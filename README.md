@@ -15,7 +15,7 @@ All skills share a common thread: they are **prompt-driven, not script-driven**.
 ### Quick Install
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh | bash
 ```
 
 This opens an interactive menu to choose where to install:
