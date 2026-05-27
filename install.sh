@@ -133,7 +133,7 @@ install_skill() {
       rm -rf "$dst"
     else
       warn "Already exists: ${dst}"
-      read -rp "  Overwrite? [y/N] " ans
+      read -rp "  Overwrite? [y/N] " ans </dev/tty
       if [[ ! "$ans" =~ ^[Yy]$ ]]; then
         warn "Skipped: ${skill}"
         return 0
@@ -233,7 +233,7 @@ interactive_menu() {
   echo ""
 
   local choice
-  read -rp "Selecciona [1-4]: " choice
+  read -rp "Selecciona [1-4]: " choice </dev/tty
 
   case "$choice" in
     1) MODE="global" ;;
@@ -244,13 +244,13 @@ interactive_menu() {
   esac
 
   if [[ "$MODE" != "global" ]]; then
-    read -rp "Ruta del proyecto (Enter para cwd): " input_target
+    read -rp "Ruta del proyecto (Enter para cwd): " input_target </dev/tty
     if [[ -n "$input_target" ]]; then
       TARGET="$input_target"
     fi
   fi
 
-  read -rp "¿Modo dry-run? (mostrar sin ejecutar) [y/N]: " ans
+  read -rp "¿Modo dry-run? (mostrar sin ejecutar) [y/N]: " ans </dev/tty
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     DRY_RUN=true
   fi
