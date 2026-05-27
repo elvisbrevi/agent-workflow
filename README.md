@@ -10,6 +10,158 @@ All skills share a common thread: they are **prompt-driven, not script-driven**.
 
 ---
 
+## Installation
+
+### Quick Install
+
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh)
+```
+
+This opens an interactive menu to choose where to install:
+
+```
+¿Dónde instalar las skills del workflow?
+  1) Global              → ~/.agents/skills/
+  2) Local .agents/      → {proyecto}/.agents/skills/
+  3) Local .opencode/    → {proyecto}/.opencode/skills/
+  4) Ambas locales       → {proyecto}/.agents/skills/ + {proyecto}/.opencode/skills/
+```
+
+### Non-Interactive Usage
+
+```bash
+# Global (available to all projects)
+./install.sh --global
+
+# Local to a project
+./install.sh --local --target ~/my-project
+./install.sh --opencode --target ~/my-project
+
+# Both local directories at once
+./install.sh --both
+
+# Preview without changes
+./install.sh --dry-run --local
+
+# Uninstall
+./install.sh --uninstall --global
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--global` | Install to `~/.agents/skills/` |
+| `--local` | Install to `{target}/.agents/skills/` |
+| `--opencode` | Install to `{target}/.opencode/skills/` |
+| `--both` | Install to both local directories |
+| `--target DIR` | Project directory (default: cwd) |
+| `--uninstall` | Remove installed symlinks |
+| `--dry-run` | Preview without making changes |
+| `--force` | Overwrite existing without asking |
+| `--ref REF` | Branch or tag (default: main) |
+
+### How It Works
+
+1. Clones `elvisbrevi/agent-workflow` to `~/.cache/agent-workflow/`
+2. Creates symlinks from the target `skills/` directory to the cached repo
+3. Skills are always up-to-date — run `./install.sh` again to pull latest changes
+
+### Install from Specific Version
+
+```bash
+# Install from a specific tag or branch
+./install.sh --global --ref v1.0.0
+./install.sh --local --ref develop
+```
+
+---
+
+## Quick Start: Using the Skills
+
+Skills are **prompt templates** that the AI agent reads and follows. They are not executable scripts — the agent is the executor, the skill is the process.
+
+### How Skills Are Discovered
+
+Once installed, the agent automatically reads skill descriptions from the `skills/` directory. When your request matches a skill's trigger phrases, the agent loads and follows it.
+
+### Manual Invocation
+
+You can always invoke a skill explicitly by name:
+
+```
+Use the grill-with-docs skill on my current plan
+Run the tdd workflow for this feature
+Diagnose this bug using the diagnose skill
+```
+
+### Auto-Trigger Phrases
+
+Each skill has trigger phrases in its description. Examples:
+
+| Skill | Trigger Phrases |
+|-------|----------------|
+| **zoom-out** | "zoom out", "map the modules", "what calls this" |
+| **grill-with-docs** | "challenge this plan", "interview my design", "validate against domain" |
+| **prototype** | "prototype this", "let me play with it", "try a few designs" |
+| **tdd** | "use tdd", "red-green-refactor", "test-driven" |
+| **diagnose** | "debug this", "find the bug", "diagnose the issue" |
+| **review** | "review this diff", "check against spec", "code review" |
+| **handoff** | "handoff session", "transfer context", "summarize for next agent" |
+| **caveman** | "caveman mode", "talk like caveman", "be brief" |
+
+### Choosing a Workflow
+
+Not sure which workflow to use? Here's a decision guide:
+
+```
+Do you understand the code?
+  ├─ No  → zoom-out (DISCOVERY)
+  └─ Yes
+      │
+      Are you fixing a bug?
+      ├─ Yes → diagnose (DIAGNOSIS)
+      └─ No
+          │
+          Are you refactoring?
+          ├─ Yes → improve-codebase-architecture → grill-with-docs → tdd (DESIGN→IMPLEMENT)
+          └─ No
+              │
+              Do you have a clear plan?
+              ├─ No  → grill-with-docs → prototype (DESIGN)
+              └─ Yes → to-prd → to-issues → tdd (PLANNING→IMPLEMENT)
+
+Always end with: review (REVIEW)
+Need to switch agents? → handoff (REVIEW)
+```
+
+### Example: Full Feature Workflow
+
+```
+You: I want to add a notification system to the app
+
+Agent: [loads grill-with-docs] Let me challenge this plan against your domain...
+       [asks 10 questions, updates CONTEXT.md]
+
+Agent: [loads prototype] Building a throwaway prototype to validate the state machine...
+       [creates prototype, tests it, captures answer, deletes code]
+
+Agent: [loads to-prd] Creating a PRD as a GitHub issue...
+       [publishes issue #42]
+
+Agent: [loads to-issues] Decomposing into vertical slices...
+       [publishes issues #43, #44, #45]
+
+Agent: [loads tdd] Implementing issue #43 with TDD...
+       [writes test, implements, refactors, repeats]
+
+Agent: [loads review] Reviewing the diff against spec and standards...
+       [reports findings]
+```
+
+---
+
 ## Classification
 
 ### UTILITY (meta / communication)
@@ -308,6 +460,7 @@ diagnose                review
 ```
 workflow/
 ├── README.md
+├── install.sh
 │
 ├── utility/
 │   ├── caveman/
