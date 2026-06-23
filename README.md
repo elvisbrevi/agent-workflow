@@ -1,6 +1,6 @@
 # Workflow Skills
 
-A curated subset of 12 skills from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Each skill is copied verbatim from the original repository, grouped by its phase in the development lifecycle.
+A curated subset of 12 skills + 1 autonomous agent from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Each skill is copied verbatim from the original repository, grouped by its phase in the development lifecycle. The agent (`afk-issuemerger`) is original to this repo.
 
 ## Philosophy
 
@@ -21,11 +21,11 @@ curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/inst
 This opens an interactive menu to choose where to install:
 
 ```
-¿Dónde instalar las skills del workflow?
-  1) Global              → ~/.agents/skills/
-  2) Local .agents/      → {proyecto}/.agents/skills/
-  3) Local .opencode/    → {proyecto}/.opencode/skills/
-  4) Ambas locales       → {proyecto}/.agents/skills/ + {proyecto}/.opencode/skills/
+¿Dónde instalar las skills y agents del workflow?
+  1) Global              → ~/.agents/skills/ + ~/.agents/agents/
+  2) Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/
+  3) Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/
+  4) Ambas locales       → .agents/ + .opencode/
 ```
 
 ### Non-Interactive Usage
@@ -52,9 +52,9 @@ This opens an interactive menu to choose where to install:
 
 | Flag | Description |
 |------|-------------|
-| `--global` | Install to `~/.agents/skills/` |
-| `--local` | Install to `{target}/.agents/skills/` |
-| `--opencode` | Install to `{target}/.opencode/skills/` |
+| `--global` | Install to `~/.agents/skills/` and `~/.agents/agents/` |
+| `--local` | Install to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
+| `--opencode` | Install to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
 | `--both` | Install to both local directories |
 | `--target DIR` | Project directory (default: cwd) |
 | `--uninstall` | Remove installed symlinks |
@@ -509,9 +509,35 @@ workflow/
 │       └── scripts/
 │           └── hitl-loop.template.sh
 │
-└── review/
-    ├── review/
-    │   └── SKILL.md
-    └── handoff/
-        └── SKILL.md
+├── review/
+│   ├── review/
+│   │   └── SKILL.md
+│   └── handoff/
+│       └── SKILL.md
+│
+└── agent/
+    └── afk-issuemerger/
+        ├── AGENT.md
+        └── REFERENCE.md
 ```
+
+---
+
+## Agents
+
+In addition to the 12 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
+
+| Type | What it is | Where it lives |
+|------|-----------|----------------|
+| **Skill** (12) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
+| **Agent** (1) | A self-contained autonomous loop that runs in its own session, takes actions, and clears context between iterations. | `agent/<name>/AGENT.md` |
+
+### `afk-issuemerger` — autonomous issue drainer
+
+Picks the next open, non-blocked issue from GitHub / Azure DevOps / `todo.md`, implements it end-to-end with the `tdd` skill, squash-merges the result into `main`, pushes, closes the issue, clears context with `/clear`, and starts the next iteration. Stops when the queue is empty or when a HITL slice is encountered.
+
+**Invoke** with `/afk-issuemerger` (opencode) or natural language: *"drain the issue queue"*, *"implement the pending issues"*, *"work through the backlog"*.
+
+**Safety** — this agent performs destructive operations: `git push` to the base branch, closes issues, edits `todo.md`. Each iteration's actions are auditable via the resulting commit and issue comment, but a misconfigured run can pollute `main`. Always run from a clean working tree and confirm the base branch before launching.
+
+See [agent/afk-issuemerger/AGENT.md](agent/afk-issuemerger/AGENT.md) for the full per-iteration flow and [agent/afk-issuemerger/REFERENCE.md](agent/afk-issuemerger/REFERENCE.md) for per-source CLI commands.

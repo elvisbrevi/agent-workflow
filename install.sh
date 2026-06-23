@@ -3,14 +3,16 @@ set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
-# Clones elvisbrevi/agent-workflow and symlinks skills into
-# the target directory (global, local .agents/, local .opencode/, or both).
+# Clones elvisbrevi/agent-workflow and symlinks skills + agents
+# into the target directory (global, local .agents/, local
+# .opencode/, or both).
 # ─────────────────────────────────────────────────────────────
 
 REPO_URL="https://github.com/elvisbrevi/agent-workflow.git"
 REPO_BRANCH="main"
 CACHE_DIR="${HOME}/.cache/agent-workflow"
 CATEGORIES=(utility discovery design planning implementation diagnosis review)
+AGENT_CATEGORIES=(agent)
 
 # ── Colors ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -31,23 +33,23 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install agent-workflow skills via symlinks.
+Install agent-workflow skills and agents via symlinks.
 
 Options:
-  --global              Install to ~/.agents/skills/
-  --local [--target D]  Install to D/.agents/skills/  (default: cwd)
-  --opencode [--target D] Install to D/.opencode/skills/
+  --global              Install to ~/.agents/skills/ and ~/.agents/agents/
+  --local [--target D]  Install to D/.agents/    (default: cwd)
+  --opencode [--target D] Install to D/.opencode/  (skills → skills/, agents → agent/)
   --both [--target D]   Install to both local directories
   --uninstall           Remove installed symlinks
   --dry-run             Show what would be done without changes
-  --force               Overwrite existing symlinks without asking
+  --force               Overwrite existing without asking
   --ref REF             Branch or tag to install from (default: main)
   -h, --help            Show this help
 
 Examples:
   $(basename "$0")                          # Interactive menu
   $(basename "$0") --global                 # Global install
-  $(basename "$0") --local --target ~/proj  # Local .agents/skills/
+  $(basename "$0") --local --target ~/proj  # Local .agents/
   $(basename "$0") --both                   # Both local dirs in cwd
   $(basename "$0") --uninstall --global     # Remove global symlinks
   $(basename "$0") --dry-run --local        # Preview local install
@@ -208,6 +210,112 @@ uninstall_from() {
   echo -e "  ${GREEN}${count} skills processed.${NC}"
 }
 
+# ── Discover agents ─────────────────────────────────────────
+# Returns: "agent_name" lines (one per AGENT.md)
+discover_agents() {
+  local cache="$1"
+  for cat in "${AGENT_CATEGORIES[@]}"; do
+    local cat_dir="${cache}/${cat}"
+    [[ -d "$cat_dir" ]] || continue
+    for agent_dir in "${cat_dir}"/*/; do
+      [[ -f "${agent_dir}AGENT.md" ]] || continue
+      local agent_name
+      agent_name="$(basename "$agent_dir")"
+      echo "${agent_name}"
+    done
+  done
+}
+
+# ── Install one agent ───────────────────────────────────────
+install_agent() {
+  local cache="$1" dest_base="$2" agent="$3"
+  local src="${cache}/agent/${agent}"
+  local dst="${dest_base}/${agent}"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  symlink ${CYAN}${dst}${NC} → ${src}"
+    return 0
+  fi
+
+  if [[ -e "$dst" ]] || [[ -L "$dst" ]]; then
+    if [[ "$FORCE" == true ]]; then
+      rm -rf "$dst"
+    else
+      warn "Already exists: ${dst}"
+      read -rp "  Overwrite? [y/N] " ans </dev/tty
+      if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+        warn "Skipped: ${agent}"
+        return 0
+      fi
+      rm -rf "$dst"
+    fi
+  fi
+
+  ln -s "$src" "$dst"
+  ok "Installed agent: ${agent}"
+}
+
+# ── Uninstall one agent ─────────────────────────────────────
+uninstall_agent() {
+  local dest_base="$1" agent="$2"
+  local dst="${dest_base}/${agent}"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  remove ${CYAN}${dst}${NC}"
+    return 0
+  fi
+
+  if [[ -L "$dst" ]]; then
+    rm "$dst"
+    ok "Removed agent: ${agent}"
+  elif [[ -e "$dst" ]]; then
+    warn "Not a symlink, skipped: ${dst}"
+  fi
+}
+
+# ── Install agents to a destination ─────────────────────────
+install_agents_to() {
+  local cache="$1" dest_base="$2" label="$3"
+
+  echo ""
+  echo -e "${BOLD}Installing agents → ${label}${NC}"
+  echo -e "  Destination: ${dest_base}"
+
+  mkdir -p "$dest_base"
+
+  local count=0
+  while IFS= read -r agent; do
+    [[ -z "$agent" ]] && continue
+    install_agent "$cache" "$dest_base" "$agent"
+    ((count++))
+  done < <(discover_agents "$cache")
+
+  echo -e "  ${GREEN}${count} agents processed.${NC}"
+}
+
+# ── Uninstall agents from a destination ─────────────────────
+uninstall_agents_from() {
+  local cache="$1" dest_base="$2" label="$3"
+
+  echo ""
+  echo -e "${BOLD}Uninstalling agents from ${label}${NC}"
+  echo -e "  Destination: ${dest_base}"
+
+  if [[ ! -d "$dest_base" ]]; then
+    warn "Directory does not exist: ${dest_base}"
+    return 0
+  fi
+
+  local count=0
+  while IFS= read -r agent; do
+    [[ -z "$agent" ]] && continue
+    uninstall_agent "$dest_base" "$agent"
+    ((count++))
+  done < <(discover_agents "$cache")
+
+  echo -e "  ${GREEN}${count} agents processed.${NC}"
+}
+
 # ── List discovered skills ──────────────────────────────────
 list_skills() {
   local cache="$1"
@@ -219,17 +327,27 @@ list_skills() {
   done < <(discover_skills "$cache")
 }
 
+# ── List discovered agents ──────────────────────────────────
+list_agents() {
+  local cache="$1"
+  echo -e "\n${BOLD}Agents found:${NC}"
+  while IFS= read -r agent; do
+    [[ -z "$agent" ]] && continue
+    echo -e "  ${CYAN}agent${NC}/${agent}"
+  done < <(discover_agents "$cache")
+}
+
 # ── Interactive menu ────────────────────────────────────────
 interactive_menu() {
   echo ""
   echo -e "${BOLD}agent-workflow skill installer${NC}"
   echo ""
-  echo "¿Dónde instalar las skills?"
+  echo "¿Dónde instalar las skills y agents?"
   echo ""
-  echo -e "  ${CYAN}1)${NC} Global              → ~/.agents/skills/"
-  echo -e "  ${CYAN}2)${NC} Local .agents/      → {proyecto}/.agents/skills/"
-  echo -e "  ${CYAN}3)${NC} Local .opencode/    → {proyecto}/.opencode/skills/"
-  echo -e "  ${CYAN}4)${NC} Ambas locales       → {proyecto}/.agents/skills/ + {proyecto}/.opencode/skills/"
+  echo -e "  ${CYAN}1)${NC} Global              → ~/.agents/skills/ + ~/.agents/agents/"
+  echo -e "  ${CYAN}2)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
+  echo -e "  ${CYAN}3)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
+  echo -e "  ${CYAN}4)${NC} Ambas locales       → .agents/ + .opencode/"
   echo ""
 
   local choice
@@ -256,6 +374,30 @@ interactive_menu() {
   fi
 }
 
+# ── Dispatch table — emits "kind:path" lines per destination
+dispatch_destinations() {
+  case "$MODE" in
+    global)
+      echo "skills:${HOME}/.agents/skills"
+      echo "agents:${HOME}/.agents/agents"
+      ;;
+    local)
+      echo "skills:${TARGET}/.agents/skills"
+      echo "agents:${TARGET}/.agents/agents"
+      ;;
+    opencode)
+      echo "skills:${TARGET}/.opencode/skills"
+      echo "agents:${TARGET}/.opencode/agent"
+      ;;
+    both)
+      echo "skills:${TARGET}/.agents/skills"
+      echo "agents:${TARGET}/.agents/agents"
+      echo "skills:${TARGET}/.opencode/skills"
+      echo "agents:${TARGET}/.opencode/agent"
+      ;;
+  esac
+}
+
 # ── Main ────────────────────────────────────────────────────
 main() {
   # Interactive if no mode specified
@@ -266,40 +408,29 @@ main() {
   resolve_target
   sync_repo
   list_skills "$CACHE_DIR"
+  list_agents "$CACHE_DIR"
 
-  if [[ "$UNINSTALL" == true ]]; then
-    case "$MODE" in
-      global)
-        uninstall_from "$CACHE_DIR" "${HOME}/.agents/skills" "global (~/.agents/skills/)"
-        ;;
-      local)
-        uninstall_from "$CACHE_DIR" "${TARGET}/.agents/skills" "local (.agents/skills/)"
-        ;;
-      opencode)
-        uninstall_from "$CACHE_DIR" "${TARGET}/.opencode/skills" "local (.opencode/skills/)"
-        ;;
-      both)
-        uninstall_from "$CACHE_DIR" "${TARGET}/.agents/skills" "local (.agents/skills/)"
-        uninstall_from "$CACHE_DIR" "${TARGET}/.opencode/skills" "local (.opencode/skills/)"
-        ;;
-    esac
-  else
-    case "$MODE" in
-      global)
-        install_to "$CACHE_DIR" "${HOME}/.agents/skills" "global (~/.agents/skills/)"
-        ;;
-      local)
-        install_to "$CACHE_DIR" "${TARGET}/.agents/skills" "local (.agents/skills/)"
-        ;;
-      opencode)
-        install_to "$CACHE_DIR" "${TARGET}/.opencode/skills" "local (.opencode/skills/)"
-        ;;
-      both)
-        install_to "$CACHE_DIR" "${TARGET}/.agents/skills" "local (.agents/skills/)"
-        install_to "$CACHE_DIR" "${TARGET}/.opencode/skills" "local (.opencode/skills/)"
-        ;;
-    esac
-  fi
+  # Run skills + agents for each destination
+  while IFS= read -r dest; do
+    [[ -z "$dest" ]] && continue
+    local kind="${dest%%:*}"
+    local path="${dest#*:}"
+    local label="${MODE} (${path})"
+
+    if [[ "$UNINSTALL" == true ]]; then
+      if [[ "$kind" == "skills" ]]; then
+        uninstall_from "$CACHE_DIR" "$path" "$label"
+      else
+        uninstall_agents_from "$CACHE_DIR" "$path" "$label"
+      fi
+    else
+      if [[ "$kind" == "skills" ]]; then
+        install_to "$CACHE_DIR" "$path" "$label"
+      else
+        install_agents_to "$CACHE_DIR" "$path" "$label"
+      fi
+    fi
+  done < <(dispatch_destinations)
 
   echo ""
   if [[ "$DRY_RUN" == true ]]; then
