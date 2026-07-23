@@ -251,7 +251,7 @@ Skills for validating changes and preserving session continuity.
 | Skill | Description | I/O |
 |-------|-------------|-----|
 | **code-review** | Current upstream two-axis review: checks the diff against documented standards plus a Fowler smell baseline, and independently against the originating spec. Validates the fixed point before launching parallel sub-agents and keeps findings separated by axis. | Reads: diff, commits, issue/spec, tracker configuration, documented standards. Creates: nothing. Modifies: nothing. |
-| **handoff** | Compresses the current conversation into a transfer document for another agent. Includes suggested skills for the next session. References external artifacts (PRDs, issues, ADRs) by path/URL rather than duplicating. Redacts sensitive information. Saves to OS temp directory, not the workspace. | Reads: conversation context. Creates: handoff document in OS temp directory. Modifies: nothing. |
+| **handoff** | Compresses the current conversation into a transfer document for another agent. Includes suggested skills for the next session. References existing specs, plans, ADRs, issues, commits, and diffs by path/URL rather than duplicating them. Redacts sensitive information. Saves to the OS temp directory, not the workspace. | Reads: conversation context. Creates: handoff document in OS temp directory. Modifies: nothing. |
 
 ---
 
@@ -551,7 +551,8 @@ workflow/
 │   │   ├── SKILL.md
 │   │   └── agents/openai.yaml
 │   └── handoff/
-│       └── SKILL.md
+│       ├── SKILL.md
+│       └── agents/openai.yaml
 │
 └── agent/
     └── afk-issuemerger/
