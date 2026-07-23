@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 This skill takes the current conversation context and codebase understanding and produces a spec (you may know this document as a PRD). Do NOT interview the user — just synthesize what you already know.
 
-The issue tracker and triage label vocabulary should have been provided to you — run `/setup-matt-pocock-skills` if not.
+The issue tracker and triage role vocabulary should have been provided to you — run `/setup-elvis-brevi-skills` if not. Read `docs/agents/issue-tracker.md` before publishing; it defines the tracker-specific work-item type and role representation.
 
 ## Process
 
@@ -16,7 +16,7 @@ The issue tracker and triage label vocabulary should have been provided to you �
 
 Check with the user that these seams match their expectations.
 
-3. Write the spec using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
+3. Write the spec using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage role using the configured representation — no need for additional triage. On Azure Boards, use the configured spec work-item type and preserve unrelated Tags.
 
 <spec-template>
 
