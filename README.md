@@ -1,6 +1,6 @@
 # Workflow Skills
 
-A curated subset of 19 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`afk-issuemerger`) is original to this repo.
+A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`afk-issuemerger`) is original to this repo.
 
 ## Philosophy
 
@@ -111,7 +111,6 @@ Each skill has trigger phrases in its description. Examples:
 | **triage** | "show items needing attention", "triage #42", "move to ready-for-agent" |
 | **wayfinder** | "map this huge effort", "chart the decisions", "work through this map" |
 | **code-review** | "review this diff", "check against spec", "code review" |
-| **review** | "review since X", "review this branch" |
 | **handoff** | "handoff session", "transfer context", "summarize for next agent" |
 | **caveman** | "caveman mode", "talk like caveman", "be brief" |
 
@@ -252,7 +251,6 @@ Skills for validating changes and preserving session continuity.
 | Skill | Description | I/O |
 |-------|-------------|-----|
 | **code-review** | Current upstream two-axis review: checks the diff against documented standards plus a Fowler smell baseline, and independently against the originating spec. Validates the fixed point before launching parallel sub-agents and keeps findings separated by axis. | Reads: diff, commits, issue/spec, tracker configuration, documented standards. Creates: nothing. Modifies: nothing. |
-| **review** | Two-axis parallel review of a git diff: **Standards** (does code follow documented repo conventions?) and **Spec** (does code faithfully implement the originating issue/PRD?). Runs both as parallel sub-agents to prevent context pollution. Reports findings independently — a change can pass one axis and fail the other, and reporting them together would mask this. | Reads: git diff, commit log, issue/PRD, `CLAUDE.md`/`AGENTS.md`, `CONTRIBUTING.md`, `docs/adr/`, config files. Creates: nothing. Modifies: nothing (reports findings conversationally). |
 | **handoff** | Compresses the current conversation into a transfer document for another agent. Includes suggested skills for the next session. References external artifacts (PRDs, issues, ADRs) by path/URL rather than duplicating. Redacts sensitive information. Saves to OS temp directory, not the workspace. | Reads: conversation context. Creates: handoff document in OS temp directory. Modifies: nothing. |
 
 ---
@@ -404,7 +402,6 @@ caveman ──→ [any workflow above]
 | tdd | CONTEXT.md, ADRs, tests, code | tests + code | may delete old tests | — |
 | diagnose | code, tests, logs | regression test, NOTES.md | code (fix) | [DEBUG-*], prototypes |
 | code-review | diff, commits, spec, standards | — | — | — |
-| review | diff, commits, spec, standards | — | — | — |
 | handoff | conversation | handoff doc in /tmp | — | — |
 
 ---
@@ -553,8 +550,6 @@ workflow/
 │   ├── code-review/
 │   │   ├── SKILL.md
 │   │   └── agents/openai.yaml
-│   ├── review/
-│   │   └── SKILL.md
 │   └── handoff/
 │       └── SKILL.md
 │
@@ -568,11 +563,11 @@ workflow/
 
 ## Agents
 
-In addition to the 19 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
+In addition to the 18 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
 
 | Type | What it is | Where it lives |
 |------|-----------|----------------|
-| **Skill** (19) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
+| **Skill** (18) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
 | **Agent** (1) | A self-contained autonomous loop that runs in its own session, takes actions, and clears context between iterations. | `agent/<name>/AGENT.md` |
 
 ### `afk-issuemerger` — autonomous issue drainer
