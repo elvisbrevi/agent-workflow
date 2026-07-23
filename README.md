@@ -130,7 +130,7 @@ Do you understand the code?
               │
               Do you have a clear plan?
               ├─ No  → grill-with-docs → prototype (DESIGN)
-              └─ Yes → to-prd → to-issues → tdd (PLANNING→IMPLEMENT)
+              └─ Yes → to-spec → to-tickets → tdd (PLANNING→IMPLEMENT)
 
 Always end with: review (REVIEW)
 Need to switch agents? → handoff (REVIEW)
@@ -147,10 +147,10 @@ Agent: [loads grill-with-docs] Let me challenge this plan against your domain...
 Agent: [loads prototype] Building a throwaway prototype to validate the state machine...
        [creates prototype, tests it, captures answer, deletes code]
 
-Agent: [loads to-prd] Creating a PRD as a GitHub issue...
+Agent: [loads to-spec] Creating a spec as a GitHub issue...
        [publishes issue #42]
 
-Agent: [loads to-issues] Decomposing into vertical slices...
+Agent: [loads to-tickets] Decomposing into tracer-bullet tickets...
        [publishes issues #43, #44, #45]
 
 Agent: [loads tdd] Implementing issue #43 with TDD...
@@ -203,10 +203,10 @@ Skills for turning ideas into actionable, agent-ready work items.
 
 | Skill | Description | I/O |
 |-------|-------------|-----|
-| **to-prd** | Synthesizes the current conversation context into a Product Requirements Document without further interviews. Produces: problem statement, solution, extensive user stories, implementation decisions, testing decisions, out-of-scope. Publishes as a **single issue** on the project tracker with the `ready-for-agent` label. | Reads: conversation context, codebase, `CONTEXT.md`, `docs/adr/*.md`, `docs/agents/issue-tracker.md`. Creates: 1 issue on tracker. Modifies: nothing. |
-| **to-issues** | Decomposes a plan/PRD into **multiple vertical-slice issues** using tracer bullets. Each slice cuts through ALL layers end-to-end and is independently demoable. Classifies each as HITL (needs human) or AFK (autonomous). Quizzes the user on granularity, dependencies, and classification before publishing in dependency order. | Reads: conversation context + parent issue, codebase (optional), `CONTEXT.md`, `docs/adr/*.md`, `docs/agents/`. Creates: N issues on tracker. Modifies: nothing (never closes parent). |
+| **to-spec** | Synthesizes the current conversation into a spec without re-interviewing the user. Confirms the highest practical testing seams, then records the problem, solution, user stories, implementation and testing decisions, out-of-scope, and notes. Publishes a **single issue** with the `ready-for-agent` label. | Reads: conversation context, codebase, `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: 1 issue on tracker. Modifies: nothing. |
+| **to-tickets** | Decomposes a plan, spec, or conversation into **tracer-bullet tickets** with explicit blocking edges. Supports local ticket files or a real tracker, keeps each slice within one fresh context window, and uses expand–contract sequencing for wide refactors. Quizzes the user before publishing in dependency order. | Reads: conversation context or referenced spec/issue, codebase (optional), `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: N local ticket files or tracker issues. Modifies: nothing (never closes parent). |
 
-**Key distinction:** `to-prd` produces 1 panoramic issue (the compass). `to-issues` produces N executable tickets (the steps). Both go to the issue tracker, never to local files.
+**Key distinction:** `to-spec` produces one panoramic spec issue (the compass). `to-tickets` produces N executable tickets with explicit blocking edges (the steps), either as local files or in the configured tracker.
 
 ### IMPLEMENTATION (write code)
 
@@ -261,12 +261,12 @@ DESIGN:    grill-with-docs ──→ prototype (LOGIC)
            CONTEXT.md          throwaway TUI
            (updated)           (deleted after answer)
 
-PLANNING:  to-prd ──→ to-issues
+PLANNING:  to-spec ──→ to-tickets
                 │           │
-                │  1 issue  │  N issues (vertical slices)
+                │  1 spec   │  N tickets (vertical slices)
                 ▼           ▼
            GitHub Issue   GitHub Issues
-           #100 (PRD)     #101, #102, #103...
+           #100 (spec)    #101, #102, #103...
 
 IMPLEMENT: tdd ──→ tests + code (1 slice at a time)
 
@@ -315,7 +315,7 @@ DESIGN:    improve-codebase-architecture
 
 DESIGN:    grill-with-docs ──→ validate new design against domain
 
-PLANNING:  to-issues ──→ N refactor tickets
+PLANNING:  to-tickets ──→ N refactor tickets
 
 IMPLEMENT: tdd ──→ refactor with test safety net
 
@@ -333,10 +333,10 @@ DESIGN:    grill-with-docs ──→ clarify domain terms
                 ▼
            (capture answer in NOTES.md, delete prototype)
 
-PLANNING:  to-prd ──→ document as formal PRD
+PLANNING:  to-spec ──→ document as a formal spec
                 │
                 ▼
-           to-issues ──→ decompose into tickets
+           to-tickets ──→ decompose into tickets
                 │
                 ▼
            tdd ──→ implement
@@ -346,7 +346,7 @@ PLANNING:  to-prd ──→ document as formal PRD
 
 ```
 [Agent A]
-  grill-with-docs ──→ to-prd ──→ to-issues
+  grill-with-docs ──→ to-spec ──→ to-tickets
                                        │
                                        ▼
                                   handoff ──→ saves to /tmp/
@@ -381,8 +381,8 @@ caveman ──→ [any workflow above]
 | grill-with-docs | CONTEXT.md, ADRs, code | CONTEXT.md, ADRs | CONTEXT.md | — |
 | prototype | code, tooling | prototype files, script, NOTES.md | package.json (temp) | prototype files |
 | improve-codebase-architecture | CONTEXT.md, ADRs, code | HTML report in /tmp | CONTEXT.md | — |
-| to-prd | conversation, code, CONTEXT.md | 1 issue | — | — |
-| to-issues | conversation, parent issue, CONTEXT.md | N issues | — | — |
+| to-spec | conversation, code, CONTEXT.md | 1 spec issue | — | — |
+| to-tickets | conversation or referenced spec/issue, CONTEXT.md | N local files or tracker issues | — | — |
 | tdd | CONTEXT.md, ADRs, tests, code | tests + code | may delete old tests | — |
 | diagnose | code, tests, logs | regression test, NOTES.md | code (fix) | [DEBUG-*], prototypes |
 | review | diff, commits, spec, standards | — | — | — |
@@ -413,7 +413,7 @@ improve-codebase-architecture
     ├──────────────────────┐
     │                      │
     ▼                      ▼
-to-prd ──────► to-issues
+to-spec ─────► to-tickets
     │              │
     │   (1 issue)  │   (N issues)
     │              │
@@ -489,10 +489,12 @@ workflow/
 │       └── INTERFACE-DESIGN.md
 │
 ├── planning/
-│   ├── to-prd/
-│   │   └── SKILL.md
-│   └── to-issues/
-│       └── SKILL.md
+│   ├── to-spec/
+│   │   ├── SKILL.md
+│   │   └── agents/openai.yaml
+│   └── to-tickets/
+│       ├── SKILL.md
+│       └── agents/openai.yaml
 │
 ├── implementation/
 │   └── tdd/
