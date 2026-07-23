@@ -1,6 +1,6 @@
 # Workflow Skills
 
-A curated subset of 12 skills + 1 autonomous agent from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Each skill is copied verbatim from the original repository, grouped by its phase in the development lifecycle. The agent (`afk-issuemerger`) is original to this repo.
+A curated subset of 17 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`afk-issuemerger`) is original to this repo.
 
 ## Philosophy
 
@@ -107,6 +107,8 @@ Each skill has trigger phrases in its description. Examples:
 | **prototype** | "prototype this", "let me play with it", "try a few designs" |
 | **tdd** | "use tdd", "red-green-refactor", "test-driven" |
 | **diagnose** | "debug this", "find the bug", "diagnose the issue" |
+| **triage** | "show items needing attention", "triage #42", "move to ready-for-agent" |
+| **wayfinder** | "map this huge effort", "chart the decisions", "work through this map" |
 | **review** | "review this diff", "check against spec", "code review" |
 | **handoff** | "handoff session", "transfer context", "summarize for next agent" |
 | **caveman** | "caveman mode", "talk like caveman", "be brief" |
@@ -128,9 +130,13 @@ Do you understand the code?
           ├─ Yes → improve-codebase-architecture → grill-with-docs → tdd (DESIGN→IMPLEMENT)
           └─ No
               │
-              Do you have a clear plan?
-              ├─ No  → grill-with-docs → prototype (DESIGN)
-              └─ Yes → to-spec → to-tickets → tdd (PLANNING→IMPLEMENT)
+              Is the effort too large or uncertain for one session?
+              ├─ Yes → wayfinder → to-spec → to-tickets (PLANNING)
+              └─ No
+                  │
+                  Do you have a clear plan?
+                  ├─ No  → grill-with-docs → prototype (DESIGN)
+                  └─ Yes → to-spec → to-tickets → tdd (PLANNING→IMPLEMENT)
 
 Always end with: review (REVIEW)
 Need to switch agents? → handoff (REVIEW)
@@ -147,8 +153,8 @@ Agent: [loads grill-with-docs] Let me challenge this plan against your domain...
 Agent: [loads prototype] Building a throwaway prototype to validate the state machine...
        [creates prototype, tests it, captures answer, deletes code]
 
-Agent: [loads to-spec] Creating a spec as a GitHub issue...
-       [publishes issue #42]
+Agent: [loads to-spec] Creating a spec on the configured issue tracker...
+       [publishes tracker item #42]
 
 Agent: [loads to-tickets] Decomposing into tracer-bullet tickets...
        [publishes issues #43, #44, #45]
@@ -171,6 +177,8 @@ Skills that modify how the agent operates, not what it produces.
 | Skill | Description | I/O |
 |-------|-------------|-----|
 | **caveman** | Ultra-compressed communication mode. Drops ~75% of tokens by stripping filler, articles, and pleasantries while preserving technical accuracy. Persists across turns until explicitly disabled. Temporarily exits compression for security warnings and destructive operations. | Reads: nothing. Creates: nothing. Modifies: nothing (communication style only). |
+| **grilling** | Relentless one-question-at-a-time interview for stress-testing a plan, decision, or idea. Looks up discoverable facts, leaves decisions to the user, and does not act until shared understanding is confirmed. | Reads: conversation and relevant environment facts. Creates: nothing. Modifies: nothing. |
+| **setup-elvis-brevi-skills** | Configures a repository's issue tracker, optional triage-role vocabulary, and domain-document layout for the engineering skills. Supports GitHub, GitLab, Azure Boards, local Markdown, or a documented custom tracker; Azure uses `az` canonically with optional `yp` shortcuts. | Reads: repo configuration, agent instructions, domain docs, installed skills. Creates: `docs/agents/*.md` and optionally `AGENTS.md` or `CLAUDE.md`. Modifies: an existing agent-instructions file when present. |
 | **write-a-skill** | Creates new agent skills with proper structure, progressive disclosure, and bundled resources. Enforces SKILL.md under 100 lines, description with triggers, and reference docs one level deep. The meta-skill that bootstraps the workflow itself. | Reads: nothing. Creates: `SKILL.md` + reference docs + optional scripts. Modifies: nothing. |
 
 ### DISCOVERY (understand / explore)
@@ -187,7 +195,8 @@ Skills for shaping ideas before committing to code. This is where expensive mist
 
 | Skill | Description | I/O |
 |-------|-------------|-----|
-| **grill-with-docs** | Relentless one-question-at-a-time interview that challenges a plan against the existing domain model (`CONTEXT.md`) and architectural decisions (`docs/adr/`). Forces terminological precision, cross-references with actual code, stress-tests with concrete scenarios, and updates domain documentation inline as decisions crystallize. The output is sharper language and a validated plan — not code. | Reads: `CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/*.md`, relevant source code. Creates: `CONTEXT.md` (lazily, when first term resolved), `docs/adr/NNNN-slug.md` (only when decision is hard to reverse, surprising, and a real trade-off). Modifies: `CONTEXT.md` (adds/refines terms inline). |
+| **domain-modeling** | Actively sharpens the project's ubiquitous language, challenges ambiguous terms and code contradictions, updates `CONTEXT.md` inline, and offers ADRs only for hard-to-reverse, surprising trade-offs. | Reads: `CONTEXT.md`, `CONTEXT-MAP.md`, ADRs and relevant source code. Creates: domain docs lazily. Modifies: `CONTEXT.md`. |
+| **grill-with-docs** | User-invoked composition of `grilling` with `domain-modeling`: stress-tests a plan while maintaining the project's glossary and architectural decisions. | Reads and writes through the two composed skills. |
 | **prototype** | Builds throwaway code to answer exactly one question, then deletes everything. Two branches: **LOGIC** (interactive terminal app that drives a state machine through hard cases — pure reducer behind a TUI shell) and **UI** (several radically different UI variations on a single route, toggleable via `?variant=` and a floating bottom bar). The answer is captured in a commit/ADR/issue; the code is deleted. | Reads: source code in the area, existing routing/tooling conventions. Creates: prototype files + task runner script + `NOTES.md`. Modifies: `package.json` (temporarily, for run script). Then **deletes everything** except the captured answer. |
 | **improve-codebase-architecture** | Three-phase architectural diagnosis: (1) explore codebase for shallow modules, leakage, poor locality; (2) generate a self-contained HTML report with Tailwind+Mermaid diagrams showing before/after for each deepening candidate; (3) grilling loop to design the chosen candidate's new shape. Uses a precise architectural vocabulary (module, interface, seam, adapter, depth, leverage, locality) defined in `LANGUAGE.md`. | Reads: `CONTEXT.md`, `docs/adr/*.md`, entire codebase (via explore sub-agent). Creates: `/tmp/architecture-review-<timestamp>.html` (visual report). Modifies: `CONTEXT.md` (if deepening names new domain concepts). |
 
@@ -203,10 +212,12 @@ Skills for turning ideas into actionable, agent-ready work items.
 
 | Skill | Description | I/O |
 |-------|-------------|-----|
-| **to-spec** | Synthesizes the current conversation into a spec without re-interviewing the user. Confirms the highest practical testing seams, then records the problem, solution, user stories, implementation and testing decisions, out-of-scope, and notes. Publishes a **single issue** with the `ready-for-agent` label. | Reads: conversation context, codebase, `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: 1 issue on tracker. Modifies: nothing. |
+| **to-spec** | Synthesizes the current conversation into a spec without re-interviewing the user. Confirms the highest practical testing seams, then records the problem, solution, user stories, implementation and testing decisions, out-of-scope, and notes. Publishes a **single tracker item** with the `ready-for-agent` role. | Reads: conversation context, codebase, `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: 1 item on tracker. Modifies: nothing. |
 | **to-tickets** | Decomposes a plan, spec, or conversation into **tracer-bullet tickets** with explicit blocking edges. Supports local ticket files or a real tracker, keeps each slice within one fresh context window, and uses expand–contract sequencing for wide refactors. Quizzes the user before publishing in dependency order. | Reads: conversation context or referenced spec/issue, codebase (optional), `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: N local ticket files or tracker issues. Modifies: nothing (never closes parent). |
+| **triage** | Moves tracker items through category and state roles, verifies claims against the codebase, and writes durable agent briefs. On Azure Boards it uses the configured Tags, fields, states, and discussions while preserving unrelated Tags. | Reads: tracker items and discussion, code, domain docs, ADRs, `.out-of-scope/`. Creates: tracker comments and optional out-of-scope records. Modifies: tracker roles/states and rejected-enhancement records. |
+| **wayfinder** | Maps work too large for one session as a parent map plus decision tickets, advances the open frontier one decision at a time, and records durable resolutions. On Azure Boards it uses Parent/Child and Predecessor/Successor relations. | Reads: map, child tickets, dependencies, domain docs. Creates: map and decision work items. Modifies: claims, discussions, states, relations, and the map index. |
 
-**Key distinction:** `to-spec` produces one panoramic spec issue (the compass). `to-tickets` produces N executable tickets with explicit blocking edges (the steps), either as local files or in the configured tracker.
+**Key distinction:** `wayfinder` resolves uncertainty before execution, `to-spec` produces one panoramic specification (the compass), `to-tickets` produces N executable tickets with explicit blocking edges (the steps), and `triage` controls readiness at tracker intake.
 
 ### IMPLEMENTATION (write code)
 
@@ -236,7 +247,7 @@ Skills for finding and fixing defects with scientific rigor.
 
 ### REVIEW (validate / hand over)
 
-Skills for quality assurance and session continuity.
+Skills for validating changes and preserving session continuity.
 
 | Skill | Description | I/O |
 |-------|-------------|-----|
@@ -265,7 +276,7 @@ PLANNING:  to-spec ──→ to-tickets
                 │           │
                 │  1 spec   │  N tickets (vertical slices)
                 ▼           ▼
-           GitHub Issue   GitHub Issues
+           Tracker item   Child tracker items
            #100 (spec)    #101, #102, #103...
 
 IMPLEMENT: tdd ──→ tests + code (1 slice at a time)
@@ -376,13 +387,18 @@ caveman ──→ [any workflow above]
 | Skill | Reads | Creates | Modifies | Deletes |
 |-------|-------|---------|----------|---------|
 | caveman | — | — | — | — |
+| grilling | conversation, environment facts | — | — | — |
+| setup-elvis-brevi-skills | repo config, agent instructions, domain docs | `docs/agents/*.md`, optionally agent instructions | existing `AGENTS.md` or `CLAUDE.md` | — |
 | write-a-skill | — | SKILL.md + docs | — | — |
 | zoom-out | CONTEXT.md, code | — | — | — |
+| domain-modeling | CONTEXT.md, ADRs, code | CONTEXT.md, ADRs | CONTEXT.md | — |
 | grill-with-docs | CONTEXT.md, ADRs, code | CONTEXT.md, ADRs | CONTEXT.md | — |
 | prototype | code, tooling | prototype files, script, NOTES.md | package.json (temp) | prototype files |
 | improve-codebase-architecture | CONTEXT.md, ADRs, code | HTML report in /tmp | CONTEXT.md | — |
+| wayfinder | destination, tracker map, decision tickets | map and child work items | claims, discussions, states, relations, map index | — |
 | to-spec | conversation, code, CONTEXT.md | 1 spec issue | — | — |
 | to-tickets | conversation or referenced spec/issue, CONTEXT.md | N local files or tracker issues | — | — |
+| triage | tracker items, code, domain docs, `.out-of-scope/` | comments, agent briefs, optional rejection records | roles, states, rejection records | — |
 | tdd | CONTEXT.md, ADRs, tests, code | tests + code | may delete old tests | — |
 | diagnose | code, tests, logs | regression test, NOTES.md | code (fix) | [DEBUG-*], prototypes |
 | review | diff, commits, spec, standards | — | — | — |
@@ -413,7 +429,7 @@ improve-codebase-architecture
     ├──────────────────────┐
     │                      │
     ▼                      ▼
-to-spec ─────► to-tickets
+wayfinder ───► to-spec ─────► to-tickets
     │              │
     │   (1 issue)  │   (N issues)
     │              │
@@ -465,6 +481,17 @@ workflow/
 ├── utility/
 │   ├── caveman/
 │   │   └── SKILL.md
+│   ├── grilling/
+│   │   └── SKILL.md
+│   ├── setup-elvis-brevi-skills/
+│   │   ├── SKILL.md
+│   │   ├── agents/openai.yaml
+│   │   ├── domain.md
+│   │   ├── issue-tracker-azure-devops.md
+│   │   ├── issue-tracker-github.md
+│   │   ├── issue-tracker-gitlab.md
+│   │   ├── issue-tracker-local.md
+│   │   └── triage-labels.md
 │   └── write-a-skill/
 │       └── SKILL.md
 │
@@ -473,6 +500,10 @@ workflow/
 │       └── SKILL.md
 │
 ├── design/
+│   ├── domain-modeling/
+│   │   ├── SKILL.md
+│   │   ├── ADR-FORMAT.md
+│   │   └── CONTEXT-FORMAT.md
 │   ├── grill-with-docs/
 │   │   ├── SKILL.md
 │   │   ├── ADR-FORMAT.md
@@ -489,6 +520,14 @@ workflow/
 │       └── INTERFACE-DESIGN.md
 │
 ├── planning/
+│   ├── triage/
+│   │   ├── SKILL.md
+│   │   ├── AGENT-BRIEF.md
+│   │   ├── OUT-OF-SCOPE.md
+│   │   └── agents/openai.yaml
+│   ├── wayfinder/
+│   │   ├── SKILL.md
+│   │   └── agents/openai.yaml
 │   ├── to-spec/
 │   │   ├── SKILL.md
 │   │   └── agents/openai.yaml
@@ -527,11 +566,11 @@ workflow/
 
 ## Agents
 
-In addition to the 12 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
+In addition to the 17 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
 
 | Type | What it is | Where it lives |
 |------|-----------|----------------|
-| **Skill** (12) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
+| **Skill** (17) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
 | **Agent** (1) | A self-contained autonomous loop that runs in its own session, takes actions, and clears context between iterations. | `agent/<name>/AGENT.md` |
 
 ### `afk-issuemerger` — autonomous issue drainer
