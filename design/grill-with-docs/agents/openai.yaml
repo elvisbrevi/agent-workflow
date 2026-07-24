@@ -1,0 +1,6 @@
+interface:
+  display_name: "Grill with Docs"
+  short_description: "Challenge a design and document decisions"
+  default_prompt: "Use $grill-with-docs to challenge my plan and document the resulting domain decisions."
+policy:
+  allow_implicit_invocation: false

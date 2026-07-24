@@ -1,0 +1,6 @@
+interface:
+  display_name: "Zoom Out"
+  short_description: "Map code from a higher-level perspective"
+  default_prompt: "Use $zoom-out to map this code area, its modules, and its callers."
+policy:
+  allow_implicit_invocation: false
