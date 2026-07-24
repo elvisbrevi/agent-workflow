@@ -68,6 +68,20 @@ This opens an interactive menu to choose where to install:
 2. Creates symlinks from the target `skills/` directory to the cached repo
 3. Skills are always up-to-date — run `./install.sh` again to pull latest changes
 
+### Codex
+
+Codex discovers global skills from `~/.agents/skills` and project skills from
+`.agents/skills`. The global and local `.agents` installation modes above are
+therefore compatible with Codex.
+
+After installing, Codex normally detects new skills automatically. If a skill
+does not appear in `/skills` or when typing `$`, restart Codex or open a new
+session. To verify the global installation of `grill-with-docs`:
+
+```bash
+test -f ~/.agents/skills/grill-with-docs/SKILL.md
+```
+
 ### Install from Specific Version
 
 ```bash
@@ -90,6 +104,14 @@ Once installed, the agent automatically reads skill descriptions from the `skill
 
 You can always invoke a skill explicitly by name:
 
+For Codex, use `/skills` to browse installed skills or type `$` to mention one:
+
+```text
+$grill-with-docs challenge my current plan
+```
+
+In agents that support natural-language skill selection:
+
 ```
 Use the grill-with-docs skill on my current plan
 Run the tdd workflow for this feature
@@ -102,8 +124,6 @@ Each skill has trigger phrases in its description. Examples:
 
 | Skill | Trigger Phrases |
 |-------|----------------|
-| **zoom-out** | "zoom out", "map the modules", "what calls this" |
-| **grill-with-docs** | "challenge this plan", "interview my design", "validate against domain" |
 | **prototype** | "prototype this", "let me play with it", "try a few designs" |
 | **implement** | "implement this spec", "build these tickets", "implement the work" |
 | **tdd** | "use tdd", "red-green-refactor", "test-driven" |
@@ -113,6 +133,9 @@ Each skill has trigger phrases in its description. Examples:
 | **code-review** | "review this diff", "check against spec", "code review" |
 | **handoff** | "handoff session", "transfer context", "summarize for next agent" |
 | **caveman** | "caveman mode", "talk like caveman", "be brief" |
+
+`grill-with-docs` and `zoom-out` are intentionally explicit-only in Codex;
+invoke them with `$grill-with-docs` and `$zoom-out`, respectively.
 
 ### Choosing a Workflow
 
