@@ -12,71 +12,156 @@ All skills share a common thread: they are **prompt-driven, not script-driven**.
 
 ## Installation
 
-### Quick Install
+The installer creates symlinks to a cached checkout, so the installed skills remain
+synchronized with the selected branch or tag without copying or forking their source.
+There are separate destinations for Claude Code, shared `.agents` consumers, and
+OpenCode.
+
+### Quick Install for Claude Code
+
+Use an explicit mode when running from a pipe. This avoids the interactive menu, which
+requires a controlling terminal:
+
+```bash
+# Personal installation, available in every Claude Code project
+curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
+  | bash -s -- --claude-global
+
+# Project-only installation
+curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
+  | bash -s -- --claude-local --target "$PWD"
+```
+
+Claude Code discovers personal skills from `~/.claude/skills/` and project skills from
+`.claude/skills/`. Claude Code modes install skills only; the `afk-issuemerger` autonomous
+agent is intentionally not installed in those destinations.
+
+If you want to inspect the downloaded script before executing it:
+
+```bash
+curl -fsSLo /tmp/agent-workflow-install.sh \
+  https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh
+bash /tmp/agent-workflow-install.sh --claude-global
+```
+
+### Interactive Installation
+
+Running the installer without a mode opens a menu. It must be run from a shell with a
+controlling TTY; a `curl | bash` process launched by a non-interactive runner cannot use
+`/dev/tty`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh | bash
 ```
 
-This opens an interactive menu to choose where to install:
+The menu offers:
 
 ```
-¿Dónde instalar las skills y agents del workflow?
-  1) Global              → ~/.agents/skills/ + ~/.agents/agents/
-  2) Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/
-  3) Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/
-  4) Ambas locales       → .agents/ + .opencode/
+¿Dónde instalar las skills y agents?
+  1) Claude Code global  → ~/.claude/skills/
+  2) Claude Code local   → {proyecto}/.claude/skills/
+  3) Shared global       → ~/.agents/skills/ + ~/.agents/agents/
+  4) Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/
+  5) Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/
+  6) Ambas locales       → .agents/ + .opencode/
 ```
 
 ### Non-Interactive Usage
 
 ```bash
-# Global (available to all projects)
+# Claude Code (all projects)
+./install.sh --claude-global
+
+# Claude Code (one project)
+./install.sh --claude-local --target ~/my-project
+
+# Shared .agents installation (skills and autonomous agents)
 ./install.sh --global
 
-# Local to a project
+# Shared .agents installation for one project
 ./install.sh --local --target ~/my-project
+
+# OpenCode installation
 ./install.sh --opencode --target ~/my-project
 
-# Both local directories at once
-./install.sh --both
+# Both shared local directories
+./install.sh --both --target ~/my-project
 
 # Preview without changes
-./install.sh --dry-run --local
+./install.sh --dry-run --claude-global
 
 # Uninstall
-./install.sh --uninstall --global
+./install.sh --uninstall --claude-global
 ```
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `--global` | Install to `~/.agents/skills/` and `~/.agents/agents/` |
-| `--local` | Install to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
-| `--opencode` | Install to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
-| `--both` | Install to both local directories |
-| `--target DIR` | Project directory (default: cwd) |
+| `--claude-global` | Install skills to `~/.claude/skills/` |
+| `--claude-local` | Install skills to `{target}/.claude/skills/` |
+| `--global` | Install skills and agents to `~/.agents/skills/` and `~/.agents/agents/` |
+| `--local` | Install skills and agents to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
+| `--opencode` | Install skills and agents to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
+| `--both` | Install to both local `.agents/` and `.opencode/` directories |
+| `--target DIR` | Project directory for a local mode (default: cwd) |
 | `--uninstall` | Remove installed symlinks |
 | `--dry-run` | Preview without making changes |
-| `--force` | Overwrite existing without asking |
-| `--ref REF` | Branch or tag (default: main) |
+| `--force` | Overwrite existing paths without prompting |
+| `--ref REF` | Branch or tag to install from (default: `main`) |
 
 ### How It Works
 
-1. Clones `elvisbrevi/agent-workflow` to `~/.cache/agent-workflow/`
-2. Creates symlinks from the target `skills/` directory to the cached repo
-3. Skills are always up-to-date — run `./install.sh` again to pull latest changes
+1. Clones `elvisbrevi/agent-workflow` to `~/.cache/agent-workflow/` or updates the existing checkout.
+2. Discovers skills and agents from the cache.
+3. Creates symlinks in the selected destination.
+4. Re-running the installer updates the cache and points new installations at the selected revision.
 
-### Codex
+The installer is compatible with Bash 3.2 and newer Bash releases. Explicit modes are
+preferred for automation because they do not require a TTY.
+
+### Testing the installer
+
+The regression suite uses temporary homes and a fake cache, so it does not modify your
+real installation or require network access:
+
+```bash
+# Use the default Bash on the host
+bash tests/install_test.sh
+
+# Explicitly exercise a modern Bash on macOS
+BASH_BIN=/opt/homebrew/bin/bash bash tests/install_test.sh
+```
+
+### Claude Code
+
+Claude Code uses these skill locations:
+
+| Scope | Location | Applies to |
+|-------|----------|------------|
+| Personal | `~/.claude/skills/<name>/SKILL.md` | Every project |
+| Project | `.claude/skills/<name>/SKILL.md` | The current project |
+
+After installation, invoke a skill with its slash command, for example:
+
+```text
+/zoom-out
+/grill-with-docs
+```
+
+Skills whose frontmatter sets `disable-model-invocation: true` are explicit-only: they can
+be invoked by the user, but Claude will not select them automatically. If a newly created
+skills directory does not appear in the current session, start a new Claude Code session.
+
+### Codex and OpenCode
 
 Codex discovers global skills from `~/.agents/skills` and project skills from
-`.agents/skills`. The global and local `.agents` installation modes above are
-therefore compatible with Codex.
+`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. Use the
+corresponding installer mode above when targeting those clients.
 
-After installing, Codex normally detects new skills automatically. If a skill
-does not appear in `/skills` or when typing `$`, restart Codex or open a new
-session. To verify the global installation of `grill-with-docs`:
+After installing, Codex normally detects new skills automatically. If a skill does not
+appear in `/skills` or when typing `$`, restart Codex or open a new session. To verify a
+shared global installation of `grill-with-docs`:
 
 ```bash
 test -f ~/.agents/skills/grill-with-docs/SKILL.md
@@ -86,23 +171,33 @@ test -f ~/.agents/skills/grill-with-docs/SKILL.md
 
 ```bash
 # Install from a specific tag or branch
-./install.sh --global --ref v1.0.0
-./install.sh --local --ref develop
+./install.sh --claude-global --ref v1.0.0
+./install.sh --claude-local --target ~/my-project --ref develop
 ```
 
 ---
 
 ## Quick Start: Using the Skills
 
-Skills are **prompt templates** that the AI agent reads and follows. They are not executable scripts — the agent is the executor, the skill is the process.
+Skills are **prompt templates** that the AI agent reads and follows. They are not
+executable scripts — the agent is the executor, the skill is the process.
 
 ### How Skills Are Discovered
 
-Once installed, the agent automatically reads skill descriptions from the `skills/` directory. When your request matches a skill's trigger phrases, the agent loads and follows it.
+Once installed, the agent automatically reads skill descriptions from the selected
+`skills/` directory. When your request matches a skill's trigger phrases, the agent
+loads and follows it.
 
 ### Manual Invocation
 
-You can always invoke a skill explicitly by name:
+You can always invoke a skill explicitly by name.
+
+For Claude Code, use its slash command:
+
+```text
+/zoom-out
+/grill-with-docs
+```
 
 For Codex, use `/skills` to browse installed skills or type `$` to mention one:
 
@@ -134,8 +229,9 @@ Each skill has trigger phrases in its description. Examples:
 | **handoff** | "handoff session", "transfer context", "summarize for next agent" |
 | **caveman** | "caveman mode", "talk like caveman", "be brief" |
 
-`grill-with-docs` and `zoom-out` are intentionally explicit-only in Codex;
-invoke them with `$grill-with-docs` and `$zoom-out`, respectively.
+Skills with `disable-model-invocation: true` are intentionally explicit-only. Invoke them
+manually with their client-specific command, such as `/grill-with-docs` in Claude Code or
+`$grill-with-docs` in Codex.
 
 ### Choosing a Workflow
 
@@ -495,6 +591,8 @@ wayfinder ───► to-spec ─────► to-tickets
 workflow/
 ├── README.md
 ├── install.sh
+├── tests/
+│   └── install_test.sh
 │
 ├── utility/
 │   ├── caveman/

@@ -4,8 +4,7 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
 # Clones elvisbrevi/agent-workflow and symlinks skills + agents
-# into the target directory (global, local .agents/, local
-# .opencode/, or both).
+# into Claude Code, shared .agents/, or OpenCode destinations.
 # ─────────────────────────────────────────────────────────────
 
 REPO_URL="https://github.com/elvisbrevi/agent-workflow.git"
@@ -29,6 +28,23 @@ warn()  { echo -e "${YELLOW}⚠${NC}  $*"; }
 err()   { echo -e "${RED}✖${NC}  $*" >&2; }
 die()   { err "$@"; exit 1; }
 
+TTY_RESPONSE=""
+
+prompt_tty() {
+  local prompt="$1" failure_message="$2"
+  local response
+
+  if ! { : </dev/tty; } 2>/dev/null; then
+    die "$failure_message"
+  fi
+
+  if ! IFS= read -r -p "$prompt" response </dev/tty; then
+    die "Unable to read interactive input from /dev/tty."
+  fi
+
+  TTY_RESPONSE="$response"
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -36,23 +52,28 @@ Usage: $(basename "$0") [OPTIONS]
 Install agent-workflow skills and agents via symlinks.
 
 Options:
+  --claude-global       Install skills to ~/.claude/skills/
+  --claude-local        Install skills to D/.claude/skills/ (default D: cwd)
   --global              Install to ~/.agents/skills/ and ~/.agents/agents/
-  --local [--target D]  Install to D/.agents/    (default: cwd)
-  --opencode [--target D] Install to D/.opencode/  (skills → skills/, agents → agent/)
-  --both [--target D]   Install to both local directories
+  --local               Install to D/.agents/ (default D: cwd)
+  --opencode            Install to D/.opencode/ (default D: cwd)
+  --both                Install to both local .agents/ and .opencode/
+  --target D            Project directory for local modes
   --uninstall           Remove installed symlinks
   --dry-run             Show what would be done without changes
-  --force               Overwrite existing without asking
+  --force               Overwrite existing paths without prompting
   --ref REF             Branch or tag to install from (default: main)
   -h, --help            Show this help
 
 Examples:
-  $(basename "$0")                          # Interactive menu
-  $(basename "$0") --global                 # Global install
-  $(basename "$0") --local --target ~/proj  # Local .agents/
-  $(basename "$0") --both                   # Both local dirs in cwd
-  $(basename "$0") --uninstall --global     # Remove global symlinks
-  $(basename "$0") --dry-run --local        # Preview local install
+  $(basename "$0")                                  # Interactive menu (TTY required)
+  $(basename "$0") --claude-global                 # Claude Code, all projects
+  $(basename "$0") --claude-local --target ~/proj  # Claude Code, one project
+  $(basename "$0") --global                        # Shared ~/.agents/ install
+  $(basename "$0") --local --target ~/proj         # Local .agents/ install
+  $(basename "$0") --both                          # Both local shared directories
+  $(basename "$0") --uninstall --claude-global     # Remove Claude Code skills
+  $(basename "$0") --dry-run --local               # Preview local install
 EOF
 }
 
@@ -65,17 +86,19 @@ UNINSTALL=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --global)       MODE="global"; shift ;;
-    --local)        MODE="local"; shift ;;
-    --opencode)     MODE="opencode"; shift ;;
-    --both)         MODE="both"; shift ;;
-    --target)       TARGET="$2"; shift 2 ;;
-    --uninstall)    UNINSTALL=true; shift ;;
-    --dry-run)      DRY_RUN=true; shift ;;
-    --force)        FORCE=true; shift ;;
-    --ref)          REPO_BRANCH="$2"; shift 2 ;;
-    -h|--help)      usage; exit 0 ;;
-    *)              die "Unknown option: $1. Use --help for usage." ;;
+    --claude-global) MODE="claude-global"; shift ;;
+    --claude-local)  MODE="claude-local"; shift ;;
+    --global)        MODE="global"; shift ;;
+    --local)         MODE="local"; shift ;;
+    --opencode)      MODE="opencode"; shift ;;
+    --both)          MODE="both"; shift ;;
+    --target)        TARGET="$2"; shift 2 ;;
+    --uninstall)     UNINSTALL=true; shift ;;
+    --dry-run)       DRY_RUN=true; shift ;;
+    --force)         FORCE=true; shift ;;
+    --ref)           REPO_BRANCH="$2"; shift 2 ;;
+    -h|--help)       usage; exit 0 ;;
+    *)               die "Unknown option: $1. Use --help for usage." ;;
   esac
 done
 
@@ -135,8 +158,8 @@ install_skill() {
       rm -rf "$dst"
     else
       warn "Already exists: ${dst}"
-      read -rp "  Overwrite? [y/N] " ans </dev/tty
-      if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+      prompt_tty "  Overwrite? [y/N] " "Cannot prompt to overwrite ${dst} without a TTY. Re-run with --force."
+      if [[ ! "$TTY_RESPONSE" =~ ^[Yy]$ ]]; then
         warn "Skipped: ${skill}"
         return 0
       fi
@@ -174,14 +197,16 @@ install_to() {
   echo -e "${BOLD}Installing skills → ${label}${NC}"
   echo -e "  Destination: ${dest_base}"
 
-  mkdir -p "$dest_base"
+  if [[ "$DRY_RUN" == false ]]; then
+    mkdir -p "$dest_base"
+  fi
 
   local count=0
   while IFS= read -r entry; do
     local cat="${entry%%/*}"
     local skill="${entry#*/}"
     install_skill "$cache" "$dest_base" "$cat" "$skill"
-    ((count++))
+    count=$((count + 1))
   done < <(discover_skills "$cache")
 
   echo -e "  ${GREEN}${count} skills processed.${NC}"
@@ -204,7 +229,7 @@ uninstall_from() {
   while IFS= read -r entry; do
     local skill="${entry#*/}"
     uninstall_skill "$dest_base" "$skill"
-    ((count++))
+    count=$((count + 1))
   done < <(discover_skills "$cache")
 
   echo -e "  ${GREEN}${count} skills processed.${NC}"
@@ -242,8 +267,8 @@ install_agent() {
       rm -rf "$dst"
     else
       warn "Already exists: ${dst}"
-      read -rp "  Overwrite? [y/N] " ans </dev/tty
-      if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+      prompt_tty "  Overwrite? [y/N] " "Cannot prompt to overwrite ${dst} without a TTY. Re-run with --force."
+      if [[ ! "$TTY_RESPONSE" =~ ^[Yy]$ ]]; then
         warn "Skipped: ${agent}"
         return 0
       fi
@@ -281,13 +306,15 @@ install_agents_to() {
   echo -e "${BOLD}Installing agents → ${label}${NC}"
   echo -e "  Destination: ${dest_base}"
 
-  mkdir -p "$dest_base"
+  if [[ "$DRY_RUN" == false ]]; then
+    mkdir -p "$dest_base"
+  fi
 
   local count=0
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
     install_agent "$cache" "$dest_base" "$agent"
-    ((count++))
+    count=$((count + 1))
   done < <(discover_agents "$cache")
 
   echo -e "  ${GREEN}${count} agents processed.${NC}"
@@ -310,7 +337,7 @@ uninstall_agents_from() {
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
     uninstall_agent "$dest_base" "$agent"
-    ((count++))
+    count=$((count + 1))
   done < <(discover_agents "$cache")
 
   echo -e "  ${GREEN}${count} agents processed.${NC}"
@@ -344,31 +371,38 @@ interactive_menu() {
   echo ""
   echo "¿Dónde instalar las skills y agents?"
   echo ""
-  echo -e "  ${CYAN}1)${NC} Global              → ~/.agents/skills/ + ~/.agents/agents/"
-  echo -e "  ${CYAN}2)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
-  echo -e "  ${CYAN}3)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
-  echo -e "  ${CYAN}4)${NC} Ambas locales       → .agents/ + .opencode/"
+  echo -e "  ${CYAN}1)${NC} Claude Code global  → ~/.claude/skills/"
+  echo -e "  ${CYAN}2)${NC} Claude Code local   → {proyecto}/.claude/skills/"
+  echo -e "  ${CYAN}3)${NC} Shared global       → ~/.agents/skills/ + ~/.agents/agents/"
+  echo -e "  ${CYAN}4)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
+  echo -e "  ${CYAN}5)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
+  echo -e "  ${CYAN}6)${NC} Ambas locales       → .agents/ + .opencode/"
   echo ""
 
-  local choice
-  read -rp "Selecciona [1-4]: " choice </dev/tty
+  local choice input_target ans
+  prompt_tty "Selecciona [1-6]: " "Interactive mode requires a TTY. Pass an explicit mode such as --claude-global or --global."
+  choice="$TTY_RESPONSE"
 
   case "$choice" in
-    1) MODE="global" ;;
-    2) MODE="local" ;;
-    3) MODE="opencode" ;;
-    4) MODE="both" ;;
+    1) MODE="claude-global" ;;
+    2) MODE="claude-local" ;;
+    3) MODE="global" ;;
+    4) MODE="local" ;;
+    5) MODE="opencode" ;;
+    6) MODE="both" ;;
     *) die "Opción inválida: $choice" ;;
   esac
 
-  if [[ "$MODE" != "global" ]]; then
-    read -rp "Ruta del proyecto (Enter para cwd): " input_target </dev/tty
+  if [[ "$MODE" != "global" && "$MODE" != "claude-global" ]]; then
+    prompt_tty "Ruta del proyecto (Enter para cwd): " "Interactive mode requires a TTY. Pass --target with an explicit mode."
+    input_target="$TTY_RESPONSE"
     if [[ -n "$input_target" ]]; then
       TARGET="$input_target"
     fi
   fi
 
-  read -rp "¿Modo dry-run? (mostrar sin ejecutar) [y/N]: " ans </dev/tty
+  prompt_tty "¿Modo dry-run? (mostrar sin ejecutar) [y/N]: " "Interactive mode requires a TTY. Pass --dry-run with an explicit mode."
+  ans="$TTY_RESPONSE"
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     DRY_RUN=true
   fi
@@ -377,6 +411,12 @@ interactive_menu() {
 # ── Dispatch table — emits "kind:path" lines per destination
 dispatch_destinations() {
   case "$MODE" in
+    claude-global)
+      echo "skills:${HOME}/.claude/skills"
+      ;;
+    claude-local)
+      echo "skills:${TARGET}/.claude/skills"
+      ;;
     global)
       echo "skills:${HOME}/.agents/skills"
       echo "agents:${HOME}/.agents/agents"
