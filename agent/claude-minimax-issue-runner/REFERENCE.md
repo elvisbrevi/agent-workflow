@@ -12,9 +12,12 @@ The `claude-minimax` process exits after one issue. Only an explicit
 `ISSUE_COMPLETED` status starts another process. This replaces the old
 host-specific `/clear` loop.
 
-`claude-minimax` may be either an executable or an interactive Bash function.
-The latter matches a common setup where `~/.bashrc` injects the MiniMax
-Anthropic-compatible endpoint and selected model behind the customized command.
+`claude-minimax` may be either an executable or a Bash function. For a function,
+the runner starts a clean, non-interactive Bash process and sources `~/.bashrc`
+(or `CLAUDE_MINIMAX_RC_FILE`). Dynamic Flyline loading is skipped in this child
+shell so prompt initialization cannot interfere with the non-interactive
+worker. This matches a common setup where the function injects the MiniMax
+Anthropic-compatible endpoint and selected model.
 
 ## Configuration
 
@@ -25,7 +28,8 @@ Anthropic-compatible endpoint and selected model behind the customized command.
 | `ISSUE_RUNNER_PROGRESS_INTERVAL` | `30` | Seconds between progress heartbeats; `0` disables them |
 | `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip the initial destructive-action confirmation |
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
-| `CLAUDE_MINIMAX_SHELL` | `bash` | Interactive shell used to resolve a shell function |
+| `CLAUDE_MINIMAX_SHELL` | `bash` | Bash executable used to resolve a shell function |
+| `CLAUDE_MINIMAX_RC_FILE` | `~/.bashrc` | Initialization file containing the shell function |
 | `CLAUDE_MINIMAX_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 
 The runner accepts an optional repository path:

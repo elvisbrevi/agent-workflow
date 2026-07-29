@@ -739,7 +739,10 @@ For a project-local install:
 ```
 
 The default worker command is exactly `claude-minimax`. It may be an executable or a
-function loaded from `~/.bashrc`. The runner uses `--print`,
+function loaded from `~/.bashrc`. Function loading uses a clean, non-interactive
+Bash child and skips Flyline's dynamic prompt library, avoiding terminal/job-control
+startup errors. `CLAUDE_MINIMAX_RC_FILE` can point to a dedicated initialization
+file. The runner uses `--print`,
 `--no-session-persistence`, and Claude Code's `auto` permission mode by default.
 `CLAUDE_MINIMAX_PERMISSION_MODE` remains available as an explicit override.
 

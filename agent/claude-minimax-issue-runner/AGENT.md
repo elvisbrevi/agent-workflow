@@ -25,7 +25,7 @@ Verify all of the following:
 2. The worktree is clean.
 3. `ISSUE_RUNNER_BASE_BRANCH` names the intended base branch (default: `main`).
 4. The `claude-minimax` command is available either as an executable or as a
-   shell function loaded by interactive Bash.
+   shell function in `CLAUDE_MINIMAX_RC_FILE` (default: `~/.bashrc`).
 
 If any point is uncertain, stop and ask the user.
 
