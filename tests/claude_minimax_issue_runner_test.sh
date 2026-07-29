@@ -71,7 +71,8 @@ test_fresh_shell_per_issue() {
   grep -Fxq -- '--print' "$args_file" || fail 'Missing --print'
   grep -Fxq -- '--no-session-persistence' "$args_file" || \
     fail 'Missing --no-session-persistence'
-  grep -Fxq -- 'auto' "$args_file" || fail 'Missing default auto permission mode'
+  grep -Fxq -- 'bypassPermissions' "$args_file" || \
+    fail 'Missing autonomous bypassPermissions mode'
   grep -Fq 'No pending, available, non-epic issues remain.' "$output" || \
     fail 'Runner did not report a drained queue'
 

@@ -5,7 +5,7 @@
 The runner starts one `claude-minimax` process per iteration with:
 
 ```text
---print --no-session-persistence --permission-mode auto
+--print --no-session-persistence --permission-mode bypassPermissions
 ```
 
 The `claude-minimax` process exits after one issue. Only an explicit
@@ -30,7 +30,7 @@ Anthropic-compatible endpoint and selected model.
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
 | `CLAUDE_MINIMAX_SHELL` | `bash` | Bash executable used to resolve a shell function |
 | `CLAUDE_MINIMAX_RC_FILE` | `~/.bashrc` | Initialization file containing the shell function |
-| `CLAUDE_MINIMAX_PERMISSION_MODE` | `auto` | Claude Code permission mode |
+| `CLAUDE_MINIMAX_PERMISSION_MODE` | `bypassPermissions` | Claude Code permission mode; override to impose interactive restrictions |
 
 The runner accepts an optional repository path:
 
@@ -78,4 +78,7 @@ automatically.
 This runner intentionally permits workers to commit, push, create and merge
 PRs, and close issues. It refuses to start from a dirty worktree and checks the
 worktree again before every new worker. It also refuses a second runner for the
-same repository. Any missing or unknown worker status stops the loop.
+same repository. The default `bypassPermissions` mode is required because
+non-interactive `--print` workers cannot answer permission prompts; the runner's
+TTY confirmation is the authorization boundary. Any missing or unknown worker
+status stops the loop.

@@ -53,6 +53,11 @@ ISSUE_RUNNER_ASSUME_YES=true claude-minimax-issue-runner
 Wait for the runner to exit and report its final status. Do not implement an
 issue yourself and do not start a second runner.
 
+The default `bypassPermissions` mode is intentional: `--print` workers cannot
+answer interactive permission prompts. The runner's initial TTY confirmation is
+the authorization boundary for autonomous writes, tests, pushes, merges, and
+issue closure.
+
 The runner streams worker output and prints periodic elapsed-time heartbeats.
 Its repository lock also exposes a `status` snapshot in the Git common
 directory; see [REFERENCE.md](REFERENCE.md) for the inspection command.
