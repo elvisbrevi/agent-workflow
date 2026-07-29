@@ -240,11 +240,37 @@ test_stale_repository_lock_is_recovered() {
   pass 'stale repository lock is recovered automatically'
 }
 
+test_shell_function_loader_skips_interactive_only_startup() {
+  local home="${TEST_ROOT}/startup-home"
+  local repo="${TEST_ROOT}/startup-repo"
+  local output="${TEST_ROOT}/startup-output.log"
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  printf '%s\n' \
+    'enable -f /definitely/missing/libflyline.dylib flyline' \
+    'claude-minimax() {' \
+    '  printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' \
+    '}' > "${home}/.bashrc"
+
+  HOME="$home" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Runner did not invoke the shell-defined worker'
+
+  if grep -Eq 'no job control|cannot open shared object|libflyline' "$output"; then
+    fail 'Runner executed interactive-only shell startup'
+  fi
+
+  pass 'shell-defined worker loads without interactive Flyline startup'
+}
+
 test_fresh_shell_per_issue
 test_unknown_status_stops_loop
 test_dirty_worktree_is_rejected
 test_progress_is_reported_while_worker_runs
 test_repository_lock_rejects_second_runner
 test_stale_repository_lock_is_recovered
+test_shell_function_loader_skips_interactive_only_startup
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"

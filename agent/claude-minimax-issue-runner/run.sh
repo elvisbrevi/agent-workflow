@@ -171,9 +171,24 @@ invoke_worker() {
     return
   fi
 
-  "$CLAUDE_SHELL" -ic \
-    'runner_command="$1"; shift; "$runner_command" "$@"' \
-    "$RUNNER_NAME" "$CLAUDE_COMMAND" "${claude_args[@]}"
+  [[ -r "$CLAUDE_RC_FILE" ]] || \
+    die "shell command not found and init file is not readable: ${CLAUDE_RC_FILE}"
+
+  "$CLAUDE_SHELL" --noprofile --norc -c '
+    runner_command="$1"
+    runner_rc_file="$2"
+    shift 2
+
+    enable() {
+      if [[ "$*" == *flyline* ]]; then
+        return 0
+      fi
+      builtin enable "$@"
+    }
+
+    source "$runner_rc_file"
+    "$runner_command" "$@"
+  ' "$RUNNER_NAME" "$CLAUDE_COMMAND" "$CLAUDE_RC_FILE" "${claude_args[@]}"
 }
 
 run_worker_with_progress() {
@@ -238,6 +253,7 @@ MAX_ITERATIONS="${ISSUE_RUNNER_MAX_ITERATIONS:-0}"
 PROGRESS_INTERVAL="${ISSUE_RUNNER_PROGRESS_INTERVAL:-30}"
 CLAUDE_COMMAND="${CLAUDE_MINIMAX_COMMAND:-claude-minimax}"
 CLAUDE_SHELL="${CLAUDE_MINIMAX_SHELL:-bash}"
+CLAUDE_RC_FILE="${CLAUDE_MINIMAX_RC_FILE:-${HOME}/.bashrc}"
 PERMISSION_MODE="${CLAUDE_MINIMAX_PERMISSION_MODE:-auto}"
 ITERATION=0
 
