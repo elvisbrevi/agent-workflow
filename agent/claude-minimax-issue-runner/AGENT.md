@@ -53,11 +53,16 @@ ISSUE_RUNNER_ASSUME_YES=true claude-minimax-issue-runner
 Wait for the runner to exit and report its final status. Do not implement an
 issue yourself and do not start a second runner.
 
+The runner streams worker output and prints periodic elapsed-time heartbeats.
+Its repository lock also exposes a `status` snapshot in the Git common
+directory; see [REFERENCE.md](REFERENCE.md) for the inspection command.
+
 ## Guarantees
 
 - Each worker session handles at most one available, non-epic issue.
 - Every worker is a new `claude-minimax --print --no-session-persistence`
   process.
+- Only one runner may operate on a repository, including its linked worktrees.
 - The worker must use `/implement`, `/tdd`, and `/code-review`.
 - Success means the PR reached the base branch and the issue was closed.
 - A missing status marker, dirty worktree, blocked queue, or failed worker stops

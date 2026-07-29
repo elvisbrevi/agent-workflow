@@ -22,6 +22,7 @@ Anthropic-compatible endpoint and selected model behind the customized command.
 |---|---|---|
 | `ISSUE_RUNNER_BASE_BRANCH` | `main` | PR target and integration branch |
 | `ISSUE_RUNNER_MAX_ITERATIONS` | `0` | Maximum completed issues; `0` means no limit |
+| `ISSUE_RUNNER_PROGRESS_INTERVAL` | `30` | Seconds between progress heartbeats; `0` disables them |
 | `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip the initial destructive-action confirmation |
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
 | `CLAUDE_MINIMAX_SHELL` | `bash` | Interactive shell used to resolve a shell function |
@@ -32,6 +33,32 @@ The runner accepts an optional repository path:
 ```bash
 claude-minimax-issue-runner /path/to/repository
 ```
+
+## Progress and repository lock
+
+Worker output is streamed as it arrives. While a worker is otherwise silent,
+the supervisor prints a heartbeat with its iteration and elapsed time every
+`ISSUE_RUNNER_PROGRESS_INTERVAL` seconds.
+
+The runner also creates this lock in the repository's Git common directory:
+
+```text
+claude-minimax-issue-runner.lock/
+├── owner
+└── status
+```
+
+For a normal repository, inspect progress from another terminal with:
+
+```bash
+cat "$(git rev-parse --git-common-dir)/claude-minimax-issue-runner.lock/status"
+```
+
+The status snapshot includes the runner PID, state, iteration, elapsed seconds,
+and last update time. The Git common directory makes one lock cover the main
+checkout and all linked worktrees. A concurrent runner exits with the owner and
+latest status. A lock whose owner process no longer exists is recovered
+automatically.
 
 ## Exit codes
 
@@ -46,5 +73,5 @@ claude-minimax-issue-runner /path/to/repository
 
 This runner intentionally permits workers to commit, push, create and merge
 PRs, and close issues. It refuses to start from a dirty worktree and checks the
-worktree again before every new worker. Any missing or unknown worker status
-stops the loop.
+worktree again before every new worker. It also refuses a second runner for the
+same repository. Any missing or unknown worker status stops the loop.
