@@ -5,7 +5,7 @@
 The runner starts one `claude-minimax` process per iteration with:
 
 ```text
---print --no-session-persistence --permission-mode bypassPermissions
+--print --no-session-persistence --permission-mode auto
 ```
 
 The `claude-minimax` process exits after one issue. Only an explicit
@@ -25,7 +25,7 @@ Anthropic-compatible endpoint and selected model behind the customized command.
 | `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip the initial destructive-action confirmation |
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
 | `CLAUDE_MINIMAX_SHELL` | `bash` | Interactive shell used to resolve a shell function |
-| `CLAUDE_MINIMAX_PERMISSION_MODE` | `bypassPermissions` | Claude Code permission mode |
+| `CLAUDE_MINIMAX_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 
 The runner accepts an optional repository path:
 
