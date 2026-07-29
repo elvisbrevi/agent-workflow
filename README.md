@@ -728,7 +728,8 @@ For a project-local install:
 
 The default worker command is exactly `claude-minimax`. It may be an executable or a
 function loaded from `~/.bashrc`. The runner uses `--print`,
-`--no-session-persistence`, and the autonomous `bypassPermissions` permission mode.
+`--no-session-persistence`, and Claude Code's `auto` permission mode by default.
+`CLAUDE_MINIMAX_PERMISSION_MODE` remains available as an explicit override.
 
 **Safety** — this agent performs destructive operations: it pushes branches, creates
 and merges PRs into the base branch, and closes issues. It requires an initial
