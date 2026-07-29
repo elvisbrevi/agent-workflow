@@ -1,0 +1,41 @@
+Implement the next available issue (ONLY ONE ISSUE).
+
+Rules:
+
+1. Work on exactly one pending issue. Do not select an epic. Treat an item as an
+   epic when the tracker identifies its type as Epic, it has an `epic` label or
+   tag, or its title starts with `[Epic]`.
+2. Respect the repository instructions, issue dependencies, blockers, and
+   acceptance criteria. If no non-epic issue is currently available, do not
+   mutate the repository or tracker.
+3. Use `/implement`, `/tdd`, and `/code-review` in that order as applicable.
+   Finish the implementation and verification before publishing.
+4. Create a PR to the configured base branch, merge it automatically, verify
+   the merge, and then close the issue. Never take a second issue in this
+   session.
+5. Do not merely report commands for another agent to run. Perform the work.
+6. Do not delegate to `claude-minimax-issue-runner` and do not launch another
+   runner. This process is already the single-issue worker.
+
+Your final response must end with exactly one of these standalone lines:
+
+`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED`
+
+Use `ISSUE_COMPLETED` only after the PR is merged and the issue is closed.
+
+`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY`
+
+Use `QUEUE_EMPTY` only after verifying that no pending, available, non-epic
+issue remains.
+
+`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED`
+
+Use `BLOCKED` when pending non-epic issues exist but none can safely be handled
+without human input.
+
+`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED`
+
+Use `FAILED` when the selected issue could not be fully implemented, merged,
+and closed. Explain the failure before the marker. Do not claim completion for
+partial work. Print the selected status line as plain text, without Markdown
+backticks or a code fence.

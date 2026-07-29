@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
-# Clones elvisbrevi/agent-workflow and symlinks skills + agents
-# into Claude Code, shared .agents/, or OpenCode destinations.
+# Clones elvisbrevi/agent-workflow and symlinks skills, agents,
+# and Claude-MiniMax runners into supported destinations.
 # ─────────────────────────────────────────────────────────────
 
 REPO_URL="https://github.com/elvisbrevi/agent-workflow.git"
@@ -12,6 +12,7 @@ REPO_BRANCH="main"
 CACHE_DIR="${HOME}/.cache/agent-workflow"
 CATEGORIES=(utility discovery design planning implementation diagnosis review)
 AGENT_CATEGORIES=(agent)
+LEGACY_AGENT_NAMES=(afk-issuemerger)
 
 # ── Colors ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -52,8 +53,8 @@ Usage: $(basename "$0") [OPTIONS]
 Install agent-workflow skills and agents via symlinks.
 
 Options:
-  --claude-global       Install skills to ~/.claude/skills/
-  --claude-local        Install skills to D/.claude/skills/ (default D: cwd)
+  --claude-global       Install skills, Claude agents, and runners globally
+  --claude-local        Install skills, Claude agents, and runners in D
   --global              Install to ~/.agents/skills/ and ~/.agents/agents/
   --local               Install to D/.agents/ (default D: cwd)
   --opencode            Install to D/.opencode/ (default D: cwd)
@@ -67,8 +68,8 @@ Options:
 
 Examples:
   $(basename "$0")                                  # Interactive menu (TTY required)
-  $(basename "$0") --claude-global                 # Claude Code, all projects
-  $(basename "$0") --claude-local --target ~/proj  # Claude Code, one project
+  $(basename "$0") --claude-global                 # Claude-MiniMax, all projects
+  $(basename "$0") --claude-local --target ~/proj  # Claude-MiniMax, one project
   $(basename "$0") --global                        # Shared ~/.agents/ install
   $(basename "$0") --local --target ~/proj         # Local .agents/ install
   $(basename "$0") --both                          # Both local shared directories
@@ -298,6 +299,28 @@ uninstall_agent() {
   fi
 }
 
+remove_legacy_agent_links() {
+  local cache="$1" dest_base="$2"
+  local legacy candidate target
+
+  for legacy in "${LEGACY_AGENT_NAMES[@]}"; do
+    for candidate in "${dest_base}/${legacy}" "${dest_base}/${legacy}.md"; do
+      [[ -L "$candidate" ]] || continue
+      target="$(readlink "$candidate")"
+      case "$target" in
+        "${cache}/agent/${legacy}"|"${cache}/agent/${legacy}/AGENT.md"|"${cache}/agent/${legacy}/run.sh")
+          if [[ "$DRY_RUN" == true ]]; then
+            echo -e "  ${YELLOW}dry-run${NC}  remove legacy ${CYAN}${candidate}${NC}"
+          else
+            rm "$candidate"
+            ok "Removed legacy agent link: ${legacy}"
+          fi
+          ;;
+      esac
+    done
+  done
+}
+
 # ── Install agents to a destination ─────────────────────────
 install_agents_to() {
   local cache="$1" dest_base="$2" label="$3"
@@ -309,6 +332,8 @@ install_agents_to() {
   if [[ "$DRY_RUN" == false ]]; then
     mkdir -p "$dest_base"
   fi
+
+  remove_legacy_agent_links "$cache" "$dest_base"
 
   local count=0
   while IFS= read -r agent; do
@@ -333,6 +358,8 @@ uninstall_agents_from() {
     return 0
   fi
 
+  remove_legacy_agent_links "$cache" "$dest_base"
+
   local count=0
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
@@ -341,6 +368,165 @@ uninstall_agents_from() {
   done < <(discover_agents "$cache")
 
   echo -e "  ${GREEN}${count} agents processed.${NC}"
+}
+
+# ── Claude Code agent definitions ───────────────────────────
+install_claude_agent() {
+  local cache="$1" dest_base="$2" agent="$3"
+  local src="${cache}/agent/${agent}/AGENT.md"
+  local dst="${dest_base}/${agent}.md"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  symlink ${CYAN}${dst}${NC} → ${src}"
+    return 0
+  fi
+
+  if [[ -e "$dst" ]] || [[ -L "$dst" ]]; then
+    if [[ "$FORCE" == true ]]; then
+      rm -rf "$dst"
+    else
+      warn "Already exists: ${dst}"
+      prompt_tty "  Overwrite? [y/N] " "Cannot prompt to overwrite ${dst} without a TTY. Re-run with --force."
+      if [[ ! "$TTY_RESPONSE" =~ ^[Yy]$ ]]; then
+        warn "Skipped Claude agent: ${agent}"
+        return 0
+      fi
+      rm -rf "$dst"
+    fi
+  fi
+
+  ln -s "$src" "$dst"
+  ok "Installed Claude agent: ${agent}"
+}
+
+uninstall_claude_agent() {
+  local dest_base="$1" agent="$2"
+  local dst="${dest_base}/${agent}.md"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  remove ${CYAN}${dst}${NC}"
+    return 0
+  fi
+
+  if [[ -L "$dst" ]]; then
+    rm "$dst"
+    ok "Removed Claude agent: ${agent}"
+  elif [[ -e "$dst" ]]; then
+    warn "Not a symlink, skipped: ${dst}"
+  fi
+}
+
+process_claude_agents() {
+  local action="$1" cache="$2" dest_base="$3" label="$4"
+  local count=0 agent heading="Installing"
+
+  [[ "$action" == "uninstalling" ]] && heading="Uninstalling"
+
+  echo ""
+  echo -e "${BOLD}${heading} Claude agents → ${label}${NC}"
+  echo -e "  Destination: ${dest_base}"
+
+  if [[ "$action" == "installing" && "$DRY_RUN" == false ]]; then
+    mkdir -p "$dest_base"
+  elif [[ "$action" == "uninstalling" && ! -d "$dest_base" ]]; then
+    warn "Directory does not exist: ${dest_base}"
+    return 0
+  fi
+
+  remove_legacy_agent_links "$cache" "$dest_base"
+
+  while IFS= read -r agent; do
+    [[ -z "$agent" ]] && continue
+    if [[ "$action" == "installing" ]]; then
+      install_claude_agent "$cache" "$dest_base" "$agent"
+    else
+      uninstall_claude_agent "$dest_base" "$agent"
+    fi
+    count=$((count + 1))
+  done < <(discover_agents "$cache")
+
+  echo -e "  ${GREEN}${count} Claude agents processed.${NC}"
+}
+
+# ── Claude-MiniMax runner launchers ─────────────────────────
+install_runner() {
+  local cache="$1" dest_base="$2" agent="$3"
+  local src="${cache}/agent/${agent}/run.sh"
+  local dst="${dest_base}/${agent}"
+
+  [[ -f "$src" ]] || return 0
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  symlink ${CYAN}${dst}${NC} → ${src}"
+    return 0
+  fi
+
+  if [[ -e "$dst" ]] || [[ -L "$dst" ]]; then
+    if [[ "$FORCE" == true ]]; then
+      rm -rf "$dst"
+    else
+      warn "Already exists: ${dst}"
+      prompt_tty "  Overwrite? [y/N] " "Cannot prompt to overwrite ${dst} without a TTY. Re-run with --force."
+      if [[ ! "$TTY_RESPONSE" =~ ^[Yy]$ ]]; then
+        warn "Skipped runner: ${agent}"
+        return 0
+      fi
+      rm -rf "$dst"
+    fi
+  fi
+
+  ln -s "$src" "$dst"
+  ok "Installed runner: ${agent}"
+}
+
+uninstall_runner() {
+  local dest_base="$1" agent="$2"
+  local dst="${dest_base}/${agent}"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  ${YELLOW}dry-run${NC}  remove ${CYAN}${dst}${NC}"
+    return 0
+  fi
+
+  if [[ -L "$dst" ]]; then
+    rm "$dst"
+    ok "Removed runner: ${agent}"
+  elif [[ -e "$dst" ]]; then
+    warn "Not a symlink, skipped: ${dst}"
+  fi
+}
+
+process_runners() {
+  local action="$1" cache="$2" dest_base="$3" label="$4"
+  local count=0 agent heading="Installing"
+
+  [[ "$action" == "uninstalling" ]] && heading="Uninstalling"
+
+  echo ""
+  echo -e "${BOLD}${heading} runners → ${label}${NC}"
+  echo -e "  Destination: ${dest_base}"
+
+  if [[ "$action" == "installing" && "$DRY_RUN" == false ]]; then
+    mkdir -p "$dest_base"
+  elif [[ "$action" == "uninstalling" && ! -d "$dest_base" ]]; then
+    warn "Directory does not exist: ${dest_base}"
+    return 0
+  fi
+
+  remove_legacy_agent_links "$cache" "$dest_base"
+
+  while IFS= read -r agent; do
+    [[ -z "$agent" ]] && continue
+    [[ -f "${cache}/agent/${agent}/run.sh" ]] || continue
+    if [[ "$action" == "installing" ]]; then
+      install_runner "$cache" "$dest_base" "$agent"
+    else
+      uninstall_runner "$dest_base" "$agent"
+    fi
+    count=$((count + 1))
+  done < <(discover_agents "$cache")
+
+  echo -e "  ${GREEN}${count} runners processed.${NC}"
 }
 
 # ── List discovered skills ──────────────────────────────────
@@ -371,8 +557,8 @@ interactive_menu() {
   echo ""
   echo "¿Dónde instalar las skills y agents?"
   echo ""
-  echo -e "  ${CYAN}1)${NC} Claude Code global  → ~/.claude/skills/"
-  echo -e "  ${CYAN}2)${NC} Claude Code local   → {proyecto}/.claude/skills/"
+  echo -e "  ${CYAN}1)${NC} Claude Code global  → ~/.claude/ + ~/.local/bin/"
+  echo -e "  ${CYAN}2)${NC} Claude Code local   → {proyecto}/.claude/"
   echo -e "  ${CYAN}3)${NC} Shared global       → ~/.agents/skills/ + ~/.agents/agents/"
   echo -e "  ${CYAN}4)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
   echo -e "  ${CYAN}5)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
@@ -413,9 +599,13 @@ dispatch_destinations() {
   case "$MODE" in
     claude-global)
       echo "skills:${HOME}/.claude/skills"
+      echo "claude-agents:${HOME}/.claude/agents"
+      echo "runners:${HOME}/.local/bin"
       ;;
     claude-local)
       echo "skills:${TARGET}/.claude/skills"
+      echo "claude-agents:${TARGET}/.claude/agents"
+      echo "runners:${TARGET}/.claude/bin"
       ;;
     global)
       echo "skills:${HOME}/.agents/skills"
@@ -458,17 +648,19 @@ main() {
     local label="${MODE} (${path})"
 
     if [[ "$UNINSTALL" == true ]]; then
-      if [[ "$kind" == "skills" ]]; then
-        uninstall_from "$CACHE_DIR" "$path" "$label"
-      else
-        uninstall_agents_from "$CACHE_DIR" "$path" "$label"
-      fi
+      case "$kind" in
+        skills) uninstall_from "$CACHE_DIR" "$path" "$label" ;;
+        agents) uninstall_agents_from "$CACHE_DIR" "$path" "$label" ;;
+        claude-agents) process_claude_agents "uninstalling" "$CACHE_DIR" "$path" "$label" ;;
+        runners) process_runners "uninstalling" "$CACHE_DIR" "$path" "$label" ;;
+      esac
     else
-      if [[ "$kind" == "skills" ]]; then
-        install_to "$CACHE_DIR" "$path" "$label"
-      else
-        install_agents_to "$CACHE_DIR" "$path" "$label"
-      fi
+      case "$kind" in
+        skills) install_to "$CACHE_DIR" "$path" "$label" ;;
+        agents) install_agents_to "$CACHE_DIR" "$path" "$label" ;;
+        claude-agents) process_claude_agents "installing" "$CACHE_DIR" "$path" "$label" ;;
+        runners) process_runners "installing" "$CACHE_DIR" "$path" "$label" ;;
+      esac
     fi
   done < <(dispatch_destinations)
 
