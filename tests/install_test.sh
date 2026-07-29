@@ -33,6 +33,12 @@ assert_symlink() {
   [[ -f "${path}/SKILL.md" ]] || fail "Expected linked SKILL.md: ${path}"
 }
 
+assert_file_symlink() {
+  local path="$1"
+  [[ -L "$path" ]] || fail "Expected file symlink: ${path}"
+  [[ -f "$path" ]] || fail "Expected linked file: ${path}"
+}
+
 seed_cache() {
   local home="$1"
   local cache="${home}/.cache/agent-workflow"
@@ -46,6 +52,8 @@ seed_cache() {
   printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' > "${cache}/utility/alpha/SKILL.md"
   printf '%s\n' '---' 'name: beta' 'description: Beta fixture.' '---' > "${cache}/design/beta/SKILL.md"
   printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' > "${cache}/agent/runner/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${cache}/agent/runner/run.sh"
+  chmod +x "${cache}/agent/runner/run.sh"
 }
 
 test_no_tty_error() {
@@ -86,7 +94,11 @@ test_piped_explicit_mode() {
 
   assert_contains "$output" "${home}/.claude/skills/alpha"
   assert_contains "$output" "${home}/.claude/skills/beta"
+  assert_contains "$output" "${home}/.claude/agents/runner.md"
+  assert_contains "$output" "${home}/.local/bin/runner"
   assert_contains "$output" '2 skills processed.'
+  assert_contains "$output" '1 Claude agents processed.'
+  assert_contains "$output" '1 runners processed.'
   [[ ! -e "${home}/.claude/skills" ]] || fail 'Dry-run created a Claude Code skills directory'
 
   pass 'piped invocation accepts an explicit non-interactive mode'
@@ -98,6 +110,9 @@ test_shared_global_round_trip() {
   local uninstall_output="${TEST_ROOT}/shared-uninstall.log"
 
   seed_cache "$home"
+  mkdir -p "${home}/.agents/agents"
+  ln -s "${home}/.cache/agent-workflow/agent/afk-issuemerger" \
+    "${home}/.agents/agents/afk-issuemerger"
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --global --force >"$install_output" 2>&1 || \
     fail 'Shared global install failed'
@@ -105,8 +120,11 @@ test_shared_global_round_trip() {
   assert_symlink "${home}/.agents/skills/alpha"
   assert_symlink "${home}/.agents/skills/beta"
   [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected runner agent symlink'
+  [[ ! -L "${home}/.agents/agents/afk-issuemerger" ]] || \
+    fail 'Legacy afk-issuemerger symlink was not removed'
   assert_contains "$install_output" '2 skills processed.'
   assert_contains "$install_output" '1 agents processed.'
+  assert_contains "$install_output" 'Removed legacy agent link: afk-issuemerger'
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --global >"$uninstall_output" 2>&1 || \
     fail 'Shared global uninstall failed'
@@ -136,22 +154,37 @@ test_claude_destinations() {
     fail 'Claude Code global install failed'
   assert_symlink "${home}/.claude/skills/alpha"
   assert_symlink "${home}/.claude/skills/beta"
-  [[ ! -e "${home}/.claude/agents" ]] || fail 'Claude Code mode must not install the autonomous agent'
+  assert_file_symlink "${home}/.claude/agents/runner.md"
+  assert_file_symlink "${home}/.local/bin/runner"
   assert_contains "$global_output" '2 skills processed.'
+  assert_contains "$global_output" '1 Claude agents processed.'
+  assert_contains "$global_output" '1 runners processed.'
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --claude-local --target "$project" --force >"$local_output" 2>&1 || \
     fail 'Claude Code project install failed'
   assert_symlink "${project}/.claude/skills/alpha"
   assert_symlink "${project}/.claude/skills/beta"
-  [[ ! -e "${project}/.claude/agents" ]] || fail 'Claude Code mode must not install the autonomous agent'
+  assert_file_symlink "${project}/.claude/agents/runner.md"
+  assert_file_symlink "${project}/.claude/bin/runner"
   assert_contains "$local_output" '2 skills processed.'
+  assert_contains "$local_output" '1 Claude agents processed.'
+  assert_contains "$local_output" '1 runners processed.'
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --claude-global >/dev/null 2>&1 || \
     fail 'Claude Code global uninstall failed'
   HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --claude-local --target "$project" >/dev/null 2>&1 || \
     fail 'Claude Code project uninstall failed'
 
-  pass 'Claude Code global and project destinations install skills only'
+  [[ ! -e "${home}/.claude/agents/runner.md" && ! -L "${home}/.claude/agents/runner.md" ]] || \
+    fail 'Global Claude agent was not uninstalled'
+  [[ ! -e "${home}/.local/bin/runner" && ! -L "${home}/.local/bin/runner" ]] || \
+    fail 'Global runner was not uninstalled'
+  [[ ! -e "${project}/.claude/agents/runner.md" && ! -L "${project}/.claude/agents/runner.md" ]] || \
+    fail 'Project Claude agent was not uninstalled'
+  [[ ! -e "${project}/.claude/bin/runner" && ! -L "${project}/.claude/bin/runner" ]] || \
+    fail 'Project runner was not uninstalled'
+
+  pass 'Claude Code destinations install and uninstall skills, agents, and runners'
 }
 
 test_no_tty_error

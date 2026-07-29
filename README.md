@@ -1,6 +1,6 @@
 # Workflow Skills
 
-A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`afk-issuemerger`) is original to this repo.
+A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`claude-minimax-issue-runner`) is original to this repo.
 
 ## Philosophy
 
@@ -33,8 +33,13 @@ curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/inst
 ```
 
 Claude Code discovers personal skills from `~/.claude/skills/` and project skills from
-`.claude/skills/`. Claude Code modes install skills only; the `afk-issuemerger` autonomous
-agent is intentionally not installed in those destinations.
+`.claude/skills/`. These modes also install the `claude-minimax-issue-runner` supervisor
+as a Claude agent and as an executable command:
+
+| Scope | Agent definition | Runner command |
+|---|---|---|
+| Personal | `~/.claude/agents/claude-minimax-issue-runner.md` | `~/.local/bin/claude-minimax-issue-runner` |
+| Project | `.claude/agents/claude-minimax-issue-runner.md` | `.claude/bin/claude-minimax-issue-runner` |
 
 If you want to inspect the downloaded script before executing it:
 
@@ -58,8 +63,8 @@ The menu offers:
 
 ```
 ¿Dónde instalar las skills y agents?
-  1) Claude Code global  → ~/.claude/skills/
-  2) Claude Code local   → {proyecto}/.claude/skills/
+  1) Claude Code global  → ~/.claude/ + ~/.local/bin/
+  2) Claude Code local   → {proyecto}/.claude/
   3) Shared global       → ~/.agents/skills/ + ~/.agents/agents/
   4) Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/
   5) Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/
@@ -98,8 +103,8 @@ The menu offers:
 
 | Flag | Description |
 |------|-------------|
-| `--claude-global` | Install skills to `~/.claude/skills/` |
-| `--claude-local` | Install skills to `{target}/.claude/skills/` |
+| `--claude-global` | Install skills and the Claude-MiniMax agent/runner globally |
+| `--claude-local` | Install skills and the Claude-MiniMax agent/runner in `{target}` |
 | `--global` | Install skills and agents to `~/.agents/skills/` and `~/.agents/agents/` |
 | `--local` | Install skills and agents to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
 | `--opencode` | Install skills and agents to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
@@ -113,7 +118,7 @@ The menu offers:
 ### How It Works
 
 1. Clones `elvisbrevi/agent-workflow` to `~/.cache/agent-workflow/` or updates the existing checkout.
-2. Discovers skills and agents from the cache.
+2. Discovers skills, agents, and executable runners from the cache.
 3. Creates symlinks in the selected destination.
 4. Re-running the installer updates the cache and points new installations at the selected revision.
 
@@ -142,6 +147,11 @@ Claude Code uses these skill locations:
 | Personal | `~/.claude/skills/<name>/SKILL.md` | Every project |
 | Project | `.claude/skills/<name>/SKILL.md` | The current project |
 
+It uses `~/.claude/agents/*.md` and `.claude/agents/*.md` for custom agents. The
+installer also exposes the external runner in `~/.local/bin/` (personal mode) or
+`.claude/bin/` (project mode). The external command is what creates and terminates a
+fresh Claude-MiniMax CLI process for every issue.
+
 After installation, invoke a skill with its slash command, for example:
 
 ```text
@@ -156,8 +166,9 @@ skills directory does not appear in the current session, start a new Claude Code
 ### Codex and OpenCode
 
 Codex discovers global skills from `~/.agents/skills` and project skills from
-`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. Use the
-corresponding installer mode above when targeting those clients.
+`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. Those modes
+can discover the supervisor definition, but its worker runtime is intentionally
+`claude-minimax`; it is not an OpenCode session-clearing loop.
 
 After installing, Codex normally detects new skills automatically. If a skill does not
 appear in `/skills` or when typing `$`, restart Codex or open a new session. To verify a
@@ -676,9 +687,11 @@ workflow/
 │       └── agents/openai.yaml
 │
 └── agent/
-    └── afk-issuemerger/
+    └── claude-minimax-issue-runner/
         ├── AGENT.md
-        └── REFERENCE.md
+        ├── PROMPT.md
+        ├── REFERENCE.md
+        └── run.sh
 ```
 
 ---
@@ -690,14 +703,39 @@ In addition to the 18 prompt-driven skills above, this repo ships one **autonomo
 | Type | What it is | Where it lives |
 |------|-----------|----------------|
 | **Skill** (18) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
-| **Agent** (1) | A self-contained autonomous loop that runs in its own session, takes actions, and clears context between iterations. | `agent/<name>/AGENT.md` |
+| **Agent** (1) | A supervisor plus executable loop that launches a fresh Claude-MiniMax process for each issue. | `agent/<name>/AGENT.md` + `run.sh` |
 
-### `afk-issuemerger` — autonomous issue drainer
+### `claude-minimax-issue-runner` — isolated Claude-MiniMax issue drainer
 
-Picks the next open, non-blocked issue from GitHub / Azure DevOps / `todo.md`, implements it end-to-end with the `tdd` skill, squash-merges the result into `main`, pushes, closes the issue, clears context with `/clear`, and starts the next iteration. Stops when the queue is empty or when a HITL slice is encountered.
+Launches the customized `claude-minimax` CLI with a single-issue prompt. Each fresh
+worker takes exactly one available non-epic issue, uses `/implement`, `/tdd`, and
+`/code-review`, opens a PR to the configured base branch, merges it automatically, and
+closes the issue. The process exits, then the supervisor launches a new non-persistent
+worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
+failure, a dirty worktree, or an invalid worker status.
 
-**Invoke** with `/afk-issuemerger` (opencode) or natural language: *"drain the issue queue"*, *"implement the pending issues"*, *"work through the backlog"*.
+**Invoke globally** from the target repository:
 
-**Safety** — this agent performs destructive operations: `git push` to the base branch, closes issues, edits `todo.md`. Each iteration's actions are auditable via the resulting commit and issue comment, but a misconfigured run can pollute `main`. Always run from a clean working tree and confirm the base branch before launching.
+```bash
+claude-minimax-issue-runner
+```
 
-See [agent/afk-issuemerger/AGENT.md](agent/afk-issuemerger/AGENT.md) for the full per-iteration flow and [agent/afk-issuemerger/REFERENCE.md](agent/afk-issuemerger/REFERENCE.md) for per-source CLI commands.
+For a project-local install:
+
+```bash
+./.claude/bin/claude-minimax-issue-runner
+```
+
+The default worker command is exactly `claude-minimax`. It may be an executable or a
+function loaded from `~/.bashrc`. The runner uses `--print`,
+`--no-session-persistence`, and the autonomous `bypassPermissions` permission mode.
+
+**Safety** — this agent performs destructive operations: it pushes branches, creates
+and merges PRs into the base branch, and closes issues. It requires an initial
+confirmation, verifies a clean worktree before every worker, and refuses to continue
+after ambiguous or partial results. Set `ISSUE_RUNNER_BASE_BRANCH` when the target is
+not `main`.
+
+See [agent/claude-minimax-issue-runner/AGENT.md](agent/claude-minimax-issue-runner/AGENT.md),
+[PROMPT.md](agent/claude-minimax-issue-runner/PROMPT.md), and
+[REFERENCE.md](agent/claude-minimax-issue-runner/REFERENCE.md).
