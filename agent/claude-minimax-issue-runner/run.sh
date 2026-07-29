@@ -141,8 +141,8 @@ confirm_destructive_run() {
     die "confirmation requires a TTY; set ISSUE_RUNNER_ASSUME_YES=true only after explicit authorization"
   fi
 
-  printf 'This will repeatedly merge PRs into %s and close issues. Continue? [y/N] ' \
-    "$BASE_BRANCH" >/dev/tty
+  printf 'This will use Claude permission mode %s, repeatedly merge PRs into %s, and close issues. Continue? [y/N] ' \
+    "$PERMISSION_MODE" "$BASE_BRANCH" >/dev/tty
   IFS= read -r answer </dev/tty || die "unable to read confirmation"
   [[ "$answer" =~ ^[Yy]$ ]] || die "cancelled"
 }
@@ -254,7 +254,7 @@ PROGRESS_INTERVAL="${ISSUE_RUNNER_PROGRESS_INTERVAL:-30}"
 CLAUDE_COMMAND="${CLAUDE_MINIMAX_COMMAND:-claude-minimax}"
 CLAUDE_SHELL="${CLAUDE_MINIMAX_SHELL:-bash}"
 CLAUDE_RC_FILE="${CLAUDE_MINIMAX_RC_FILE:-${HOME}/.bashrc}"
-PERMISSION_MODE="${CLAUDE_MINIMAX_PERMISSION_MODE:-auto}"
+PERMISSION_MODE="${CLAUDE_MINIMAX_PERMISSION_MODE:-bypassPermissions}"
 ITERATION=0
 
 [[ $# -le 1 ]] || die "usage: ${RUNNER_NAME} [repository]"

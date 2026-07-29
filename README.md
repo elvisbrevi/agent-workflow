@@ -743,12 +743,13 @@ function loaded from `~/.bashrc`. Function loading uses a clean, non-interactive
 Bash child and skips Flyline's dynamic prompt library, avoiding terminal/job-control
 startup errors. `CLAUDE_MINIMAX_RC_FILE` can point to a dedicated initialization
 file. The runner uses `--print`,
-`--no-session-persistence`, and Claude Code's `auto` permission mode by default.
+`--no-session-persistence`, and Claude Code's `bypassPermissions` mode by default.
 `CLAUDE_MINIMAX_PERMISSION_MODE` remains available as an explicit override.
 
 **Safety** — this agent performs destructive operations: it pushes branches, creates
 and merges PRs into the base branch, and closes issues. It requires an initial
-confirmation, verifies a clean worktree before every worker, and refuses to continue
+confirmation that explicitly displays the permission mode, verifies a clean worktree
+before every worker, and refuses to continue
 after ambiguous or partial results. An atomic lock in the Git common directory
 prevents concurrent runners across the repository and its linked worktrees; stale
 locks are recovered when their owner process no longer exists. Set
