@@ -714,6 +714,18 @@ closes the issue. The process exits, then the supervisor launches a new non-pers
 worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
 failure, a dirty worktree, or an invalid worker status.
 
+Worker output is streamed live. During silent operations, the supervisor prints
+an elapsed-time heartbeat every 30 seconds by default. It also maintains a
+status snapshot in the repository's Git common directory, so progress can be
+checked from another terminal:
+
+```bash
+cat "$(git rev-parse --git-common-dir)/claude-minimax-issue-runner.lock/status"
+```
+
+Set `ISSUE_RUNNER_PROGRESS_INTERVAL` to change the heartbeat interval (`0`
+disables it).
+
 **Invoke globally** from the target repository:
 
 ```bash
@@ -734,8 +746,10 @@ function loaded from `~/.bashrc`. The runner uses `--print`,
 **Safety** — this agent performs destructive operations: it pushes branches, creates
 and merges PRs into the base branch, and closes issues. It requires an initial
 confirmation, verifies a clean worktree before every worker, and refuses to continue
-after ambiguous or partial results. Set `ISSUE_RUNNER_BASE_BRANCH` when the target is
-not `main`.
+after ambiguous or partial results. An atomic lock in the Git common directory
+prevents concurrent runners across the repository and its linked worktrees; stale
+locks are recovered when their owner process no longer exists. Set
+`ISSUE_RUNNER_BASE_BRANCH` when the target is not `main`.
 
 See [agent/claude-minimax-issue-runner/AGENT.md](agent/claude-minimax-issue-runner/AGENT.md),
 [PROMPT.md](agent/claude-minimax-issue-runner/PROMPT.md), and
