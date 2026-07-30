@@ -536,14 +536,20 @@ require_recovery_tty_confirmation() {
   local prompt="$1"
   local answer
 
-  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    printf '%s Continue? [y/N] ' "$prompt" >/dev/tty || \
+      emit_recovery_required "TTY confirmation is required before recovery can continue"
+    IFS= read -r answer </dev/tty || \
+      emit_recovery_required "unable to read TTY confirmation for recovery"
+  elif [[ -t 0 && -t 1 ]]; then
+    printf '%s Continue? [y/N] ' "$prompt" || \
+      emit_recovery_required "TTY confirmation is required before recovery can continue"
+    IFS= read -r answer || \
+      emit_recovery_required "unable to read TTY confirmation for recovery"
+  else
     emit_recovery_required "TTY confirmation is required before recovery can continue"
   fi
 
-  printf '%s Continue? [y/N] ' "$prompt" >/dev/tty || \
-    emit_recovery_required "TTY confirmation is required before recovery can continue"
-  IFS= read -r answer </dev/tty || \
-    emit_recovery_required "unable to read TTY confirmation for recovery"
   [[ "$answer" =~ ^[Yy]$ ]] || \
     emit_recovery_required "operator declined recovery confirmation"
 }
