@@ -487,6 +487,248 @@ assert_clean_worktree() {
   fi
 }
 
+dirty_worktree_snapshot() {
+  git status --porcelain
+}
+
+github_repo_slug() {
+  local url slug
+
+  url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  case "$url" in
+    git@github.com:*)
+      slug="${url#git@github.com:}"
+      ;;
+    https://github.com/*)
+      slug="${url#https://github.com/}"
+      ;;
+    http://github.com/*)
+      slug="${url#http://github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  slug="${slug%.git}"
+  [[ "$slug" == */* ]] || return 1
+  printf '%s\n' "$slug"
+}
+
+checkpoint_value() {
+  local field="$1"
+  local file="${2:-}"
+  [[ -n "$file" ]] || file="$(checkpoint_file)"
+  sed -n "s/^${field}=//p" "$file" 2>/dev/null | head -n 1
+}
+
+emit_recovery_required() {
+  local message="$1"
+  local checkpoint="${2:-$(checkpoint_file)}"
+
+  printf '%s: RECOVERY_REQUIRED: %s\n' "$RUNNER_NAME" "$message" >&2
+  if [[ -r "$checkpoint" ]]; then
+    printf '%s: checkpoint retained at %s\n' "$RUNNER_NAME" "$checkpoint" >&2
+  fi
+  exit 4
+}
+
+require_recovery_tty_confirmation() {
+  local prompt="$1"
+  local answer
+
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    emit_recovery_required "TTY confirmation is required before recovery can continue"
+  fi
+
+  printf '%s Continue? [y/N] ' "$prompt" >/dev/tty || \
+    emit_recovery_required "TTY confirmation is required before recovery can continue"
+  IFS= read -r answer </dev/tty || \
+    emit_recovery_required "unable to read TTY confirmation for recovery"
+  [[ "$answer" =~ ^[Yy]$ ]] || \
+    emit_recovery_required "operator declined recovery confirmation"
+}
+
+reconcile_startup_recovery_state() {
+  local issue_number="$1"
+  local branch="$2"
+  local issue_state pr_json pr_count repo_slug blocked_by
+
+  if ! command -v gh >/dev/null 2>&1; then
+    emit_recovery_required "gh is required to reconcile issue and PR state before recovery"
+  fi
+
+  if ! issue_state="$(gh issue view "$issue_number" --json state,labels,assignees 2>/dev/null \
+      | jq -r '.state // empty' 2>/dev/null)"; then
+    emit_recovery_required "unable to reconcile issue ${issue_number} before recovery"
+  fi
+  [[ -n "$issue_state" ]] || \
+    emit_recovery_required "unable to determine issue ${issue_number} state before recovery"
+
+  repo_slug="$(github_repo_slug)" || \
+    emit_recovery_required "unable to determine GitHub repository for dependency reconciliation"
+  if ! blocked_by="$(gh api "repos/${repo_slug}/issues/${issue_number}" \
+      --jq '.issue_dependencies_summary.blocked_by // 0' 2>/dev/null)"; then
+    emit_recovery_required "unable to reconcile dependency state for issue ${issue_number}"
+  fi
+  [[ "$blocked_by" =~ ^[0-9]+$ ]] || \
+    emit_recovery_required "ambiguous dependency state for issue ${issue_number}"
+  if [[ "$blocked_by" -gt 0 ]]; then
+    emit_recovery_required "issue ${issue_number} is blocked by ${blocked_by} open issue(s)"
+  fi
+
+  if ! pr_json="$(gh pr list --state all --head "$branch" --json state,number,mergedAt 2>/dev/null)"; then
+    emit_recovery_required "unable to reconcile PR state for branch ${branch} before recovery"
+  fi
+  pr_count="$(jq -r 'length' 2>/dev/null <<<"$pr_json")"
+  [[ "$pr_count" =~ ^[0-9]+$ ]] || \
+    emit_recovery_required "ambiguous PR state for branch ${branch}"
+  if [[ "$pr_count" -gt 1 ]]; then
+    emit_recovery_required "ambiguous PR state for branch ${branch}: ${pr_count} PRs found"
+  fi
+  if [[ "$issue_state" == "CLOSED" ]]; then
+    emit_recovery_required "issue ${issue_number} is already closed; refusing to launch a recovery worker over dirty files"
+  fi
+  if [[ "$pr_count" -eq 1 ]]; then
+    local merged
+    merged="$(jq -r '((.[0].mergedAt // null) != null)' 2>/dev/null <<<"$pr_json")"
+    [[ "$merged" == "true" ]] || [[ "$merged" == "false" ]] || \
+      emit_recovery_required "ambiguous merged state for PR on branch ${branch}"
+    if [[ "$merged" == "true" ]]; then
+      emit_recovery_required "PR for branch ${branch} is already merged; refusing to duplicate recovery effects over dirty files"
+    fi
+  fi
+
+  printf '[%s] Reconciled recovery target: issue %s is %s; open blockers: %s; PRs for %s: %s\n' \
+    "$RUNNER_NAME" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count"
+}
+
+validate_checkpoint_for_dirty_recovery() {
+  local checkpoint="$1"
+  local issue branch base_branch base_sha state
+  local current
+
+  [[ -r "$checkpoint" ]] || \
+    emit_recovery_required "dirty worktree requires a readable checkpoint or explicit legacy adoption"
+
+  issue="$(checkpoint_value issue "$checkpoint")"
+  branch="$(checkpoint_value branch "$checkpoint")"
+  base_branch="$(checkpoint_value base_branch "$checkpoint")"
+  base_sha="$(checkpoint_value base_sha "$checkpoint")"
+  state="$(checkpoint_value state "$checkpoint")"
+  current="$(current_branch)"
+
+  [[ "$issue" =~ ^[0-9]+$ ]] || \
+    emit_recovery_required "checkpoint is missing a concrete issue number"
+  [[ -n "$branch" && "$branch" != "unknown" ]] || \
+    emit_recovery_required "checkpoint is missing a concrete branch"
+  [[ "$current" == "$branch" ]] || \
+    emit_recovery_required "checkpoint branch ${branch} does not match current branch ${current}"
+  [[ "$base_branch" == "$BASE_BRANCH" ]] || \
+    emit_recovery_required "checkpoint base branch ${base_branch:-unknown} does not match configured base ${BASE_BRANCH}"
+  [[ -n "$base_sha" && "$base_sha" != "unknown" ]] || \
+    emit_recovery_required "checkpoint is missing a concrete base SHA"
+  git rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null 2>&1 || \
+    emit_recovery_required "checkpoint base SHA ${base_sha} is stale or unavailable"
+  [[ -n "$state" ]] || \
+    emit_recovery_required "checkpoint is missing a lifecycle state"
+}
+
+write_legacy_checkpoint() {
+  local issue_number="$1"
+  local target tmp
+
+  target="$(checkpoint_file)"
+  tmp="${target}.tmp.$$"
+  mkdir -p "$(dirname "$target")"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'iteration=1\n'
+    printf 'issue=%s\n' "$issue_number"
+    printf 'branch=%s\n' "$(current_branch)"
+    printf 'base_branch=%s\n' "$BASE_BRANCH"
+    printf 'base_sha=%s\n' "$(current_base_sha)"
+    printf 'session_id=unavailable\n'
+    printf 'state=legacy_adopted\n'
+    printf 'updated_at=%s\n' "$(timestamp)"
+  } > "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+prepare_dirty_startup_recovery() {
+  local checkpoint
+  local dirty_files
+  local issue branch base_sha state session_id strategy
+
+  STARTUP_RECOVERY_MODE=""
+  STARTUP_RECOVERY_ISSUE=""
+  STARTUP_RECOVERY_SESSION=""
+  STARTUP_RECOVERY_PROMPT=""
+
+  dirty_files="$(dirty_worktree_snapshot)"
+  [[ -n "$dirty_files" ]] || return 0
+
+  checkpoint="$(checkpoint_file)"
+  if [[ -r "$checkpoint" ]]; then
+    validate_checkpoint_for_dirty_recovery "$checkpoint"
+    issue="$(checkpoint_value issue "$checkpoint")"
+    branch="$(checkpoint_value branch "$checkpoint")"
+    base_sha="$(checkpoint_value base_sha "$checkpoint")"
+    state="$(checkpoint_value state "$checkpoint")"
+    session_id="$(checkpoint_value session_id "$checkpoint")"
+    if is_session_resumable "$session_id" "$branch" "$base_sha"; then
+      strategy="resume captured Claude session"
+      STARTUP_RECOVERY_SESSION="$session_id"
+    else
+      strategy="launch fresh recovery worker constrained to checkpointed issue"
+      STARTUP_RECOVERY_SESSION=""
+    fi
+
+    printf '[%s] Restart recovery target: issue %s, branch %s, base SHA %s, state %s, strategy: %s\n' \
+      "$RUNNER_NAME" "$issue" "$branch" "$base_sha" "$state" "$strategy"
+    printf '[%s] Dirty files to preserve:\n%s\n' "$RUNNER_NAME" "$dirty_files"
+    reconcile_startup_recovery_state "$issue" "$branch"
+    require_recovery_tty_confirmation \
+      "Recover issue ${issue} on branch ${branch} from checkpoint state ${state} using strategy '${strategy}'."
+
+    STARTUP_RECOVERY_MODE="checkpoint"
+    STARTUP_RECOVERY_ISSUE="$issue"
+    STARTUP_RECOVERY_PROMPT="Restart recovery:
+- Continue exactly issue #${issue}; do not select another issue.
+- Preserve and inspect the existing dirty files; do not discard, reset, stash, or overwrite partial work.
+- The checkpoint branch is ${branch}, base SHA is ${base_sha}, and last state is ${state}.
+- Reconcile live issue and PR state before any mutation, then complete the existing work."
+    return 0
+  fi
+
+  if [[ -z "${ISSUE_RUNNER_ADOPT_ISSUE:-}" ]]; then
+    printf '[%s] Dirty files without checkpoint:\n%s\n' "$RUNNER_NAME" "$dirty_files" >&2
+    emit_recovery_required "legacy adoption requires ISSUE_RUNNER_ADOPT_ISSUE; refusing to infer the issue from branch, files, or queue order"
+  fi
+  [[ "${ISSUE_RUNNER_ADOPT_ISSUE}" =~ ^[0-9]+$ ]] || \
+    emit_recovery_required "ISSUE_RUNNER_ADOPT_ISSUE must be a numeric issue number"
+
+  issue="$ISSUE_RUNNER_ADOPT_ISSUE"
+  branch="$(current_branch)"
+  [[ "$branch" != "unknown" ]] || \
+    emit_recovery_required "legacy adoption requires a named branch"
+  printf '[%s] Legacy adoption target: issue %s, branch %s, base SHA %s, strategy: fresh recovery worker\n' \
+    "$RUNNER_NAME" "$issue" "$branch" "$(current_base_sha)"
+  printf '[%s] Dirty files to preserve:\n%s\n' "$RUNNER_NAME" "$dirty_files"
+  reconcile_startup_recovery_state "$issue" "$branch"
+  require_recovery_tty_confirmation \
+    "Adopt existing dirty work as issue ${issue} on branch ${branch}."
+  write_legacy_checkpoint "$issue"
+
+  STARTUP_RECOVERY_MODE="legacy"
+  STARTUP_RECOVERY_ISSUE="$issue"
+  STARTUP_RECOVERY_SESSION=""
+  STARTUP_RECOVERY_PROMPT="Legacy recovery adoption:
+- Continue exactly issue #${issue}; do not select another issue.
+- Preserve and inspect the existing dirty files; do not discard, reset, stash, or overwrite partial work.
+- This is a synthetic checkpoint with no resumable session.
+- Reconcile live issue and PR state before any mutation, then complete the existing work."
+}
+
 # Returns 0 (success) when the input line is a JSON object. Avoids emitting
 # raw stream JSON into operator output.
 stream_event_is_object() {
@@ -882,7 +1124,8 @@ run_worker_with_progress() {
 attempt_with_recovery() {
   local prompt="$1"
   local output_file="$2"
-  local session_id=""
+  local initial_session_id="${3:-}"
+  local session_id="$initial_session_id"
   local attempt=0
   local max_attempts=$(( ${#RETRY_DELAY_VALUES[@]} + 1 ))
   local configured_limit=""
@@ -908,7 +1151,9 @@ attempt_with_recovery() {
     # Decide whether the captured Claude session is safe to resume. The
     # first attempt has no checkpoint session and always launches fresh.
     resume_session=""
-    if [[ "$attempt" -gt 1 && -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
+    if [[ "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
+      resume_session="$initial_session_id"
+    elif [[ "$attempt" -gt 1 && -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
       checkpoint_branch="$(sed -n 's/^branch=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       checkpoint_base_sha="$(sed -n 's/^base_sha=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       if is_session_resumable "${CHECKPOINT_SESSION_ID}" "$checkpoint_branch" "$checkpoint_base_sha"; then
@@ -916,7 +1161,10 @@ attempt_with_recovery() {
       fi
     fi
 
-    if [[ -n "$resume_session" ]]; then
+    if [[ -n "$resume_session" && "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
+      printf '[%s] Restart recovery resuming Claude session %s\n' \
+        "$RUNNER_NAME" "$resume_session"
+    elif [[ -n "$resume_session" ]]; then
       printf '[%s] Recovery attempt %s resuming Claude session %s\n' \
         "$RUNNER_NAME" "$attempt" "$resume_session"
     elif [[ "$attempt" -gt 1 ]]; then
@@ -1112,28 +1360,55 @@ if ! git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}" &&
 fi
 
 acquire_repository_lock
-assert_clean_worktree
 confirm_destructive_run
+prepare_dirty_startup_recovery
+if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+  assert_clean_worktree
+fi
 
 BASE_PROMPT="$(<"$PROMPT_FILE")"
 
 while true; do
   ITERATION=$((ITERATION + 1))
-  CHECKPOINT_ISSUE=""
-  CHECKPOINT_STATE="starting"
-  CHECKPOINT_SESSION_ID=""
+  if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    CHECKPOINT_ISSUE="$STARTUP_RECOVERY_ISSUE"
+    CHECKPOINT_STATE="$(checkpoint_value state "$(checkpoint_file)")"
+    CHECKPOINT_SESSION_ID="$(checkpoint_value session_id "$(checkpoint_file)")"
+  else
+    CHECKPOINT_ISSUE=""
+    CHECKPOINT_STATE="starting"
+    CHECKPOINT_SESSION_ID=""
+  fi
   RECOVERY_ATTEMPT=0
   RECOVERY_CATEGORY=""
   RECOVERY_DELAY=""
-  assert_clean_worktree
+  if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    assert_clean_worktree
+  fi
 
-  # Record an initial checkpoint for this attempt before any worker process
-  # runs. The runner fills in `issue`, `state`, and (when available)
-  # `session_id` as the worker emits identifying events.
-  write_checkpoint "starting"
-  write_lock_status "starting" 0
+  if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    # Record an initial checkpoint for this attempt before any worker process
+    # runs. The runner fills in `issue`, `state`, and (when available)
+    # `session_id` as the worker emits identifying events.
+    write_checkpoint "starting"
+    write_lock_status "starting" 0
+  else
+    write_lock_status "recovery_starting" 0
+  fi
 
-  WORKER_PROMPT="${BASE_PROMPT}
+  if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    WORKER_PROMPT="${BASE_PROMPT}
+
+${STARTUP_RECOVERY_PROMPT}
+
+Runtime configuration:
+- Repository root: ${REPO_ROOT}
+- Base branch: ${BASE_BRANCH}
+- This is restart recovery iteration ${ITERATION}.
+
+Do not inspect the queue for another issue. Continue only the recovery target."
+  else
+    WORKER_PROMPT="${BASE_PROMPT}
 
 Runtime configuration:
 - Repository root: ${REPO_ROOT}
@@ -1142,13 +1417,19 @@ Runtime configuration:
 
 Begin by inspecting the live tracker and repository state. Remember: exactly one
 non-epic issue in this session."
+  fi
 
   OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/${RUNNER_NAME}.XXXXXX")"
-  printf '\n[%s] Starting fresh Claude-MiniMax worker %s at %s\n' \
-    "$RUNNER_NAME" "$ITERATION" "$(timestamp)"
+  if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    printf '\n[%s] Starting recovery Claude-MiniMax worker for issue %s at %s\n' \
+      "$RUNNER_NAME" "$STARTUP_RECOVERY_ISSUE" "$(timestamp)"
+  else
+    printf '\n[%s] Starting fresh Claude-MiniMax worker %s at %s\n' \
+      "$RUNNER_NAME" "$ITERATION" "$(timestamp)"
+  fi
 
   RECOVERY_REQUIRED_REACHED=false
-  attempt_with_recovery "$WORKER_PROMPT" "$OUTPUT_FILE" || \
+  attempt_with_recovery "$WORKER_PROMPT" "$OUTPUT_FILE" "${STARTUP_RECOVERY_SESSION:-}" || \
     RECOVERY_REQUIRED_REACHED=true
 
   # The renderer subshell carries the identified issue in a side-channel
@@ -1185,6 +1466,13 @@ non-epic issue in this session."
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       clear_checkpoint
       printf '[%s] Worker %s completed one issue.\n' "$RUNNER_NAME" "$ITERATION"
+      if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+        printf '[%s] Restart recovery completed; returning to normal queue loop.\n' "$RUNNER_NAME"
+        STARTUP_RECOVERY_MODE=""
+        STARTUP_RECOVERY_ISSUE=""
+        STARTUP_RECOVERY_SESSION=""
+        STARTUP_RECOVERY_PROMPT=""
+      fi
       if [[ "$MAX_ITERATIONS" -gt 0 && "$ITERATION" -ge "$MAX_ITERATIONS" ]]; then
         printf '%s: iteration limit reached after %s completed issue(s)\n' \
           "$RUNNER_NAME" "$ITERATION"
