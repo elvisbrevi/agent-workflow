@@ -712,7 +712,7 @@ worker takes exactly one available non-epic issue, uses `/implement`, `/tdd`, an
 `/code-review`, opens a PR to the configured base branch, merges it automatically, and
 closes the issue. The process exits, then the supervisor launches a new non-persistent
 worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
-failure, a dirty worktree, or an invalid worker status.
+failure, unexplained dirty work, or an invalid worker status.
 
 Worker output is streamed live as Claude's `stream-json` events, rendered by
 the supervisor as concise, iteration-aware progress lines
@@ -752,8 +752,13 @@ file. The runner uses `--print`,
 **Safety** — this agent performs destructive operations: it pushes branches, creates
 and merges PRs into the base branch, and closes issues. It requires an initial
 confirmation that explicitly displays the permission mode, verifies a clean worktree
-before every worker, and refuses to continue
-after ambiguous or partial results. An atomic lock in the Git common directory
+before every normal worker, and refuses to continue
+after ambiguous or partial results. If startup finds dirty work with a valid recovery
+checkpoint, it displays the issue, branch, base SHA, last state, dirty files, and
+strategy, reconciles live issue/PR state, then requires TTY confirmation before
+resuming. Dirty legacy work without a checkpoint requires
+`ISSUE_RUNNER_ADOPT_ISSUE=<number>` and is never inferred from branch names or files.
+An atomic lock in the Git common directory
 prevents concurrent runners across the repository and its linked worktrees; stale
 locks are recovered when their owner process no longer exists. Set
 `ISSUE_RUNNER_BASE_BRANCH` when the target is not `main`.
