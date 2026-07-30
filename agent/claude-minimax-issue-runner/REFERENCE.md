@@ -214,6 +214,42 @@ prints a diagnostic on stderr pointing to the retained artifact, and
 exits with code `4`. It never advances to another issue — the next
 runner startup is responsible for picking the work back up.
 
+## Restart recovery and legacy adoption
+
+On startup, a dirty worktree is no longer treated as a generic failure when
+there is enough recovery identity to continue safely. The supervisor first
+checks the Git common directory for `claude-minimax-issue-runner.checkpoint`.
+When the checkpoint is valid and matches the current worktree, the runner
+prints the exact issue number, branch, base SHA, last checkpoint state, dirty
+files, and recovery strategy. It then reconciles the issue and PR state with
+GitHub before any worker is launched.
+
+Recovery only proceeds after explicit TTY confirmation. A declined prompt,
+missing TTY, stale base SHA, branch mismatch, missing issue number, ambiguous
+PR state, or unavailable tracker state exits with code `4`
+(`RECOVERY_REQUIRED`) and leaves the checkpoint and worktree untouched.
+
+If the checkpoint contains a usable Claude session id and the branch/base SHA
+still match, the first recovery worker is invoked with `--resume <session_id>`.
+Otherwise the runner starts a fresh worker with `--no-session-persistence` and
+a prompt constrained to the checkpointed issue. In both cases the worker is
+instructed to inspect and complete the existing partial work, never select a
+new issue, and never discard, reset, stash, or overwrite dirty files.
+
+For older interrupted work created before checkpoint support existed, use
+legacy adoption:
+
+```bash
+ISSUE_RUNNER_ADOPT_ISSUE=123 claude-minimax-issue-runner /path/to/repo
+```
+
+The issue number is mandatory. The runner never infers it from the branch,
+filenames, dirty paths, or queue ordering. Before adoption it displays the
+dirty files and proposed recovery identity, reconciles issue/dependency/PR
+state, and requires TTY confirmation. Only after confirmation does it create a
+synthetic checkpoint with `session_id=unavailable` and launch a fresh recovery
+worker constrained to that supplied issue.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -227,11 +263,13 @@ runner startup is responsible for picking the work back up.
 ## Safety
 
 This runner intentionally permits workers to commit, push, create and merge
-PRs, and close issues. It refuses to start from a dirty worktree and checks the
-worktree again before every new worker. It also refuses a second runner for the
-same repository. The default `bypassPermissions` mode is required because
-non-interactive `--print` workers cannot answer permission prompts; the runner's
-TTY confirmation is the authorization boundary. Any missing or unknown worker
-status stops the loop. Transient transport failures are the only category of
-failure that triggers an automatic retry, and that retry always respects the
-configured delay schedule and retry limit.
+PRs, and close issues. It refuses to start from unexplained dirty work: dirty
+state must either match a valid checkpoint or be explicitly adopted with
+`ISSUE_RUNNER_ADOPT_ISSUE`. It also checks the worktree before every normal new
+worker and refuses a second runner for the same repository. The default
+`bypassPermissions` mode is required because non-interactive `--print` workers
+cannot answer permission prompts; the runner's TTY confirmations are the
+authorization boundary. Any missing or unknown worker status stops the loop.
+Transient transport failures are the only category of failure that triggers an
+automatic retry, and that retry always respects the configured delay schedule
+and retry limit.
