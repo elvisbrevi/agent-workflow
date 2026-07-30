@@ -28,6 +28,9 @@ Anthropic-compatible endpoint and selected model.
 | `ISSUE_RUNNER_PROGRESS_INTERVAL` | `30` | Seconds between progress heartbeats; `0` disables them |
 | `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip the initial destructive-action confirmation |
 | `ISSUE_RUNNER_STREAM_OUTPUT` | `true` | Invoke the worker with `--output-format stream-json` and render semantic progress; set to `false` to keep the legacy text output and `tee` behavior |
+| `ISSUE_RUNNER_RETRY_DELAYS` | `15,30,60` | Comma-separated list of seconds to wait between retry attempts of a transiently failed worker; one retry per delay entry. Set to empty to disable retries entirely. |
+| `ISSUE_RUNNER_RETRY_LIMIT` | _unset_ | Override the total number of worker attempts allowed per issue, including the initial attempt. Defaults to `count(delays) + 1`. |
+| `ISSUE_RUNNER_TRANSIENT_PATTERNS` | _unset_ | Newline-separated list of POSIX extended regexes matched (case-insensitively) against the worker output to classify a non-zero exit as a transient transport failure. When unset, a conservative default allowlist of `connection closed / reset / refused / aborted`, `read|write timeout`, `timed out`, `ECONNRESET / ECONNREFUSED / ETIMEDOUT / ENOTFOUND / EAI_AGAIN`, `broken pipe`, `unexpected EOF`, `TLS handshake`, `stream closed / hangup / reset`, `network error / unreachable / down`, `server disconnect / hangup / reset`, and `socket hangup` is used. |
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
 | `CLAUDE_MINIMAX_SHELL` | `bash` | Bash executable used to resolve a shell function |
 | `CLAUDE_MINIMAX_RC_FILE` | `~/.bashrc` | Initialization file containing the shell function |
@@ -177,6 +180,40 @@ progress without reading the checkpoint directly.
   checkpoint with the last safe state so the next restart can decide
   whether recovery is safe.
 
+## Transient retry
+
+The supervisor wraps every worker invocation in a bounded retry loop.
+Only worker exits whose output matches an approved transport failure
+signature are retried. Anything else — `BLOCKED`, `FAILED`, malformed
+status markers, and non-transient process exits — stops the loop
+immediately.
+
+Before every retry the supervisor:
+
+1. Reads the persisted checkpoint and the live Git branch so the
+   identity context is consistent.
+2. Reconciles the local branch, the live PR list, and the live issue
+   state. A checkpoint that already reached `pr_merged` or
+   `issue_closed` (or an already-merged PR with a closed issue) is
+   treated as completed; the supervisor injects a synthetic
+   `ISSUE_COMPLETED` status and advances the loop without launching
+   another worker.
+3. Resumes the captured Claude session when the checkpoint carries one
+   and the worktree still matches the recorded branch and base SHA.
+   Otherwise the supervisor launches a fresh recovery worker
+   constrained to the same issue, with `--no-session-persistence`.
+4. Writes `state=recovering`, `recovery_attempt`, `recovery_delay`, and
+   `recovery_category` into the lock status snapshot so operators can
+   observe the in-flight retry without reading the checkpoint file.
+
+After the configured retry budget is exhausted, the supervisor writes
+`state=recovery_required` into the lock status, retains the checkpoint
+and the per-iteration output artifact, appends
+`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=RECOVERY_REQUIRED` to the artifact,
+prints a diagnostic on stderr pointing to the retained artifact, and
+exits with code `4`. It never advances to another issue — the next
+runner startup is responsible for picking the work back up.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -185,6 +222,7 @@ progress without reading the checkpoint directly.
 | `1` | Worker or runner failure |
 | `2` | Pending work requires human input |
 | `3` | Configured iteration limit reached |
+| `4` | `RECOVERY_REQUIRED` — transient retries exhausted; checkpoint and output retained for a human operator or the next restart to inspect |
 
 ## Safety
 
@@ -194,4 +232,6 @@ worktree again before every new worker. It also refuses a second runner for the
 same repository. The default `bypassPermissions` mode is required because
 non-interactive `--print` workers cannot answer permission prompts; the runner's
 TTY confirmation is the authorization boundary. Any missing or unknown worker
-status stops the loop.
+status stops the loop. Transient transport failures are the only category of
+failure that triggers an automatic retry, and that retry always respects the
+configured delay schedule and retry limit.
