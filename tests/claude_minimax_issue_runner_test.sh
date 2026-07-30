@@ -839,7 +839,17 @@ test_lock_status_exposes_checkpoint_identity() {
   # The lock status snapshot is observable from another terminal. The runner
   # must publish the same identity fields (issue, branch, base_branch,
   # lifecycle state) so operators can inspect progress without reading the
-  # checkpoint file directly.
+  # checkpoint file directly. Wait for the renderer to publish the issue
+  # identity from the `gh issue view` event before inspecting the lock
+  # status — the worker may touch `started` before the renderer has
+  # processed that stream event.
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+    if grep -Eq '^issue=33$' "$lock_status_file" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+
   [[ -r "$lock_status_file" ]] || \
     fail 'Lock status file was not produced'
   for field in issue branch base_branch state; do
@@ -855,6 +865,807 @@ test_lock_status_exposes_checkpoint_identity() {
   wait "$first_pid" || fail 'Identity runner failed after release'
 
   pass 'repository lock status exposes the same checkpoint identity'
+}
+
+# --- Transient disconnect retry tests (issue #3) ---------------------------
+#
+# A "transient fixture" simulates a Claude worker that emits a stream-json
+# result event whose text matches one of the approved transport failure
+# signatures, then exits with a non-zero status. The runner must recognize
+# the pattern, apply the bounded backoff, and retry until the fixture
+# eventually returns a recognized status marker.
+
+# Writes a fixture that:
+#   - reads the current attempt number from $2 (an on-disk counter file);
+#   - extracts the runner iteration from --name <runner>-<N>;
+#   - on attempt 1, 2, ..., emits the supplied "transient" result event
+#     and exits with a non-zero status; the fixture's own attempt count
+#     drives the loop, so the runner's ITERATION counter does not change;
+#   - on the final attempt, emits a recognized status marker;
+#   - on subsequent iterations (after the issue is "completed"), emits
+#     QUEUE_EMPTY so the runner exits normally instead of looping.
+# Args: target, counter, transient_result_text, final_marker
+write_transient_fixture() {
+  local target="$1"
+  local counter="$2"
+  local transient_text="$3"
+  local final_marker="$4"
+
+  cat > "$target" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+if [[ "\$attempt" -le 2 ]]; then
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"attempt '"'"'\$attempt'"'"' starting"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"${transient_text}"}'
+  exit 1
+fi
+
+printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=${final_marker}\\n"}'
+exit 0
+PROLOG
+  chmod +x "$target"
+}
+
+# Writes a fixture that emits a non-transient failure on attempt 1 and a
+# recognized status marker on attempt 2. The retry path must NOT trigger.
+# On subsequent iterations the fixture returns QUEUE_EMPTY so the runner
+# can drain its loop instead of looping indefinitely.
+write_non_transient_fixture() {
+  local target="$1"
+  local counter="$2"
+  local unknown_text="$3"
+  local final_marker="$4"
+
+  cat > "$target" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+if [[ "\$attempt" -le 1 ]]; then
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"attempt '"'"'\$attempt'"'"' starting"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"${unknown_text}"}'
+  exit 1
+fi
+
+printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=${final_marker}\\n"}'
+exit 0
+PROLOG
+  chmod +x "$target"
+}
+
+# Writes a fixture that emits a non-transient BLOCKED outcome on attempt 1.
+# Retry must NOT trigger. On subsequent iterations the fixture returns
+# QUEUE_EMPTY so the runner can drain its loop.
+write_blocked_fixture() {
+  local target="$1"
+  local counter="$2"
+
+  cat > "$target" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+printf '%s\n' '{"type":"result","subtype":"success","result":"needs human input\\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED\\n"}'
+exit 0
+PROLOG
+  chmod +x "$target"
+}
+
+test_transient_disconnect_retries_with_bounded_backoff() {
+  local repo="${TEST_ROOT}/transient-retry-repo"
+  local fake="${TEST_ROOT}/claude-minimax-transient-retry"
+  local output="${TEST_ROOT}/transient-retry-output.log"
+  local counter="${TEST_ROOT}/transient-retry-counter"
+  local lock_status
+
+  new_repo "$repo"
+  write_transient_fixture "$fake" "$counter" \
+    "Connection closed by remote host" \
+    "ISSUE_COMPLETED"
+
+  # Override the default 15,30,60 backoff so the test completes quickly.
+  # The fixture still fails on attempts 1 and 2 then succeeds, so we
+  # expect the runner to retry through three total attempts.
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Transient retry fixture did not finish'
+
+  # The fixture was invoked three times: two transient failures and one
+  # successful completion.
+  local attempts
+  attempts="$(<"$counter")"
+  [[ "$attempts" -ge 3 ]] || \
+    fail "Expected at least three worker attempts, got ${attempts}"
+
+  # The runner must log the retry attempt and the backoff sleep.
+  grep -Fq 'Recovering from transient transport failure' "$output" || \
+    fail 'Runner did not announce the transient retry'
+  grep -Fq 'attempt 1 of' "$output" || \
+    fail 'Runner did not report the attempt counter'
+  grep -Fq 'recovery_delay=' "$output" || \
+    fail 'Runner did not publish the configured backoff delay'
+
+  # The runner announces the retry in stdout with the category, attempt,
+  # and delay. The lock-status snapshot is also written between the
+  # first failure and the backoff sleep, but it is released on exit;
+  # the stdout announcement is the observable signal.
+  grep -Fq 'recovery_category=transient_transport' "$output" || \
+    fail 'Runner did not publish the transient failure category in stdout'
+
+  pass 'transient transport failure retries with bounded backoff'
+}
+
+test_non_transient_disconnect_does_not_retry() {
+  local repo="${TEST_ROOT}/non-transient-repo"
+  local fake="${TEST_ROOT}/claude-minimax-non-transient"
+  local output="${TEST_ROOT}/non-transient-output.log"
+  local counter="${TEST_ROOT}/non-transient-counter"
+  local status
+
+  new_repo "$repo"
+  write_non_transient_fixture "$fake" "$counter" \
+    "Something completely unexpected went wrong" \
+    "ISSUE_COMPLETED"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # Only one attempt: the unknown error must stop the loop.
+  [[ "$(<"$counter")" == "1" ]] || \
+    fail 'Non-transient failure must not trigger a retry'
+  [[ "$status" -eq 1 ]] || \
+    fail "Non-transient worker failure must exit 1, got ${status}"
+  if grep -Fq 'Recovering from transient transport failure' "$output"; then
+    fail 'Runner announced a transient retry for a non-transient failure'
+  fi
+
+  pass 'non-transient failure stops the loop without retrying'
+}
+
+test_blocked_outcome_does_not_retry() {
+  local repo="${TEST_ROOT}/blocked-no-retry-repo"
+  local fake="${TEST_ROOT}/claude-minimax-blocked-no-retry"
+  local output="${TEST_ROOT}/blocked-no-retry-output.log"
+  local counter="${TEST_ROOT}/blocked-no-retry-counter"
+  local status
+
+  new_repo "$repo"
+  write_blocked_fixture "$fake" "$counter"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$(<"$counter")" == "1" ]] || \
+    fail 'BLOCKED outcome must not trigger a retry'
+  [[ "$status" -eq 2 ]] || \
+    fail "BLOCKED must exit 2, got ${status}"
+
+  pass 'BLOCKED outcome stops immediately and never retries'
+}
+
+test_recovery_reconciles_local_state_before_continuing() {
+  local repo="${TEST_ROOT}/reconcile-repo"
+  local fake="${TEST_ROOT}/claude-minimax-reconcile"
+  local output="${TEST_ROOT}/reconcile-output.log"
+  local counter="${TEST_ROOT}/reconcile-counter"
+  local checkpoint_file
+
+  new_repo "$repo"
+  write_transient_fixture "$fake" "$counter" \
+    "Connection reset by peer" \
+    "ISSUE_COMPLETED"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # Pre-seed a checkpoint that identifies the in-flight issue, branch, and
+  # base SHA so the orchestrator has identity context for reconciliation.
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=99
+branch=main
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse HEAD)
+state=mutating
+updated_at=test
+EOF
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Reconcile fixture did not finish'
+
+  grep -Fq 'Reconciling recovery state' "$output" || \
+    fail 'Runner did not announce the reconciliation step'
+
+  pass 'recovery reconciles local branch and checkpoint state before retrying'
+}
+
+test_session_resume_when_checkpoint_has_safe_session_id() {
+  local repo="${TEST_ROOT}/resume-repo"
+  local home="${TEST_ROOT}/resume-home"
+  local fake="${TEST_ROOT}/claude-minimax-resume"
+  local output="${TEST_ROOT}/resume-output.log"
+  local counter="${TEST_ROOT}/resume-counter"
+  local args_file="${TEST_ROOT}/resume-args"
+  local checkpoint_file
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # The first attempt emits a transient failure. The second attempt must
+  # receive --resume <session_id> from the captured Claude session id.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+if [[ "\$attempt" -eq 1 ]]; then
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-resume-xyz"}'
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"Connection closed by remote host"}'
+  exit 1
+fi
+
+for arg in "\$@"; do printf '%s\n' "\$arg" >>"$args_file"; done
+printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local arg' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  counter_file="'"$counter"'"' \
+    '  attempt=0' \
+    '  [[ -f "$counter_file" ]] && attempt=$(<"$counter_file")' \
+    '  attempt=$((attempt + 1))' \
+    '  printf "%s\\n" "$attempt" >"$counter_file"' \
+    '  iteration=1' \
+    '  name_next=0' \
+    '  for arg in "$@"; do' \
+    '    if [[ "$name_next" == "1" ]]; then' \
+    '      if [[ "$arg" =~ -([0-9]+)$ ]]; then' \
+    '        iteration="${BASH_REMATCH[1]}"' \
+    '      fi' \
+    '      break' \
+    '    fi' \
+    '    if [[ "$arg" == "--name" ]]; then' \
+    '      name_next=1' \
+    '    fi' \
+    '  done' \
+    '  if [[ "$iteration" -gt 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    return 0' \
+    '  fi' \
+    '  if [[ "$attempt" -eq 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-shell-resume-xyz\"}"' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"Connection closed by remote host\"}"' \
+    '    return 1' \
+    '  fi' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  # Pre-seed the checkpoint with a session id and a matching branch so the
+  # runner considers the session safe to resume.
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=5
+branch=main
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse HEAD)
+session_id=sess-preflight
+state=mutating
+updated_at=test
+EOF
+
+  HOME="$home" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Resume fixture did not finish'
+
+  # The second worker invocation must receive --resume with the captured id.
+  # This is the runtime observable of the resume path: if the worker was
+  # invoked with --resume <captured-id>, then the orchestrator both
+  # captured the session id and decided it was safe to resume.
+  grep -Fxq -- '--resume' "$args_file" || \
+    fail 'Recovery worker was not invoked with --resume'
+  grep -Fxq -- 'sess-shell-resume-xyz' "$args_file" || \
+    fail 'Recovery worker did not receive the captured session id'
+
+  pass 'recovery worker resumes the captured Claude session when safe'
+}
+
+test_session_resume_skipped_when_no_captured_session_id() {
+  local repo="${TEST_ROOT}/no-session-repo"
+  local home="${TEST_ROOT}/no-session-home"
+  local fake="${TEST_ROOT}/claude-minimax-no-session"
+  local output="${TEST_ROOT}/no-session-output.log"
+  local counter="${TEST_ROOT}/no-session-counter"
+  local args_file="${TEST_ROOT}/no-session-args"
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # Fixture emits a transient failure on attempt 1 WITHOUT a system init
+  # event, so no session id is captured. Attempt 2 succeeds.
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local arg' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  counter_file="'"$counter"'"' \
+    '  attempt=0' \
+    '  [[ -f "$counter_file" ]] && attempt=$(<"$counter_file")' \
+    '  attempt=$((attempt + 1))' \
+    '  printf "%s\\n" "$attempt" >"$counter_file"' \
+    '  iteration=1' \
+    '  name_next=0' \
+    '  for arg in "$@"; do' \
+    '    if [[ "$name_next" == "1" ]]; then' \
+    '      if [[ "$arg" =~ -([0-9]+)$ ]]; then' \
+    '        iteration="${BASH_REMATCH[1]}"' \
+    '      fi' \
+    '      break' \
+    '    fi' \
+    '    if [[ "$arg" == "--name" ]]; then' \
+    '      name_next=1' \
+    '    fi' \
+    '  done' \
+    '  if [[ "$iteration" -gt 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    return 0' \
+    '  fi' \
+    '  if [[ "$attempt" -eq 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"Connection closed by remote host\"}"' \
+    '    return 1' \
+    '  fi' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  HOME="$home" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'No-session fixture did not finish'
+
+  # Without a captured session id, the recovery worker must launch fresh
+  # with --no-session-persistence and must NOT receive --resume.
+  if grep -Fxq -- '--resume' "$args_file"; then
+    fail 'Recovery worker received --resume despite no captured session id'
+  fi
+  grep -Fxq -- '--no-session-persistence' "$args_file" || \
+    fail 'Fresh recovery worker did not receive --no-session-persistence'
+
+  pass 'session resume is skipped when no session id was captured'
+}
+
+test_recovery_required_after_exhausted_retries() {
+  local repo="${TEST_ROOT}/recovery-required-repo"
+  local fake="${TEST_ROOT}/claude-minimax-recovery-required"
+  local output="${TEST_ROOT}/recovery-required-output.log"
+  local counter="${TEST_ROOT}/recovery-required-counter"
+  local checkpoint_file
+  local status
+
+  new_repo "$repo"
+  write_transient_fixture "$fake" "$counter" \
+    "Connection closed by remote host" \
+    "ISSUE_COMPLETED"
+  # The fixture only retries twice (attempt 1 and 2), then would succeed
+  # on attempt 3. Override the limit so the runner gives up before the
+  # fixture succeeds.
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_RUNNER_RETRY_LIMIT=1 \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Exhausted retries must exit 4 (RECOVERY_REQUIRED), got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Runner did not announce RECOVERY_REQUIRED'
+  # The checkpoint must be retained for the next restart to inspect.
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint was cleared after a RECOVERY_REQUIRED outcome'
+  grep -Eq '^state=' "$checkpoint_file" || \
+    fail 'Checkpoint lost its last safe state after exhaustion'
+
+  pass 'exhausted retries return RECOVERY_REQUIRED and retain the checkpoint'
+}
+
+test_recovery_required_does_not_advance_to_next_issue() {
+  local repo="${TEST_ROOT}/no-next-repo"
+  local fake="${TEST_ROOT}/claude-minimax-no-next"
+  local output="${TEST_ROOT}/no-next-output.log"
+  local counter="${TEST_ROOT}/no-next-counter"
+  local status
+
+  new_repo "$repo"
+  write_transient_fixture "$fake" "$counter" \
+    "Connection closed by remote host" \
+    "QUEUE_EMPTY"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_RUNNER_RETRY_LIMIT=1 \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Exhausted retries must exit 4, got ${status}"
+  # The runner must NOT advance to a second iteration. Only attempt 1 of
+  # the recovery loop should run because the retry limit was 1.
+  [[ "$(<"$counter")" -le 2 ]] || \
+    fail 'Runner advanced past the failed issue after RECOVERY_REQUIRED'
+  if grep -Fq 'No pending, available, non-epic issues remain.' "$output"; then
+    fail 'Runner reported QUEUE_EMPTY while still recovering'
+  fi
+
+  pass 'RECOVERY_REQUIRED never advances to the next issue'
+}
+
+test_idempotent_retry_recognizes_already_merged_pr() {
+  local repo="${TEST_ROOT}/merged-repo"
+  local fake="${TEST_ROOT}/claude-minimax-merged"
+  local output="${TEST_ROOT}/merged-output.log"
+  local counter="${TEST_ROOT}/merged-counter"
+
+  new_repo "$repo"
+
+  # Fixture simulates a worker that successfully merged its PR for
+  # issue 42 and advanced the checkpoint to state=pr_merged via the
+  # renderer, then died on a transient transport failure before it
+  # could emit the ISSUE_COMPLETED status marker. The orchestrator must
+  # detect the pr_merged checkpoint and treat the retry as a no-op.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  # Track which iteration the runner reached. The orchestrator must NOT
+  # launch a retry within iteration 1, so the iteration must advance
+  # exactly once — and only after the orchestrator injects
+  # ISSUE_COMPLETED for the already-merged issue.
+  printf '%s\n' "\$iteration" >> "\${counter_file}.iter"
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 42"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"gh pr create --title issue 42 --body x"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"gh pr merge --auto"}}]}}'
+printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"Connection closed by remote host"}'
+exit 1
+PROLOG
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # The orchestrator must observe the pr_merged checkpoint, inject a
+  # synthetic ISSUE_COMPLETED, and advance to iteration 2 without
+  # launching a retry. The fixture is invoked exactly twice: once for
+  # the failing first attempt, once for the QUEUE_EMPTY iteration.
+  # A retry would show up as a counter > 2 or as a second iteration
+  # line being recorded before the orchestrator injected the
+  # completion.
+  local iter_count final_counter
+  iter_count="$(wc -l < "${counter}.iter" 2>/dev/null | tr -d ' ')"
+  final_counter="$(<"$counter")"
+  [[ "$iter_count" == "1" ]] || \
+    fail "Runner launched unexpected retry attempts (got ${iter_count} post-recovery iterations)"
+  [[ "$final_counter" == "2" ]] || \
+    fail "Runner expected exactly two fixture invocations (initial + drain), got ${final_counter}"
+  # No retry can happen after the recovery detected the already-completed
+  # state. Verify by inspecting the orchestrator's announcement and the
+  # absence of a second transient retry log line.
+  if grep -c 'Recovering from transient transport failure' "$output" | grep -qv '^1$'; then
+    fail 'Runner announced more than one transient retry attempt'
+  fi
+  [[ "$status" -eq 0 ]] || \
+    fail "Already-merged retry must exit cleanly, got ${status}"
+  grep -Fq 'Recovery detected an already-completed issue' "$output" || \
+    fail 'Runner did not announce the idempotent recovery'
+
+  pass 'retry recognizes an already-completed checkpoint and does not duplicate work'
+}
+
+test_retry_delays_are_configurable() {
+  local repo="${TEST_ROOT}/custom-delays-repo"
+  local fake="${TEST_ROOT}/claude-minimax-custom-delays"
+  local output="${TEST_ROOT}/custom-delays-output.log"
+  local counter="${TEST_ROOT}/custom-delays-counter"
+
+  new_repo "$repo"
+  write_transient_fixture "$fake" "$counter" \
+    "Connection closed by remote host" \
+    "ISSUE_COMPLETED"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="2,3,5" \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Custom delays fixture did not finish'
+
+  # The runner must publish the configured delays in its progress output.
+  grep -Fq 'recovery_delay=2' "$output" || \
+    fail 'Runner did not publish the first configured delay'
+  grep -Fq 'recovery_delay=3' "$output" || \
+    fail 'Runner did not publish the second configured delay'
+
+  pass 'retry delays are configurable via ISSUE_RUNNER_RETRY_DELAYS'
+}
+
+test_lock_status_publishes_recovery_fields() {
+  local repo="${TEST_ROOT}/lock-recovery-repo"
+  local fake="${TEST_ROOT}/claude-minimax-lock-recovery"
+  local output="${TEST_ROOT}/lock-recovery-output.log"
+  local counter="${TEST_ROOT}/lock-recovery-counter"
+  local started="${TEST_ROOT}/lock-recovery-started"
+  local release="${TEST_ROOT}/lock-recovery-release"
+  local first_pid attempt
+  local lock_status_file
+
+  new_repo "$repo"
+  lock_status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == "1" ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  exit 0
+fi
+
+if [[ "\$attempt" -eq 1 ]]; then
+  touch "$started"
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 17"}}]}}'
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"Connection closed by remote host"}'
+  exit 1
+fi
+
+printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  # Override the first delay so we can reliably observe the recovering
+  # state in the lock status file before the sleep ends.
+  RUNNER_TEST_STARTED="$started" \
+  RUNNER_TEST_RELEASE="$release" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="10" \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 &
+  first_pid=$!
+
+  # Wait for the runner to publish state=recovering in the lock status.
+  # This happens AFTER the renderer has captured the identified issue
+  # from `gh issue view 17` and AFTER the orchestrator has classified
+  # the failure as transient_transport.
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+    if grep -Eq '^state=recovering$' "$lock_status_file" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  [[ -r "$lock_status_file" ]] || \
+    fail 'Lock status file was not produced during recovery'
+  for field in state recovery_attempt recovery_delay recovery_category; do
+    grep -Eq "^${field}=" "$lock_status_file" || \
+      fail "Lock status missing recovery field: ${field}"
+  done
+  grep -Eq '^state=recovering$' "$lock_status_file" || \
+    fail 'Lock status did not publish state=recovering'
+  grep -Eq '^issue=17$' "$lock_status_file" || \
+    fail 'Lock status did not publish the identified issue'
+  grep -Eq '^recovery_attempt=1$' "$lock_status_file" || \
+    fail 'Lock status did not publish recovery_attempt=1'
+  grep -Eq '^recovery_delay=10$' "$lock_status_file" || \
+    fail 'Lock status did not publish the configured recovery delay'
+  grep -Eq '^recovery_category=transient_transport$' "$lock_status_file" || \
+    fail 'Lock status did not publish the transient failure category'
+
+  touch "$release"
+  wait "$first_pid" || fail 'Recovery runner failed after release'
+
+  pass 'lock status exposes recovering state with attempt, delay, and category'
+}
+
+test_recovery_retains_output_artifact_on_recovery_required() {
+  local repo="${TEST_ROOT}/retain-artifact-repo"
+  local fake="${TEST_ROOT}/claude-minimax-retain-artifact"
+  local output="${TEST_ROOT}/retain-artifact-output.log"
+  local counter="${TEST_ROOT}/retain-artifact-counter"
+  local status
+
+  new_repo "$repo"
+  # Fixture never recovers, so the orchestrator must exhaust retries and
+  # emit RECOVERY_REQUIRED while keeping the output artifact for diagnosis.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"Connection closed by remote host"}'
+exit 1
+PROLOG
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1" \
+  ISSUE_RUNNER_RETRY_LIMIT=1 \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "RECOVERY_REQUIRED must exit 4, got ${status}"
+  # The diagnostic must point to a retained artifact on disk.
+  grep -Fq 'output retained at' "$output" || \
+    fail 'RECOVERY_REQUIRED diagnostic did not reference the retained artifact'
+
+  pass 'RECOVERY_REQUIRED retains the output artifact for diagnosis'
 }
 
 test_fresh_shell_per_issue
@@ -880,5 +1691,17 @@ test_checkpoint_cleared_on_queue_empty
 test_checkpoint_retained_on_non_zero_exit
 test_checkpoint_retained_on_blocked_outcome
 test_lock_status_exposes_checkpoint_identity
+test_transient_disconnect_retries_with_bounded_backoff
+test_non_transient_disconnect_does_not_retry
+test_blocked_outcome_does_not_retry
+test_recovery_reconciles_local_state_before_continuing
+test_session_resume_when_checkpoint_has_safe_session_id
+test_session_resume_skipped_when_no_captured_session_id
+test_recovery_required_after_exhausted_retries
+test_recovery_required_does_not_advance_to_next_issue
+test_idempotent_retry_recognizes_already_merged_pr
+test_retry_delays_are_configurable
+test_lock_status_publishes_recovery_fields
+test_recovery_retains_output_artifact_on_recovery_required
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
