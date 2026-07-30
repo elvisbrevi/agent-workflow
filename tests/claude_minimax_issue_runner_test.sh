@@ -1791,6 +1791,185 @@ test_legacy_adoption_requires_explicit_issue_number() {
   pass 'legacy adoption requires an explicit issue number and never infers it'
 }
 
+run_with_recovery_confirmation() {
+  local output="$1"
+  shift
+  local expect_script="${TEST_ROOT}/confirm-recovery-${TESTS_RUN}.expect"
+
+  command -v expect >/dev/null 2>&1 || \
+    fail 'expect is required for confirmed TTY recovery fixtures'
+
+  cat > "$expect_script" <<'PROLOG'
+set timeout 20
+log_user 1
+eval spawn $env(RUNNER_TEST_COMMAND)
+expect {
+  -re {Continue\? \[y/N\]} {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}
+set wait_result [wait]
+exit [lindex $wait_result 3]
+PROLOG
+
+  RUNNER_TEST_COMMAND="$*" expect "$expect_script" >"$output" 2>&1
+}
+
+test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint() {
+  local repo="${TEST_ROOT}/restart-resume-repo"
+  local fake="${TEST_ROOT}/claude-minimax-restart-resume"
+  local fake_gh="${TEST_ROOT}/gh-restart-resume"
+  local bin_dir="${TEST_ROOT}/restart-resume-bin"
+  local output="${TEST_ROOT}/restart-resume-output.log"
+  local args="${TEST_ROOT}/restart-resume-args"
+  local prompt="${TEST_ROOT}/restart-resume-prompt"
+  local count_file="${TEST_ROOT}/restart-resume-count"
+  local calls="${TEST_ROOT}/restart-resume-gh-calls"
+  local checkpoint_file
+
+  new_repo "$repo"
+  git -C "$repo" switch -c issue-77 --quiet
+  printf '%s\n' 'partial restart work' >> "${repo}/README.md"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=77
+branch=issue-77
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse main)
+session_id=sess-restart-77
+state=mutating
+updated_at=test
+EOF
+
+  mkdir -p "$bin_dir"
+  write_github_state_fixture "$fake_gh" "$calls"
+  ln -s "$fake_gh" "${bin_dir}/gh"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -f "$RUNNER_TEST_COUNT_FILE" ]] && count="$(<"$RUNNER_TEST_COUNT_FILE")"
+count=$((count + 1))
+printf '%s\n' "$count" > "$RUNNER_TEST_COUNT_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done
+last_arg="${@: -1}"
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"
+  git add README.md
+  git commit --quiet -m 'test: complete restart recovery'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+else
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+fi
+PROLOG
+  chmod +x "$fake"
+
+  run_with_recovery_confirmation "$output" \
+    env PATH="${bin_dir}:$PATH" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    CLAUDE_MINIMAX_COMMAND="$fake" \
+    RUNNER_TEST_COUNT_FILE="$count_file" \
+    RUNNER_TEST_ARGS_FILE="$args" \
+    RUNNER_TEST_PROMPT_FILE="$prompt" \
+    "$RUNNER" "$repo"
+
+  [[ "$(<"$count_file")" == "2" ]] || \
+    fail 'Confirmed restart recovery did not return to the normal queue loop'
+  grep -Fxq -- '--resume' "$args" || \
+    fail 'Confirmed restart recovery did not resume the captured session'
+  grep -Fxq -- 'sess-restart-77' "$args" || \
+    fail 'Confirmed restart recovery used the wrong session id'
+  grep -Fq 'Continue exactly issue #77' "$prompt" || \
+    fail 'Confirmed restart recovery prompt was not constrained to the checkpointed issue'
+  grep -Fq 'do not select another issue' "$prompt" || \
+    fail 'Confirmed restart recovery prompt allowed queue selection'
+  [[ ! -e "$checkpoint_file" ]] || \
+    fail 'Confirmed restart recovery did not clear the checkpoint after completion'
+  grep -Fq 'Restart recovery completed; returning to normal queue loop.' "$output" || \
+    fail 'Confirmed restart recovery did not report returning to the queue loop'
+
+  pass 'confirmed restart recovery resumes the captured session and clears the checkpoint'
+}
+
+test_confirmed_legacy_adoption_creates_checkpoint_and_launches_fresh_worker() {
+  local repo="${TEST_ROOT}/legacy-confirm-repo"
+  local fake="${TEST_ROOT}/claude-minimax-legacy-confirm"
+  local fake_gh="${TEST_ROOT}/gh-legacy-confirm"
+  local bin_dir="${TEST_ROOT}/legacy-confirm-bin"
+  local output="${TEST_ROOT}/legacy-confirm-output.log"
+  local args="${TEST_ROOT}/legacy-confirm-args"
+  local prompt="${TEST_ROOT}/legacy-confirm-prompt"
+  local count_file="${TEST_ROOT}/legacy-confirm-count"
+  local calls="${TEST_ROOT}/legacy-confirm-gh-calls"
+  local checkpoint_seen="${TEST_ROOT}/legacy-confirm-checkpoint-seen"
+  local checkpoint_file
+
+  new_repo "$repo"
+  git -C "$repo" switch -c adopt-legacy --quiet
+  printf '%s\n' 'legacy work to adopt' >> "${repo}/README.md"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  mkdir -p "$bin_dir"
+  write_github_state_fixture "$fake_gh" "$calls"
+  ln -s "$fake_gh" "${bin_dir}/gh"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -f "$RUNNER_TEST_COUNT_FILE" ]] && count="$(<"$RUNNER_TEST_COUNT_FILE")"
+count=$((count + 1))
+printf '%s\n' "$count" > "$RUNNER_TEST_COUNT_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done
+last_arg="${@: -1}"
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"
+  grep -Fq 'issue=55' "$RUNNER_TEST_CHECKPOINT_FILE"
+  grep -Fq 'session_id=unavailable' "$RUNNER_TEST_CHECKPOINT_FILE"
+  grep -Fq 'state=legacy_adopted' "$RUNNER_TEST_CHECKPOINT_FILE"
+  printf '%s\n' seen > "$RUNNER_TEST_CHECKPOINT_SEEN_FILE"
+  git add README.md
+  git commit --quiet -m 'test: complete legacy adoption'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+else
+  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+fi
+PROLOG
+  chmod +x "$fake"
+
+  run_with_recovery_confirmation "$output" \
+    env PATH="${bin_dir}:$PATH" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_ADOPT_ISSUE=55 \
+    CLAUDE_MINIMAX_COMMAND="$fake" \
+    RUNNER_TEST_COUNT_FILE="$count_file" \
+    RUNNER_TEST_ARGS_FILE="$args" \
+    RUNNER_TEST_PROMPT_FILE="$prompt" \
+    RUNNER_TEST_CHECKPOINT_FILE="$checkpoint_file" \
+    RUNNER_TEST_CHECKPOINT_SEEN_FILE="$checkpoint_seen" \
+    "$RUNNER" "$repo"
+
+  [[ "$(<"$count_file")" == "2" ]] || \
+    fail 'Confirmed legacy adoption did not return to the normal queue loop'
+  [[ -r "$checkpoint_seen" ]] || \
+    fail 'Confirmed legacy adoption did not create the synthetic checkpoint before worker launch'
+  grep -Fxq -- '--no-session-persistence' "$args" || \
+    fail 'Confirmed legacy adoption did not launch a fresh worker'
+  ! grep -Fxq -- '--resume' "$args" || \
+    fail 'Confirmed legacy adoption attempted to resume a session'
+  grep -Fq 'Continue exactly issue #55' "$prompt" || \
+    fail 'Confirmed legacy adoption prompt was not constrained to the supplied issue'
+  grep -Fq 'synthetic checkpoint with no resumable session' "$prompt" || \
+    fail 'Confirmed legacy adoption prompt did not describe the synthetic checkpoint'
+  [[ ! -e "$checkpoint_file" ]] || \
+    fail 'Confirmed legacy adoption did not clear the checkpoint after completion'
+  grep -Fq 'README.md' "$output" || \
+    fail 'Confirmed legacy adoption did not display dirty files before confirmation'
+
+  pass 'confirmed legacy adoption creates a synthetic checkpoint and launches a fresh constrained worker'
+}
+
 test_restart_recovery_does_not_duplicate_closed_issue() {
   local repo="${TEST_ROOT}/restart-closed-repo"
   local fake="${TEST_ROOT}/claude-minimax-restart-closed"
@@ -1897,6 +2076,8 @@ test_lock_status_publishes_recovery_fields
 test_recovery_retains_output_artifact_on_recovery_required
 test_restart_recovery_requires_confirmation_before_worker
 test_legacy_adoption_requires_explicit_issue_number
+test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint
+test_confirmed_legacy_adoption_creates_checkpoint_and_launches_fresh_worker
 test_restart_recovery_does_not_duplicate_closed_issue
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
