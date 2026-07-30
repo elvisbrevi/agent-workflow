@@ -550,6 +550,8 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
     fail 'Runner did not pass --output-format when invoking claude-minimax'
   grep -Fxq -- 'stream-json' "$args_file" || \
     fail 'Runner did not request stream-json output format'
+  grep -Fxq -- '--verbose' "$args_file" || \
+    fail 'Runner did not pass --verbose alongside stream-json (CLI requirement)'
 
   pass 'runner invokes claude-minimax with stream-json output enabled'
 }

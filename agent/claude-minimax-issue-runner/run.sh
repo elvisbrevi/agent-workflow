@@ -1023,7 +1023,9 @@ invoke_worker() {
   fi
 
   if [[ "$STREAM_OUTPUT" == "true" ]]; then
-    claude_args+=(--output-format stream-json)
+    # `--print` requires `--verbose` whenever `--output-format stream-json`
+    # is requested; without it the CLI aborts before producing any output.
+    claude_args+=(--output-format stream-json --verbose)
   fi
 
   claude_args+=("$prompt")
