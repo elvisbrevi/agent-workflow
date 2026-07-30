@@ -551,6 +551,312 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
   pass 'runner invokes claude-minimax with stream-json output enabled'
 }
 
+# --- Checkpoint persistence tests (issue #2) -------------------------------
+
+RUNNER_NAME="claude-minimax-issue-runner"
+
+# Absolute path to the Git common directory, matching how the runner
+# resolves the lock and checkpoint destinations.
+checkpoint_path() {
+  local repo="$1"
+  local common_dir
+  common_dir="$(git -C "$repo" rev-parse --git-common-dir)"
+  if [[ "$common_dir" = /* ]]; then
+    printf '%s' "$common_dir"
+  else
+    (cd "$repo" && printf '%s/%s' "$(pwd -P)" "$common_dir")
+  fi
+}
+
+test_streaming_worker_identifies_issue_before_first_mutation() {
+  local repo="${TEST_ROOT}/identify-repo"
+  local fake="${TEST_ROOT}/claude-minimax-identify"
+  local output="${TEST_ROOT}/identify-output.log"
+  local checkpoint_file
+  local status_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  # Issue identification precedes any Edit or git mutation. The issue number
+  # must be captured from `gh issue view N` before the assistant edits a file.
+  write_stream_fixture "$fake" \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 42"}}]}}' \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"git commit -m feat: implement"}}]}}' \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Identify-before-mutation fixture did not finish'
+
+  # Issue 42 must be recorded before the Edit event reached the renderer.
+  # We inspect the output ordering: the 'Identified issue 42' progress line
+  # must appear before 'Editing agent/run.sh'.
+  local identify_line edit_line
+  identify_line="$( { grep -n 'Identified issue 42' "$output" || true; } | head -n 1 | cut -d: -f1)"
+  edit_line="$( { grep -n 'Editing agent/run.sh' "$output" || true; } | head -n 1 | cut -d: -f1)"
+  [[ -n "$identify_line" && -n "$edit_line" ]] || \
+    fail 'Runner did not surface the identified issue before the first mutation'
+  (( identify_line < edit_line )) || \
+    fail 'Issue identification was emitted after a mutation event'
+
+  pass 'streamed worker identifies its issue before its first mutation'
+}
+
+test_checkpoint_records_required_fields_atomically() {
+  local repo="${TEST_ROOT}/fields-repo"
+  local fake="${TEST_ROOT}/claude-minimax-fields"
+  local output="${TEST_ROOT}/fields-output.log"
+  local checkpoint_file lock_status_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  lock_status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  # Force a worker failure so the checkpoint survives to be inspected.
+  write_stream_fixture "$fake" \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 7"}}]}}' \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED\n"}'
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || true
+
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint file was not written atomically on FAILED outcome'
+  # Atomic means the file is either present in full or absent; a stray .tmp
+  # sibling would indicate a non-atomic write.
+  [[ ! -e "${checkpoint_file}.tmp" ]] || \
+    fail 'Checkpoint left a stray temporary file (non-atomic write)'
+
+  for field in iteration issue branch base_branch base_sha state updated_at; do
+    grep -Eq "^${field}=" "$checkpoint_file" || \
+      fail "Checkpoint missing required field: ${field}"
+  done
+
+  grep -Eq '^issue=7$' "$checkpoint_file" || \
+    fail 'Checkpoint did not capture the selected issue number'
+  grep -Eq '^branch=main$' "$checkpoint_file" || \
+    fail 'Checkpoint did not capture the current branch'
+  grep -Eq '^base_branch=main$' "$checkpoint_file" || \
+    fail 'Checkpoint did not capture the configured base branch'
+  grep -Eq '^base_sha=[0-9a-f]{40}$' "$checkpoint_file" || \
+    fail 'Checkpoint did not capture a valid base branch SHA'
+
+  pass 'checkpoint records required fields and survives a failed outcome'
+}
+
+test_checkpoint_does_not_persist_secrets_or_full_commands() {
+  local repo="${TEST_ROOT}/redact-checkpoint-repo"
+  local fake="${TEST_ROOT}/claude-minimax-redact-checkpoint"
+  local output="${TEST_ROOT}/redact-checkpoint-output.log"
+  local checkpoint_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # The worker passes a bearer token in its command; the checkpoint must
+  # capture only the issue number, never the credential or the full command.
+  write_stream_fixture "$fake" \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 9 -H \"Authorization: Bearer gh_super_secret_token_xyz\""}}]}}' \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED\n"}'
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || true
+
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint was not written for a FAILED outcome'
+  if grep -Fq 'gh_super_secret_token_xyz' "$checkpoint_file"; then
+    fail 'Checkpoint persisted a bearer token'
+  fi
+  if grep -Fqi 'authorization' "$checkpoint_file"; then
+    fail 'Checkpoint persisted an authorization header fragment'
+  fi
+  if grep -Fq 'gh issue view' "$checkpoint_file"; then
+    fail 'Checkpoint persisted the full shell command'
+  fi
+
+  pass 'checkpoint never persists secrets, full commands, or authorization fragments'
+}
+
+test_checkpoint_cleared_on_issue_completed() {
+  local repo="${TEST_ROOT}/clear-completed-repo"
+  local fake="${TEST_ROOT}/claude-minimax-clear-completed"
+  local output="${TEST_ROOT}/clear-completed-output.log"
+  local checkpoint_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  write_stream_fixture "$fake" \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 11"}}]}}' \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Completed fixture did not finish'
+
+  [[ ! -e "$checkpoint_file" ]] || \
+    fail 'Checkpoint was not cleared after ISSUE_COMPLETED'
+
+  pass 'checkpoint is cleared after a successful ISSUE_COMPLETED'
+}
+
+test_checkpoint_cleared_on_queue_empty() {
+  local repo="${TEST_ROOT}/clear-empty-repo"
+  local fake="${TEST_ROOT}/claude-minimax-clear-empty"
+  local output="${TEST_ROOT}/clear-empty-output.log"
+  local checkpoint_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  write_stream_fixture "$fake" \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Empty queue fixture did not finish'
+
+  [[ ! -e "$checkpoint_file" ]] || \
+    fail 'Checkpoint was not cleared after QUEUE_EMPTY'
+
+  pass 'checkpoint is cleared after a verified empty queue'
+}
+
+test_checkpoint_retained_on_non_zero_exit() {
+  local repo="${TEST_ROOT}/retain-exit-repo"
+  local fake="${TEST_ROOT}/claude-minimax-retain-exit"
+  local output="${TEST_ROOT}/retain-exit-output.log"
+  local checkpoint_file lock_status_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  lock_status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  # Fixture streams a single event then exits 7 with no status marker. The
+  # runner must surface the failure AND retain the checkpoint with the last
+  # safe state so the next startup can attempt recovery.
+  cat > "$fake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 13"}}]}}'
+exit 7
+EOF
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  set -e
+
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint was lost after a non-zero worker exit'
+  grep -Eq '^issue=13$' "$checkpoint_file" || \
+    fail 'Checkpoint did not retain the identified issue on non-zero exit'
+  grep -Eq '^state=' "$checkpoint_file" || \
+    fail 'Checkpoint did not retain its last safe state'
+
+  pass 'non-zero worker exit retains the checkpoint with the last safe state'
+}
+
+test_checkpoint_retained_on_blocked_outcome() {
+  local repo="${TEST_ROOT}/retain-blocked-repo"
+  local fake="${TEST_ROOT}/claude-minimax-retain-blocked"
+  local output="${TEST_ROOT}/retain-blocked-output.log"
+  local checkpoint_file
+
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  write_stream_fixture "$fake" \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 21"}}]}}' \
+    '{"type":"result","subtype":"success","result":"need human input\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED\n"}'
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  local status=$?
+  set -e
+
+  [[ "$status" -eq 2 ]] || fail "BLOCKED must exit 2, got ${status}"
+
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint was not retained after BLOCKED'
+  grep -Eq '^issue=21$' "$checkpoint_file" || \
+    fail 'BLOCKED checkpoint did not record the issue'
+  grep -Eq '^state=blocked$' "$checkpoint_file" || \
+    fail 'BLOCKED checkpoint did not record a blocked lifecycle state'
+
+  pass 'BLOCKED outcome retains the checkpoint with its lifecycle state'
+}
+
+test_lock_status_exposes_checkpoint_identity() {
+  local repo="${TEST_ROOT}/status-identity-repo"
+  local fake="${TEST_ROOT}/claude-minimax-status-identity"
+  local output="${TEST_ROOT}/status-identity-output.log"
+  local lock_status_file
+  local first_pid attempt
+  local started="${TEST_ROOT}/status-identity-started"
+  local release="${TEST_ROOT}/status-identity-release"
+
+  new_repo "$repo"
+  lock_status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  # The fixture sleeps so the runner remains alive long enough to inspect
+  # the lock status file from another shell — exactly how an operator
+  # would observe progress during a long issue implementation. The
+  # `gh issue view` event is emitted first so the checkpoint captures the
+  # issue identity BEFORE the worker blocks.
+  write_stream_fixture "$fake" \
+    '!touch "$RUNNER_TEST_STARTED"' \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 33"}}]}}' \
+    '!while [[ ! -e "$RUNNER_TEST_RELEASE" ]]; do sleep 0.1; done' \
+    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+
+  RUNNER_TEST_STARTED="$started" \
+  RUNNER_TEST_RELEASE="$release" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1 &
+  first_pid=$!
+
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -e "$started" ]] && break
+    sleep 0.1
+  done
+  [[ -e "$started" ]] || fail 'Runner did not start the identity fixture'
+
+  # The lock status snapshot is observable from another terminal. The runner
+  # must publish the same identity fields (issue, branch, base_branch,
+  # lifecycle state) so operators can inspect progress without reading the
+  # checkpoint file directly.
+  [[ -r "$lock_status_file" ]] || \
+    fail 'Lock status file was not produced'
+  for field in issue branch base_branch state; do
+    grep -Eq "^${field}=" "$lock_status_file" || \
+      fail "Lock status missing checkpoint field: ${field}"
+  done
+  grep -Eq '^issue=33$' "$lock_status_file" || \
+    fail 'Lock status did not expose the identified issue'
+  grep -Eq '^branch=main$' "$lock_status_file" || \
+    fail 'Lock status did not expose the current branch'
+
+  touch "$release"
+  wait "$first_pid" || fail 'Identity runner failed after release'
+
+  pass 'repository lock status exposes the same checkpoint identity'
+}
+
 test_fresh_shell_per_issue
 test_unknown_status_stops_loop
 test_dirty_worktree_is_rejected
@@ -566,5 +872,13 @@ test_streaming_worker_extracts_each_status_marker
 test_streaming_worker_preserves_non_zero_exit_code
 test_streaming_blocked_retains_artifact_path
 test_streaming_invokes_worker_with_stream_json_output_flag
+test_streaming_worker_identifies_issue_before_first_mutation
+test_checkpoint_records_required_fields_atomically
+test_checkpoint_does_not_persist_secrets_or_full_commands
+test_checkpoint_cleared_on_issue_completed
+test_checkpoint_cleared_on_queue_empty
+test_checkpoint_retained_on_non_zero_exit
+test_checkpoint_retained_on_blocked_outcome
+test_lock_status_exposes_checkpoint_identity
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
