@@ -30,6 +30,7 @@ new_repo() {
   printf '%s\n' '# fixture' > "${path}/README.md"
   git -C "$path" add README.md
   git -C "$path" commit --quiet -m "test: seed"
+  git -C "$path" remote add origin https://github.com/example/recovery-fixture.git
 }
 
 test_fresh_shell_per_issue() {
@@ -121,11 +122,13 @@ test_dirty_worktree_is_rejected() {
   status=$?
   set -e
 
-  [[ "$status" -eq 1 ]] || fail 'Dirty worktree must fail'
+  [[ "$status" -eq 4 ]] || fail 'Dirty worktree without recovery identity must require recovery'
   [[ ! -e "$marker" ]] || fail 'Worker launched despite dirty worktree'
-  grep -Fq 'worktree is not clean' "$output" || fail 'Missing dirty-worktree diagnostic'
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || fail 'Missing recovery-required diagnostic'
+  grep -Fq 'legacy adoption requires ISSUE_RUNNER_ADOPT_ISSUE' "$output" || \
+    fail 'Missing explicit legacy-adoption diagnostic'
 
-  pass 'dirty worktree is rejected before launching claude-minimax'
+  pass 'dirty worktree without checkpoint requires explicit recovery before launching claude-minimax'
 }
 
 test_progress_is_reported_while_worker_runs() {
@@ -1668,6 +1671,195 @@ PROLOG
   pass 'RECOVERY_REQUIRED retains the output artifact for diagnosis'
 }
 
+# --- Restart recovery tests (issue #4) --------------------------------------
+
+write_github_state_fixture() {
+  local target="$1"
+  local calls_file="$2"
+  cat > "$target" <<PROLOG
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$calls_file"
+case "\$1 \$2" in
+  "api repos/example/recovery-fixture/issues/"*)
+    printf '%s\n' '0'
+    ;;
+  "issue view")
+    printf '%s\n' '{"state":"OPEN","labels":[{"name":"ready-for-agent"}],"assignees":[]}'
+    ;;
+  "pr list")
+    printf '%s\n' '[]'
+    ;;
+  *)
+    printf 'unexpected gh call: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+PROLOG
+  chmod +x "$target"
+}
+
+test_restart_recovery_requires_confirmation_before_worker() {
+  local repo="${TEST_ROOT}/restart-confirm-repo"
+  local fake="${TEST_ROOT}/claude-minimax-restart-confirm"
+  local fake_gh="${TEST_ROOT}/gh-restart-confirm"
+  local bin_dir="${TEST_ROOT}/restart-confirm-bin"
+  local output="${TEST_ROOT}/restart-confirm-output.log"
+  local marker="${TEST_ROOT}/restart-confirm-worker-ran"
+  local calls="${TEST_ROOT}/restart-confirm-gh-calls"
+  local checkpoint_file status
+
+  new_repo "$repo"
+  git -C "$repo" switch -c issue-77 --quiet
+  printf '%s\n' 'partial work' >> "${repo}/README.md"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=77
+branch=issue-77
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse main)
+session_id=sess-restart-77
+state=mutating
+updated_at=test
+EOF
+
+  mkdir -p "$bin_dir"
+  write_github_state_fixture "$fake_gh" "$calls"
+  ln -s "$fake_gh" "${bin_dir}/gh"
+  printf '%s\n' '#!/usr/bin/env bash' "touch \"$marker\"" > "$fake"
+  chmod +x "$fake"
+
+  set +e
+  PATH="${bin_dir}:$PATH" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Restart recovery without TTY must exit 4, got ${status}"
+  [[ ! -e "$marker" ]] || \
+    fail 'Restart recovery launched a worker without explicit confirmation'
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Missing RECOVERY_REQUIRED diagnostic for unconfirmed restart recovery'
+  grep -Fq 'issue 77' "$output" || \
+    fail 'Restart recovery diagnostic did not display the checkpointed issue'
+  grep -Fq 'state mutating' "$output" || \
+    fail 'Restart recovery diagnostic did not display the last checkpoint state'
+  grep -Fq 'TTY confirmation' "$output" || \
+    fail 'Restart recovery did not explain the missing confirmation'
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Unconfirmed restart recovery removed the checkpoint'
+
+  pass 'restart recovery displays checkpoint identity and requires confirmation before worker launch'
+}
+
+test_legacy_adoption_requires_explicit_issue_number() {
+  local repo="${TEST_ROOT}/legacy-adopt-repo"
+  local fake="${TEST_ROOT}/claude-minimax-legacy-adopt"
+  local output="${TEST_ROOT}/legacy-adopt-output.log"
+  local marker="${TEST_ROOT}/legacy-adopt-worker-ran"
+  local checkpoint_file status
+
+  new_repo "$repo"
+  git -C "$repo" switch -c issue-guessable --quiet
+  printf '%s\n' 'legacy partial work' >> "${repo}/README.md"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  printf '%s\n' '#!/usr/bin/env bash' "touch \"$marker\"" > "$fake"
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Dirty legacy work without explicit issue must exit 4, got ${status}"
+  [[ ! -e "$marker" ]] || \
+    fail 'Legacy adoption launched a worker without explicit issue number'
+  [[ ! -e "$checkpoint_file" ]] || \
+    fail 'Legacy adoption created a checkpoint without explicit issue number'
+  grep -Fq 'legacy adoption requires ISSUE_RUNNER_ADOPT_ISSUE' "$output" || \
+    fail 'Missing explicit-issue diagnostic for legacy adoption'
+  grep -Fq 'README.md' "$output" || \
+    fail 'Legacy adoption diagnostic did not display dirty files'
+
+  pass 'legacy adoption requires an explicit issue number and never infers it'
+}
+
+test_restart_recovery_does_not_duplicate_closed_issue() {
+  local repo="${TEST_ROOT}/restart-closed-repo"
+  local fake="${TEST_ROOT}/claude-minimax-restart-closed"
+  local fake_gh="${TEST_ROOT}/gh-restart-closed"
+  local bin_dir="${TEST_ROOT}/restart-closed-bin"
+  local output="${TEST_ROOT}/restart-closed-output.log"
+  local marker="${TEST_ROOT}/restart-closed-worker-ran"
+  local checkpoint_file status
+
+  new_repo "$repo"
+  git -C "$repo" switch -c issue-88 --quiet
+  printf '%s\n' 'partial closed work' >> "${repo}/README.md"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=88
+branch=issue-88
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse main)
+session_id=unavailable
+state=pr_merged
+updated_at=test
+EOF
+
+  mkdir -p "$bin_dir"
+  cat > "$fake_gh" <<'PROLOG'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/example/recovery-fixture/issues/"*)
+    printf '%s\n' '0'
+    ;;
+  "issue view")
+    printf '%s\n' '{"state":"CLOSED","labels":[{"name":"ready-for-agent"}],"assignees":[]}'
+    ;;
+  "pr list")
+    printf '%s\n' '[{"state":"MERGED","number":12,"mergedAt":"2026-07-30T12:00:00Z"}]'
+    ;;
+  *)
+    printf 'unexpected gh call: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
+PROLOG
+  chmod +x "$fake_gh"
+  ln -s "$fake_gh" "${bin_dir}/gh"
+  printf '%s\n' '#!/usr/bin/env bash' "touch \"$marker\"" > "$fake"
+  chmod +x "$fake"
+
+  set +e
+  PATH="${bin_dir}:$PATH" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Closed issue restart recovery must exit 4, got ${status}"
+  [[ ! -e "$marker" ]] || \
+    fail 'Restart recovery launched a worker for an already closed issue'
+  grep -Fq 'already closed' "$output" || \
+    fail 'Missing already-closed issue diagnostic'
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Closed-issue recovery removed the checkpoint'
+
+  pass 'restart recovery does not duplicate effects for an already closed issue'
+}
+
 test_fresh_shell_per_issue
 test_unknown_status_stops_loop
 test_dirty_worktree_is_rejected
@@ -1703,5 +1895,8 @@ test_idempotent_retry_recognizes_already_merged_pr
 test_retry_delays_are_configurable
 test_lock_status_publishes_recovery_fields
 test_recovery_retains_output_artifact_on_recovery_required
+test_restart_recovery_requires_confirmation_before_worker
+test_legacy_adoption_requires_explicit_issue_number
+test_restart_recovery_does_not_duplicate_closed_issue
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
