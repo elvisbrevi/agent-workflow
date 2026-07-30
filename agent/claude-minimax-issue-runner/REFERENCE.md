@@ -27,6 +27,7 @@ Anthropic-compatible endpoint and selected model.
 | `ISSUE_RUNNER_MAX_ITERATIONS` | `0` | Maximum completed issues; `0` means no limit |
 | `ISSUE_RUNNER_PROGRESS_INTERVAL` | `30` | Seconds between progress heartbeats; `0` disables them |
 | `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip the initial destructive-action confirmation |
+| `ISSUE_RUNNER_STREAM_OUTPUT` | `true` | Invoke the worker with `--output-format stream-json` and render semantic progress; set to `false` to keep the legacy text output and `tee` behavior |
 | `CLAUDE_MINIMAX_COMMAND` | `claude-minimax` | Executable or Bash function used for each worker |
 | `CLAUDE_MINIMAX_SHELL` | `bash` | Bash executable used to resolve a shell function |
 | `CLAUDE_MINIMAX_RC_FILE` | `~/.bashrc` | Initialization file containing the shell function |
@@ -40,9 +41,48 @@ claude-minimax-issue-runner /path/to/repository
 
 ## Progress and repository lock
 
-Worker output is streamed as it arrives. While a worker is otherwise silent,
-the supervisor prints a heartbeat with its iteration and elapsed time every
-`ISSUE_RUNNER_PROGRESS_INTERVAL` seconds.
+The runner invokes each worker with Claude's `stream-json` output format
+(`--output-format stream-json`) and parses the resulting event stream in real
+time. It renders concise, iteration-aware human-readable progress lines as
+the assistant inspects the repository, edits files, runs tests, reviews
+changes, or creates, merges, and closes a PR. Assistant tool inputs, prompts,
+tokens, bearer credentials, and raw JSON protocol noise are kept out of the
+operator terminal — only the redacted summary reaches the operator. The raw
+stream is still persisted to the per-iteration output artifact, which is the
+same path reported by the `BLOCKED` and `FAILED` diagnostics.
+
+Worker output is streamed as it arrives. The heartbeat with the current
+iteration and elapsed time is suppressed while the renderer is still
+producing semantic progress events; the supervisor only falls back to a
+heartbeat when no stream event has arrived for `ISSUE_RUNNER_PROGRESS_INTERVAL`
+seconds.
+
+The renderer maps the following CLI stream events to operator-visible
+progress text:
+
+| Stream event | Operator output |
+|---|---|
+| assistant tool_use `Read` / `Glob` / `Grep` / `WebFetch` / `WebSearch` / `NotebookRead` / `LS` | `Inspecting repository or tracker state` |
+| assistant tool_use `Edit` / `Write` / `MultiEdit` / `NotebookEdit` | `Editing <file path>` (or `Editing files` when no path is provided) |
+| assistant tool_use `Bash` running tests or verification commands | `Running tests or verification` |
+| assistant tool_use `Bash` creating a PR | `Creating pull request` |
+| assistant tool_use `Bash` merging or closing a PR | `Merging or closing pull request` |
+| assistant tool_use `Bash` closing an issue | `Closing issue` |
+| assistant tool_use `Bash` pushing, committing, or rebasing | `Pushing branch` / `Committing changes` / `Merging or rebasing branch` |
+| assistant tool_use `Bash` for anything else | `Running shell command` |
+| assistant tool_use `TodoWrite` / `Task` | `Planning the next worker step` |
+| `result` (assistant final response) | `Worker finished (see <artifact> for full output)` plus the final text written verbatim to the artifact so the status marker stays extractable |
+
+## Requirements
+
+`jq` is required when `ISSUE_RUNNER_STREAM_OUTPUT=true` (the default). The
+runner uses it to parse the streaming JSON events into semantic progress
+without printing the raw protocol.
+
+Setting `ISSUE_RUNNER_STREAM_OUTPUT=false` restores the legacy behavior:
+workers are invoked without `--output-format stream-json`, every line is
+forwarded verbatim through a `tee`, and the elapsed-time heartbeat is the
+only progress signal operators see. `jq` is not required in that mode.
 
 The runner also creates this lock in the repository's Git common directory:
 

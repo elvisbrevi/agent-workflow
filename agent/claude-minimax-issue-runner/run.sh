@@ -153,6 +153,163 @@ assert_clean_worktree() {
   fi
 }
 
+# Returns 0 (success) when the input line is a JSON object. Avoids emitting
+# raw stream JSON into operator output.
+stream_event_is_object() {
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$1"
+}
+
+stream_event_field() {
+  local field="$1"
+  local line="$2"
+  jq -r --arg f "$field" 'try (getpath($f | split(".")) // empty) catch empty' 2>/dev/null <<<"$line"
+}
+
+# Map a Claude stream-json event to one human-readable progress line for the
+# operator. Never prints raw JSON, secrets, full prompts, or complete tool
+# arguments. Status text is captured in the renderer pipeline, not here.
+render_stream_event() {
+  local raw_line="$1"
+
+  [[ "$(stream_event_field 'type' "$raw_line")" == "assistant" ]] || return 0
+
+  local tool_block tool_name tool_input
+  tool_block="$(
+    jq -c 'try (.message.content[] | select(.type=="tool_use")) catch empty' \
+      2>/dev/null <<<"$raw_line" | head -n 1
+  )"
+  [[ -z "$tool_block" ]] && return 0
+  tool_name="$(jq -r '.name // ""' 2>/dev/null <<<"$tool_block")"
+  tool_input="$(jq -c '.input // {}' 2>/dev/null <<<"$tool_block")"
+  [[ -z "$tool_name" ]] && return 0
+  render_semantic_progress "$tool_name" "$tool_input"
+}
+
+render_semantic_progress() {
+  local tool_name="$1"
+  local tool_input="$2"
+
+  case "$tool_name" in
+    Read|Glob|Grep|NotebookRead|WebFetch|WebSearch|LS|ListMcpResources)
+      printf '[%s] Inspecting repository or tracker state\n' "$RUNNER_NAME"
+      ;;
+    Edit|Write|MultiEdit|NotebookEdit)
+      local file_path
+      file_path="$(jq -r '.file_path // .notebook_path // ""' 2>/dev/null <<<"$tool_input")"
+      if [[ -n "$file_path" && "$file_path" != "null" ]]; then
+        printf '[%s] Editing %s\n' "$RUNNER_NAME" "$file_path"
+      else
+        printf '[%s] Editing files\n' "$RUNNER_NAME"
+      fi
+      ;;
+    Bash)
+      local cmd
+      cmd="$(jq -r '.command // ""' 2>/dev/null <<<"$tool_input")"
+      render_bash_progress "$cmd"
+      ;;
+    TodoWrite|Task)
+      printf '[%s] Planning the next worker step\n' "$RUNNER_NAME"
+      ;;
+    *)
+      printf '[%s] Worker tool: %s\n' "$RUNNER_NAME" "$tool_name"
+      ;;
+  esac
+}
+
+render_bash_progress() {
+  local cmd="$1"
+
+  if [[ -z "$cmd" || "$cmd" == "null" ]]; then
+    printf '[%s] Running shell command\n' "$RUNNER_NAME"
+    return
+  fi
+
+  case "$cmd" in
+    "gh pr create"*)
+      printf '[%s] Creating pull request\n' "$RUNNER_NAME"
+      ;;
+    "gh pr merge"*|"gh pr close"*)
+      printf '[%s] Merging or closing pull request\n' "$RUNNER_NAME"
+      ;;
+    "gh issue close"*)
+      printf '[%s] Closing issue\n' "$RUNNER_NAME"
+      ;;
+    "gh issue"*)
+      printf '[%s] Inspecting issue tracker\n' "$RUNNER_NAME"
+      ;;
+    "git push"*)
+      printf '[%s] Pushing branch\n' "$RUNNER_NAME"
+      ;;
+    "git commit"*)
+      printf '[%s] Committing changes\n' "$RUNNER_NAME"
+      ;;
+    "git merge"*|"git rebase"*)
+      printf '[%s] Merging or rebasing branch\n' "$RUNNER_NAME"
+      ;;
+    *code-review*|*"/code-review"*)
+      printf '[%s] Reviewing changes\n' "$RUNNER_NAME"
+      ;;
+    *npm*test*|*bats*|*pytest*|*cargo*test*|*swift*test*|*jest*|*mocha*|*bash*tests/*|*"go test"*)
+      printf '[%s] Running tests or verification\n' "$RUNNER_NAME"
+      ;;
+    *)
+      printf '[%s] Running shell command\n' "$RUNNER_NAME"
+      ;;
+  esac
+}
+
+# Redact common credential shapes from arbitrary assistant text. The raw text
+# still ends up in OUTPUT_FILE for the failure diagnostic path.
+redact_secrets() {
+  sed -E \
+    -e 's/[Aa]uthorization([[:space:][:punct:]]+[A-Za-z0-9._~+/-]+)+/<redacted:authorization>/g' \
+    -e 's/[Bb]earer[[:space:][:punct:]]+[A-Za-z0-9._~+/-]{6,}/<redacted:bearer>/g' \
+    -e "s/(api[_-]?key|secret|password|access[_-]?token|auth[_-]?token)['\"[:space:]]*[:=]['\"[:space:]]*[A-Za-z0-9._~+/-]+/\1=<redacted>/gI" \
+    -e 's/(ghp_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|ghu_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)/<redacted:credential>/g' \
+    -e 's/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/<redacted:private-key>/g'
+}
+
+# Reads the worker stdout stream, persists raw lines to OUTPUT_FILE so existing
+# status-marker extraction continues to work, and renders redacted semantic
+# progress to the operator's stdout. Plain-text output from non-streaming
+# workers is forwarded unchanged. The side-channel timestamp file at
+# "$1.touch" lets the heartbeat loop suppress the empty-interval message while
+# events are still flowing.
+render_stream_pipeline() {
+  local output_file="$1"
+  local touch_file="${output_file}.touch"
+  local raw_line
+
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    [[ -z "$raw_line" ]] && continue
+
+    printf '%s\n' "$raw_line" >> "$output_file"
+
+    if ! stream_event_is_object "$raw_line"; then
+      printf '%s\n' "$raw_line"
+      continue
+    fi
+
+    case "$(stream_event_field 'type' "$raw_line")" in
+      assistant)
+        render_stream_event "$raw_line"
+        : > "$touch_file"
+        ;;
+      result)
+        local result_text
+        result_text="$(jq -r '.result // ""' 2>/dev/null <<<"$raw_line")"
+        if [[ -n "$result_text" && "$result_text" != "null" ]]; then
+          # Persist the assistant's final text on its own lines so existing
+          # status-marker extraction (sed -n s/^PREFIX/p) still finds the line.
+          printf '%s\n' "$result_text" >> "$output_file"
+          printf '[%s] Worker finished (see %s for full output)\n' \
+            "$RUNNER_NAME" "$output_file"
+        fi
+        ;;
+    esac
+  done
+}
+
 invoke_worker() {
   local prompt="$1"
   shift
@@ -163,8 +320,13 @@ invoke_worker() {
     --no-session-persistence
     --permission-mode "$PERMISSION_MODE"
     --name "${RUNNER_NAME}-${ITERATION}"
-    "$prompt"
   )
+
+  if [[ "$STREAM_OUTPUT" == "true" ]]; then
+    claude_args+=(--output-format stream-json)
+  fi
+
+  claude_args+=("$prompt")
 
   if command -v "$CLAUDE_COMMAND" >/dev/null 2>&1; then
     "$CLAUDE_COMMAND" "${claude_args[@]}"
@@ -195,17 +357,25 @@ run_worker_with_progress() {
   local prompt="$1"
   local output_file="$2"
   local exit_file="${output_file}.exit"
+  local touch_file="${output_file}.touch"
   local pipeline_pid heartbeat_pid=""
-  local started_at now elapsed pipeline_exit
+  local started_at now elapsed pipeline_exit sink
 
   started_at="$(date +%s)"
+  rm -f "$touch_file" "$exit_file"
   write_lock_status "worker_running" 0
+
+  if [[ "$STREAM_OUTPUT" == "true" ]]; then
+    sink=render_stream_pipeline
+  else
+    sink=tee
+  fi
 
   {
     set +e
     invoke_worker "$prompt"
     printf '%s\n' "$?" > "$exit_file"
-  } 2>&1 | tee "$output_file" &
+  } 2>&1 | "$sink" "$output_file" &
   pipeline_pid=$!
 
   if [[ "$PROGRESS_INTERVAL" -gt 0 ]]; then
@@ -215,6 +385,11 @@ run_worker_with_progress() {
         now="$(date +%s)"
         elapsed=$((now - started_at))
         write_lock_status "worker_running" "$elapsed"
+        # Suppress the heartbeat while the stream is still producing events.
+        if [[ "$STREAM_OUTPUT" == "true" && -e "$touch_file" ]]; then
+          : > "$touch_file"
+          continue
+        fi
         printf '\n[%s] Worker %s still running (elapsed %ss; live output above).\n' \
           "$RUNNER_NAME" "$ITERATION" "$elapsed"
       done
@@ -239,7 +414,7 @@ run_worker_with_progress() {
   else
     WORKER_EXIT="$pipeline_exit"
   fi
-  rm -f "$exit_file"
+  rm -f "$exit_file" "$touch_file"
   write_lock_status "worker_finished" "$elapsed"
   printf '[%s] Worker %s exited after %ss (code %s).\n' \
     "$RUNNER_NAME" "$ITERATION" "$elapsed" "$WORKER_EXIT"
@@ -255,16 +430,23 @@ CLAUDE_COMMAND="${CLAUDE_MINIMAX_COMMAND:-claude-minimax}"
 CLAUDE_SHELL="${CLAUDE_MINIMAX_SHELL:-bash}"
 CLAUDE_RC_FILE="${CLAUDE_MINIMAX_RC_FILE:-${HOME}/.bashrc}"
 PERMISSION_MODE="${CLAUDE_MINIMAX_PERMISSION_MODE:-bypassPermissions}"
+STREAM_OUTPUT="${ISSUE_RUNNER_STREAM_OUTPUT:-true}"
 ITERATION=0
 
 [[ $# -le 1 ]] || die "usage: ${RUNNER_NAME} [repository]"
 [[ -f "$PROMPT_FILE" ]] || die "worker prompt not found: ${PROMPT_FILE}"
 [[ "$BASE_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid base branch: ${BASE_BRANCH}"
+[[ "$STREAM_OUTPUT" =~ ^(true|false)$ ]] || \
+  die "ISSUE_RUNNER_STREAM_OUTPUT must be 'true' or 'false'"
 is_non_negative_integer "$MAX_ITERATIONS" || \
   die "ISSUE_RUNNER_MAX_ITERATIONS must be a non-negative integer"
 is_non_negative_integer "$PROGRESS_INTERVAL" || \
   die "ISSUE_RUNNER_PROGRESS_INTERVAL must be a non-negative integer"
 command -v "$CLAUDE_SHELL" >/dev/null 2>&1 || die "shell not found: ${CLAUDE_SHELL}"
+if [[ "$STREAM_OUTPUT" == "true" ]]; then
+  command -v jq >/dev/null 2>&1 || \
+    die "jq is required for stream-json output rendering"
+fi
 
 cd "$REPOSITORY" 2>/dev/null || die "repository not found: ${REPOSITORY}"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a Git repository"
