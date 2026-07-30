@@ -714,10 +714,13 @@ closes the issue. The process exits, then the supervisor launches a new non-pers
 worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
 failure, a dirty worktree, or an invalid worker status.
 
-Worker output is streamed live. During silent operations, the supervisor prints
-an elapsed-time heartbeat every 30 seconds by default. It also maintains a
-status snapshot in the repository's Git common directory, so progress can be
-checked from another terminal:
+Worker output is streamed live as Claude's `stream-json` events, rendered by
+the supervisor as concise, iteration-aware progress lines
+(inspecting/editing/creating PR/closing issue). While a worker is silent the
+supervisor still prints an elapsed-time heartbeat every 30 seconds by default.
+The full raw stream stays available in each iteration's artifact file for
+diagnostics, and the repository lock keeps a status snapshot in the Git
+common directory so progress can be checked from another terminal:
 
 ```bash
 cat "$(git rev-parse --git-common-dir)/claude-minimax-issue-runner.lock/status"
