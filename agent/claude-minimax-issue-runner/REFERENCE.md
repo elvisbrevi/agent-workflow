@@ -104,6 +104,79 @@ checkout and all linked worktrees. A concurrent runner exits with the owner and
 latest status. A lock whose owner process no longer exists is recovered
 automatically.
 
+## Recovery checkpoint
+
+The runner persists a durable checkpoint for every worker attempt next to the
+repository lock, so a future restart can recover the selected issue and the
+last safe state without relying on the failed process's memory:
+
+```text
+claude-minimax-issue-runner.checkpoint
+```
+
+Inspect the checkpoint from another terminal with:
+
+```bash
+cat "$(git rev-parse --git-common-dir)/claude-minimax-issue-runner.checkpoint"
+```
+
+The file uses the same Git common directory as the lock, so it covers the main
+checkout and all linked worktrees.
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `pid` | Runner PID that wrote the checkpoint |
+| `iteration` | Worker attempt number (starts at 1) |
+| `issue` | Identified issue number, or `unknown` until the worker inspects it |
+| `branch` | Current branch the worker is on |
+| `base_branch` | Configured base branch for PRs |
+| `base_sha` | SHA of the base branch when the checkpoint was written |
+| `session_id` | Captured Claude session identity, or `unavailable` |
+| `state` | Lifecycle state of the attempt (see below) |
+| `updated_at` | Timestamp of the last checkpoint write |
+
+### Lifecycle states
+
+The checkpoint state advances as the worker emits recognizable events. The
+runner records the issue identity as soon as the assistant calls
+`gh issue view N`, before any edit, push, PR creation, or merge:
+
+| State | Reached when |
+|---|---|
+| `starting` | The attempt has been recorded but the worker has not yet identified its issue |
+| `issue_selected` | The worker inspected `gh issue view N` and the issue number was captured |
+| `mutating` | The worker edited, committed, or ran tests |
+| `branch_pushed` | The worker pushed the feature branch |
+| `pr_created` | The worker created the pull request |
+| `pr_merged` | The worker merged or closed the pull request |
+| `issue_closed` | The worker closed the issue |
+| `blocked` | The worker reported `BLOCKED` |
+| `failed` | The worker reported `FAILED` or exited with a non-zero status |
+| `malformed` | The worker exited cleanly but emitted no recognized status marker |
+
+### Privacy boundary
+
+The checkpoint never persists prompts, credentials, bearer tokens, full shell
+commands, or any complete tool inputs. It only records the identity
+information needed to resume or report on the attempt. Sensitive fields in the
+stream renderer continue to be redacted before reaching operator output, and
+the side-channel issue file (`${OUTPUT_FILE}.issue`) carries only the bare
+issue number back to the supervisor.
+
+The same non-sensitive identity fields (`issue`, `branch`, `base_branch`,
+`state`) are mirrored into the lock `status` file so operators can inspect
+progress without reading the checkpoint directly.
+
+### Retention
+
+- `ISSUE_COMPLETED` removes the checkpoint.
+- `QUEUE_EMPTY` removes the checkpoint (verified empty queue).
+- `BLOCKED`, `FAILED`, non-zero worker exits, and unknown statuses retain the
+  checkpoint with the last safe state so the next restart can decide
+  whether recovery is safe.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -49,8 +49,103 @@ write_lock_status() {
     printf 'iteration=%s\n' "$ITERATION"
     printf 'elapsed_seconds=%s\n' "$elapsed"
     printf 'updated_at=%s\n' "$(timestamp)"
+    if [[ -n "${CHECKPOINT_ISSUE:-}" ]]; then
+      printf 'issue=%s\n' "${CHECKPOINT_ISSUE}"
+    fi
+    printf 'branch=%s\n' "$(current_branch)"
+    printf 'base_branch=%s\n' "$BASE_BRANCH"
   } > "$status_tmp"
   mv -f "$status_tmp" "${LOCK_DIR}/status"
+}
+
+# Returns the absolute path to the recovery checkpoint file. The checkpoint
+# lives next to the repository lock so it spans linked worktrees and is
+# available even when no lock is currently held.
+checkpoint_file() {
+  printf '%s/%s.checkpoint\n' "$GIT_COMMON_DIR" "$RUNNER_NAME"
+}
+
+# Returns the current branch name, falling back to "unknown" when the
+# repository is in detached HEAD (e.g. mid-rebase) or unwritable.
+current_branch() {
+  local branch
+  branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [[ -z "$branch" ]]; then
+    printf 'unknown\n'
+  else
+    printf '%s\n' "$branch"
+  fi
+}
+
+# Resolves the SHA of the configured base branch, falling back to "unknown"
+# when the local ref or its origin counterpart cannot be resolved.
+current_base_sha() {
+  local sha
+  if sha="$(git rev-parse --verify --quiet "refs/heads/${BASE_BRANCH}^{commit}" 2>/dev/null)"; then
+    printf '%s\n' "$sha"
+    return
+  fi
+  if sha="$(git rev-parse --verify --quiet "refs/remotes/origin/${BASE_BRANCH}^{commit}" 2>/dev/null)"; then
+    printf '%s\n' "$sha"
+    return
+  fi
+  printf 'unknown\n'
+}
+
+# Writes a non-sensitive checkpoint describing the worker's progress. The
+# write is atomic: the destination is replaced by `mv` from a sibling temp
+# file so partial checkpoints never appear. The function deliberately
+# records only identity, branch, lifecycle state, and attempt number; it
+# never captures prompts, credentials, tokens, or full tool inputs.
+write_checkpoint() {
+  local state="$1"
+  local target tmp
+
+  target="$(checkpoint_file)"
+  tmp="${target}.tmp.$$"
+  mkdir -p "$(dirname "$target")"
+
+  CHECKPOINT_STATE="$state"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'iteration=%s\n' "$ITERATION"
+    if [[ -n "${CHECKPOINT_ISSUE:-}" ]]; then
+      printf 'issue=%s\n' "${CHECKPOINT_ISSUE}"
+    else
+      printf 'issue=unknown\n'
+    fi
+    printf 'branch=%s\n' "$(current_branch)"
+    printf 'base_branch=%s\n' "$BASE_BRANCH"
+    printf 'base_sha=%s\n' "$(current_base_sha)"
+    if [[ -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
+      printf 'session_id=%s\n' "${CHECKPOINT_SESSION_ID}"
+    else
+      printf 'session_id=unavailable\n'
+    fi
+    printf 'state=%s\n' "$state"
+    printf 'updated_at=%s\n' "$(timestamp)"
+  } > "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+# Removes the recovery checkpoint. Called after ISSUE_COMPLETED or after a
+# verified empty queue. Failures, blocked outcomes, abnormal exits, and
+# unknown statuses retain the checkpoint instead.
+clear_checkpoint() {
+  local target
+  target="$(checkpoint_file)"
+  rm -f "$target" "${target}.tmp."*
+}
+
+# Removes any sibling .tmp.* files left behind by a crashed or interrupted
+# write. Safe to invoke on every finalization; if the write completed
+# atomically there is nothing to clean up. Called on terminal states so
+# an aborted attempt does not pollute the checkpoint directory with stale
+# temp files that could shadow a future write.
+cleanup_checkpoint_tmp() {
+  local target
+  target="$(checkpoint_file)"
+  rm -f "${target}.tmp."*
 }
 
 release_repository_lock() {
@@ -170,6 +265,7 @@ stream_event_field() {
 # arguments. Status text is captured in the renderer pipeline, not here.
 render_stream_event() {
   local raw_line="$1"
+  local output_file="${2:-}"
 
   [[ "$(stream_event_field 'type' "$raw_line")" == "assistant" ]] || return 0
 
@@ -182,12 +278,13 @@ render_stream_event() {
   tool_name="$(jq -r '.name // ""' 2>/dev/null <<<"$tool_block")"
   tool_input="$(jq -c '.input // {}' 2>/dev/null <<<"$tool_block")"
   [[ -z "$tool_name" ]] && return 0
-  render_semantic_progress "$tool_name" "$tool_input"
+  render_semantic_progress "$tool_name" "$tool_input" "$output_file"
 }
 
 render_semantic_progress() {
   local tool_name="$1"
   local tool_input="$2"
+  local output_file="${3:-}"
 
   case "$tool_name" in
     Read|Glob|Grep|NotebookRead|WebFetch|WebSearch|LS|ListMcpResources)
@@ -196,6 +293,7 @@ render_semantic_progress() {
     Edit|Write|MultiEdit|NotebookEdit)
       local file_path
       file_path="$(jq -r '.file_path // .notebook_path // ""' 2>/dev/null <<<"$tool_input")"
+      advance_checkpoint_state "mutating" "$output_file"
       if [[ -n "$file_path" && "$file_path" != "null" ]]; then
         printf '[%s] Editing %s\n' "$RUNNER_NAME" "$file_path"
       else
@@ -205,7 +303,7 @@ render_semantic_progress() {
     Bash)
       local cmd
       cmd="$(jq -r '.command // ""' 2>/dev/null <<<"$tool_input")"
-      render_bash_progress "$cmd"
+      render_bash_progress "$cmd" "$output_file"
       ;;
     TodoWrite|Task)
       printf '[%s] Planning the next worker step\n' "$RUNNER_NAME"
@@ -218,6 +316,7 @@ render_semantic_progress() {
 
 render_bash_progress() {
   local cmd="$1"
+  local output_file="${2:-}"
 
   if [[ -z "$cmd" || "$cmd" == "null" ]]; then
     printf '[%s] Running shell command\n' "$RUNNER_NAME"
@@ -225,22 +324,36 @@ render_bash_progress() {
   fi
 
   case "$cmd" in
+    "gh issue view "*)
+      local issue_number
+      issue_number="$(printf '%s\n' "$cmd" | sed -nE 's/^gh issue view[[:space:]]+([0-9]+).*/\1/p')"
+      if [[ -n "$issue_number" ]]; then
+        record_identified_issue "$issue_number" "$output_file"
+      else
+        printf '[%s] Inspecting issue tracker\n' "$RUNNER_NAME"
+      fi
+      ;;
     "gh pr create"*)
+      advance_checkpoint_state "pr_created" "$output_file"
       printf '[%s] Creating pull request\n' "$RUNNER_NAME"
       ;;
     "gh pr merge"*|"gh pr close"*)
+      advance_checkpoint_state "pr_merged" "$output_file"
       printf '[%s] Merging or closing pull request\n' "$RUNNER_NAME"
       ;;
     "gh issue close"*)
+      advance_checkpoint_state "issue_closed" "$output_file"
       printf '[%s] Closing issue\n' "$RUNNER_NAME"
       ;;
     "gh issue"*)
       printf '[%s] Inspecting issue tracker\n' "$RUNNER_NAME"
       ;;
     "git push"*)
+      advance_checkpoint_state "branch_pushed" "$output_file"
       printf '[%s] Pushing branch\n' "$RUNNER_NAME"
       ;;
     "git commit"*)
+      advance_checkpoint_state "mutating" "$output_file"
       printf '[%s] Committing changes\n' "$RUNNER_NAME"
       ;;
     "git merge"*|"git rebase"*)
@@ -250,10 +363,88 @@ render_bash_progress() {
       printf '[%s] Reviewing changes\n' "$RUNNER_NAME"
       ;;
     *npm*test*|*bats*|*pytest*|*cargo*test*|*swift*test*|*jest*|*mocha*|*bash*tests/*|*"go test"*)
+      advance_checkpoint_state "mutating" "$output_file"
       printf '[%s] Running tests or verification\n' "$RUNNER_NAME"
       ;;
     *)
       printf '[%s] Running shell command\n' "$RUNNER_NAME"
+      ;;
+  esac
+}
+
+# Records the issue number identified by the worker and transitions the
+# checkpoint to "issue_selected". The renderer subshell cannot propagate
+# variables back to the supervisor, so the issue is also persisted to the
+# side-channel file "$output_file.issue" for the parent process to pick up
+# after the worker exits. The issue is captured as soon as the assistant
+# inspects it via `gh issue view N`, before any edit, push, PR creation,
+# or merge. This satisfies the "identify before mutation" acceptance
+# criterion.
+record_identified_issue() {
+  local issue_number="$1"
+  local output_file="${2:-}"
+
+  if [[ -z "$issue_number" || ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    return
+  fi
+
+  CHECKPOINT_ISSUE="$issue_number"
+  write_checkpoint "issue_selected"
+  write_lock_status "issue_selected" 0
+
+  if [[ -n "$output_file" ]]; then
+    printf '%s' "$issue_number" > "${output_file}.issue"
+  fi
+
+  printf '[%s] Identified issue %s\n' "$RUNNER_NAME" "$issue_number"
+}
+
+# Advances the checkpoint lifecycle to a new state. Repeated calls for the
+# same state are idempotent. When invoked from the renderer subshell, also
+# writes the new issue (if any) to the side-channel file so the supervisor
+# can pick it up after the worker exits.
+advance_checkpoint_state() {
+  local next_state="$1"
+  local output_file="${2:-}"
+  local current="${CHECKPOINT_STATE:-starting}"
+
+  if [[ "$next_state" == "$current" ]]; then
+    return
+  fi
+
+  CHECKPOINT_STATE="$next_state"
+  write_checkpoint "$next_state"
+  write_lock_status "$next_state" 0
+
+  if [[ -n "$output_file" && -n "${CHECKPOINT_ISSUE:-}" ]]; then
+    printf '%s' "$CHECKPOINT_ISSUE" > "${output_file}.issue"
+  fi
+}
+
+# Records the final state of an attempt after the worker has exited. If the
+# worker reached a progressed state (issue_selected, mutating, branch_pushed,
+# pr_created, pr_merged, or issue_closed), the most-progressed state is
+# preserved as the "last safe state" so the next restart can determine
+# whether recovery is safe. The terminal state is recorded only when no
+# progressed state was reached (i.e. the worker never identified its issue
+# or completed any mutation). This satisfies the "last safe state"
+# acceptance criterion for transient, failed, killed, and malformed
+# outcomes.
+finalize_attempt_state() {
+  local terminal_state="$1"
+  local current="${CHECKPOINT_STATE:-starting}"
+
+  cleanup_checkpoint_tmp
+
+  case "$current" in
+    starting|issue_selected)
+      CHECKPOINT_STATE="$terminal_state"
+      write_checkpoint "$terminal_state"
+      write_lock_status "$terminal_state" 0
+      ;;
+    *)
+      write_checkpoint "$current"
+      write_lock_status "$current" 0
       ;;
   esac
 }
@@ -274,11 +465,17 @@ redact_secrets() {
 # progress to the operator's stdout. Plain-text output from non-streaming
 # workers is forwarded unchanged. The side-channel timestamp file at
 # "$1.touch" lets the heartbeat loop suppress the empty-interval message while
-# events are still flowing.
+# events are still flowing. The side-channel file at "$1.issue" carries the
+# identified issue number from the renderer subshell back to the supervisor
+# so the final checkpoint (written in the parent process after the worker
+# exits) records the correct issue identity.
 render_stream_pipeline() {
   local output_file="$1"
   local touch_file="${output_file}.touch"
+  local issue_file="${output_file}.issue"
   local raw_line
+
+  : > "$issue_file"
 
   while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     [[ -z "$raw_line" ]] && continue
@@ -292,7 +489,7 @@ render_stream_pipeline() {
 
     case "$(stream_event_field 'type' "$raw_line")" in
       assistant)
-        render_stream_event "$raw_line"
+        render_stream_event "$raw_line" "$output_file"
         : > "$touch_file"
         ;;
       result)
@@ -469,7 +666,16 @@ BASE_PROMPT="$(<"$PROMPT_FILE")"
 
 while true; do
   ITERATION=$((ITERATION + 1))
+  CHECKPOINT_ISSUE=""
+  CHECKPOINT_STATE="starting"
+  CHECKPOINT_SESSION_ID=""
   assert_clean_worktree
+
+  # Record an initial checkpoint for this attempt before any worker process
+  # runs. The runner fills in `issue`, `state`, and (when available)
+  # `session_id` as the worker emits identifying events.
+  write_checkpoint "starting"
+  write_lock_status "starting" 0
 
   WORKER_PROMPT="${BASE_PROMPT}
 
@@ -487,11 +693,20 @@ non-epic issue in this session."
 
   run_worker_with_progress "$WORKER_PROMPT" "$OUTPUT_FILE"
 
+  # The renderer subshell carries the identified issue in a side-channel
+  # file so the supervisor can adopt it before writing the final
+  # checkpoint for this attempt.
+  ISSUE_FILE="${OUTPUT_FILE}.issue"
+  if [[ -s "$ISSUE_FILE" ]]; then
+    CHECKPOINT_ISSUE="$(<"$ISSUE_FILE")"
+  fi
+
   WORKER_STATUS="$(
     sed -n "s/^${STATUS_PREFIX}//p" "$OUTPUT_FILE" | tail -n 1
   )"
 
   if [[ "$WORKER_EXIT" -ne 0 ]]; then
+    finalize_attempt_state "failed"
     printf '%s: worker %s exited with code %s; output retained at %s\n' \
       "$RUNNER_NAME" "$ITERATION" "$WORKER_EXIT" "$OUTPUT_FILE" >&2
     exit 1
@@ -499,7 +714,8 @@ non-epic issue in this session."
 
   case "$WORKER_STATUS" in
     ISSUE_COMPLETED)
-      rm -f "$OUTPUT_FILE"
+      rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
+      clear_checkpoint
       printf '[%s] Worker %s completed one issue.\n' "$RUNNER_NAME" "$ITERATION"
       if [[ "$MAX_ITERATIONS" -gt 0 && "$ITERATION" -ge "$MAX_ITERATIONS" ]]; then
         printf '%s: iteration limit reached after %s completed issue(s)\n' \
@@ -508,21 +724,25 @@ non-epic issue in this session."
       fi
       ;;
     QUEUE_EMPTY)
-      rm -f "$OUTPUT_FILE"
+      rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
+      clear_checkpoint
       printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
       exit 0
       ;;
     BLOCKED)
+      finalize_attempt_state "blocked"
       printf '%s: pending work requires human input; output retained at %s\n' \
         "$RUNNER_NAME" "$OUTPUT_FILE" >&2
       exit 2
       ;;
     FAILED)
+      finalize_attempt_state "failed"
       printf '%s: worker failed to finish its issue; output retained at %s\n' \
         "$RUNNER_NAME" "$OUTPUT_FILE" >&2
       exit 1
       ;;
     *)
+      finalize_attempt_state "malformed"
       printf '%s: worker returned no recognized status; output retained at %s\n' \
         "$RUNNER_NAME" "$OUTPUT_FILE" >&2
       exit 1
