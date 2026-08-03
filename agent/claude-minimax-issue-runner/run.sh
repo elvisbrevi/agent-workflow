@@ -721,11 +721,11 @@ finalize_attempt_state() {
 }
 
 # Backward-compatible alias for the historical `redact_secrets` name. The
-# runtime adapter exposes the implementation under the agent-scoped
-# `claude_runtime_redact` function; orchestration code that still imports
-# the old name keeps working through this shim.
+# runtime adapter exposes the implementation under the generic
+# `runtime_redact` function; orchestration code that still imports the
+# old name keeps working through this shim.
 redact_secrets() {
-  claude_runtime_redact
+  runtime_redact
 }
 
 run_worker_with_progress() {
@@ -742,14 +742,14 @@ run_worker_with_progress() {
   write_lock_status "worker_running" 0
 
   if [[ "$STREAM_OUTPUT" == "true" ]]; then
-    sink=claude_runtime_render_stream
+    sink=runtime_render_stream
   else
     sink=tee
   fi
 
   {
     set +e
-    claude_runtime_invoke "$prompt" "$session_id"
+    runtime_invoke "$prompt" "$session_id"
     printf '%s\n' "$?" > "$exit_file"
   } 2>&1 | "$sink" "$output_file" &
   pipeline_pid=$!
@@ -987,19 +987,20 @@ attempt_with_recovery() {
   done
 }
 
-# Source the tracker and runtime adapters before entering orchestration. The
-# supervisor consumes normalized tracker operations and lifecycle events only;
+# Source the tracker and config adapters before entering orchestration.
+# The runtime adapter is sourced later, after the active profile is
+# known, so the orchestrator picks the right adapter (claude, codex,
+# ...) without depending on a single hardcoded path. The supervisor
+# consumes normalized tracker operations and lifecycle events only;
 # provider-specific command construction remains inside the adapters.
 SCRIPT_DIR="$(resolve_script_dir)"
 TRACKER_ADAPTER="${SCRIPT_DIR}/tracker/github-adapter.sh"
-RUNTIME_ADAPTER="${SCRIPT_DIR}/runtime/claude-adapter.sh"
+RUNTIME_ADAPTER_DIR="${SCRIPT_DIR}/runtime"
 CONFIG_ADAPTER="${SCRIPT_DIR}/config/issue-killer-config.sh"
 # shellcheck source=agent/claude-minimax-issue-runner/config/issue-killer-config.sh
 source "$CONFIG_ADAPTER"
 # shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
 source "$TRACKER_ADAPTER"
-# shellcheck source=agent/claude-minimax-issue-runner/runtime/claude-adapter.sh
-source "$RUNTIME_ADAPTER"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 
 # Parse the optional positional repository argument together with the
@@ -1082,7 +1083,10 @@ issue_killer_config_apply_profile "$SELECTED_PROFILE" || \
 
 # Project the selected profile onto the legacy runtime variables the
 # adapter consumes. The adapter treats these as the single source of
-# truth for the worker invocation.
+# truth for the worker invocation. `PERMISSION_MODE` is only relevant
+# for the Claude adapter; other adapters ignore it. The Claude-only
+# projection stays here so existing test fixtures and out-of-tree
+# consumers that read CLAUDE_COMMAND / CLAUDE_RC_FILE keep working.
 CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
 CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
 CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
@@ -1099,6 +1103,36 @@ if [[ -n "$ISSUE_KILLER_PROFILE_OPTIONS" ]]; then
       permission_mode) PERMISSION_MODE="$option_value" ;;
     esac
   done <<<"$ISSUE_KILLER_PROFILE_OPTIONS"
+fi
+
+# Source the runtime adapter that matches the selected profile's CLI.
+# The orchestrator calls only the generic `runtime_*` interface, so the
+# adapter file selected here is the sole place that knows the CLI's
+# invocation flags, JSON event shape, and session identity. The
+# adapter is sourced after the profile so we can validate the
+# CLI-specific options (e.g. codex reasoning_effort and sandbox)
+# before the worker is launched.
+case "$ISSUE_KILLER_PROFILE_CLI" in
+  claude)
+    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/claude-adapter.sh"
+    ;;
+  codex)
+    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/codex-adapter.sh"
+    ;;
+  *)
+    die "runtime adapter is not available for CLI: ${ISSUE_KILLER_PROFILE_CLI:-unset}"
+    ;;
+esac
+[[ -r "$RUNTIME_ADAPTER" ]] || die "runtime adapter not found: ${RUNTIME_ADAPTER}"
+# shellcheck source=agent/claude-minimax-issue-runner/runtime/codex-adapter.sh
+source "$RUNTIME_ADAPTER"
+# Validate CLI-specific profile options. The Claude adapter tolerates
+# any permission_mode string; the Codex adapter strictly rejects
+# malformed reasoning_effort, sandbox, and auto_approve values so a
+# misspelled safety setting is never silently ignored.
+if [[ "$ISSUE_KILLER_PROFILE_CLI" == "codex" ]]; then
+  codex_runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || \
+    die "codex profile ${ISSUE_KILLER_PROFILE_NAME} has invalid options"
 fi
 
 [[ -f "$PROMPT_FILE" ]] || die "worker prompt not found: ${PROMPT_FILE}"
