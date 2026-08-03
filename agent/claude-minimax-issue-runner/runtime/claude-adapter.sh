@@ -12,8 +12,12 @@
 # The orchestration layer (run.sh) must not parse Claude stream JSON or
 # construct the `claude-minimax` command directly. It calls the named
 # functions below to operate the worker uniformly regardless of the
-# underlying CLI; later tickets (Codex, OpenCode) will add a sibling
-# adapter without changing the orchestration loop.
+# underlying CLI. The orchestrator consumes the `runtime_*` aliases
+# declared at the bottom of this file; the `claude_runtime_*` names
+# remain for backwards compatibility with existing test fixtures and
+# third-party callers. Sibling adapters (Codex, OpenCode) expose the
+# same `runtime_*` surface so the orchestrator never branches on the
+# selected CLI.
 #
 # Required inputs from the orchestrator (defined before this file is
 # sourced):
@@ -379,6 +383,29 @@ claude_runtime_render_stream() {
     esac
   done
 }
+
+# Generic `runtime_*` aliases. The orchestrator and other adapters call
+# these names so the runner remains CLI-agnostic. Each alias is a thin
+# forwarder to the Claude-specific implementation above; the alias layer
+# exists so a future adapter can be selected by sourcing a sibling file
+# without touching the orchestrator. The `claude_runtime_*` definitions
+# earlier in this file remain the authoritative implementation; the
+# orchestrator's old call sites that still mention them keep working
+# through the unchanged originals.
+runtime_is_event_object() { claude_runtime_is_event_object "$@"; }
+runtime_event_field()     { claude_runtime_event_field "$@"; }
+runtime_redact()          { claude_runtime_redact; }
+runtime_decode_event()    { claude_runtime_decode_event "$@"; }
+runtime_capture_session() { claude_runtime_capture_session "$@"; }
+runtime_dispatch_event()  { claude_runtime_dispatch_event "$@"; }
+runtime_invoke_args()     { claude_runtime_invoke_args "$@"; }
+runtime_invoke()          { claude_runtime_invoke "$@"; }
+runtime_render_stream()   { claude_runtime_render_stream "$@"; }
+# `runtime_decode_bash` is the private normalization helper used by
+# `claude_runtime_decode_event`. Codex has its own shell-event grammar
+# so it does not share this name; we still expose it on the Claude
+# adapter for any direct caller.
+runtime_decode_bash()     { claude_runtime_decode_bash "$@"; }
 
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
