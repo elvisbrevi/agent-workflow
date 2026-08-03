@@ -269,78 +269,6 @@ classify_failure() {
   fi
 }
 
-# Reconciles the checkpoint against the live Git, PR, and issue state.
-# Reads $CHECKPOINT_ISSUE and the current branch. Returns one of:
-#   completed          - issue is closed and its PR (if any) is merged
-#   merged_no_issue    - PR exists and is merged but the issue is still open
-#   pr_open            - PR exists and is open or closed without merge
-#   branch_only        - branch exists but no PR has been created
-#   no_work            - no branch exists; the previous attempt died early
-#   unknown            - the reconciler could not determine the state
-# The function intentionally only consults the local Git refs plus the
-# GitHub CLI; it never mutates the worktree.
-reconcile_recovery_state() {
-  local branch
-  local issue_number="$1"
-  local pr_state pr_json issue_state
-
-  branch="$(current_branch)"
-  if [[ "$branch" == "unknown" ]]; then
-    printf 'unknown\n'
-    return 0
-  fi
-
-  # No worktree mutation means no PR was created.
-  if [[ -z "$issue_number" || ! "$issue_number" =~ ^[0-9]+$ ]]; then
-    if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-      printf 'branch_only\n'
-    else
-      printf 'no_work\n'
-    fi
-    return 0
-  fi
-
-  if ! command -v gh >/dev/null 2>&1; then
-    printf 'unknown\n'
-    return 0
-  fi
-
-  if ! pr_json="$(gh pr list --state all --head "$branch" --json state,number,mergedAt 2>/dev/null)"; then
-    printf 'unknown\n'
-    return 0
-  fi
-
-  pr_state="$(jq -r 'if (length == 0) then "none" else (.[0].state // "none") end' \
-    2>/dev/null <<<"$pr_json")"
-  if [[ "$pr_state" == "none" ]]; then
-    if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-      printf 'branch_only\n'
-    else
-      printf 'no_work\n'
-    fi
-    return 0
-  fi
-
-  local merged
-  merged="$(jq -r 'if (length == 0) then false else ((.[0].mergedAt // null) != null) end' \
-    2>/dev/null <<<"$pr_json")"
-
-  if [[ "$merged" == "true" ]]; then
-    issue_state="$(gh issue view "$issue_number" --json state 2>/dev/null \
-      | jq -r '.state // "OPEN"' 2>/dev/null)"
-    case "$issue_state" in
-      CLOSED)
-        printf 'completed\n'
-        ;;
-      *)
-        printf 'merged_no_issue\n'
-        ;;
-    esac
-  else
-    printf 'pr_open\n'
-  fi
-}
-
 # Returns 0 when the captured Claude session is safe to resume: the
 # checkpoint carries a session id, the branch matches the worktree, and the
 # base SHA still resolves. Returns 1 otherwise (a fresh recovery worker
@@ -495,29 +423,6 @@ dirty_worktree_snapshot() {
   git status --porcelain
 }
 
-github_repo_slug() {
-  local url slug
-
-  url="$(git config --get remote.origin.url 2>/dev/null || true)"
-  case "$url" in
-    git@github.com:*)
-      slug="${url#git@github.com:}"
-      ;;
-    https://github.com/*)
-      slug="${url#https://github.com/}"
-      ;;
-    http://github.com/*)
-      slug="${url#http://github.com/}"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-  slug="${slug%.git}"
-  [[ "$slug" == */* ]] || return 1
-  printf '%s\n' "$slug"
-}
-
 checkpoint_value() {
   local field="$1"
   local file="${2:-}"
@@ -556,60 +461,6 @@ require_recovery_tty_confirmation() {
 
   [[ "$answer" =~ ^[Yy]$ ]] || \
     emit_recovery_required "operator declined recovery confirmation"
-}
-
-reconcile_startup_recovery_state() {
-  local issue_number="$1"
-  local branch="$2"
-  local issue_state pr_json pr_count repo_slug blocked_by
-
-  if ! command -v gh >/dev/null 2>&1; then
-    emit_recovery_required "gh is required to reconcile issue and PR state before recovery"
-  fi
-
-  if ! issue_state="$(gh issue view "$issue_number" --json state,labels,assignees 2>/dev/null \
-      | jq -r '.state // empty' 2>/dev/null)"; then
-    emit_recovery_required "unable to reconcile issue ${issue_number} before recovery"
-  fi
-  [[ -n "$issue_state" ]] || \
-    emit_recovery_required "unable to determine issue ${issue_number} state before recovery"
-
-  repo_slug="$(github_repo_slug)" || \
-    emit_recovery_required "unable to determine GitHub repository for dependency reconciliation"
-  if ! blocked_by="$(gh api "repos/${repo_slug}/issues/${issue_number}" \
-      --jq '.issue_dependencies_summary.blocked_by // 0' 2>/dev/null)"; then
-    emit_recovery_required "unable to reconcile dependency state for issue ${issue_number}"
-  fi
-  [[ "$blocked_by" =~ ^[0-9]+$ ]] || \
-    emit_recovery_required "ambiguous dependency state for issue ${issue_number}"
-  if [[ "$blocked_by" -gt 0 ]]; then
-    emit_recovery_required "issue ${issue_number} is blocked by ${blocked_by} open issue(s)"
-  fi
-
-  if ! pr_json="$(gh pr list --state all --head "$branch" --json state,number,mergedAt 2>/dev/null)"; then
-    emit_recovery_required "unable to reconcile PR state for branch ${branch} before recovery"
-  fi
-  pr_count="$(jq -r 'length' 2>/dev/null <<<"$pr_json")"
-  [[ "$pr_count" =~ ^[0-9]+$ ]] || \
-    emit_recovery_required "ambiguous PR state for branch ${branch}"
-  if [[ "$pr_count" -gt 1 ]]; then
-    emit_recovery_required "ambiguous PR state for branch ${branch}: ${pr_count} PRs found"
-  fi
-  if [[ "$issue_state" == "CLOSED" ]]; then
-    emit_recovery_required "issue ${issue_number} is already closed; refusing to launch a recovery worker over dirty files"
-  fi
-  if [[ "$pr_count" -eq 1 ]]; then
-    local merged
-    merged="$(jq -r '((.[0].mergedAt // null) != null)' 2>/dev/null <<<"$pr_json")"
-    [[ "$merged" == "true" ]] || [[ "$merged" == "false" ]] || \
-      emit_recovery_required "ambiguous merged state for PR on branch ${branch}"
-    if [[ "$merged" == "true" ]]; then
-      emit_recovery_required "PR for branch ${branch} is already merged; refusing to duplicate recovery effects over dirty files"
-    fi
-  fi
-
-  printf '[%s] Reconciled recovery target: issue %s is %s; open blockers: %s; PRs for %s: %s\n' \
-    "$RUNNER_NAME" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count"
 }
 
 validate_checkpoint_for_dirty_recovery() {
@@ -696,7 +547,7 @@ prepare_dirty_startup_recovery() {
     printf '[%s] Restart recovery target: issue %s, branch %s, base SHA %s, state %s, strategy: %s\n' \
       "$RUNNER_NAME" "$issue" "$branch" "$base_sha" "$state" "$strategy"
     printf '[%s] Dirty files to preserve:\n%s\n' "$RUNNER_NAME" "$dirty_files"
-    reconcile_startup_recovery_state "$issue" "$branch"
+    tracker_reconcile_startup_state "$issue" "$branch"
     require_recovery_tty_confirmation \
       "Recover issue ${issue} on branch ${branch} from checkpoint state ${state} using strategy '${strategy}'."
 
@@ -724,7 +575,7 @@ prepare_dirty_startup_recovery() {
   printf '[%s] Legacy adoption target: issue %s, branch %s, base SHA %s, strategy: fresh recovery worker\n' \
     "$RUNNER_NAME" "$issue" "$branch" "$(current_base_sha)"
   printf '[%s] Dirty files to preserve:\n%s\n' "$RUNNER_NAME" "$dirty_files"
-  reconcile_startup_recovery_state "$issue" "$branch"
+  tracker_reconcile_startup_state "$issue" "$branch"
   require_recovery_tty_confirmation \
     "Adopt existing dirty work as issue ${issue} on branch ${branch}."
   write_legacy_checkpoint "$issue"
@@ -744,7 +595,7 @@ prepare_dirty_startup_recovery() {
 # variables back to the supervisor, so the issue is also persisted to the
 # side-channel file "$output_file.issue" for the parent process to pick up
 # after the worker exits. The issue is captured as soon as the assistant
-# inspects it via `gh issue view N`, before any edit, push, PR creation,
+# inspects it through the tracker CLI, before any edit, push, PR creation,
 # or merge. This satisfies the "identify before mutation" acceptance
 # criterion.
 record_identified_issue() {
@@ -957,7 +808,7 @@ attempt_with_recovery() {
     # the only way to keep the in-memory variable aligned with the
     # persisted checkpoint before any recovery-related lock snapshot.
     # A short drain loop waits for the renderer's pipe-buffered writes
-    # to flush when the worker exited before any `gh issue view` event
+    # to flush when the worker exited before any item-read event
     # was processed (e.g. an immediate transport failure on a fresh
     # checkout).
     local waited=0
@@ -1025,7 +876,7 @@ attempt_with_recovery() {
     # completed the issue before it died, so retrying would only duplicate
     # side effects (push, PR creation, merge, issue close). This is the
     # cheapest, safest reconciliation because it does not require the
-    # `gh` CLI or any external state to be reachable. Read the persisted
+    # tracker CLI or external state to be reachable. Read the persisted
     # checkpoint directly so a pre-existing checkpoint (e.g. from a
     # previous restart) is respected even after the in-memory
     # CHECKPOINT_STATE has been reset by the main loop.
@@ -1051,7 +902,7 @@ attempt_with_recovery() {
     # completion without launching another worker.
     printf '[%s] Reconciling recovery state against branch, PR, and issue tracker\n' \
       "$RUNNER_NAME"
-    reconciled="$(reconcile_recovery_state "${CHECKPOINT_ISSUE:-}")"
+    reconciled="$(tracker_reconcile_recovery_state "${CHECKPOINT_ISSUE:-}")"
     if [[ "$reconciled" == "completed" ]]; then
       printf '[%s] Recovery detected an already-completed issue; advancing without retry\n' \
         "$RUNNER_NAME"
@@ -1083,14 +934,14 @@ attempt_with_recovery() {
   done
 }
 
-# Source the runtime adapter (the CLI-specific code). The orchestrator
-# below must not parse Claude stream JSON or build the `claude-minimax`
-# command directly; every CLI-shaped concern lives in the adapter so a
-# later ticket can add Codex/OpenCode adapters without duplicating the
-# orchestration loop. Sourcing after SCRIPT_DIR is resolved so the adapter
-# path is anchored to the script directory regardless of `cd` state.
+# Source the tracker and runtime adapters before entering orchestration. The
+# supervisor consumes normalized tracker operations and lifecycle events only;
+# provider-specific command construction remains inside the adapters.
 SCRIPT_DIR="$(resolve_script_dir)"
+TRACKER_ADAPTER="${SCRIPT_DIR}/tracker/github-adapter.sh"
 RUNTIME_ADAPTER="${SCRIPT_DIR}/runtime/claude-adapter.sh"
+# shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
+source "$TRACKER_ADAPTER"
 # shellcheck source=agent/claude-minimax-issue-runner/runtime/claude-adapter.sh
 source "$RUNTIME_ADAPTER"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
@@ -1144,6 +995,8 @@ if ! git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}" &&
    ! git show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
   die "base branch not found locally or at origin: ${BASE_BRANCH}"
 fi
+
+tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elvis-brevi-skills and retry"
 
 acquire_repository_lock
 confirm_destructive_run

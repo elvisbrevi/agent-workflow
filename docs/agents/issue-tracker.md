@@ -2,7 +2,11 @@
 
 Issues and specifications for this repository live in GitHub Issues at `elvisbrevi/agent-workflow`. Use the `gh` CLI for all operations and infer the repository from the configured Git remote.
 
-## Conventions
+## Runtime boundary
+
+The supervisor validates this document against the repository's Git remote before it launches a worker. The GitHub adapter owns remote detection, authentication checks, queue discovery, issue reads and claims, dependency checks, pull-request lookup and merge verification, issue closure, and restart reconciliation. The orchestration loop consumes those normalized tracker operations and must not construct GitHub commands directly.
+
+The adapter treats an issue as eligible only when it is open, unassigned, labeled `ready-for-agent`, not an Epic issue type, not labeled `epic`, not titled `[Epic]...`, and has no open native dependency. Ambiguous remotes, missing documentation, missing `gh`, and unavailable authentication fail before any worker or repository mutation starts.
 
 - Create an issue with `gh issue create`.
 - Read an issue and its discussion with `gh issue view <number> --comments`.
