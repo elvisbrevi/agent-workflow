@@ -19,21 +19,21 @@ Rules:
 
 Your final response must end with exactly one of these standalone lines:
 
-`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED`
+`ISSUE_KILLER_STATUS=ISSUE_COMPLETED`
 
 Use `ISSUE_COMPLETED` only after the PR is merged and the issue is closed.
 
-`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY`
+`ISSUE_KILLER_STATUS=QUEUE_EMPTY`
 
 Use `QUEUE_EMPTY` only after verifying that no pending, available, non-epic
 issue remains.
 
-`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED`
+`ISSUE_KILLER_STATUS=BLOCKED`
 
 Use `BLOCKED` when pending non-epic issues exist but none can safely be handled
 without human input.
 
-`CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED`
+`ISSUE_KILLER_STATUS=FAILED`
 
 Use `FAILED` when the selected issue could not be fully implemented, merged,
 and closed. Explain the failure before the marker. Do not claim completion for

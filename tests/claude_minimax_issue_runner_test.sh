@@ -53,9 +53,9 @@ test_fresh_shell_per_issue() {
     '  printf "%s\\n" "$count" >"$RUNNER_TEST_COUNT_FILE"' \
     '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
     '  if [[ "$count" -eq 1 ]]; then' \
-    '    printf "%s\\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED"' \
+    '    printf "%s\\n" "ISSUE_KILLER_STATUS=ISSUE_COMPLETED"' \
     '  else' \
-    '    printf "%s\\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' \
+    '    printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
     '  fi' \
     '}' > "${home}/.bashrc"
 
@@ -140,7 +140,7 @@ test_progress_is_reported_while_worker_runs() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'sleep 2' \
-    'printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' > "$fake"
+    'printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
   chmod +x "$fake"
 
   ISSUE_RUNNER_ASSUME_YES=true \
@@ -172,7 +172,7 @@ test_repository_lock_rejects_second_runner() {
     '#!/usr/bin/env bash' \
     'touch "$RUNNER_TEST_STARTED"' \
     'while [[ ! -e "$RUNNER_TEST_RELEASE" ]]; do sleep 0.1; done' \
-    'printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' > "$fake"
+    'printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
   chmod +x "$fake"
 
   RUNNER_TEST_STARTED="$started" \
@@ -230,7 +230,7 @@ test_stale_repository_lock_is_recovered() {
   printf '%s\n' 'state=worker_running' > "${lock_dir}/status"
   printf '%s\n' \
     '#!/usr/bin/env bash' \
-    'printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' > "$fake"
+    'printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
   chmod +x "$fake"
 
   ISSUE_RUNNER_ASSUME_YES=true \
@@ -254,7 +254,7 @@ test_shell_function_loader_skips_interactive_only_startup() {
   printf '%s\n' \
     'enable -f /definitely/missing/libflyline.dylib flyline' \
     'claude-minimax() {' \
-    '  printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' \
+    '  printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
     '}' > "${home}/.bashrc"
 
   HOME="$home" \
@@ -303,7 +303,7 @@ for arg in "$@"; do
   fi
 done
 if [[ "$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
   exit 0
 fi
 PROLOG
@@ -330,7 +330,7 @@ test_streaming_worker_renders_semantic_progress() {
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"bash tests/claude_minimax_issue_runner_test.sh"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"gh pr create --title progress --body streaming"}}]}}' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -373,7 +373,7 @@ test_streaming_silent_worker_heartbeats() {
   # emitting the final result, so the runner must fall back to a heartbeat.
   write_stream_fixture "$fake" \
     '!sleep 2' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
@@ -399,7 +399,7 @@ test_streaming_heartbeat_suppressed_while_events_flow() {
   # for two seconds, so no elapsed-time heartbeat should reach the operator.
   write_stream_fixture "$fake" \
     '!for i in 1 2 3 4; do printf "%s\n" "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"tick $i\"}]}}"; sleep 0.5; done' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
@@ -421,7 +421,7 @@ test_streaming_worker_redacts_secrets_and_redacts_full_prompts() {
   new_repo "$repo"
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"curl -H \"Authorization: Bearer gh_super_secret_token_xyz\" https://api.example.com"}}]}}' \
-    '{"type":"result","subtype":"success","result":"echoed: Authorization Bearer gh_super_secret_token_xyz\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+    '{"type":"result","subtype":"success","result":"echoed: Authorization Bearer gh_super_secret_token_xyz\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -449,7 +449,7 @@ test_streaming_worker_extracts_each_status_marker() {
     new_repo "${TEST_ROOT}/markers-${marker}-repo"
     write_stream_fixture "${TEST_ROOT}/claude-minimax-${marker}" \
       '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create"}}]}}' \
-      "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=${marker}\\n\"}"
+      "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=${marker}\\n\"}"
 
     set +e
     ISSUE_RUNNER_ASSUME_YES=true \
@@ -506,7 +506,7 @@ test_streaming_blocked_retains_artifact_path() {
   new_repo "$repo"
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Continue?","options":[]}]}}]}}' \
-    '{"type":"result","subtype":"success","result":"need human input\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED\n"}'
+    '{"type":"result","subtype":"success","result":"need human input\nISSUE_KILLER_STATUS=BLOCKED\n"}'
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
@@ -535,7 +535,7 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
     'claude-minimax() {' \
     '  local arg' \
     '  for arg in "$@"; do printf "%s\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
-    '  printf "%s\n" "CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY"' \
+    '  printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
     '}' > "${home}/.bashrc"
 
   if ! HOME="$home" \
@@ -590,7 +590,7 @@ test_streaming_worker_identifies_issue_before_first_mutation() {
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 42"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"git commit -m feat: implement"}}]}}' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -625,7 +625,7 @@ test_checkpoint_records_required_fields_atomically() {
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 7"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -668,7 +668,7 @@ test_checkpoint_does_not_persist_secrets_or_full_commands() {
   # capture only the issue number, never the credential or the full command.
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 9 -H \"Authorization: Bearer gh_super_secret_token_xyz\""}}]}}' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=FAILED\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -700,7 +700,7 @@ test_checkpoint_cleared_on_issue_completed() {
 
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 11"}}]}}' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -723,7 +723,7 @@ test_checkpoint_cleared_on_queue_empty() {
   checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
 
   write_stream_fixture "$fake" \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
   CLAUDE_MINIMAX_COMMAND="$fake" \
@@ -783,7 +783,7 @@ test_checkpoint_retained_on_blocked_outcome() {
 
   write_stream_fixture "$fake" \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 21"}}]}}' \
-    '{"type":"result","subtype":"success","result":"need human input\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED\n"}'
+    '{"type":"result","subtype":"success","result":"need human input\nISSUE_KILLER_STATUS=BLOCKED\n"}'
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
@@ -825,7 +825,7 @@ test_lock_status_exposes_checkpoint_identity() {
     '!touch "$RUNNER_TEST_STARTED"' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 33"}}]}}' \
     '!while [[ ! -e "$RUNNER_TEST_RELEASE" ]]; do sleep 0.1; done' \
-    '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 
   RUNNER_TEST_STARTED="$started" \
   RUNNER_TEST_RELEASE="$release" \
@@ -919,7 +919,7 @@ for arg in "\$@"; do
 done
 
 if [[ "\$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
@@ -929,7 +929,7 @@ if [[ "\$attempt" -le 2 ]]; then
   exit 1
 fi
 
-printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=${final_marker}\\n"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=${final_marker}\\n"}'
 exit 0
 PROLOG
   chmod +x "$target"
@@ -968,7 +968,7 @@ for arg in "\$@"; do
 done
 
 if [[ "\$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
@@ -978,7 +978,7 @@ if [[ "\$attempt" -le 1 ]]; then
   exit 1
 fi
 
-printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=${final_marker}\\n"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=${final_marker}\\n"}'
 exit 0
 PROLOG
   chmod +x "$target"
@@ -1014,11 +1014,11 @@ for arg in "\$@"; do
 done
 
 if [[ "\$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
-printf '%s\n' '{"type":"result","subtype":"success","result":"needs human input\\nCLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=BLOCKED\\n"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"needs human input\\nISSUE_KILLER_STATUS=BLOCKED\\n"}'
 exit 0
 PROLOG
   chmod +x "$target"
@@ -1202,7 +1202,7 @@ for arg in "\$@"; do
 done
 
 if [[ "\$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
@@ -1213,7 +1213,7 @@ if [[ "\$attempt" -eq 1 ]]; then
 fi
 
 for arg in "\$@"; do printf '%s\n' "\$arg" >>"$args_file"; done
-printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n"}'
 exit 0
 PROLOG
   chmod +x "$fake"
@@ -1241,7 +1241,7 @@ PROLOG
     '    fi' \
     '  done' \
     '  if [[ "$iteration" -gt 1 ]]; then' \
-    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
     '    return 0' \
     '  fi' \
     '  if [[ "$attempt" -eq 1 ]]; then' \
@@ -1249,7 +1249,7 @@ PROLOG
     '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"Connection closed by remote host\"}"' \
     '    return 1' \
     '  fi' \
-    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
     '}' > "${home}/.bashrc"
 
   # Pre-seed the checkpoint with a session id and a matching branch so the
@@ -1321,14 +1321,14 @@ test_session_resume_skipped_when_no_captured_session_id() {
     '    fi' \
     '  done' \
     '  if [[ "$iteration" -gt 1 ]]; then' \
-    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
     '    return 0' \
     '  fi' \
     '  if [[ "$attempt" -eq 1 ]]; then' \
     '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"Connection closed by remote host\"}"' \
     '    return 1' \
     '  fi' \
-    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
     '}' > "${home}/.bashrc"
 
   HOME="$home" \
@@ -1463,7 +1463,7 @@ if [[ "\$iteration" -gt 1 ]]; then
   # exactly once — and only after the orchestrator injects
   # ISSUE_COMPLETED for the already-merged issue.
   printf '%s\n' "\$iteration" >> "\${counter_file}.iter"
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
@@ -1573,7 +1573,7 @@ for arg in "\$@"; do
 done
 
 if [[ "\$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
   exit 0
 fi
 
@@ -1584,7 +1584,7 @@ if [[ "\$attempt" -eq 1 ]]; then
   exit 1
 fi
 
-printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\\n"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
 exit 0
 PROLOG
   chmod +x "$fake"
@@ -1862,9 +1862,9 @@ if [[ "$count" -eq 1 ]]; then
   printf '%s\n' "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"
   git add README.md
   git commit --quiet -m 'test: complete restart recovery'
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 else
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 fi
 PROLOG
   chmod +x "$fake"
@@ -1933,9 +1933,9 @@ if [[ "$count" -eq 1 ]]; then
   printf '%s\n' seen > "$RUNNER_TEST_CHECKPOINT_SEEN_FILE"
   git add README.md
   git commit --quiet -m 'test: complete legacy adoption'
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=ISSUE_COMPLETED\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 else
-  printf '%s\n' '{"type":"result","subtype":"success","result":"CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS=QUEUE_EMPTY\n"}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 fi
 PROLOG
   chmod +x "$fake"

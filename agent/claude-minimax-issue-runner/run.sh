@@ -2,7 +2,11 @@
 set -euo pipefail
 
 RUNNER_NAME="claude-minimax-issue-runner"
-STATUS_PREFIX="CLAUDE_MINIMAX_ISSUE_RUNNER_STATUS="
+# The status marker is the generic ISSUE_KILLER_STATUS namespace; later
+# tickets will rename the executable to `issue-killer` while keeping the
+# orchestrator's behavior stable. The orchestrator must not depend on the
+# Claude-specific historical name.
+STATUS_PREFIX="ISSUE_KILLER_STATUS="
 LOCK_HELD=false
 LOCK_TOKEN=""
 
@@ -735,130 +739,6 @@ prepare_dirty_startup_recovery() {
 - Reconcile live issue and PR state before any mutation, then complete the existing work."
 }
 
-# Returns 0 (success) when the input line is a JSON object. Avoids emitting
-# raw stream JSON into operator output.
-stream_event_is_object() {
-  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$1"
-}
-
-stream_event_field() {
-  local field="$1"
-  local line="$2"
-  jq -r --arg f "$field" 'try (getpath($f | split(".")) // empty) catch empty' 2>/dev/null <<<"$line"
-}
-
-# Map a Claude stream-json event to one human-readable progress line for the
-# operator. Never prints raw JSON, secrets, full prompts, or complete tool
-# arguments. Status text is captured in the renderer pipeline, not here.
-render_stream_event() {
-  local raw_line="$1"
-  local output_file="${2:-}"
-
-  [[ "$(stream_event_field 'type' "$raw_line")" == "assistant" ]] || return 0
-
-  local tool_block tool_name tool_input
-  tool_block="$(
-    jq -c 'try (.message.content[] | select(.type=="tool_use")) catch empty' \
-      2>/dev/null <<<"$raw_line" | head -n 1
-  )"
-  [[ -z "$tool_block" ]] && return 0
-  tool_name="$(jq -r '.name // ""' 2>/dev/null <<<"$tool_block")"
-  tool_input="$(jq -c '.input // {}' 2>/dev/null <<<"$tool_block")"
-  [[ -z "$tool_name" ]] && return 0
-  render_semantic_progress "$tool_name" "$tool_input" "$output_file"
-}
-
-render_semantic_progress() {
-  local tool_name="$1"
-  local tool_input="$2"
-  local output_file="${3:-}"
-
-  case "$tool_name" in
-    Read|Glob|Grep|NotebookRead|WebFetch|WebSearch|LS|ListMcpResources)
-      printf '[%s] Inspecting repository or tracker state\n' "$RUNNER_NAME"
-      ;;
-    Edit|Write|MultiEdit|NotebookEdit)
-      local file_path
-      file_path="$(jq -r '.file_path // .notebook_path // ""' 2>/dev/null <<<"$tool_input")"
-      advance_checkpoint_state "mutating" "$output_file"
-      if [[ -n "$file_path" && "$file_path" != "null" ]]; then
-        printf '[%s] Editing %s\n' "$RUNNER_NAME" "$file_path"
-      else
-        printf '[%s] Editing files\n' "$RUNNER_NAME"
-      fi
-      ;;
-    Bash)
-      local cmd
-      cmd="$(jq -r '.command // ""' 2>/dev/null <<<"$tool_input")"
-      render_bash_progress "$cmd" "$output_file"
-      ;;
-    TodoWrite|Task)
-      printf '[%s] Planning the next worker step\n' "$RUNNER_NAME"
-      ;;
-    *)
-      printf '[%s] Worker tool: %s\n' "$RUNNER_NAME" "$tool_name"
-      ;;
-  esac
-}
-
-render_bash_progress() {
-  local cmd="$1"
-  local output_file="${2:-}"
-
-  if [[ -z "$cmd" || "$cmd" == "null" ]]; then
-    printf '[%s] Running shell command\n' "$RUNNER_NAME"
-    return
-  fi
-
-  case "$cmd" in
-    "gh issue view "*)
-      local issue_number
-      issue_number="$(printf '%s\n' "$cmd" | sed -nE 's/^gh issue view[[:space:]]+([0-9]+).*/\1/p')"
-      if [[ -n "$issue_number" ]]; then
-        record_identified_issue "$issue_number" "$output_file"
-      else
-        printf '[%s] Inspecting issue tracker\n' "$RUNNER_NAME"
-      fi
-      ;;
-    "gh pr create"*)
-      advance_checkpoint_state "pr_created" "$output_file"
-      printf '[%s] Creating pull request\n' "$RUNNER_NAME"
-      ;;
-    "gh pr merge"*|"gh pr close"*)
-      advance_checkpoint_state "pr_merged" "$output_file"
-      printf '[%s] Merging or closing pull request\n' "$RUNNER_NAME"
-      ;;
-    "gh issue close"*)
-      advance_checkpoint_state "issue_closed" "$output_file"
-      printf '[%s] Closing issue\n' "$RUNNER_NAME"
-      ;;
-    "gh issue"*)
-      printf '[%s] Inspecting issue tracker\n' "$RUNNER_NAME"
-      ;;
-    "git push"*)
-      advance_checkpoint_state "branch_pushed" "$output_file"
-      printf '[%s] Pushing branch\n' "$RUNNER_NAME"
-      ;;
-    "git commit"*)
-      advance_checkpoint_state "mutating" "$output_file"
-      printf '[%s] Committing changes\n' "$RUNNER_NAME"
-      ;;
-    "git merge"*|"git rebase"*)
-      printf '[%s] Merging or rebasing branch\n' "$RUNNER_NAME"
-      ;;
-    *code-review*|*"/code-review"*)
-      printf '[%s] Reviewing changes\n' "$RUNNER_NAME"
-      ;;
-    *npm*test*|*bats*|*pytest*|*cargo*test*|*swift*test*|*jest*|*mocha*|*bash*tests/*|*"go test"*)
-      advance_checkpoint_state "mutating" "$output_file"
-      printf '[%s] Running tests or verification\n' "$RUNNER_NAME"
-      ;;
-    *)
-      printf '[%s] Running shell command\n' "$RUNNER_NAME"
-      ;;
-  esac
-}
-
 # Records the issue number identified by the worker and transitions the
 # checkpoint to "issue_selected". The renderer subshell cannot propagate
 # variables back to the supervisor, so the issue is also persisted to the
@@ -936,123 +816,12 @@ finalize_attempt_state() {
   esac
 }
 
-# Redact common credential shapes from arbitrary assistant text. The raw text
-# still ends up in OUTPUT_FILE for the failure diagnostic path.
+# Backward-compatible alias for the historical `redact_secrets` name. The
+# runtime adapter exposes the implementation under the agent-scoped
+# `claude_runtime_redact` function; orchestration code that still imports
+# the old name keeps working through this shim.
 redact_secrets() {
-  sed -E \
-    -e 's/[Aa]uthorization([[:space:][:punct:]]+[A-Za-z0-9._~+/-]+)+/<redacted:authorization>/g' \
-    -e 's/[Bb]earer[[:space:][:punct:]]+[A-Za-z0-9._~+/-]{6,}/<redacted:bearer>/g' \
-    -e "s/(api[_-]?key|secret|password|access[_-]?token|auth[_-]?token)['\"[:space:]]*[:=]['\"[:space:]]*[A-Za-z0-9._~+/-]+/\1=<redacted>/gI" \
-    -e 's/(ghp_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|ghu_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)/<redacted:credential>/g' \
-    -e 's/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/<redacted:private-key>/g'
-}
-
-# Reads the worker stdout stream, persists raw lines to OUTPUT_FILE so existing
-# status-marker extraction continues to work, and renders redacted semantic
-# progress to the operator's stdout. Plain-text output from non-streaming
-# workers is forwarded unchanged. The side-channel timestamp file at
-# "$1.touch" lets the heartbeat loop suppress the empty-interval message while
-# events are still flowing. The side-channel file at "$1.issue" carries the
-# identified issue number from the renderer subshell back to the supervisor
-# so the final checkpoint (written in the parent process after the worker
-# exits) records the correct issue identity.
-render_stream_pipeline() {
-  local output_file="$1"
-  local touch_file="${output_file}.touch"
-  local issue_file="${output_file}.issue"
-  local session_file="${output_file}.session"
-  local raw_line
-
-  : > "$issue_file"
-  : > "$session_file"
-
-  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
-    [[ -z "$raw_line" ]] && continue
-
-    printf '%s\n' "$raw_line" >> "$output_file"
-
-    if ! stream_event_is_object "$raw_line"; then
-      printf '%s\n' "$raw_line"
-      continue
-    fi
-
-    case "$(stream_event_field 'type' "$raw_line")" in
-      assistant)
-        render_stream_event "$raw_line" "$output_file"
-        : > "$touch_file"
-        ;;
-      system)
-        if [[ "$(stream_event_field 'subtype' "$raw_line")" == "init" ]]; then
-          local sid
-          sid="$(jq -r '.session_id // ""' 2>/dev/null <<<"$raw_line")"
-          if [[ -n "$sid" && "$sid" != "null" ]]; then
-            printf '%s' "$sid" > "$session_file"
-          fi
-        fi
-        ;;
-      result)
-        local result_text
-        result_text="$(jq -r '.result // ""' 2>/dev/null <<<"$raw_line")"
-        if [[ -n "$result_text" && "$result_text" != "null" ]]; then
-          # Persist the assistant's final text on its own lines so existing
-          # status-marker extraction (sed -n s/^PREFIX/p) still finds the line.
-          printf '%s\n' "$result_text" >> "$output_file"
-          printf '[%s] Worker finished (see %s for full output)\n' \
-            "$RUNNER_NAME" "$output_file"
-        fi
-        ;;
-    esac
-  done
-}
-
-invoke_worker() {
-  local prompt="$1"
-  local session_id="${2:-}"
-  local -a claude_args
-
-  claude_args=(
-    --print
-    --permission-mode "$PERMISSION_MODE"
-    --name "${RUNNER_NAME}-${ITERATION}"
-  )
-
-  if [[ -n "$session_id" ]]; then
-    claude_args+=(--resume "$session_id")
-  else
-    claude_args+=(--no-session-persistence)
-  fi
-
-  if [[ "$STREAM_OUTPUT" == "true" ]]; then
-    # `--print` requires `--verbose` whenever `--output-format stream-json`
-    # is requested; without it the CLI aborts before producing any output.
-    claude_args+=(--output-format stream-json --verbose)
-  fi
-
-  claude_args+=("$prompt")
-
-  if command -v "$CLAUDE_COMMAND" >/dev/null 2>&1; then
-    "$CLAUDE_COMMAND" "${claude_args[@]}"
-    return
-  fi
-
-  [[ -r "$CLAUDE_RC_FILE" ]] || \
-    die "shell command not found and init file is not readable: ${CLAUDE_RC_FILE}"
-
-  "$CLAUDE_SHELL" --noprofile --norc -c '
-    runner_command="$1"
-    runner_rc_file="$2"
-    shift 2
-
-    enable() {
-      if [[ "$*" == *flyline* ]]; then
-        return 0
-      fi
-      builtin enable "$@"
-    }
-
-    source "$runner_rc_file"
-    "$runner_command" "$@"
-  ' "$RUNNER_NAME" "$CLAUDE_COMMAND" "$CLAUDE_RC_FILE" "${claude_args[@]}"
+  claude_runtime_redact
 }
 
 run_worker_with_progress() {
@@ -1069,14 +838,14 @@ run_worker_with_progress() {
   write_lock_status "worker_running" 0
 
   if [[ "$STREAM_OUTPUT" == "true" ]]; then
-    sink=render_stream_pipeline
+    sink=claude_runtime_render_stream
   else
     sink=tee
   fi
 
   {
     set +e
-    invoke_worker "$prompt" "$session_id"
+    claude_runtime_invoke "$prompt" "$session_id"
     printf '%s\n' "$?" > "$exit_file"
   } 2>&1 | "$sink" "$output_file" &
   pipeline_pid=$!
@@ -1314,7 +1083,16 @@ attempt_with_recovery() {
   done
 }
 
+# Source the runtime adapter (the CLI-specific code). The orchestrator
+# below must not parse Claude stream JSON or build the `claude-minimax`
+# command directly; every CLI-shaped concern lives in the adapter so a
+# later ticket can add Codex/OpenCode adapters without duplicating the
+# orchestration loop. Sourcing after SCRIPT_DIR is resolved so the adapter
+# path is anchored to the script directory regardless of `cd` state.
 SCRIPT_DIR="$(resolve_script_dir)"
+RUNTIME_ADAPTER="${SCRIPT_DIR}/runtime/claude-adapter.sh"
+# shellcheck source=agent/claude-minimax-issue-runner/runtime/claude-adapter.sh
+source "$RUNTIME_ADAPTER"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 REPOSITORY="${1:-.}"
 BASE_BRANCH="${ISSUE_RUNNER_BASE_BRANCH:-main}"
