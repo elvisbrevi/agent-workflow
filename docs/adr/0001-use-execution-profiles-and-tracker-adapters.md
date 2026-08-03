@@ -1,0 +1,7 @@
+# Use execution profiles and tracker adapters
+
+`issue-killer` will separate autonomous issue orchestration from both the agent CLI and the issue tracker. Operators select a named, validated execution profile rather than independently combining a CLI and model; CLI adapters translate that profile for Claude, Codex, or OpenCode, while tracker adapters provide equivalent lifecycle operations through GitHub `gh` or Azure DevOps `az`. This avoids invalid runtime combinations and prevents provider-specific event, permission, recovery, and tracker semantics from leaking back into the orchestration loop.
+
+OpenCode profiles may additionally form an ordered fallback chain because OpenCode can continue a session with another configured provider/model. Automatic fallback is restricted to explicit provider failures such as exhausted quota or subscription, persistent rate limiting, or model unavailability; ordinary transport, implementation, and context-window failures keep their existing stop/retry behavior. The selected profile and remaining chain are checkpointed so recovery cannot silently change execution behavior.
+
+Renaming the existing runner is a one-way migration: installations move to `issue-killer` without a permanent legacy alias, while the new runner detects active legacy locks and safely adopts a valid legacy checkpoint once. Tracker selection is repository-owned and derived from the Git remote plus `docs/agents/issue-tracker.md`, rather than being coupled to a machine-level execution profile.
