@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="${ROOT_DIR}/agent/claude-minimax-issue-runner/run.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claude-minimax-runner.XXXXXX")"
+TEST_BIN="${TEST_ROOT}/bin"
+mkdir -p "$TEST_BIN"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$1 $2" in' \
+  '  "auth status") printf "%s\\n" "Logged in to github.com" ;;' \
+  '  "api repos/"*) printf "%s\\n" "0" ;;' \
+  '  "issue view") printf "%s\\n" '\''{"state":"OPEN","labels":[{"name":"ready-for-agent"}],"assignees":[]} '\'' ;;' \
+  '  "pr list") printf "%s\\n" "[]" ;;' \
+  '  *) printf "unexpected gh call: %s\\n" "$*" >&2; exit 1 ;;' \
+  'esac' > "${TEST_BIN}/gh"
+chmod +x "${TEST_BIN}/gh"
+export PATH="${TEST_BIN}:$PATH"
 TESTS_RUN=0
 
 cleanup() {
@@ -28,7 +41,12 @@ new_repo() {
   git -C "$path" config user.name "Runner Test"
   git -C "$path" config user.email "runner@example.test"
   printf '%s\n' '# fixture' > "${path}/README.md"
-  git -C "$path" add README.md
+  mkdir -p "${path}/docs/agents"
+  printf '%s\n' \
+    '# Issue Tracker: GitHub' \
+    '' \
+    'Use the `gh` CLI for all operations.' > "${path}/docs/agents/issue-tracker.md"
+  git -C "$path" add README.md docs/agents/issue-tracker.md
   git -C "$path" commit --quiet -m "test: seed"
   git -C "$path" remote add origin https://github.com/example/recovery-fixture.git
 }
@@ -267,6 +285,91 @@ test_shell_function_loader_skips_interactive_only_startup() {
   fi
 
   pass 'shell-defined worker loads without interactive Flyline startup'
+}
+
+test_tracker_preflight_rejects_missing_cli() {
+  local repo="${TEST_ROOT}/tracker-missing-cli-repo"
+  local fake="${TEST_ROOT}/tracker-missing-cli-worker"
+  local output="${TEST_ROOT}/tracker-missing-cli-output.log"
+  local bin_dir="${TEST_ROOT}/tracker-missing-cli-bin"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '${TEST_ROOT}/tracker-missing-cli-worker-ran'" > "$fake"
+  chmod +x "$fake"
+  mkdir -p "$bin_dir"
+  ln -s "$(command -v jq)" "${bin_dir}/jq"
+
+  set +e
+  PATH="${bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "Missing tracker CLI must fail before launch, got ${status}"
+  grep -Fq 'gh is required' "$output" || fail 'Missing GitHub CLI diagnostic'
+  [[ ! -e "${TEST_ROOT}/tracker-missing-cli-worker-ran" ]] || \
+    fail 'Worker launched when the tracker CLI was missing'
+
+  pass 'tracker preflight rejects a missing GitHub CLI before worker launch'
+}
+
+test_tracker_preflight_rejects_ambiguous_remote() {
+  local repo="${TEST_ROOT}/tracker-ambiguous-remote-repo"
+  local fake="${TEST_ROOT}/tracker-ambiguous-remote-worker"
+  local output="${TEST_ROOT}/tracker-ambiguous-remote-output.log"
+  local marker="${TEST_ROOT}/tracker-ambiguous-remote-worker-ran"
+  local status
+
+  new_repo "$repo"
+  git -C "$repo" remote add upstream https://github.com/other/repository.git
+  printf '%s\n' '#!/usr/bin/env bash' "touch '$marker'" > "$fake"
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "Ambiguous tracker remotes must fail, got ${status}"
+  grep -Fq 'ambiguous GitHub remotes' "$output" || \
+    fail 'Missing ambiguous-remote diagnostic'
+  [[ ! -e "$marker" ]] || fail 'Worker launched for an ambiguous tracker remote'
+
+  pass 'tracker preflight rejects conflicting GitHub remotes before worker launch'
+}
+
+test_tracker_preflight_rejects_conflicting_documentation() {
+  local repo="${TEST_ROOT}/tracker-conflicting-docs-repo"
+  local fake="${TEST_ROOT}/tracker-conflicting-docs-worker"
+  local output="${TEST_ROOT}/tracker-conflicting-docs-output.log"
+  local marker="${TEST_ROOT}/tracker-conflicting-docs-worker-ran"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '# Issue Tracker: Azure DevOps' > "${repo}/docs/agents/issue-tracker.md"
+  git -C "$repo" add docs/agents/issue-tracker.md
+  git -C "$repo" commit --quiet -m 'test: conflicting tracker docs'
+  printf '%s\n' '#!/usr/bin/env bash' "touch '$marker'" > "$fake"
+  chmod +x "$fake"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  CLAUDE_MINIMAX_COMMAND="$fake" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "Conflicting tracker docs must fail, got ${status}"
+  grep -Fq 'tracker documentation' "$output" || \
+    fail 'Missing tracker documentation diagnostic'
+  [[ ! -e "$marker" ]] || fail 'Worker launched with conflicting tracker documentation'
+
+  pass 'tracker preflight validates repository-owned tracker documentation'
 }
 
 # --- Streaming JSON progress tests (issue #1) -------------------------------
@@ -1682,6 +1785,9 @@ write_github_state_fixture() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$calls_file"
 case "\$1 \$2" in
+  "auth status")
+    printf '%s\n' 'Logged in to github.com'
+    ;;
   "api repos/example/recovery-fixture/issues/"*)
     printf '%s\n' '0'
     ;;
@@ -2001,6 +2107,9 @@ EOF
   cat > "$fake_gh" <<'PROLOG'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "auth status")
+    printf '%s\n' 'Logged in to github.com'
+    ;;
   "api repos/example/recovery-fixture/issues/"*)
     printf '%s\n' '0'
     ;;
@@ -2040,6 +2149,10 @@ PROLOG
 
   pass 'restart recovery does not duplicate effects for an already closed issue'
 }
+
+test_tracker_preflight_rejects_missing_cli
+test_tracker_preflight_rejects_ambiguous_remote
+test_tracker_preflight_rejects_conflicting_documentation
 
 test_fresh_shell_per_issue
 test_unknown_status_stops_loop
