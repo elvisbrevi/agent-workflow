@@ -133,28 +133,11 @@ claude_runtime_decode_bash() {
     return
   fi
 
+  if tracker_runtime_decode_command "$cmd"; then
+    return 0
+  fi
+
   case "$cmd" in
-    "gh issue view "*)
-      local issue_number
-      issue_number="$(printf '%s\n' "$cmd" | sed -nE 's/^gh issue view[[:space:]]+([0-9]+).*/\1/p')"
-      if [[ -n "$issue_number" ]]; then
-        printf 'identify\t%s\n' "$issue_number"
-      else
-        printf 'tracker\t\n'
-      fi
-      ;;
-    "gh pr create"*)
-      printf 'pr_create\t\n'
-      ;;
-    "gh pr merge"*|"gh pr close"*)
-      printf 'pr_close\t\n'
-      ;;
-    "gh issue close"*)
-      printf 'close\t\n'
-      ;;
-    "gh issue"*)
-      printf 'tracker\t\n'
-      ;;
     "git push"*)
       printf 'push\t\n'
       ;;
