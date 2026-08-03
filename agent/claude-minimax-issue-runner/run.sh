@@ -67,6 +67,11 @@ write_lock_status() {
     if [[ -n "${RECOVERY_CATEGORY:-}" ]]; then
       printf 'recovery_category=%s\n' "${RECOVERY_CATEGORY}"
     fi
+    if [[ -n "${ISSUE_KILLER_PROFILE_NAME:-}" ]]; then
+      printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
+      printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
+      printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+    fi
   } > "$status_tmp"
   mv -f "$status_tmp" "${LOCK_DIR}/status"
 }
@@ -134,6 +139,16 @@ write_checkpoint() {
       printf 'session_id=%s\n' "${CHECKPOINT_SESSION_ID}"
     else
       printf 'session_id=unavailable\n'
+    fi
+    # Persist the profile identity so a restart cannot silently
+    # change CLI, model, or fallback chain. Credentials and prompts
+    # remain excluded; the runner only records the names and
+    # identifiers needed to re-invoke the same profile.
+    if [[ -n "${ISSUE_KILLER_PROFILE_NAME:-}" ]]; then
+      printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
+      printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
+      printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+      printf 'command=%s\n' "$ISSUE_KILLER_PROFILE_COMMAND"
     fi
     printf 'state=%s\n' "$state"
     printf 'updated_at=%s\n' "$(timestamp)"
@@ -407,8 +422,20 @@ confirm_destructive_run() {
     die "confirmation requires a TTY; set ISSUE_RUNNER_ASSUME_YES=true only after explicit authorization"
   fi
 
-  printf 'This will use Claude permission mode %s, repeatedly merge PRs into %s, and close issues. Continue? [y/N] ' \
-    "$PERMISSION_MODE" "$BASE_BRANCH" >/dev/tty
+  printf 'About to launch issue-killer repeatedly against %s with these settings:\n' "$REPO_ROOT" >/dev/tty
+  printf '  profile:      %s (%s)\n' \
+    "$ISSUE_KILLER_PROFILE_NAME" "$ISSUE_KILLER_PROFILE_LABEL" >/dev/tty
+  printf '  cli:          %s\n' "$ISSUE_KILLER_PROFILE_CLI" >/dev/tty
+  printf '  model:        %s\n' "$ISSUE_KILLER_PROFILE_MODEL" >/dev/tty
+  printf '  autonomy:     permission_mode=%s\n' "$PERMISSION_MODE" >/dev/tty
+  printf '  tracker:      github\n' >/dev/tty
+  printf '  base branch:  %s\n' "$BASE_BRANCH" >/dev/tty
+  if [[ -n "$ISSUE_KILLER_PROFILE_FALLBACKS" ]]; then
+    printf '  fallbacks:    %s\n' \
+      "$(printf '%s, ' $ISSUE_KILLER_PROFILE_FALLBACKS | sed 's/, $//')" >/dev/tty
+  fi
+  printf 'This will repeatedly merge PRs into %s and close issues. Continue? [y/N] ' \
+    "$BASE_BRANCH" >/dev/tty
   IFS= read -r answer </dev/tty || die "unable to read confirmation"
   [[ "$answer" =~ ^[Yy]$ ]] || die "cancelled"
 }
@@ -466,7 +493,7 @@ require_recovery_tty_confirmation() {
 validate_checkpoint_for_dirty_recovery() {
   local checkpoint="$1"
   local issue branch base_branch base_sha state
-  local current
+  local current profile cli model command_name
 
   [[ -r "$checkpoint" ]] || \
     emit_recovery_required "dirty worktree requires a readable checkpoint or explicit legacy adoption"
@@ -492,6 +519,26 @@ validate_checkpoint_for_dirty_recovery() {
     emit_recovery_required "checkpoint base SHA ${base_sha} is stale or unavailable"
   [[ -n "$state" ]] || \
     emit_recovery_required "checkpoint is missing a lifecycle state"
+
+  # Checkpoints written before the profile migration may not carry
+  # the profile/CLI/model fields. A legacy checkpoint is allowed
+  # here only when no profile was selected for the current run; any
+  # mismatch between the live profile and the persisted identity
+  # fails closed so a restart cannot silently change the runtime.
+  profile="$(checkpoint_value profile "$checkpoint")"
+  cli="$(checkpoint_value cli "$checkpoint")"
+  model="$(checkpoint_value model "$checkpoint")"
+  command_name="$(checkpoint_value command "$checkpoint")"
+  if [[ -n "$profile" || -n "$cli" || -n "$model" || -n "$command_name" ]]; then
+    [[ "$profile" == "$ISSUE_KILLER_PROFILE_NAME" ]] || \
+      emit_recovery_required "checkpoint profile ${profile:-unknown} does not match selected profile ${ISSUE_KILLER_PROFILE_NAME:-unknown}"
+    [[ "$cli" == "$ISSUE_KILLER_PROFILE_CLI" ]] || \
+      emit_recovery_required "checkpoint cli ${cli:-unknown} does not match selected cli ${ISSUE_KILLER_PROFILE_CLI:-unknown}"
+    [[ "$model" == "$ISSUE_KILLER_PROFILE_MODEL" ]] || \
+      emit_recovery_required "checkpoint model ${model:-unknown} does not match selected model ${ISSUE_KILLER_PROFILE_MODEL:-unknown}"
+    [[ "$command_name" == "$ISSUE_KILLER_PROFILE_COMMAND" ]] || \
+      emit_recovery_required "checkpoint command ${command_name:-unknown} does not match selected command ${ISSUE_KILLER_PROFILE_COMMAND:-unknown}"
+  fi
 }
 
 write_legacy_checkpoint() {
@@ -510,6 +557,12 @@ write_legacy_checkpoint() {
     printf 'base_sha=%s\n' "$(current_base_sha)"
     printf 'session_id=unavailable\n'
     printf 'state=legacy_adopted\n'
+    if [[ -n "${ISSUE_KILLER_PROFILE_NAME:-}" ]]; then
+      printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
+      printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
+      printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+      printf 'command=%s\n' "$ISSUE_KILLER_PROFILE_COMMAND"
+    fi
     printf 'updated_at=%s\n' "$(timestamp)"
   } > "$tmp"
   mv -f "$tmp" "$target"
@@ -940,19 +993,50 @@ attempt_with_recovery() {
 SCRIPT_DIR="$(resolve_script_dir)"
 TRACKER_ADAPTER="${SCRIPT_DIR}/tracker/github-adapter.sh"
 RUNTIME_ADAPTER="${SCRIPT_DIR}/runtime/claude-adapter.sh"
+CONFIG_ADAPTER="${SCRIPT_DIR}/config/issue-killer-config.sh"
+# shellcheck source=agent/claude-minimax-issue-runner/config/issue-killer-config.sh
+source "$CONFIG_ADAPTER"
 # shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
 source "$TRACKER_ADAPTER"
 # shellcheck source=agent/claude-minimax-issue-runner/runtime/claude-adapter.sh
 source "$RUNTIME_ADAPTER"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
-REPOSITORY="${1:-.}"
+
+# Parse the optional positional repository argument together with the
+# optional `--config <path>` flag. The legacy positional form is
+# preserved so existing shell invocations keep working.
+CONFIG_PATH_OVERRIDE=""
+REPOSITORY=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      [[ $# -ge 2 ]] || die "--config requires a path argument"
+      CONFIG_PATH_OVERRIDE="$2"
+      shift 2
+      ;;
+    --config=*)
+      CONFIG_PATH_OVERRIDE="${1#--config=}"
+      shift
+      ;;
+    --help|-h)
+      printf 'usage: %s [--config <path>] [repository]\n' "$RUNNER_NAME"
+      exit 0
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      [[ -z "$REPOSITORY" ]] || die "only one repository argument is accepted"
+      REPOSITORY="$1"
+      shift
+      ;;
+  esac
+done
+REPOSITORY="${REPOSITORY:-.}"
+
 BASE_BRANCH="${ISSUE_RUNNER_BASE_BRANCH:-main}"
 MAX_ITERATIONS="${ISSUE_RUNNER_MAX_ITERATIONS:-0}"
 PROGRESS_INTERVAL="${ISSUE_RUNNER_PROGRESS_INTERVAL:-30}"
-CLAUDE_COMMAND="${CLAUDE_MINIMAX_COMMAND:-claude-minimax}"
-CLAUDE_SHELL="${CLAUDE_MINIMAX_SHELL:-bash}"
-CLAUDE_RC_FILE="${CLAUDE_MINIMAX_RC_FILE:-${HOME}/.bashrc}"
-PERMISSION_MODE="${CLAUDE_MINIMAX_PERMISSION_MODE:-bypassPermissions}"
 STREAM_OUTPUT="${ISSUE_RUNNER_STREAM_OUTPUT:-true}"
 RETRY_DELAY_VALUES=()
 TRANSIENT_PATTERN_VALUES=()
@@ -960,8 +1044,63 @@ RECOVERY_ATTEMPT=0
 RECOVERY_CATEGORY=""
 RECOVERY_DELAY=""
 ITERATION=0
+ISSUE_KILLER_PROFILE_NAME=""
+ISSUE_KILLER_PROFILE_LABEL=""
+ISSUE_KILLER_PROFILE_CLI=""
+ISSUE_KILLER_PROFILE_COMMAND=""
+ISSUE_KILLER_PROFILE_MODEL=""
+ISSUE_KILLER_PROFILE_SHELL=""
+ISSUE_KILLER_PROFILE_INIT_FILE=""
+ISSUE_KILLER_PROFILE_OPTIONS=""
+ISSUE_KILLER_PROFILE_FALLBACKS=""
 
-[[ $# -le 1 ]] || die "usage: ${RUNNER_NAME} [repository]"
+# Resolve and load the operator's TOML configuration. The runner
+# refuses to launch without a profile: the destructive confirmation,
+# checkpoint persistence, and recovery enforcement all rely on the
+# canonical profile identity the loader establishes.
+ISSUE_KILLER_CONFIG_PATH="$(issue_killer_config_resolve_path ${CONFIG_PATH_OVERRIDE:+--config "$CONFIG_PATH_OVERRIDE"})"
+issue_killer_config_load "$ISSUE_KILLER_CONFIG_PATH" || \
+  die "issue-killer configuration is invalid; edit ${ISSUE_KILLER_CONFIG_PATH} and retry"
+
+# Select a profile: the operator chooses interactively when a TTY is
+# available, otherwise the configured `default_profile` is used
+# deterministically. The runner never picks a CLI/model outside the
+# declared profile set.
+if [[ -r /dev/tty && -t 0 && -t 1 ]]; then
+  SELECTED_PROFILE="$(
+    issue_killer_config_prompt_profile \
+      "$(issue_killer_config_lookup top.default_profile)"
+  )" || die "unable to select an execution profile"
+else
+  SELECTED_PROFILE=""
+  issue_killer_config_select_default_profile || \
+    die "non-interactive launch requires a valid default_profile in ${ISSUE_KILLER_CONFIG_PATH}"
+  SELECTED_PROFILE="$ISSUE_KILLER_PROFILE_NAME"
+fi
+issue_killer_config_apply_profile "$SELECTED_PROFILE" || \
+  die "profile ${SELECTED_PROFILE} is invalid"
+
+# Project the selected profile onto the legacy runtime variables the
+# adapter consumes. The adapter treats these as the single source of
+# truth for the worker invocation.
+CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
+CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
+CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
+PERMISSION_MODE="bypassPermissions"
+if [[ -n "$ISSUE_KILLER_PROFILE_OPTIONS" ]]; then
+  option_line=""
+  option_key=""
+  option_value=""
+  while IFS= read -r option_line; do
+    [[ -z "$option_line" ]] && continue
+    option_key="${option_line%%=*}"
+    option_value="${option_line#*=}"
+    case "$option_key" in
+      permission_mode) PERMISSION_MODE="$option_value" ;;
+    esac
+  done <<<"$ISSUE_KILLER_PROFILE_OPTIONS"
+fi
+
 [[ -f "$PROMPT_FILE" ]] || die "worker prompt not found: ${PROMPT_FILE}"
 [[ "$BASE_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid base branch: ${BASE_BRANCH}"
 [[ "$STREAM_OUTPUT" =~ ^(true|false)$ ]] || \
