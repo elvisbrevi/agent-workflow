@@ -34,6 +34,56 @@ pass() {
   printf 'PASS: %s\n' "$1"
 }
 
+# Writes a minimal issue-killer configuration that selects the supplied
+# command as the default Claude profile. The command is invoked either
+# as a directly executable program or as a shell function loaded from
+# the supplied init file. Tests that need a non-default profile should
+# write their own TOML and point ISSUE_KILLER_CONFIG_PATH at it.
+write_default_config() {
+  local target="$1"
+  local command_name="$2"
+  local shell_name="${3:-}"
+  local init_file="${4:-}"
+  local permission_mode="${5:-bypassPermissions}"
+
+  {
+    printf 'default_profile = "default"\n'
+    printf '\n'
+    printf '[profiles.default]\n'
+    printf 'label = "Test profile"\n'
+    printf 'cli = "claude"\n'
+    printf 'command = "%s"\n' "$command_name"
+    printf 'model = "test-model"\n'
+    if [[ -n "$shell_name" ]]; then
+      printf 'shell = "%s"\n' "$shell_name"
+    fi
+    if [[ -n "$init_file" ]]; then
+      printf 'init_file = "%s"\n' "$init_file"
+    fi
+    printf '\n'
+    printf '[profiles.default.options]\n'
+    printf 'permission_mode = "%s"\n' "$permission_mode"
+  } > "$target"
+}
+
+# Convenience helper for tests that previously used
+# CLAUDE_MINIMAX_COMMAND. Generates a config that names the supplied
+# executable and echoes the path to stdout so the caller can bind
+# `ISSUE_KILLER_CONFIG_PATH` to that exact path on the same line as
+# the runner invocation. A separate env-binding line is required
+# because chained `&&` commands in bash do not propagate env-var
+# prefixes from the previous line.
+use_config_for_command() {
+  local command_name="$1"
+  local shell_name="${2:-}"
+  local init_file="${3:-}"
+  local config_path="${TEST_ROOT}/config.toml"
+
+  write_default_config "$config_path" "$command_name" "$shell_name" "$init_file"
+  unset CLAUDE_MINIMAX_COMMAND CLAUDE_MINIMAX_SHELL CLAUDE_MINIMAX_RC_FILE CLAUDE_MINIMAX_PERMISSION_MODE
+  printf '%s\n' "$config_path"
+}
+
 new_repo() {
   local path="$1"
   mkdir -p "$path"
@@ -58,6 +108,7 @@ test_fresh_shell_per_issue() {
   local count_file="${TEST_ROOT}/function-count"
   local source_file="${TEST_ROOT}/function-shell-starts"
   local args_file="${TEST_ROOT}/function-args"
+  local config_path="${TEST_ROOT}/function-config.toml"
 
   mkdir -p "$home"
   new_repo "$repo"
@@ -77,11 +128,14 @@ test_fresh_shell_per_issue() {
     '  fi' \
     '}' > "${home}/.bashrc"
 
+  write_default_config "$config_path" "claude-minimax" "bash" "${home}/.bashrc"
+
   HOME="$home" \
   RUNNER_TEST_COUNT_FILE="$count_file" \
   RUNNER_TEST_SOURCE_FILE="$source_file" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Runner did not drain the simulated queue'
 
   [[ "$(<"$count_file")" == "2" ]] || fail 'Expected exactly two Claude-MiniMax workers'
@@ -110,7 +164,7 @@ test_unknown_status_stops_loop() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -135,7 +189,7 @@ test_dirty_worktree_is_rejected() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -163,7 +217,7 @@ test_progress_is_reported_while_worker_runs() {
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Progress fixture did not finish'
 
   grep -Fq 'Worker 1 still running (elapsed ' "$output" || \
@@ -197,7 +251,7 @@ test_repository_lock_rejects_second_runner() {
   RUNNER_TEST_RELEASE="$release" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$first_output" 2>&1 &
   first_pid=$!
 
@@ -213,7 +267,7 @@ test_repository_lock_rejects_second_runner() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$worktree" >"$second_output" 2>&1
   status=$?
   set -e
@@ -252,7 +306,7 @@ test_stale_repository_lock_is_recovered() {
   chmod +x "$fake"
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Runner did not recover stale lock'
 
   grep -Fq 'Recovered stale repository lock (previous pid 999999).' "$output" || \
@@ -266,6 +320,7 @@ test_shell_function_loader_skips_interactive_only_startup() {
   local home="${TEST_ROOT}/startup-home"
   local repo="${TEST_ROOT}/startup-repo"
   local output="${TEST_ROOT}/startup-output.log"
+  local config_path="${TEST_ROOT}/startup-config.toml"
 
   mkdir -p "$home"
   new_repo "$repo"
@@ -275,8 +330,11 @@ test_shell_function_loader_skips_interactive_only_startup() {
     '  printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
     '}' > "${home}/.bashrc"
 
+  write_default_config "$config_path" "claude-minimax" "bash" "${home}/.bashrc"
+
   HOME="$home" \
   ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Runner did not invoke the shell-defined worker'
 
@@ -303,7 +361,7 @@ test_tracker_preflight_rejects_missing_cli() {
   set +e
   PATH="${bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin" \
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -330,7 +388,7 @@ test_tracker_preflight_rejects_ambiguous_remote() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -359,7 +417,7 @@ test_tracker_preflight_rejects_conflicting_documentation() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -436,7 +494,7 @@ test_streaming_worker_renders_semantic_progress() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Streaming fixture did not finish'
 
   grep -Fq 'Inspecting' "$output" || \
@@ -480,7 +538,7 @@ test_streaming_silent_worker_heartbeats() {
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Silent streaming fixture did not finish'
 
   grep -Fq 'Worker 1 still running (elapsed ' "$output" || \
@@ -506,7 +564,7 @@ test_streaming_heartbeat_suppressed_while_events_flow() {
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Active streaming fixture did not finish'
 
   if grep -Fq 'Worker 1 still running (elapsed ' "$output"; then
@@ -527,7 +585,7 @@ test_streaming_worker_redacts_secrets_and_redacts_full_prompts() {
     '{"type":"result","subtype":"success","result":"echoed: Authorization Bearer gh_super_secret_token_xyz\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Redaction fixture did not finish'
 
   if grep -F 'gh_super_secret_token_xyz' "$output" >/dev/null 2>&1; then
@@ -556,7 +614,7 @@ test_streaming_worker_extracts_each_status_marker() {
 
     set +e
     ISSUE_RUNNER_ASSUME_YES=true \
-    CLAUDE_MINIMAX_COMMAND="${TEST_ROOT}/claude-minimax-${marker}" \
+    ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "${TEST_ROOT}/claude-minimax-${marker}")" \
       "$RUNNER" "${TEST_ROOT}/markers-${marker}-repo" \
       >"${TEST_ROOT}/markers-${marker}-output.log" 2>&1
     local status=$?
@@ -587,7 +645,7 @@ EOF
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -613,7 +671,7 @@ test_streaming_blocked_retains_artifact_path() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -630,6 +688,7 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
   local repo="${TEST_ROOT}/stream-args-repo"
   local output="${TEST_ROOT}/stream-args-output.log"
   local args_file="${TEST_ROOT}/stream-args"
+  local config_path="${TEST_ROOT}/stream-args-config.toml"
   local stream_args_present=true
 
   mkdir -p "$home"
@@ -641,9 +700,12 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
     '  printf "%s\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
     '}' > "${home}/.bashrc"
 
+  write_default_config "$config_path" "claude-minimax" "bash" "${home}/.bashrc"
+
   if ! HOME="$home" \
        RUNNER_TEST_ARGS_FILE="$args_file" \
        ISSUE_RUNNER_ASSUME_YES=true \
+       ISSUE_KILLER_CONFIG_PATH="$config_path" \
          "$RUNNER" "$repo" >"$output" 2>&1; then
     stream_args_present=false
   fi
@@ -696,7 +758,7 @@ test_streaming_worker_identifies_issue_before_first_mutation() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Identify-before-mutation fixture did not finish'
 
@@ -731,7 +793,7 @@ test_checkpoint_records_required_fields_atomically() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || true
 
   [[ -r "$checkpoint_file" ]] || \
@@ -774,7 +836,7 @@ test_checkpoint_does_not_persist_secrets_or_full_commands() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || true
 
   [[ -r "$checkpoint_file" ]] || \
@@ -806,7 +868,7 @@ test_checkpoint_cleared_on_issue_completed() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Completed fixture did not finish'
 
@@ -829,7 +891,7 @@ test_checkpoint_cleared_on_queue_empty() {
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
 
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Empty queue fixture did not finish'
 
@@ -861,7 +923,7 @@ EOF
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   set -e
 
@@ -890,7 +952,7 @@ test_checkpoint_retained_on_blocked_outcome() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   local status=$?
   set -e
@@ -934,7 +996,7 @@ test_lock_status_exposes_checkpoint_identity() {
   RUNNER_TEST_RELEASE="$release" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_PROGRESS_INTERVAL=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 &
   first_pid=$!
 
@@ -1144,7 +1206,7 @@ test_transient_disconnect_retries_with_bounded_backoff() {
   # expect the runner to retry through three total attempts.
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Transient retry fixture did not finish'
 
@@ -1187,7 +1249,7 @@ test_non_transient_disconnect_does_not_retry() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1216,7 +1278,7 @@ test_blocked_outcome_does_not_retry() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1257,7 +1319,7 @@ EOF
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Reconcile fixture did not finish'
 
@@ -1369,10 +1431,12 @@ state=mutating
 updated_at=test
 EOF
 
+  write_default_config "${TEST_ROOT}/resume-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   HOME="$home" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/resume-config.toml" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Resume fixture did not finish'
 
@@ -1434,10 +1498,12 @@ test_session_resume_skipped_when_no_captured_session_id() {
     '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
     '}' > "${home}/.bashrc"
 
+  write_default_config "${TEST_ROOT}/no-session-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   HOME="$home" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/no-session-config.toml" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'No-session fixture did not finish'
 
@@ -1473,7 +1539,7 @@ test_recovery_required_after_exhausted_retries() {
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
   ISSUE_RUNNER_RETRY_LIMIT=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1507,7 +1573,7 @@ test_recovery_required_does_not_advance_to_next_issue() {
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
   ISSUE_RUNNER_RETRY_LIMIT=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1581,7 +1647,7 @@ PROLOG
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1627,7 +1693,7 @@ test_retry_delays_are_configurable() {
 
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="2,3,5" \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
       fail 'Custom delays fixture did not finish'
 
@@ -1698,7 +1764,7 @@ PROLOG
   RUNNER_TEST_RELEASE="$release" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="10" \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1 &
   first_pid=$!
 
@@ -1762,7 +1828,7 @@ PROLOG
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1" \
   ISSUE_RUNNER_RETRY_LIMIT=1 \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1841,7 +1907,7 @@ EOF
   set +e
   PATH="${bin_dir}:$PATH" \
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1880,7 +1946,7 @@ test_legacy_adoption_requires_explicit_issue_number() {
 
   set +e
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -1912,6 +1978,10 @@ set timeout 20
 log_user 1
 eval spawn $env(RUNNER_TEST_COMMAND)
 expect {
+  -re {Profile \[1\]} {
+    send "\r"
+    exp_continue
+  }
   -re {Continue\? \[y/N\]} {
     send "y\r"
     exp_continue
@@ -1978,7 +2048,7 @@ PROLOG
   run_with_recovery_confirmation "$output" \
     env PATH="${bin_dir}:$PATH" \
     ISSUE_RUNNER_ASSUME_YES=true \
-    CLAUDE_MINIMAX_COMMAND="$fake" \
+    ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     RUNNER_TEST_COUNT_FILE="$count_file" \
     RUNNER_TEST_ARGS_FILE="$args" \
     RUNNER_TEST_PROMPT_FILE="$prompt" \
@@ -2050,7 +2120,7 @@ PROLOG
     env PATH="${bin_dir}:$PATH" \
     ISSUE_RUNNER_ASSUME_YES=true \
     ISSUE_RUNNER_ADOPT_ISSUE=55 \
-    CLAUDE_MINIMAX_COMMAND="$fake" \
+    ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     RUNNER_TEST_COUNT_FILE="$count_file" \
     RUNNER_TEST_ARGS_FILE="$args" \
     RUNNER_TEST_PROMPT_FILE="$prompt" \
@@ -2133,7 +2203,7 @@ PROLOG
   set +e
   PATH="${bin_dir}:$PATH" \
   ISSUE_RUNNER_ASSUME_YES=true \
-  CLAUDE_MINIMAX_COMMAND="$fake" \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     "$RUNNER" "$repo" >"$output" 2>&1
   status=$?
   set -e
@@ -2194,5 +2264,385 @@ test_legacy_adoption_requires_explicit_issue_number
 test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint
 test_confirmed_legacy_adoption_creates_checkpoint_and_launches_fresh_worker
 test_restart_recovery_does_not_duplicate_closed_issue
+
+# --- Issue-killer profile selection tests (issue #13) -------------------
+
+write_profile_config() {
+  local target="$1"
+  local default_name="$2"
+  shift 2
+  local profiles_block=""
+  local options_block=""
+
+  printf 'default_profile = "%s"\n' "$default_name" > "$target"
+  for entry in "$@"; do
+    local name label cli command model shell init_file permission_mode
+    name="${entry%%=*}"
+    local rest="${entry#*=}"
+    label="${rest%%|*}"
+    rest="${rest#*|}"
+    cli="${rest%%|*}"
+    rest="${rest#*|}"
+    command="${rest%%|*}"
+    rest="${rest#*|}"
+    model="${rest%%|*}"
+    rest="${rest#*|}"
+    shell="${rest%%|*}"
+    rest="${rest#*|}"
+    init_file="${rest%%|*}"
+    rest="${rest#*|}"
+    permission_mode="$rest"
+
+    {
+      printf '\n[profiles.%s]\n' "$name"
+      printf 'label = "%s"\n' "$label"
+      printf 'cli = "%s"\n' "$cli"
+      printf 'command = "%s"\n' "$command"
+      printf 'model = "%s"\n' "$model"
+      if [[ -n "$shell" ]]; then
+        printf 'shell = "%s"\n' "$shell"
+      fi
+      if [[ -n "$init_file" ]]; then
+        printf 'init_file = "%s"\n' "$init_file"
+      fi
+      printf '\n[profiles.%s.options]\n' "$name"
+      printf 'permission_mode = "%s"\n' "$permission_mode"
+    } >> "$target"
+  done
+}
+
+test_default_profile_used_without_tty() {
+  local repo="${TEST_ROOT}/profile-default-repo"
+  local fake="${TEST_ROOT}/profile-default-worker"
+  local config_path="${TEST_ROOT}/profile-default-config.toml"
+  local output="${TEST_ROOT}/profile-default-output.log"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
+  chmod +x "$fake"
+
+  # The profile uses the direct executable path (no shell/init_file pair)
+  # so the runner selects it through `command -v` rather than a shell
+  # function. The other profile is included to exercise the lookup path
+  # for multiple profiles under the default-profile branch.
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod|claude|${fake}|claude-3|||" \
+    "claude-staging=Claude Staging|claude|/tmp/none|claude-3-5|||acceptEdits"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "Non-interactive default-profile launch exited ${status}; output follows:\n$(cat "$output")"
+
+  # The runner must select the default profile (claude-prod) without
+  # printing the interactive prompt.
+  if grep -Fq 'Select an execution profile:' "$output"; then
+    fail 'Non-interactive launch should not render the profile selector'
+  fi
+  grep -Fq 'ISSUE_KILLER_STATUS=QUEUE_EMPTY' "$output" || \
+    fail 'Default profile worker did not complete'
+
+  pass 'non-interactive launch uses default_profile without prompting'
+}
+
+test_missing_default_profile_rejects_non_tty() {
+  local repo="${TEST_ROOT}/profile-missing-default-repo"
+  local fake="${TEST_ROOT}/profile-missing-default-worker"
+  local config_path="${TEST_ROOT}/profile-missing-default-config.toml"
+  local output="${TEST_ROOT}/profile-missing-default-output.log"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'echo should-not-run; exit 1' > "$fake"
+  chmod +x "$fake"
+
+  # default_profile intentionally references a profile not in the file.
+  write_profile_config "$config_path" "absent-profile" \
+    "claude-prod=Claude Prod|claude|${fake}|claude-3|||bypassPermissions"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || \
+    fail "Missing default_profile must exit 1, got ${status}"
+  grep -Fq 'requires a valid default_profile' "$output" || \
+    fail 'Missing default_profile diagnostic not surfaced'
+  [[ ! -e "$repo/.git/claude-minimax-issue-runner.lock" ]] || \
+    fail 'Runner acquired a lock with an invalid default profile'
+
+  pass 'non-interactive launch fails closed without a valid default_profile'
+}
+
+test_config_rejects_unknown_top_level_key() {
+  local config_path="${TEST_ROOT}/profile-unknown-top.toml"
+  local output="${TEST_ROOT}/profile-unknown-top-output.log"
+
+  printf 'default_profile = "x"\nunknown_field = "bad"\n[profiles.x]\nlabel = "x"\ncli = "claude"\ncommand = "/bin/echo"\nmodel = "x"\n' \
+    > "$config_path"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "${TEST_ROOT}/any-repo" >"$output" 2>&1 || true
+  grep -Fq 'unknown top-level key' "$output" || \
+    fail 'Unknown top-level key not rejected before mutation'
+
+  pass 'config rejects unknown top-level keys before any mutation'
+}
+
+test_config_rejects_unknown_profile_field() {
+  local config_path="${TEST_ROOT}/profile-unknown-field.toml"
+
+  printf 'default_profile = "x"\n[profiles.x]\nlabel = "x"\ncli = "claude"\ncommand = "/bin/echo"\nmodel = "x"\nbogus_field = "bad"\n' \
+    > "$config_path"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "${TEST_ROOT}/any-repo" >/dev/null 2>&1
+  local status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || fail 'Unknown profile field must fail closed'
+
+  pass 'config rejects unknown profile fields and fails closed'
+}
+
+test_checkpoint_records_profile_identity() {
+  local repo="${TEST_ROOT}/profile-checkpoint-repo"
+  local fake="${TEST_ROOT}/profile-checkpoint-worker"
+  local config_path="${TEST_ROOT}/profile-checkpoint-config.toml"
+  local output="${TEST_ROOT}/profile-checkpoint-output.log"
+  local checkpoint_file
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=FAILED"' > "$fake"
+  chmod +x "$fake"
+
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod|claude|${fake}|claude-3-pro|||"
+
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || true
+
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Checkpoint file was not written for a FAILED outcome'
+  grep -Eq '^profile=claude-prod$' "$checkpoint_file" || \
+    fail 'Checkpoint did not record the profile name'
+  grep -Eq '^cli=claude$' "$checkpoint_file" || \
+    fail 'Checkpoint did not record the CLI name'
+  grep -Eq '^model=claude-3-pro$' "$checkpoint_file" || \
+    fail 'Checkpoint did not record the model name'
+  grep -Eq "^command=${fake}\$" "$checkpoint_file" || \
+    fail 'Checkpoint did not record the command path'
+
+  pass 'checkpoint records profile, cli, model, and command identity'
+}
+
+test_checkpoint_enforces_profile_identity_on_recovery() {
+  local repo="${TEST_ROOT}/profile-mismatch-repo"
+  local fake="${TEST_ROOT}/profile-mismatch-worker"
+  local config_path="${TEST_ROOT}/profile-mismatch-config.toml"
+  local checkpoint_file
+  local status
+  local output="${TEST_ROOT}/profile-mismatch-output.log"
+
+  new_repo "$repo"
+  git -C "$repo" switch -c issue-91 --quiet
+  printf 'dirty\n' >> "${repo}/README.md"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'echo should-not-run; exit 1' > "$fake"
+  chmod +x "$fake"
+
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod|claude|${fake}|claude-3-pro|||bypassPermissions"
+
+  # Pre-seed a checkpoint whose profile does not match the live config.
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  base_sha="$(git -C "$repo" rev-parse main)"
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=91
+branch=issue-91
+base_branch=main
+base_sha=${base_sha}
+session_id=sess-mismatch
+profile=claude-staging
+cli=claude
+model=claude-3-5
+command=/different/path
+state=mutating
+updated_at=test
+EOF
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Profile-mismatched recovery must exit 4, got ${status}"
+  grep -Fq 'checkpoint profile claude-staging does not match selected profile claude-prod' "$output" || \
+    fail 'Recovery did not explain the profile identity mismatch'
+
+  pass 'recovery enforces checkpoint profile identity and rejects mismatches'
+}
+
+test_destructive_confirmation_lists_profile_identity() {
+  local repo="${TEST_ROOT}/profile-confirm-repo"
+  local fake="${TEST_ROOT}/profile-confirm-worker"
+  local config_path="${TEST_ROOT}/profile-confirm-config.toml"
+  local expect_script="${TEST_ROOT}/profile-confirm.expect"
+  local output="${TEST_ROOT}/profile-confirm-output.log"
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
+  chmod +x "$fake"
+
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod Label|claude|${fake}|claude-3-pro|||bypassPermissions"
+
+  cat > "$expect_script" <<PROLOG
+set timeout 15
+log_user 1
+spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/claude-minimax-issue-runner/run.sh "$repo"
+expect {
+  -re {Profile \[1\]} {
+    send "\r"
+    exp_continue
+  }
+  -re {Continue\? \[y/N\]} {
+    send "n\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script" >"$output" 2>&1 || \
+    fail 'Destructive confirmation did not display the profile identity'
+
+  grep -Fq 'claude-prod' "$output" || \
+    fail 'Destructive confirmation missing profile name'
+  grep -Fq 'Claude Prod Label' "$output" || \
+    fail 'Destructive confirmation missing profile label'
+  grep -Fq 'claude-3-pro' "$output" || \
+    fail 'Destructive confirmation missing model identifier'
+  grep -Fq 'bypassPermissions' "$output" || \
+    fail 'Destructive confirmation missing autonomy mode'
+  grep -Fq 'base branch:' "$output" || \
+    fail 'Destructive confirmation missing base branch label'
+
+  pass 'destructive confirmation lists profile, model, autonomy, and base branch'
+}
+
+test_black_box_claude_profile_completes_issue() {
+  local repo="${TEST_ROOT}/profile-blackbox-repo"
+  local fake="${TEST_ROOT}/profile-blackbox-worker"
+  local config_path="${TEST_ROOT}/profile-blackbox-config.toml"
+  local output="${TEST_ROOT}/profile-blackbox-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+echo fake called >&2
+for arg in "$@"; do echo "ARG: $arg" >&2; done
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+PROLOG
+  chmod +x "$fake"
+
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod|claude|${fake}|claude-3-pro|||bypassPermissions"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Black-box Claude profile did not drain the queue'
+
+  grep -Fq 'No pending, available, non-epic issues remain.' "$output" || \
+    fail 'Black-box Claude profile did not reach empty queue'
+
+  pass 'black-box Claude profile drains the queue through the generic command'
+}
+
+# A degenerate test that exercises the profile picker with multiple profiles
+# without launching a worker. The expect script verifies each profile appears
+# in the rendered menu and that the destructive confirmation shows the
+# selected profile's identity.
+test_profile_picker_lists_every_profile_with_footer() {
+  local repo="${TEST_ROOT}/profile-picker-repo"
+  local fake="${TEST_ROOT}/profile-picker-worker"
+  local config_path="${TEST_ROOT}/profile-picker-config.toml"
+  local expect_script="${TEST_ROOT}/profile-picker.expect"
+  local output="${TEST_ROOT}/profile-picker-output.log"
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo should-not-run; exit 1' > "$fake"
+  chmod +x "$fake"
+
+  write_profile_config "$config_path" "claude-prod" \
+    "claude-prod=Claude Prod Label|claude|/no/such/path|claude-3-pro|||bypassPermissions" \
+    "codex-luna=Codex Luna|codex|/no/such/path|gpt-5-luna|||default"
+
+  cat > "$expect_script" <<PROLOG
+set timeout 15
+log_user 1
+spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/claude-minimax-issue-runner/run.sh "$repo"
+expect {
+  -re {Profile \[1\]:} {
+    send "2\r"
+    exp_continue
+  }
+  -re {Continue\? \[y/N\]} {
+    send "n\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script" >"$output" 2>&1 || \
+    fail 'TTY profile selector did not render the expected menu'
+
+  grep -Fq 'Select an execution profile:' "$output" || \
+    fail 'Profile picker did not render the menu header'
+  grep -Fq 'Claude Prod Label' "$output" || \
+    fail 'Profile picker did not show the first profile label'
+  grep -Fq 'Codex Luna' "$output" || \
+    fail 'Profile picker did not show the second profile label'
+  grep -Fq 'config.toml to add or change profiles' "$output" || \
+    fail 'Profile picker footer did not invite configuration edits'
+  grep -Fq 'codex-luna' "$output" || \
+    fail 'Selecting profile 2 did not switch to codex-luna'
+
+  pass 'TTY profile picker lists every profile and points at the config path'
+}
+
+test_default_profile_used_without_tty
+test_missing_default_profile_rejects_non_tty
+test_config_rejects_unknown_top_level_key
+test_config_rejects_unknown_profile_field
+test_checkpoint_records_profile_identity
+test_checkpoint_enforces_profile_identity_on_recovery
+test_destructive_confirmation_lists_profile_identity
+test_black_box_claude_profile_completes_issue
+test_profile_picker_lists_every_profile_with_footer
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
