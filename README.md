@@ -800,6 +800,10 @@ deterministically. Missing or invalid `default_profile`, duplicate chain
 entries, cycles, or non-OpenCode fallback references are rejected before
 worker launch.
 
+### Worker event output
+
+The default worker stream is complete structured JSON. Each object includes the operator-facing `category`, CLI identity, iteration, UTC timestamp, and the complete provider event under `event`; provider order and payload fidelity are preserved. The `Worker finished` object also carries the generic issue-killer status when present. Provider events may expose prompts, commands, paths, tool inputs, credentials, tokens, or other sensitive values. Treat default output as sensitive and avoid publishing or storing it in shared logs.
+
 ### CLI adapters
 
 | Adapter | Invocation | Event format | Notes |

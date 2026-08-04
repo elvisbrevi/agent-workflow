@@ -485,6 +485,14 @@ opencode_runtime_invoke() {
 # orchestrator consumes what we write to stdout and the side-channel
 # files. Persists raw lines to OUTPUT_FILE so the orchestrator's
 # status-marker extraction continues to work unchanged.
+opencode_runtime_emit_json() {
+  local category="$1" raw_line="$2" status
+  status="$(jq -r '[paths(scalars) as $p | getpath($p) | strings | (try capture("ISSUE_KILLER_STATUS=(?<s>[A-Z_]+)").s catch empty)] | first // empty' <<<"$raw_line")"
+  jq -cn --arg category "$category" --arg cli "opencode" --arg iteration "${ITERATION:-0}" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$status" --argjson event "$raw_line" \
+    '{category:$category,cli:$cli,iteration:($iteration|tonumber),timestamp:$timestamp,event:$event} + (if $status != "" then {status:$status} else {} end)'
+}
+
 opencode_runtime_render_stream() {
   local output_file="$1"
   local touch_file="${output_file}.touch"
@@ -509,20 +517,44 @@ opencode_runtime_render_stream() {
         opencode_runtime_capture_session "$raw_line" "$session_file"
         : > "$touch_file"
         ;;
-      step_start|step_finish|text)
+      step_start|step_finish)
         decoded="$(opencode_runtime_decode_event "$raw_line" "$output_file" || true)"
         if [[ -n "$decoded" ]]; then
           tag="${decoded%%$'\t'*}"
           detail="${decoded#*$'\t'*}"
-          opencode_runtime_dispatch_event "$tag" "$detail" "$output_file"
+          case "$tag" in
+            inspect|tracker) opencode_runtime_emit_json "Inspecting issue tracker" "$raw_line" ;;
+            plan|mutate) opencode_runtime_emit_json "Planning the next worker step" "$raw_line" ;;
+            shell|test) opencode_runtime_emit_json "Running shell command" "$raw_line" ;;
+            push) opencode_runtime_emit_json "Pushing branch" "$raw_line" ;;
+            commit) opencode_runtime_emit_json "Committing changes" "$raw_line" ;;
+            merge_rebase) opencode_runtime_emit_json "Merging or rebasing branch" "$raw_line" ;;
+            pr_create) opencode_runtime_emit_json "Creating pull request" "$raw_line" ;;
+            pr_close) opencode_runtime_emit_json "Merging or closing pull request" "$raw_line" ;;
+            close) opencode_runtime_emit_json "Closing issue" "$raw_line" ;;
+            review) opencode_runtime_emit_json "Reviewing changes" "$raw_line" ;;
+          esac
+          opencode_runtime_dispatch_event "$tag" "$detail" "$output_file" >/dev/null
         fi
-        # Surface the assistant's final text so existing
-        # status-marker extraction (sed -n s/^PREFIX/p) still finds
-        # the line. OpenCode typically includes the agent's reply in
-        # the `part.text` field of the `text` event.
+        : > "$touch_file"
+        ;;
+      text)
+        # Text events are the complete final OpenCode worker event. Decode them
+        # only for internal issue-identification side effects; exposing the
+        # decoder's generic `plan` tag here would duplicate the provider event
+        # and put a non-final category immediately before `Worker finished`.
+        decoded="$(opencode_runtime_decode_event "$raw_line" "$output_file" || true)"
+        if [[ -n "$decoded" ]]; then
+          tag="${decoded%%$'\t'*}"
+          detail="${decoded#*$'\t'*}"
+          opencode_runtime_dispatch_event "$tag" "$detail" "$output_file" >/dev/null
+        fi
+        # Surface the assistant's final text so existing status-marker
+        # extraction (sed -n s/^PREFIX/p) still finds the line.
         agent_text="$(opencode_runtime_event_field 'part.text' "$raw_line")"
         if [[ -n "$agent_text" && "$agent_text" != "null" ]]; then
           printf '%s\n' "$agent_text" >> "$output_file"
+          opencode_runtime_emit_json "Worker finished" "$raw_line"
           printf '[%s] Worker finished (see %s for full output)\n' \
             "$RUNNER_NAME" "$output_file"
         fi

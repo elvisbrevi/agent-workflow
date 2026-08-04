@@ -419,6 +419,14 @@ codex_runtime_invoke() {
 # consumes what we write to stdout and the side-channel files.
 # Persists raw lines to OUTPUT_FILE so the orchestrator's
 # status-marker extraction continues to work unchanged.
+codex_runtime_emit_json() {
+  local category="$1" raw_line="$2" status
+  status="$(jq -r '[paths(scalars) as $p | getpath($p) | strings | (try capture("ISSUE_KILLER_STATUS=(?<s>[A-Z_]+)").s catch empty)] | first // empty' <<<"$raw_line")"
+  jq -cn --arg category "$category" --arg cli "codex" --arg iteration "${ITERATION:-0}" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$status" --argjson event "$raw_line" \
+    '{category:$category,cli:$cli,iteration:($iteration|tonumber),timestamp:$timestamp,event:$event} + (if $status != "" then {status:$status} else {} end)'
+}
+
 codex_runtime_render_stream() {
   local output_file="$1"
   local touch_file="${output_file}.touch"
@@ -448,7 +456,19 @@ codex_runtime_render_stream() {
         if [[ -n "$decoded" ]]; then
           tag="${decoded%%$'\t'*}"
           detail="${decoded#*$'\t'}"
-          codex_runtime_dispatch_event "$tag" "$detail" "$output_file"
+          case "$tag" in
+            inspect|tracker) codex_runtime_emit_json "Inspecting issue tracker" "$raw_line" ;;
+            plan|mutate) codex_runtime_emit_json "Planning the next worker step" "$raw_line" ;;
+            shell|test) codex_runtime_emit_json "Running shell command" "$raw_line" ;;
+            push) codex_runtime_emit_json "Pushing branch" "$raw_line" ;;
+            commit) codex_runtime_emit_json "Committing changes" "$raw_line" ;;
+            merge_rebase) codex_runtime_emit_json "Merging or rebasing branch" "$raw_line" ;;
+            pr_create) codex_runtime_emit_json "Creating pull request" "$raw_line" ;;
+            pr_close) codex_runtime_emit_json "Merging or closing pull request" "$raw_line" ;;
+            close) codex_runtime_emit_json "Closing issue" "$raw_line" ;;
+            review) codex_runtime_emit_json "Reviewing changes" "$raw_line" ;;
+          esac
+          codex_runtime_dispatch_event "$tag" "$detail" "$output_file" >/dev/null
         fi
         : > "$touch_file"
         ;;
@@ -473,6 +493,7 @@ codex_runtime_render_stream() {
         fi
         if [[ -n "$agent_text" && "$agent_text" != "null" ]]; then
           printf '%s\n' "$agent_text" >> "$output_file"
+          codex_runtime_emit_json "Worker finished" "$raw_line"
           printf '[%s] Worker finished (see %s for full output)\n' \
             "$RUNNER_NAME" "$output_file"
         fi
