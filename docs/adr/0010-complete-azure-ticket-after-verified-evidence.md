@@ -1,0 +1,3 @@
+# Complete an Azure ticket after verified integration and evidence
+
+An Azure ticket reaches `Done` only after its reviewed branch is merged through exactly one verified PR into the HU integration branch, native links to the PR and integrated commit are present, required captures are attached, completion evidence and cumulative real effort are verified by rereading Azure, and all effects reconcile successfully. The runner persists intent before each external effect; after interruption it reuses the merged PR and adds only missing links, attachments, field updates, or state transition, so a merged-but-incomplete ticket remains recoverable without duplicating evidence or effort.
