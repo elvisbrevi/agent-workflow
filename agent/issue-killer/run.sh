@@ -366,6 +366,24 @@ case "${TRACKER_SCOPE_STATUS:-worker_selects}" in
     CHECKPOINT_HU="$TRACKER_SCOPE_HU"
     CHECKPOINT_TICKET="$TRACKER_SCOPE_ITEM"
     CHECKPOINT_ISSUE="$TRACKER_SCOPE_ITEM"
+    # Bootstrap the HU integration branch before the worker is launched.
+    # The HU branch is the only integration target for ticket pull
+    # requests; without it the worker cannot complete the ticket
+    # lifecycle. The bootstrap fails closed on missing origin, ambiguous
+    # category, or refusing operator session so the runner never
+    # guesses a branch.
+    tracker_prepare_hu_branch "$TRACKER_SCOPE_HU" "" "${STARTUP_RECOVERY_MODE:-false}" || {
+      if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+        printf '%s: Azure HU integration branch bootstrap failed during recovery\n' \
+          "$RUNNER_NAME" >&2
+        exit 4
+      fi
+      printf '%s: Azure HU integration branch bootstrap failed; refusing to guess the HU origin branch\n' \
+        "$RUNNER_NAME" >&2
+      write_lock_status "blocked" 0
+      exit 2
+    }
+    tracker_publish_hu_branch
     write_lock_status "scope_selected" 0
     ;;
   *)
