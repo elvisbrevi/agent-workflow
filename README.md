@@ -62,11 +62,23 @@ trigger matches the request.
 
 Typical paths:
 
-```text
-Unfamiliar code: zoom-out → relevant design/planning skill
-New feature: grill-with-docs → to-spec → to-tickets → implement → tdd → code-review
-Bug: diagnose → implement/tdd → code-review
-Structural refactor: improve-codebase-architecture → implement → code-review
+```mermaid
+flowchart LR
+    subgraph "Unfamiliar code"
+        UC1["zoom-out"] --> UC2["Design/Planning skill"]
+    end
+
+    subgraph "New feature"
+        NF1["grill-with-docs"] --> NF2["to-spec"] --> NF3["to-tickets"] --> NF4["implement"] --> NF5["tdd"] --> NF6["code-review"]
+    end
+
+    subgraph "Bug"
+        BG1["diagnose"] --> BG2["implement / tdd"] --> BG3["code-review"]
+    end
+
+    subgraph "Structural refactor"
+        SR1["improve-codebase-architecture"] --> SR2["implement"] --> SR3["code-review"]
+    end
 ```
 
 Skills with `disable-model-invocation: true` are explicit-only. See each
