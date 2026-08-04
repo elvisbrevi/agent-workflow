@@ -676,6 +676,24 @@ tracker_reconcile_startup_state() {
     "${RUNNER_NAME:-issue-killer}" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count"
 }
 
+# Returns the tracker-specific portion of the worker contract. The
+# orchestrator concatenates this supplement with the shared
+# PROMPT.md and the runtime configuration section before invoking
+# any runtime adapter. Azure uses an HU (User Story) as the
+# integration container and one direct child Task or Bug as the
+# worker unit. The supplement is intentionally restricted to
+# lifecycle rules so the shared contract remains the source of
+# truth for safety, status reporting, and recovery semantics.
+tracker_worker_supplement() {
+  printf '%s\n' \
+    'Azure DevOps tracker supplement:' \
+    '- Treat the pinned Azure delivery HU as the integration container; never close the HU and never target the repository mainline from the HU integration branch.' \
+    '- The worker unit is one direct hierarchical child Task or Bug of the pinned HU. Related links, indirect descendants, and other work-item types are excluded.' \
+    '- Open exactly one ticket branch from the HU integration branch and exactly one pull request targeting that HU integration branch (not the configured base branch).' \
+    '- Confirm exactly one pull request exists for the ticket source branch, that it is completed and succeeded into the HU integration branch, and only then move the ticket to the configured closed state.' \
+    '- Respect the configured predecessor relation; never start a ticket while an open predecessor remains, and never duplicate a pull request, attachment, development link, effort increment, or state transition.'
+}
+
 tracker_runtime_decode_command() {
   local cmd="$1"
   local item_number

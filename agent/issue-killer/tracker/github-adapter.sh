@@ -237,6 +237,24 @@ tracker_reconcile_startup_state() {
     "$RUNNER_NAME" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count"
 }
 
+# Returns the tracker-specific portion of the worker contract. The
+# orchestrator concatenates this supplement with the shared
+# PROMPT.md and the runtime configuration section before invoking
+# any runtime adapter. GitHub treats the eligible issue as the
+# single delivery unit: one branch, one pull request targeting the
+# configured base branch, a verified merge, and issue closure.
+# The supplement is intentionally restricted to lifecycle rules so
+# the shared contract remains the source of truth for safety,
+# status reporting, and recovery semantics.
+tracker_worker_supplement() {
+  printf '%s\n' \
+    'GitHub tracker supplement:' \
+    '- Treat the next `ready-for-agent` GitHub issue as the single delivery unit for this worker.' \
+    '- Open exactly one ticket branch and exactly one pull request targeting the configured base branch.' \
+    '- Confirm exactly one pull request exists for the source branch, that it is merged into the configured base branch, and only then close the issue.' \
+    '- Do not target any other branch, do not open duplicate pull requests, and do not close the issue before the pull request merge is verified.'
+}
+
 # Translate tracker-specific worker commands into normalized runtime events.
 # This is the only layer that knows GitHub's gh command vocabulary.
 tracker_runtime_decode_command() {
