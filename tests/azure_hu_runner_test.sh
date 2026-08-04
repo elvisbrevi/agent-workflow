@@ -104,6 +104,12 @@ azure_calls="${TEST_ROOT}/azure-calls"
 mkdir -p "$azure_repo"
 make_azure_repo "$azure_repo" "$azure_bin" "$azure_calls"
 
+# Most runner tests run without a TTY, so the HU integration branch
+# must already exist for the bootstrap to reuse it instead of asking
+# the operator for an origin. The fixture seeds HU 100 ("Payments HU"),
+# so the deterministic branch is feature/100-payments-hu.
+git -C "$azure_repo" branch feature/100-payments-hu main >/dev/null 2>&1 || true
+
 malformed_worker="${TEST_ROOT}/malformed-worker"
 printf '%s\n' '#!/usr/bin/env bash' "touch '${TEST_ROOT}/malformed-ran'" > "$malformed_worker"
 chmod +x "$malformed_worker"
