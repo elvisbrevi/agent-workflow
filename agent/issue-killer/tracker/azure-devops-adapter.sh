@@ -304,41 +304,14 @@ tracker_initialize() {
   AZURE_PREDECESSOR_RELATION="$(azure_config_string "$docs" predecessor_relation 2>/dev/null || true)"
   AZURE_CLOSED_STATE="$(azure_config_string "$docs" closed_state 2>/dev/null || true)"
   AZURE_HU_TYPES="$(azure_config_array "$docs" delivery_hu_work_item_types 2>/dev/null || true)"
-  if [[ -z "$AZURE_HU_TYPES" ]]; then
-    AZURE_HU_TYPES="$(azure_config_array "$docs" hu_work_item_types 2>/dev/null || true)"
-  fi
   AZURE_TICKET_TYPES="$(azure_config_array "$docs" delivery_ticket_work_item_types 2>/dev/null || true)"
-  if [[ -z "$AZURE_TICKET_TYPES" ]]; then
-    AZURE_TICKET_TYPES="$(azure_config_array "$docs" ticket_work_item_types 2>/dev/null || true)"
-  fi
 
-  if [[ -n "$AZURE_HU_TYPES" && -n "$AZURE_TICKET_TYPES" ]]; then
-    AZURE_HU_SCOPE_ENABLED=true
-  elif [[ -n "$AZURE_HU_TYPES" || -n "$AZURE_TICKET_TYPES" ]]; then
-    printf '%s: Azure HU and ticket type mappings must be declared together\n' \
+  [[ -n "$AZURE_HU_TYPES" && -n "$AZURE_TICKET_TYPES" ]] || {
+    printf '%s: Azure delivery_hu_work_item_types and delivery_ticket_work_item_types mappings are required\n' \
       "${RUNNER_NAME:-issue-killer}" >&2
     return 1
-  else
-    AZURE_HU_SCOPE_ENABLED=false
-  fi
-
-  # Preserve existing repository contracts while giving the HU and ticket
-  # roles explicit names when the newer mappings are present. The domain
-  # defaults are accepted only when those exact types already belong to the
-  # repository-owned eligible type set.
-  if [[ -z "$AZURE_HU_TYPES" ]] && azure_list_contains "User Story" "$AZURE_ELIGIBLE_TYPES"; then
-    AZURE_HU_TYPES="User Story"
-  fi
-  if [[ -z "$AZURE_TICKET_TYPES" ]]; then
-    azure_list_contains "Task" "$AZURE_ELIGIBLE_TYPES" && AZURE_TICKET_TYPES="Task"
-    if azure_list_contains "Bug" "$AZURE_ELIGIBLE_TYPES"; then
-      if [[ -n "$AZURE_TICKET_TYPES" ]]; then
-        AZURE_TICKET_TYPES="${AZURE_TICKET_TYPES}"$'\n'"Bug"
-      else
-        AZURE_TICKET_TYPES="Bug"
-      fi
-    fi
-  fi
+  }
+  AZURE_HU_SCOPE_ENABLED=true
 
   azure_require_mapping organization "$AZURE_ORGANIZATION" || return 1
   azure_require_mapping project "$AZURE_PROJECT" || return 1
@@ -521,6 +494,14 @@ azure_item_created_date() {
   jq -r '.fields["System.CreatedDate"] // empty' <<<"$1"
 }
 
+azure_item_assignee() {
+  jq -r '.fields["System.AssignedTo"] // empty | if type == "object" then (.uniqueName // .displayName // "assigned") else . end' <<<"$1"
+}
+
+azure_item_is_unassigned() {
+  [[ -z "$(azure_item_assignee "$1")" ]]
+}
+
 azure_item_is_delivery_hu() {
   local item_json="$1"
   local item_type item_state tags
@@ -531,6 +512,7 @@ azure_item_is_delivery_hu() {
   azure_list_contains "$item_type" "$AZURE_HU_TYPES" || return 1
   azure_list_contains "$item_state" "$AZURE_OPEN_STATES" || return 1
   azure_item_is_epic "$item_json" && return 1
+  azure_item_is_unassigned "$item_json" || return 1
   azure_item_has_ready_tag "$tags" || return 1
 }
 
@@ -550,6 +532,7 @@ azure_hu_direct_child_ids() {
 
 tracker_validate_delivery_hu() {
   local hu_id="$1"
+  local allow_assigned="${2:-false}"
   local item_json item_type item_state blocked actual_id
 
   tracker_validate_run_options "$hu_id" || return 1
@@ -584,6 +567,11 @@ tracker_validate_delivery_hu() {
   if ! azure_item_has_ready_tag "$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"; then
     printf '%s: Azure delivery HU %s is missing the ready tag %s\n' \
       "${RUNNER_NAME:-issue-killer}" "$hu_id" "$AZURE_READY_TAG" >&2
+    return 1
+  fi
+  if [[ "$allow_assigned" != "true" ]] && ! azure_item_is_unassigned "$item_json"; then
+    printf '%s: Azure delivery HU %s is already assigned and is not available\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
     return 1
   fi
   blocked="$(tracker_item_dependencies "$hu_id" 2>/dev/null || true)"
@@ -681,7 +669,7 @@ azure_prepare_recovery_scope() {
   local ticket_id="$2"
   local child_id child_json child_type child_state blocked found=false
 
-  tracker_validate_delivery_hu "$hu_id" || return 1
+  tracker_validate_delivery_hu "$hu_id" true || return 1
   while IFS= read -r child_id; do
     [[ "$child_id" =~ ^[1-9][0-9]*$ ]] || continue
     [[ "$child_id" == "$ticket_id" ]] || continue
@@ -726,6 +714,7 @@ azure_prepare_recovery_scope() {
 
 tracker_prepare_worker_scope() {
   local requested_hu="${1:-}"
+  local allow_assigned="${2:-false}"
   local hu_id hu_ids child_lines sorted_children first_line
 
   AZURE_SCOPE_STATUS=""
@@ -755,7 +744,7 @@ tracker_prepare_worker_scope() {
   fi
 
   if [[ -n "$requested_hu" ]]; then
-    tracker_validate_delivery_hu "$requested_hu" || return 1
+    tracker_validate_delivery_hu "$requested_hu" "$allow_assigned" || return 1
     hu_id="$requested_hu"
   else
     hu_ids="$(tracker_list_eligible_hus)" || return 1
@@ -798,9 +787,6 @@ tracker_worker_scope_prompt() {
       '- Re-read the pinned HU, the active ticket, its direct parent relation, and its configured predecessors before mutation.'
   fi
 }
-
-tracker_scope_hu_id() { printf '%s\n' "$AZURE_SCOPE_HU"; }
-tracker_scope_item_id() { printf '%s\n' "$AZURE_SCOPE_ITEM"; }
 
 azure_item_has_ready_tag() {
   local tags="$1"
@@ -855,43 +841,8 @@ tracker_item_dependencies() {
   printf '%s\n' "$blocked"
 }
 
-tracker_list_legacy_eligible_items() {
-  local wiql item_json item_id item_type item_state assigned tags blocked az_items
-  local wiql_types wiql_states
-
-  wiql_types="$(azure_wiql_in_list "$AZURE_ELIGIBLE_TYPES")"
-  wiql_states="$(azure_wiql_in_list "$AZURE_OPEN_STATES")"
-  wiql="SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${AZURE_PROJECT//\'/''}' AND [System.WorkItemType] IN (${wiql_types}) AND [System.State] IN (${wiql_states}) AND [System.Tags] CONTAINS '${AZURE_READY_TAG//\'/''}' ORDER BY [System.Id]"
-
-  az_items="$(az boards query \
-    --wiql "$wiql" \
-    --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
-    --project "$AZURE_PROJECT" \
-    --output json)" || return 1
-  while IFS= read -r item_id; do
-    [[ "$item_id" =~ ^[0-9]+$ ]] || continue
-    item_json="$(tracker_item_read "$item_id")" || return 1
-    item_type="$(tracker_item_type "$item_json")"
-    item_state="$(tracker_item_state "$item_json")"
-    assigned="$(jq -r '.fields["System.AssignedTo"] // empty | if type == "object" then (.uniqueName // .displayName // "assigned") else . end' <<<"$item_json")"
-    tags="$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"
-    azure_list_contains "$item_type" "$AZURE_ELIGIBLE_TYPES" || continue
-    ! azure_item_is_epic "$item_json" || continue
-    azure_list_contains "$item_state" "$AZURE_OPEN_STATES" || continue
-    [[ -z "$assigned" ]] || continue
-    azure_item_has_ready_tag "$tags" || continue
-    blocked="$(tracker_item_dependencies "$item_id")" || return 1
-    [[ "$blocked" == "0" ]] || continue
-    printf '%s\n' "$item_id"
-  done < <(jq -r '.[] | (.id // .fields["System.Id"] // empty)' <<<"$az_items")
-}
-
 tracker_list_eligible_items() {
-  if [[ "$AZURE_HU_SCOPE_ENABLED" == "true" ]]; then
-    tracker_list_eligible_hus
-  else
-    tracker_list_legacy_eligible_items
-  fi
+  tracker_list_eligible_hus
 }
 
 tracker_item_claim() {

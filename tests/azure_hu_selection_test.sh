@@ -75,6 +75,7 @@ case "$1 $2 $3" in
       400) printf '%s\n' '{"id":400,"fields":{"System.WorkItemType":"Task","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"Not an HU"},"relations":[]}' ;;
       500) printf '%s\n' '{"id":500,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent","System.Title":"Closed HU"},"relations":[]}' ;;
       600) printf '%s\n' '{"id":600,"fields":{"System.WorkItemType":"Epic","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"Epic"},"relations":[]}' ;;
+      800) printf '%s\n' '{"id":800,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.AssignedTo":{"displayName":"Already claimed"},"System.Tags":"ready-for-agent","System.Title":"Assigned HU"},"relations":[]}' ;;
       101) printf '%s\n' '{"id":101,"fields":{"System.WorkItemType":"Task","System.State":"Closed","System.CreatedDate":"2026-08-01T10:00:00Z"},"relations":[]}' ;;
       102) printf '%s\n' '{"id":102,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.CreatedDate":"2026-08-01T11:00:00Z"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/110"}]}' ;;
       103) printf '%s\n' '{"id":103,"fields":{"System.WorkItemType":"Task","System.State":"Active","System.CreatedDate":"2026-08-01T12:00:00Z"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/100"},{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/106"}]}' ;;
@@ -132,7 +133,20 @@ tracker_prepare_worker_scope 300 || fail 'Blocked HU scope preparation failed'
   fail 'Blocked scope did not preserve pending and predecessor counts'
 pass 'a HU with only blocked children stops without selecting a ticket'
 
-for invalid_hu in 400 500 600; do
+STARTUP_RECOVERY_MODE=checkpoint
+CHECKPOINT_HU=100
+CHECKPOINT_TICKET=103
+tracker_prepare_worker_scope "" || fail 'Pinned recovery scope preparation failed'
+[[ "$TRACKER_SCOPE_STATUS" == ready && "$TRACKER_SCOPE_HU" == 100 && "$TRACKER_SCOPE_ITEM" == 103 ]] || \
+  fail 'Recovery scope did not preserve the pinned HU and ticket'
+CHECKPOINT_TICKET=106
+if tracker_prepare_worker_scope "" >/dev/null 2>&1; then
+  fail 'Recovery scope accepted an indirect ticket and changed identity'
+fi
+unset STARTUP_RECOVERY_MODE CHECKPOINT_HU CHECKPOINT_TICKET
+pass 'recovery preserves the pinned HU and rejects identity changes'
+
+for invalid_hu in 400 500 600 800; do
   if tracker_prepare_worker_scope "$invalid_hu" >/dev/null 2>&1; then
     fail "Invalid HU $invalid_hu was accepted"
   fi
@@ -144,4 +158,4 @@ if tracker_prepare_worker_scope 999; then
 fi
 pass 'unavailable explicit HU fails closed'
 
-printf '%s Azure HU selection tests passed.\n' 9
+printf '%s Azure HU selection tests passed.\n' 10

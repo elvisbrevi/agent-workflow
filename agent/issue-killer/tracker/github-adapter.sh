@@ -28,8 +28,6 @@ tracker_prepare_worker_scope() {
 }
 
 tracker_worker_scope_prompt() { :; }
-tracker_scope_hu_id() { :; }
-tracker_scope_item_id() { :; }
 
 tracker_slug_from_url() {
   local url="$1"

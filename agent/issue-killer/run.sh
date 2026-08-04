@@ -535,6 +535,36 @@ non-epic issue in this session."
           "$RUNNER_NAME" "$ITERATION"
         exit 3
       fi
+      if [[ "$TRACKER_KIND" == "azure-devops" && \
+            "${TRACKER_SCOPE_STATUS:-}" == "ready" ]]; then
+        completed_hu="$TRACKER_SCOPE_HU"
+        tracker_prepare_worker_scope "$completed_hu" true || \
+          die "unable to re-evaluate pinned Azure delivery HU ${completed_hu} after ticket completion"
+        case "$TRACKER_SCOPE_STATUS" in
+          ready)
+            CHECKPOINT_HU="$TRACKER_SCOPE_HU"
+            CHECKPOINT_TICKET="$TRACKER_SCOPE_ITEM"
+            CHECKPOINT_ISSUE="$TRACKER_SCOPE_ITEM"
+            TRACKER_SCOPE_PROMPT="$(tracker_worker_scope_prompt)"
+            printf '[%s] Azure delivery HU %s advanced to ticket %s.\n' \
+              "$RUNNER_NAME" "$TRACKER_SCOPE_HU" "$TRACKER_SCOPE_ITEM"
+            ;;
+          empty|queue_empty)
+            printf '[%s] Azure delivery HU %s has no pending direct child tickets.\n' \
+              "$RUNNER_NAME" "$completed_hu"
+            printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
+            exit 0
+            ;;
+          blocked)
+            printf '%s: Azure delivery HU %s has pending child tickets, but all are blocked by open predecessors\n' \
+              "$RUNNER_NAME" "$completed_hu" >&2
+            exit 2
+            ;;
+          *)
+            die "tracker returned an invalid Azure scope after ticket completion: ${TRACKER_SCOPE_STATUS:-unknown}"
+            ;;
+        esac
+      fi
       ;;
     QUEUE_EMPTY)
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
