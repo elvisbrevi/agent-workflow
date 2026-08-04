@@ -199,9 +199,9 @@ the stream renderer continue to be redacted before reaching operator output,
 and the side-channel issue file (`${OUTPUT_FILE}.issue`) carries only the
 bare issue number back to the supervisor.
 
-The same non-sensitive identity fields (`issue`, `branch`, `base_branch`,
-`state`) are mirrored into the lock `status` file so operators can inspect
-progress without reading the checkpoint directly.
+The same non-sensitive identity fields (`issue`, `hu`, `ticket`, `branch`,
+`base_branch`, and `state`) are mirrored into the lock `status` file so
+operators can inspect progress without reading the checkpoint directly.
 
 ### Retention
 
