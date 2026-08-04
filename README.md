@@ -64,19 +64,23 @@ Typical paths:
 
 ```mermaid
 flowchart LR
-    subgraph "Unfamiliar code"
+    subgraph UC["Unfamiliar code"]
+        direction LR
         UC1["zoom-out"] --> UC2["Design/Planning skill"]
     end
 
-    subgraph "New feature"
+    subgraph NF["New feature"]
+        direction LR
         NF1["grill-with-docs"] --> NF2["to-spec"] --> NF3["to-tickets"] --> NF4["implement"] --> NF5["tdd"] --> NF6["code-review"]
     end
 
-    subgraph "Bug"
+    subgraph BG["Bug"]
+        direction LR
         BG1["diagnose"] --> BG2["implement / tdd"] --> BG3["code-review"]
     end
 
-    subgraph "Structural refactor"
+    subgraph SR["Structural refactor"]
+        direction LR
         SR1["improve-codebase-architecture"] --> SR2["implement"] --> SR3["code-review"]
     end
 ```
