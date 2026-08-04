@@ -332,7 +332,7 @@ issue_killer_config_split_kv() {
 # Returns 0 when the supplied key is composed only of identifier-safe
 # characters and is not empty. The loader rejects keys with spaces
 # or punctuation so it cannot silently accept misspelled fields.
-# Hyphens are allowed because profile names such as `claude-minimax`
+# Hyphens are allowed because profile names such as `claude-main`
 # follow shell-identifier conventions.
 issue_killer_config_valid_key() {
   local key="$1"

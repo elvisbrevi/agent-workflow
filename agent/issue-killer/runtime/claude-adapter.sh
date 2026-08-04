@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime adapter for the Claude-MiniMax agent CLI.
+# Runtime adapter for the Claude agent CLI.
 #
 # This file owns every Claude-specific concern of the worker runtime:
 #   - non-interactive invocation construction
@@ -10,7 +10,7 @@
 #   - failure classification for retry/fallback decisions
 #
 # The orchestration layer (run.sh) must not parse Claude stream JSON or
-# construct the `claude-minimax` command directly. It calls the named
+# construct the configured command directly. It calls the named
 # functions below to operate the worker uniformly regardless of the
 # underlying CLI. The orchestrator consumes the `runtime_*` aliases
 # declared at the bottom of this file; the `claude_runtime_*` names
@@ -248,7 +248,7 @@ claude_runtime_dispatch_event() {
   esac
 }
 
-# Build the argument list that `claude-minimax` will be invoked with. The
+# Build the argument list that the Claude CLI will be invoked with. The
 # orchestrator uses this both to launch the worker and to assert expected
 # flags in tests; tests must not depend on the orchestrator's internal
 # invocation logic. New adapters expose their own equivalent.

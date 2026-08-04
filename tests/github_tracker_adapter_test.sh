@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ADAPTER="${ROOT_DIR}/agent/claude-minimax-issue-runner/tracker/github-adapter.sh"
+ADAPTER="${ROOT_DIR}/agent/issue-killer/tracker/github-adapter.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/github-tracker-adapter.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 

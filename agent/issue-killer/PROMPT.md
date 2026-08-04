@@ -25,7 +25,7 @@ Rules:
    the merge, and then close the issue. Never take a second issue in this
    session.
 5. Do not merely report commands for another agent to run. Perform the work.
-6. Do not delegate to `claude-minimax-issue-runner` and do not launch another
+6. Do not delegate to `issue-killer` and do not launch another
    runner. This process is already the single-issue worker.
 
 Your final response must end with exactly one of these standalone lines:

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${ROOT_DIR}/agent/claude-minimax-issue-runner/run.sh"
-SELECTOR="${ROOT_DIR}/agent/claude-minimax-issue-runner/tracker/selector.sh"
-ADAPTER="${ROOT_DIR}/agent/claude-minimax-issue-runner/tracker/azure-devops-adapter.sh"
+RUNNER="${ROOT_DIR}/agent/issue-killer/run.sh"
+SELECTOR="${ROOT_DIR}/agent/issue-killer/tracker/selector.sh"
+ADAPTER="${ROOT_DIR}/agent/issue-killer/tracker/azure-devops-adapter.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/azure-tracker-adapter.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
