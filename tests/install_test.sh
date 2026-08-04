@@ -6,6 +6,8 @@ INSTALLER="${ROOT_DIR}/install.sh"
 BASH_BIN="${BASH_BIN:-bash}"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-workflow-installer.XXXXXX")"
 TESTS_RUN=0
+FIXTURE_SOURCE="${TEST_ROOT}/catalog-source"
+FIXTURE_REMOTE="${TEST_ROOT}/catalog-remote.git"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -54,6 +56,30 @@ seed_cache() {
   printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' > "${cache}/agent/runner/AGENT.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${cache}/agent/runner/run.sh"
   chmod +x "${cache}/agent/runner/run.sh"
+}
+
+seed_remote() {
+  mkdir -p \
+    "${FIXTURE_SOURCE}/utility/alpha" \
+    "${FIXTURE_SOURCE}/design/beta" \
+    "${FIXTURE_SOURCE}/agent/runner"
+
+  printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' \
+    > "${FIXTURE_SOURCE}/utility/alpha/SKILL.md"
+  printf '%s\n' '---' 'name: beta' 'description: Beta fixture.' '---' \
+    > "${FIXTURE_SOURCE}/design/beta/SKILL.md"
+  printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' \
+    > "${FIXTURE_SOURCE}/agent/runner/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${FIXTURE_SOURCE}/agent/runner/run.sh"
+  chmod +x "${FIXTURE_SOURCE}/agent/runner/run.sh"
+
+  git -C "$FIXTURE_SOURCE" init --quiet
+  git -C "$FIXTURE_SOURCE" config user.name 'Installer Test'
+  git -C "$FIXTURE_SOURCE" config user.email 'installer@example.invalid'
+  git -C "$FIXTURE_SOURCE" add .
+  git -C "$FIXTURE_SOURCE" commit --quiet -m 'fixture catalog'
+  git -C "$FIXTURE_SOURCE" branch -M main
+  git clone --quiet --bare "$FIXTURE_SOURCE" "$FIXTURE_REMOTE"
 }
 
 test_no_tty_error() {
@@ -124,7 +150,7 @@ test_shared_global_round_trip() {
     fail 'Legacy afk-issuemerger symlink was not removed'
   assert_contains "$install_output" '2 skills processed.'
   assert_contains "$install_output" '1 agents processed.'
-  assert_contains "$install_output" 'Removed legacy agent link: afk-issuemerger'
+  assert_contains "$install_output" 'Removed managed link:'
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --global >"$uninstall_output" 2>&1 || \
     fail 'Shared global uninstall failed'
@@ -187,9 +213,81 @@ test_claude_destinations() {
   pass 'Claude Code destinations install and uninstall skills, agents, and runners'
 }
 
+test_install_reconciles_dirty_cache_and_stale_managed_links() {
+  local home="${TEST_ROOT}/reconcile-home"
+  local source="${TEST_ROOT}/reconcile-source"
+  local remote="${TEST_ROOT}/reconcile-remote.git"
+  local cache="${home}/.cache/agent-workflow"
+  local output="${TEST_ROOT}/reconcile.log"
+  local unrelated_target="${TEST_ROOT}/unrelated-agent.md"
+
+  mkdir -p "${source}/utility/current-skill" "${source}/agent/old-runner"
+  printf '%s\n' '---' 'name: current-skill' 'description: Current fixture.' '---' \
+    > "${source}/utility/current-skill/SKILL.md"
+  printf '%s\n' '---' 'name: old-runner' 'description: Old runner fixture.' '---' \
+    > "${source}/agent/old-runner/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/old-runner/run.sh"
+  chmod +x "${source}/agent/old-runner/run.sh"
+
+  git -C "$source" init --quiet
+  git -C "$source" config user.name 'Installer Test'
+  git -C "$source" config user.email 'installer@example.invalid'
+  git -C "$source" add .
+  git -C "$source" commit --quiet -m 'old catalog'
+  git clone --quiet --bare "$source" "$remote"
+  git -C "$source" remote add origin "$remote"
+
+  mkdir -p "$(dirname "$cache")"
+  git clone --quiet "$remote" "$cache"
+
+  rm -rf "${source}/agent/old-runner"
+  mkdir -p "${source}/agent/issue-killer"
+  printf '%s\n' '---' 'name: issue-killer' 'description: Current runner fixture.' '---' \
+    > "${source}/agent/issue-killer/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/issue-killer/run.sh"
+  chmod +x "${source}/agent/issue-killer/run.sh"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m 'rename runner'
+  git -C "$source" push --quiet origin HEAD:main
+
+  printf '%s\n' '# local cache modification' >> "${cache}/agent/old-runner/run.sh"
+  mkdir -p "${home}/.claude/skills" "${home}/.claude/agents" "${home}/.local/bin"
+  ln -s "${cache}/utility/removed-skill" "${home}/.claude/skills/removed-skill"
+  ln -s "${cache}/agent/old-runner/AGENT.md" "${home}/.claude/agents/old-runner.md"
+  ln -s "${cache}/agent/old-runner/run.sh" "${home}/.local/bin/old-runner"
+  printf '%s\n' 'unrelated' > "$unrelated_target"
+  ln -s "$unrelated_target" "${home}/.claude/agents/unrelated.md"
+
+  HOME="$home" AGENT_WORKFLOW_REPO_URL="$remote" \
+    "$BASH_BIN" "$INSTALLER" --claude-global --force >"$output" 2>&1 || \
+    fail 'Reconciled Claude Code install failed'
+
+  assert_file_symlink "${home}/.claude/agents/issue-killer.md"
+  assert_file_symlink "${home}/.local/bin/issue-killer"
+  [[ ! -e "${home}/.claude/skills/removed-skill" && \
+     ! -L "${home}/.claude/skills/removed-skill" ]] || \
+    fail 'Removed skill link survived reconciliation'
+  [[ ! -e "${home}/.claude/agents/old-runner.md" && \
+     ! -L "${home}/.claude/agents/old-runner.md" ]] || \
+    fail 'Removed Claude agent link survived reconciliation'
+  [[ ! -e "${home}/.local/bin/old-runner" && ! -L "${home}/.local/bin/old-runner" ]] || \
+    fail 'Removed runner link survived reconciliation'
+  [[ -L "${home}/.claude/agents/unrelated.md" ]] || \
+    fail 'Unrelated agent symlink was removed'
+  [[ -d "${cache}/agent/issue-killer" ]] || fail 'Cache was not refreshed to the current catalog'
+  [[ ! -e "${cache}/agent/old-runner" ]] || fail 'Dirty stale cache content survived refresh'
+  assert_contains "$output" 'Removed managed link:'
+
+  pass 'install refreshes dirty cache and reconciles only repository-owned links'
+}
+
+seed_remote
+export AGENT_WORKFLOW_REPO_URL="$FIXTURE_REMOTE"
+
 test_no_tty_error
 test_piped_explicit_mode
 test_shared_global_round_trip
 test_claude_destinations
+test_install_reconciles_dirty_cache_and_stale_managed_links
 
 printf '%s installer tests passed.\n' "$TESTS_RUN"

@@ -4,20 +4,14 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
 # Clones elvisbrevi/agent-workflow and symlinks skills, agents,
-# and Claude-MiniMax runners into supported destinations.
+# and autonomous-agent runners into supported destinations.
 # ─────────────────────────────────────────────────────────────
 
-REPO_URL="https://github.com/elvisbrevi/agent-workflow.git"
+REPO_URL="${AGENT_WORKFLOW_REPO_URL:-https://github.com/elvisbrevi/agent-workflow.git}"
 REPO_BRANCH="main"
 CACHE_DIR="${HOME}/.cache/agent-workflow"
 CATEGORIES=(utility discovery design planning implementation diagnosis review)
 AGENT_CATEGORIES=(agent)
-LEGACY_AGENT_NAMES=(afk-issuemerger)
-# Historical binary name that the canonical agent renamed away from.
-# Obsolete symlinks to it are removed safely during install/uninstall so
-# the published product surface only exposes `issue-killer`.
-LEGACY_BINARY_NAMES=(claude-minimax-issue-runner)
-LEGACY_BINARY_FILES=(AGENT.md run.sh)
 
 # ── Colors ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -73,8 +67,8 @@ Options:
 
 Examples:
   $(basename "$0")                                  # Interactive menu (TTY required)
-  $(basename "$0") --claude-global                 # Claude-MiniMax, all projects
-  $(basename "$0") --claude-local --target ~/proj  # Claude-MiniMax, one project
+  $(basename "$0") --claude-global                 # Claude Code, all projects
+  $(basename "$0") --claude-local --target ~/proj  # Claude Code, one project
   $(basename "$0") --global                        # Shared ~/.agents/ install
   $(basename "$0") --local --target ~/proj         # Local .agents/ install
   $(basename "$0") --both                          # Both local shared directories
@@ -117,19 +111,68 @@ resolve_target() {
   TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || die "Target directory not found: $TARGET"
 }
 
-# ── Clone / update repo ────────────────────────────────────
+# ── Refresh managed cache ──────────────────────────────────
 sync_repo() {
   local ref_label="${REPO_BRANCH}"
-  if [[ -d "${CACHE_DIR}/.git" ]]; then
-    info "Updating cached repo (${ref_label})..."
-    git -C "$CACHE_DIR" fetch --all --tags --quiet 2>/dev/null || true
-    git -C "$CACHE_DIR" checkout "$REPO_BRANCH" --quiet 2>/dev/null || true
-    git -C "$CACHE_DIR" pull --ff-only --quiet 2>/dev/null || true
-  else
-    info "Cloning repo to ${CACHE_DIR} (${ref_label})..."
-    mkdir -p "$(dirname "$CACHE_DIR")"
-    git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$CACHE_DIR" --quiet
+  local cache_parent refresh_dir previous_dir
+
+  cache_parent="$(dirname "$CACHE_DIR")"
+  refresh_dir="${CACHE_DIR}.refresh.$$"
+  previous_dir="${CACHE_DIR}.previous.$$"
+
+  info "Refreshing managed cache (${ref_label})..."
+  mkdir -p "$cache_parent"
+
+  if ! git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$refresh_dir" --quiet; then
+    rm -rf "$refresh_dir"
+    die "Unable to download ${REPO_URL} at ${ref_label}; existing cache was left untouched."
   fi
+
+  if [[ -e "$CACHE_DIR" ]] || [[ -L "$CACHE_DIR" ]]; then
+    if ! mv "$CACHE_DIR" "$previous_dir"; then
+      rm -rf "$refresh_dir"
+      die "Unable to move the existing managed cache at ${CACHE_DIR}."
+    fi
+  fi
+
+  if ! mv "$refresh_dir" "$CACHE_DIR"; then
+    if [[ -e "$previous_dir" ]] || [[ -L "$previous_dir" ]]; then
+      mv "$previous_dir" "$CACHE_DIR" 2>/dev/null || true
+    fi
+    rm -rf "$refresh_dir"
+    die "Unable to activate the refreshed cache at ${CACHE_DIR}."
+  fi
+
+  if [[ -e "$previous_dir" ]] || [[ -L "$previous_dir" ]]; then
+    rm -rf "$previous_dir"
+  fi
+
+  ok "Managed cache refreshed: ${CACHE_DIR}"
+}
+
+# Remove only links created from this repository cache. This reconciles
+# renamed or deleted skills and agents without relying on a growing list of
+# historical names, while preserving files and links owned by other tools.
+remove_managed_links() {
+  local cache="$1" dest_base="$2"
+  local candidate target
+
+  [[ -d "$dest_base" ]] || return 0
+
+  for candidate in "${dest_base}"/*; do
+    [[ -L "$candidate" ]] || continue
+    target="$(readlink "$candidate")"
+    case "$target" in
+      "${cache}/"*)
+        if [[ "$DRY_RUN" == true ]]; then
+          echo -e "  ${YELLOW}dry-run${NC}  remove managed ${CYAN}${candidate}${NC}"
+        else
+          rm "$candidate"
+          ok "Removed managed link: ${candidate}"
+        fi
+        ;;
+    esac
+  done
 }
 
 # ── Discover skills ─────────────────────────────────────────
@@ -207,6 +250,8 @@ install_to() {
     mkdir -p "$dest_base"
   fi
 
+  remove_managed_links "$cache" "$dest_base"
+
   local count=0
   while IFS= read -r entry; do
     local cat="${entry%%/*}"
@@ -230,6 +275,8 @@ uninstall_from() {
     warn "Directory does not exist: ${dest_base}"
     return 0
   fi
+
+  remove_managed_links "$cache" "$dest_base"
 
   local count=0
   while IFS= read -r entry; do
@@ -304,61 +351,6 @@ uninstall_agent() {
   fi
 }
 
-remove_legacy_agent_links() {
-  local cache="$1" dest_base="$2"
-  local legacy candidate target
-
-  for legacy in "${LEGACY_AGENT_NAMES[@]}"; do
-    for candidate in "${dest_base}/${legacy}" "${dest_base}/${legacy}.md"; do
-      [[ -L "$candidate" ]] || continue
-      target="$(readlink "$candidate")"
-      case "$target" in
-        "${cache}/agent/${legacy}"|"${cache}/agent/${legacy}/AGENT.md"|"${cache}/agent/${legacy}/run.sh")
-          if [[ "$DRY_RUN" == true ]]; then
-            echo -e "  ${YELLOW}dry-run${NC}  remove legacy ${CYAN}${candidate}${NC}"
-          else
-            rm "$candidate"
-            ok "Removed legacy agent link: ${legacy}"
-          fi
-          ;;
-      esac
-    done
-  done
-}
-
-# Removes obsolete symlinks that point at the historical
-# `claude-minimax-issue-runner` binary. The canonical product surface is
-# `issue-killer`; keeping the legacy name on PATH would let an old shell
-# script or third-party installer silently invoke the obsolete version.
-remove_legacy_binary_links() {
-  local cache="$1" dest_base="$2"
-  local legacy candidate suffix target file
-
-  for legacy in "${LEGACY_BINARY_NAMES[@]}"; do
-    for suffix in "" ".md"; do
-      candidate="${dest_base}/${legacy}${suffix}"
-      [[ -L "$candidate" ]] || continue
-      target="$(readlink "$candidate")"
-      matched=false
-      for file in "${LEGACY_BINARY_FILES[@]}"; do
-        case "$target" in
-          "${cache}/agent/${legacy}/${file}"|"${cache}/agent/${legacy}")
-            matched=true
-            ;;
-        esac
-      done
-      if [[ "$matched" == "true" ]]; then
-        if [[ "$DRY_RUN" == true ]]; then
-          echo -e "  ${YELLOW}dry-run${NC}  remove legacy ${CYAN}${candidate}${NC}"
-        else
-          rm "$candidate"
-          ok "Removed legacy binary link: ${candidate}"
-        fi
-      fi
-    done
-  done
-}
-
 # ── Install agents to a destination ─────────────────────────
 install_agents_to() {
   local cache="$1" dest_base="$2" label="$3"
@@ -371,7 +363,7 @@ install_agents_to() {
     mkdir -p "$dest_base"
   fi
 
-  remove_legacy_agent_links "$cache" "$dest_base"
+  remove_managed_links "$cache" "$dest_base"
 
   local count=0
   while IFS= read -r agent; do
@@ -396,7 +388,7 @@ uninstall_agents_from() {
     return 0
   fi
 
-  remove_legacy_agent_links "$cache" "$dest_base"
+  remove_managed_links "$cache" "$dest_base"
 
   local count=0
   while IFS= read -r agent; do
@@ -471,8 +463,7 @@ process_claude_agents() {
     return 0
   fi
 
-  remove_legacy_agent_links "$cache" "$dest_base"
-  remove_legacy_binary_links "$cache" "$dest_base"
+  remove_managed_links "$cache" "$dest_base"
 
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
@@ -487,7 +478,7 @@ process_claude_agents() {
   echo -e "  ${GREEN}${count} Claude agents processed.${NC}"
 }
 
-# ── Claude-MiniMax runner launchers ─────────────────────────
+# ── Agent runner launchers ──────────────────────────────────
 install_runner() {
   local cache="$1" dest_base="$2" agent="$3"
   local src="${cache}/agent/${agent}/run.sh"
@@ -552,8 +543,7 @@ process_runners() {
     return 0
   fi
 
-  remove_legacy_agent_links "$cache" "$dest_base"
-  remove_legacy_binary_links "$cache" "$dest_base"
+  remove_managed_links "$cache" "$dest_base"
 
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue

@@ -9,8 +9,11 @@ mutations. They are intentionally documented separately.
 
 ## Install
 
-The installer clones this repository into a cache and creates symlinks. Use an
-explicit mode in automation:
+The installer replaces its managed cache with a fresh clone and reconciles the
+selected destinations on every run. Links owned by this repository are removed
+before the current skills and agents are installed, so renamed or deleted
+artifacts do not survive an update. Files and links owned by other tools are
+left untouched. Use an explicit mode in automation:
 
 ```bash
 # Claude Code, all projects
