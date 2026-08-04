@@ -72,6 +72,12 @@ write_checkpoint() {
     else
       printf 'issue=unknown\n'
     fi
+    if [[ -n "${CHECKPOINT_HU:-}" ]]; then
+      printf 'hu=%s\n' "$CHECKPOINT_HU"
+    fi
+    if [[ -n "${CHECKPOINT_TICKET:-}" ]]; then
+      printf 'ticket=%s\n' "$CHECKPOINT_TICKET"
+    fi
     printf 'branch=%s\n' "$(current_branch)"
     printf 'base_branch=%s\n' "$BASE_BRANCH"
     printf 'base_sha=%s\n' "$(current_base_sha)"

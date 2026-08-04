@@ -43,11 +43,21 @@ predecessor, ready, claim, and closure mappings.
 | `ISSUE_KILLER_CONFIG_PATH` | `~/.config/issue-killer/config.toml` | TOML configuration read on startup. Override with `--config <path>`. |
 | `ISSUE_RUNNER_ADOPT_ISSUE` | _unset_ | Adopt a dirty worktree as a specific issue number when no checkpoint exists. Requires explicit TTY confirmation. |
 
-The runner accepts an optional repository path and `--config` override:
+The runner accepts an optional repository path, `--config`, and Azure-only HU
+selection:
 
 ```bash
-issue-killer --config /path/to.toml /path/to/repository
+issue-killer --config /path/to.toml --hu 123 /path/to/repository
 ```
+
+`--hu` accepts only a positive numeric Azure delivery HU ID. The Azure tracker
+contract must declare `delivery_hu_work_item_types` and
+`delivery_ticket_work_item_types` together. An omitted `--hu` discovers the
+oldest prepared HU by creation time and ID, then pins the first unblocked direct
+child Task or Bug by the same ordering. A selected HU with no pending children
+ends safely without launching a worker; a scope whose pending children are all
+blocked reports `BLOCKED`. The pinned `hu` and `ticket` identities are included
+in checkpoints and lock status, never prompts or credentials.
 
 ## Supported runtime / tracker matrix
 
@@ -145,7 +155,9 @@ main checkout and all linked worktrees.
 |---|---|
 | `pid` | Runner PID that wrote the checkpoint |
 | `iteration` | Worker attempt number (starts at 1) |
-| `issue` | Identified issue number, or `unknown` until the worker inspects it |
+| `issue` | Identified issue number; for scoped Azure execution this is the active ticket, or `unknown` until selection |
+| `hu` | Pinned Azure delivery HU identifier (Azure HU execution only) |
+| `ticket` | Active direct-child Azure delivery ticket identifier (Azure HU execution only) |
 | `branch` | Current branch the worker is on |
 | `base_branch` | Configured base branch for PRs |
 | `base_sha` | SHA of the base branch when the checkpoint was written |
@@ -187,9 +199,9 @@ the stream renderer continue to be redacted before reaching operator output,
 and the side-channel issue file (`${OUTPUT_FILE}.issue`) carries only the
 bare issue number back to the supervisor.
 
-The same non-sensitive identity fields (`issue`, `branch`, `base_branch`,
-`state`) are mirrored into the lock `status` file so operators can inspect
-progress without reading the checkpoint directly.
+The same non-sensitive identity fields (`issue`, `hu`, `ticket`, `branch`,
+`base_branch`, and `state`) are mirrored into the lock `status` file so
+operators can inspect progress without reading the checkpoint directly.
 
 ### Retention
 

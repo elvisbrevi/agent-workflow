@@ -193,7 +193,12 @@ issue-killer --config ~/.config/issue-killer/config.toml /path/to/repository
 ./.claude/bin/issue-killer
 ```
 
-The command accepts `[--config <path>] [repository]`. Defaults are:
+The command accepts `[--config <path>] [--hu <azure-hu-id>] [repository]`. The
+`--hu` option is Azure DevOps-only: it pins one validated delivery HU and its
+first eligible direct child Task or Bug. Without it, an Azure run discovers the
+next prepared HU from the repository-owned type, state, ready-tag, and
+predecessor mappings. GitHub rejects the option before launching a worker.
+Defaults are:
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -246,6 +251,8 @@ bash tests/issue_killer_test.sh
 bash tests/issue_killer_migration_test.sh
 bash tests/github_tracker_adapter_test.sh
 bash tests/azure_devops_tracker_adapter_test.sh
+bash tests/azure_hu_selection_test.sh
+bash tests/azure_hu_runner_test.sh
 ```
 
 The runner is expected to remain compatible with Bash 3.2 and a current Bash

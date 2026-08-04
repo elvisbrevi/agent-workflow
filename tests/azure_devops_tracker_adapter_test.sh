@@ -31,6 +31,8 @@ project = "example-project"
 repository = "example-repo"
 eligible_work_item_types = ["User Story", "Bug", "Task"]
 epic_work_item_types = ["Epic"]
+delivery_hu_work_item_types = ["User Story"]
+delivery_ticket_work_item_types = ["Task", "Bug"]
 open_states = ["New", "Active"]
 closed_states = ["Closed", "Done"]
 ready_tag = "ready-for-agent"
@@ -74,7 +76,14 @@ case "$1 $2 $3" in
       previous="$arg"
     done
     case "$id" in
-      1) printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}' ;;
+      1)
+        if [[ -n "${AZURE_SCOPE_TEST_MODE:-}" ]]; then
+          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","System.CreatedDate":"2026-08-01T09:00:00Z"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/10"}]}'
+        else
+          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}'
+        fi
+        ;;
+
       2) printf '%s\n' '{"id":2,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.AssignedTo":{"displayName":"Other"},"System.Tags":"ready-for-agent"},"relations":[]}' ;;
       3) printf '%s\n' '{"id":3,"fields":{"System.WorkItemType":"Task","System.State":"Closed","System.Tags":"ready-for-agent"},"relations":[]}' ;;
       4) printf '%s\n' '{"id":4,"fields":{"System.WorkItemType":"Epic","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}' ;;
@@ -83,13 +92,26 @@ case "$1 $2 $3" in
       7) printf '%s\n' '{"id":7,"fields":{"System.WorkItemType":"Task","System.State":"Active"},"relations":[]}' ;;
       8) printf '%s\n' '{"id":8,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/9"}]}' ;;
       9) printf '%s\n' '{"id":9,"fields":{"System.WorkItemType":"Task","System.State":"Done"},"relations":[]}' ;;
-      10) printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent"},"relations":[]}' ;;
+      10)
+        if [[ -n "${AZURE_SCOPE_TEST_MODE:-}" ]]; then
+          item_state="Active"
+          [[ -n "${AZURE_SCOPE_STATE_FILE:-}" && -r "${AZURE_SCOPE_STATE_FILE}" ]] && item_state="$(<"${AZURE_SCOPE_STATE_FILE}")"
+          printf '%s\n' "{\"id\":10,\"fields\":{\"System.WorkItemType\":\"Task\",\"System.State\":\"${item_state}\",\"System.CreatedDate\":\"2026-08-01T10:00:00Z\"},\"relations\":[]}"
+        else
+          printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent"},"relations":[]}'
+        fi
+        ;;
       11) printf '%s\n' '{"id":11,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent;epic","System.Title":"Tagged epic"},"relations":[]}' ;;
       12) printf '%s\n' '{"id":12,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"[Epic] titled epic"},"relations":[]}' ;;
       *) exit 1 ;;
     esac
     ;;
-  "boards work-item update") printf '%s\n' '{"id":1,"fields":{"System.State":"Done"}}' ;;
+      "boards work-item update")
+        if [[ -n "${AZURE_SCOPE_STATE_FILE:-}" ]]; then
+          printf '%s' 'Done' > "$AZURE_SCOPE_STATE_FILE"
+        fi
+        printf '%s\n' '{"id":1,"fields":{"System.State":"Done"}}'
+        ;;
   "repos pr create") printf '%s\n' '{"pullRequestId":42,"status":"active"}' ;;
   "repos pr update") printf '%s\n' '{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded"}' ;;
   "repos pr list")
@@ -254,6 +276,8 @@ model = "fixture-model"
 permission_mode = "bypassPermissions"
 CONFIG
 AZURE_COMPLETION_COUNTER="$completion_counter" \
+AZURE_SCOPE_TEST_MODE=completion \
+AZURE_SCOPE_STATE_FILE="${TEST_ROOT}/completion-state" \
 ISSUE_RUNNER_ASSUME_YES=true \
 ISSUE_KILLER_CONFIG_PATH="$completion_config" \
   "$RUNNER" "$runner_repo" >"$completion_output" 2>&1 || \
@@ -295,6 +319,8 @@ model = "fixture-model"
 permission_mode = "bypassPermissions"
 CONFIG
 if AZURE_RECOVERY_COUNTER="$recovery_counter" \
+AZURE_SCOPE_TEST_MODE=recovery \
+AZURE_SCOPE_STATE_FILE="${TEST_ROOT}/recovery-state" \
   ISSUE_RUNNER_RETRY_LIMIT=2 \
   ISSUE_RUNNER_RETRY_DELAYS=1 \
   ISSUE_RUNNER_ASSUME_YES=true \
