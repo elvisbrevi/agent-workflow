@@ -670,6 +670,11 @@ azure_prepare_recovery_scope() {
   local child_id child_json child_type child_state blocked found=false
 
   tracker_validate_delivery_hu "$hu_id" true || return 1
+  azure_validate_direct_child_relations "$AZURE_SCOPE_HU_JSON" || {
+    printf '%s: Azure delivery HU %s contains a malformed hierarchy relation\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  }
   while IFS= read -r child_id; do
     [[ "$child_id" =~ ^[1-9][0-9]*$ ]] || continue
     [[ "$child_id" == "$ticket_id" ]] || continue
@@ -757,6 +762,11 @@ tracker_prepare_worker_scope() {
     tracker_validate_delivery_hu "$hu_id" || return 1
   fi
 
+  azure_validate_direct_child_relations "$AZURE_SCOPE_HU_JSON" || {
+    printf '%s: Azure delivery HU %s contains a malformed hierarchy relation\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  }
   azure_child_scope_candidates "$AZURE_SCOPE_HU_JSON" || return 1
   child_lines="$AZURE_SCOPE_CANDIDATES"
   if [[ -z "$child_lines" ]]; then

@@ -76,6 +76,7 @@ case "$1 $2 $3" in
       500) printf '%s\n' '{"id":500,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent","System.Title":"Closed HU"},"relations":[]}' ;;
       600) printf '%s\n' '{"id":600,"fields":{"System.WorkItemType":"Epic","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"Epic"},"relations":[]}' ;;
       800) printf '%s\n' '{"id":800,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.AssignedTo":{"displayName":"Already claimed"},"System.Tags":"ready-for-agent","System.Title":"Assigned HU"},"relations":[]}' ;;
+      900) printf '%s\n' '{"id":900,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"Malformed HU"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/not-a-number"}]}' ;;
       101) printf '%s\n' '{"id":101,"fields":{"System.WorkItemType":"Task","System.State":"Closed","System.CreatedDate":"2026-08-01T10:00:00Z"},"relations":[]}' ;;
       102) printf '%s\n' '{"id":102,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.CreatedDate":"2026-08-01T11:00:00Z"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/110"}]}' ;;
       103) printf '%s\n' '{"id":103,"fields":{"System.WorkItemType":"Task","System.State":"Active","System.CreatedDate":"2026-08-01T12:00:00Z"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/100"},{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/106"}]}' ;;
@@ -146,12 +147,12 @@ fi
 unset STARTUP_RECOVERY_MODE CHECKPOINT_HU CHECKPOINT_TICKET
 pass 'recovery preserves the pinned HU and rejects identity changes'
 
-for invalid_hu in 400 500 600 800; do
+for invalid_hu in 400 500 600 800 900; do
   if tracker_prepare_worker_scope "$invalid_hu" >/dev/null 2>&1; then
     fail "Invalid HU $invalid_hu was accepted"
   fi
 done
-pass 'tasks, terminal items, and epics cannot become delivery HUs'
+pass 'tasks, terminal items, epics, assigned HUs, and malformed relations cannot become delivery HUs'
 
 if tracker_prepare_worker_scope 999; then
   fail 'Unavailable explicit HU was accepted'
