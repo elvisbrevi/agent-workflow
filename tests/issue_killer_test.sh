@@ -2035,6 +2035,7 @@ run_with_recovery_confirmation() {
   local output="$1"
   shift
   local expect_script="${TEST_ROOT}/confirm-recovery-${TESTS_RUN}.expect"
+  local status
 
   command -v expect >/dev/null 2>&1 || \
     fail 'expect is required for confirmed TTY recovery fixtures'
@@ -2052,13 +2053,26 @@ expect {
     send "y\r"
     exp_continue
   }
+  timeout {
+    send_user "Timed out waiting for the issue-killer recovery prompt\n"
+    catch {close}
+    catch {wait}
+    exit 124
+  }
   eof
 }
 set wait_result [wait]
 exit [lindex $wait_result 3]
 PROLOG
 
+  set +e
   RUNNER_TEST_COMMAND="$*" expect "$expect_script" >"$output" 2>&1
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    sed 's/^/  /' "$output" >&2
+    fail "Recovery confirmation fixture exited ${status}"
+  fi
 }
 
 test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint() {
@@ -2380,10 +2394,12 @@ test_default_profile_used_without_tty() {
   local repo="${TEST_ROOT}/profile-default-repo"
   local fake="${TEST_ROOT}/profile-default-worker"
   local config_path="${TEST_ROOT}/profile-default-config.toml"
+  local config_tmp="${TEST_ROOT}/profile-default-tmp"
   local output="${TEST_ROOT}/profile-default-output.log"
   local status
 
   new_repo "$repo"
+  mkdir -p "$config_tmp"
   printf '%s\n' '#!/usr/bin/env bash' \
     'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake"
   chmod +x "$fake"
@@ -2397,6 +2413,7 @@ test_default_profile_used_without_tty() {
     "claude-staging=Claude Staging|claude|/tmp/none|claude-3-5|||acceptEdits"
 
   set +e
+  TMPDIR="$config_tmp" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_KILLER_CONFIG_PATH="$config_path" \
     "$RUNNER" "$repo" >"$output" 2>&1
@@ -2412,8 +2429,11 @@ test_default_profile_used_without_tty() {
   fi
   grep -Fq 'ISSUE_KILLER_STATUS=QUEUE_EMPTY' "$output" || \
     fail 'Default profile worker did not complete'
+  if compgen -G "${config_tmp}/issue-killer-config.*" >/dev/null; then
+    fail 'Runner left its parsed configuration state in TMPDIR'
+  fi
 
-  pass 'non-interactive launch uses default_profile without prompting'
+  pass 'non-interactive launch uses default_profile and cleans parsed configuration state'
 }
 
 test_missing_default_profile_rejects_non_tty() {

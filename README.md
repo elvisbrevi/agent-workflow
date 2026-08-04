@@ -693,8 +693,11 @@ workflow/
         ├── PROMPT.md
         ├── REFERENCE.md
         ├── run.sh
-        ├── config/issue-killer-config.sh
-        ├── runtime/{claude,codex,opencode}-adapter.sh
+        ├── config/{issue-killer-config,toml-parser,profile-catalog}.sh
+        ├── operator/session.sh
+        ├── state/{checkpoint,repository-lock}.sh
+        ├── recovery/{legacy-migration,startup,retry}.sh
+        ├── runtime/{supervisor,claude-adapter,codex-adapter,opencode-adapter}.sh
         └── tracker/{github,azure-devops,selector,...}.sh
 ```
 
