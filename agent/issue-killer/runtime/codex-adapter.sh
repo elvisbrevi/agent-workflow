@@ -507,13 +507,8 @@ codex_runtime_render_stream() {
 # thin forwarder to the Codex-specific implementation above; the alias
 # layer exists so a future adapter can be selected by sourcing a
 # sibling file without touching the orchestrator.
-runtime_is_event_object() { codex_runtime_is_event_object "$@"; }
-runtime_event_field()     { codex_runtime_event_field "$@"; }
 runtime_redact()          { codex_runtime_redact; }
-runtime_decode_event()    { codex_runtime_decode_event "$@"; }
-runtime_capture_session() { codex_runtime_capture_session "$@"; }
-runtime_dispatch_event()  { codex_runtime_dispatch_event "$@"; }
-runtime_invoke_args()     { codex_runtime_invoke_args "$@"; }
+runtime_validate_profile() { codex_runtime_validate_profile "$@"; }
 runtime_invoke()          { codex_runtime_invoke "$@"; }
 runtime_render_stream()   { codex_runtime_render_stream "$@"; }
 

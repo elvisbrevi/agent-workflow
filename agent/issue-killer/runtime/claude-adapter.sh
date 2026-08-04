@@ -416,20 +416,10 @@ claude_runtime_render_stream() {
 # earlier in this file remain the authoritative implementation; the
 # orchestrator's old call sites that still mention them keep working
 # through the unchanged originals.
-runtime_is_event_object() { claude_runtime_is_event_object "$@"; }
-runtime_event_field()     { claude_runtime_event_field "$@"; }
 runtime_redact()          { claude_runtime_redact; }
-runtime_decode_event()    { claude_runtime_decode_event "$@"; }
-runtime_capture_session() { claude_runtime_capture_session "$@"; }
-runtime_dispatch_event()  { claude_runtime_dispatch_event "$@"; }
-runtime_invoke_args()     { claude_runtime_invoke_args "$@"; }
+runtime_validate_profile() { return 0; }
 runtime_invoke()          { claude_runtime_invoke "$@"; }
 runtime_render_stream()   { claude_runtime_render_stream "$@"; }
-# `runtime_decode_bash` is the private normalization helper used by
-# `claude_runtime_decode_event`. Codex has its own shell-event grammar
-# so it does not share this name; we still expose it on the Claude
-# adapter for any direct caller.
-runtime_decode_bash()     { claude_runtime_decode_bash "$@"; }
 
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side

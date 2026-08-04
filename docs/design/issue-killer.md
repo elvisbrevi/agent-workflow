@@ -6,6 +6,19 @@ Replace the Claude-MiniMax-specific runner with `issue-killer`, an autonomous su
 
 The existing safety guarantees remain: one runner per repository, one issue per worker, explicit authorization for destructive actions, bounded retries, durable recovery identity, verified PR merge, and issue closure before advancing the queue.
 
+## Source Layout
+
+`run.sh` is the composition root and queue loop. It loads modules that have no source-time side effects:
+
+- `config/`: strict TOML parsing and the execution-profile catalog behind the stable `issue-killer-config.sh` facade.
+- `operator/`: all TTY/stdin interaction for profile selection and destructive or recovery confirmation.
+- `state/`: durable checkpoints and repository-wide lock ownership.
+- `recovery/`: legacy migration, startup reconciliation, retry policy, and OpenCode fallback transitions.
+- `runtime/supervisor.sh`: worker process supervision and progress heartbeats.
+- `runtime/*-adapter.sh` and `tracker/*-adapter.sh`: the CLI and tracker seams required by ADR 0001.
+
+The modules communicate through the existing normalized `runtime_*` and `tracker_*` interfaces. Configuration state is temporary and is removed by the composed exit trap on both successful and failed startup.
+
 ## Configuration
 
 The default configuration path is `~/.config/issue-killer/config.toml`. `--config <path>` replaces it. Configuration must not contain credentials; each CLI remains responsible for its own authenticated provider configuration.
