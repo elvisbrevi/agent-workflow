@@ -3101,6 +3101,433 @@ PROLOG
   pass 'codex profile drains a two-issue queue through the generic status marker'
 }
 
+# --- OpenCode profile black-box tests (issue #15) ----------------------
+
+# Writes an OpenCode profile configuration. The arguments are
+# pipe-delimited records of the form:
+#   name=label|cli|command|model|shell|init_file|variant|auto_approve
+# Empty fields are skipped. Tests for issue #15 use this helper to
+# configure a profile whose CLI is `opencode` and whose options include
+# `variant` and `auto_approve`. The parser walks the pipe-separated
+# fields one delimiter at a time so empty values (e.g. when `shell`
+# and `init_file` are unset) are preserved correctly.
+write_opencode_profile_config() {
+  local target="$1"
+  local default_name="$2"
+  shift 2
+
+  printf 'default_profile = "%s"\n' "$default_name" > "$target"
+  for entry in "$@"; do
+    local name label cli command model shell init_file
+    local variant auto_approve field_idx field
+    name="${entry%%=*}"
+    local rest="${entry#*=}"
+    label=""
+    cli=""
+    command=""
+    model=""
+    shell=""
+    init_file=""
+    variant=""
+    auto_approve=""
+    field_idx=0
+    while [[ -n "$rest" ]]; do
+      field="${rest%%|*}"
+      if [[ "$field" == "$rest" ]]; then
+        rest=""
+      else
+        rest="${rest#*|}"
+      fi
+      case "$field_idx" in
+        0) label="$field" ;;
+        1) cli="$field" ;;
+        2) command="$field" ;;
+        3) model="$field" ;;
+        4) shell="$field" ;;
+        5) init_file="$field" ;;
+        6) variant="$field" ;;
+        7) auto_approve="$field" ;;
+      esac
+      field_idx=$((field_idx + 1))
+    done
+
+    {
+      printf '\n[profiles.%s]\n' "$name"
+      printf 'label = "%s"\n' "$label"
+      printf 'cli = "%s"\n' "$cli"
+      printf 'command = "%s"\n' "$command"
+      printf 'model = "%s"\n' "$model"
+      if [[ -n "$shell" ]]; then
+        printf 'shell = "%s"\n' "$shell"
+      fi
+      if [[ -n "$init_file" ]]; then
+        printf 'init_file = "%s"\n' "$init_file"
+      fi
+      printf '\n[profiles.%s.options]\n' "$name"
+      [[ -n "$variant" ]] && \
+        printf 'variant = "%s"\n' "$variant"
+      [[ -n "$auto_approve" ]] && \
+        printf 'auto_approve = "%s"\n' "$auto_approve"
+    } >> "$target"
+  done
+}
+
+test_black_box_opencode_profile_invokes_opencode_run_with_expected_args() {
+  local repo="${TEST_ROOT}/opencode-args-repo"
+  local fake="${TEST_ROOT}/opencode-args-worker"
+  local args_file="${TEST_ROOT}/opencode-args-recorded"
+  local config_path="${TEST_ROOT}/opencode-args-config.toml"
+  local output="${TEST_ROOT}/opencode-args-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+: > "\$RUNNER_TEST_ARGS_FILE"
+for arg in "\$@"; do
+  printf '%s\n' "\$arg" >> "\$RUNNER_TEST_ARGS_FILE"
+done
+printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+PROLOG
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-luna" \
+    "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||high|true"
+
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Black-box OpenCode profile did not finish its first attempt'
+
+  # `opencode run` is the canonical subcommand. The adapter must not
+  # pass arbitrary free-form shell expressions; the args list must
+  # enumerate the documented flags.
+  grep -Fxq -- 'run' "$args_file" || \
+    fail 'OpenCode adapter did not invoke the `run` subcommand'
+  grep -Fxq -- '--format' "$args_file" || \
+    fail 'OpenCode adapter did not request a structured output format'
+  grep -Fxq -- 'json' "$args_file" || \
+    fail 'OpenCode adapter did not request the JSON output format'
+  grep -Fxq -- '--model' "$args_file" || \
+    fail 'OpenCode adapter did not pass the model flag'
+  grep -Fxq -- 'openai/gpt-5-luna' "$args_file" || \
+    fail 'OpenCode adapter did not pass the configured provider/model identifier'
+  grep -Fxq -- '--variant' "$args_file" || \
+    fail 'OpenCode adapter did not pass the variant flag'
+  grep -Fxq -- 'high' "$args_file" || \
+    fail 'OpenCode adapter did not pass the configured variant value'
+  grep -Fxq -- '--auto-approve' "$args_file" || \
+    fail 'OpenCode adapter did not enable auto-approve when configured'
+
+  pass 'opencode profile invokes opencode run with --format json, --model provider/model, --variant, and --auto-approve'
+}
+
+test_black_box_opencode_profile_decodes_json_progress_events() {
+  local repo="${TEST_ROOT}/opencode-progress-repo"
+  local fake="${TEST_ROOT}/opencode-progress-worker"
+  local counter="${TEST_ROOT}/opencode-progress-counter"
+  local config_path="${TEST_ROOT}/opencode-progress-config.toml"
+  local output="${TEST_ROOT}/opencode-progress-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+counter="$RUNNER_TEST_COUNTER_FILE"
+iteration=0
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
+fi
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"session","sessionID":"sess-opencode-001"}'
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"ls -la"}}}'
+printf '%s\n' '{"type":"step_finish","part":{"type":"tool","tool":"edit","input":{"filePath":"agent/run.sh"}}}'
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"git push origin issue-15"}}}'
+printf '%s\n' '{"type":"text","sessionID":"sess-opencode-001","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+PROLOG
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-luna" \
+    "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||medium|false"
+
+  RUNNER_TEST_COUNTER_FILE="$counter" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Black-box OpenCode progress did not complete the issue'
+
+  grep -Fq 'Running shell command' "$output" || \
+    fail 'OpenCode JSON did not surface a shell command event'
+  grep -Fq 'Editing agent/run.sh' "$output" || \
+    fail 'OpenCode JSON did not surface an edit event'
+  grep -Fq 'Pushing branch' "$output" || \
+    fail 'OpenCode JSON did not surface a `git push` event'
+  grep -Fq 'Worker 1 completed one issue.' "$output" || \
+    fail 'OpenCode worker did not report the issue as completed'
+
+  pass 'opencode JSON events translate into the same normalized progress as Claude'
+}
+
+test_black_box_opencode_profile_captures_session_id() {
+  local repo="${TEST_ROOT}/opencode-session-repo"
+  local fake="${TEST_ROOT}/opencode-session-worker"
+  local counter="${TEST_ROOT}/opencode-session-counter"
+  local config_path="${TEST_ROOT}/opencode-session-config.toml"
+  local output="${TEST_ROOT}/opencode-session-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+counter="$RUNNER_TEST_COUNTER_FILE"
+iteration=0
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
+fi
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"session","sessionID":"sess-opencode-capture"}'
+# Emit FAILED so the orchestrator preserves the checkpoint that
+# records the captured session id. The test inspects the checkpoint
+# to verify the runtime adapter wrote the session id into the
+# recovery record before the FAILED terminal state.
+printf '%s\n' '{"type":"text","sessionID":"sess-opencode-capture","part":{"type":"text","text":"ISSUE_KILLER_STATUS=FAILED\n"}}'
+PROLOG
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-luna" \
+    "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||medium|false"
+
+  set +e
+  RUNNER_TEST_COUNTER_FILE="$counter" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  set -e
+
+  # The orchestrator records the captured session id into the
+  # checkpoint when the worker emits a session event. FAILED
+  # preserves the checkpoint so the runtime observable is durable.
+  checkpoint="${repo}/.git/claude-minimax-issue-runner.checkpoint"
+  grep -Eq '^session_id=sess-opencode-capture' "$checkpoint" || \
+    fail 'OpenCode adapter did not capture the session id from the session event'
+  grep -Eq '^cli=opencode' "$checkpoint" || \
+    fail 'OpenCode checkpoint did not record the opencode CLI identity'
+
+  pass 'opencode adapter captures the session id and records it on the checkpoint'
+}
+
+test_opencode_profile_validation_rejects_unknown_options() {
+  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+
+  set +e
+  RUNNER_NAME="claude-minimax-issue-runner" \
+  bash -c "source '${adapter}' && opencode_runtime_validate_profile 'unknown_option=1'" \
+    >"$TEST_ROOT/opencode-validate-unknown.out" \
+    2>"$TEST_ROOT/opencode-validate-unknown.err"
+  local rc=$?
+  set -e
+
+  [[ "$rc" -ne 0 ]] || fail 'Unknown OpenCode option must fail validation'
+  grep -Fq 'unknown option' "$TEST_ROOT/opencode-validate-unknown.err" || \
+    fail 'Validation diagnostic did not name the unknown option'
+
+  pass 'opencode profile validation rejects unknown options'
+}
+
+test_opencode_profile_validation_rejects_invalid_variant() {
+  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+
+  set +e
+  RUNNER_NAME="claude-minimax-issue-runner" \
+  bash -c "source '${adapter}' && opencode_runtime_validate_profile 'variant=banana'" \
+    >"$TEST_ROOT/opencode-validate-variant.out" \
+    2>"$TEST_ROOT/opencode-validate-variant.err"
+  local rc=$?
+  set -e
+
+  [[ "$rc" -ne 0 ]] || fail 'Invalid OpenCode variant must fail validation'
+  grep -Fq 'invalid variant' "$TEST_ROOT/opencode-validate-variant.err" || \
+    fail 'Variant validation diagnostic did not name the bad value'
+
+  pass 'opencode profile validation rejects an unknown variant'
+}
+
+test_opencode_profile_validation_rejects_invalid_model_format() {
+  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+
+  set +e
+  RUNNER_NAME="claude-minimax-issue-runner" \
+  ISSUE_KILLER_PROFILE_MODEL="not-a-provider-model" \
+  bash -c "source '${adapter}' && opencode_runtime_validate_profile ''" \
+    >"$TEST_ROOT/opencode-validate-model.out" \
+    2>"$TEST_ROOT/opencode-validate-model.err"
+  local rc=$?
+  set -e
+
+  [[ "$rc" -ne 0 ]] || fail 'Invalid OpenCode model format must fail validation'
+  grep -Fq 'invalid model' "$TEST_ROOT/opencode-validate-model.err" || \
+    fail 'Model validation diagnostic did not name the bad value'
+
+  pass 'opencode profile validation rejects an invalid provider/model format'
+}
+
+test_black_box_opencode_profile_rejects_invalid_options_before_launch() {
+  local repo="${TEST_ROOT}/opencode-bad-options-repo"
+  local fake="${TEST_ROOT}/opencode-bad-options-worker"
+  local marker="${TEST_ROOT}/opencode-bad-options-ran"
+  local config_path="${TEST_ROOT}/opencode-bad-options-config.toml"
+  local output="${TEST_ROOT}/opencode-bad-options-output.log"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '${marker}'" > "$fake"
+  chmod +x "$fake"
+
+  cat > "$config_path" <<PROLOG
+default_profile = "opencode-broken"
+
+[profiles.opencode-broken]
+label = "OpenCode Broken"
+cli = "opencode"
+command = "${fake}"
+model = "openai/gpt-5-luna"
+
+[profiles.opencode-broken.options]
+variant = "not-a-variant"
+PROLOG
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || \
+    fail 'Invalid OpenCode variant must reject the launch'
+  [[ ! -e "$marker" ]] || \
+    fail 'Worker was launched despite an invalid OpenCode variant'
+  grep -Fq 'invalid variant' "$output" || \
+    fail 'Runner did not surface the invalid-variant diagnostic'
+
+  pass 'opencode profile with an invalid variant stops the run before worker launch'
+}
+
+test_black_box_opencode_profile_resumes_session_when_captured() {
+  local repo="${TEST_ROOT}/opencode-resume-repo"
+  local fake="${TEST_ROOT}/opencode-resume-worker"
+  local counter="${TEST_ROOT}/opencode-resume-counter"
+  local args_file="${TEST_ROOT}/opencode-resume-args"
+  local config_path="${TEST_ROOT}/opencode-resume-config.toml"
+  local output="${TEST_ROOT}/opencode-resume-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="\$RUNNER_TEST_COUNTER_FILE"
+attempt=0
+if [[ -r "\$counter_file" ]]; then
+  attempt="\$(<"\$counter_file")"
+fi
+attempt=\$((attempt + 1))
+printf '%s' "\$attempt" > "\$counter_file"
+
+for arg in "\$@"; do
+  printf '%s\n' "\$arg" >> "\$RUNNER_TEST_ARGS_FILE"
+done
+printf '%s\n' 'EOF' >> "\$RUNNER_TEST_ARGS_FILE"
+
+if [[ "\$attempt" -eq 1 ]]; then
+  # First attempt: emit a captured session id, then a transient
+  # transport failure so the orchestrator captures the session and
+  # retries with --session on the next attempt.
+  printf '%s\n' '{"type":"session","sessionID":"sess-resume-1"}'
+  printf '%s\n' 'connection reset by peer' >&2
+  exit 1
+fi
+
+if [[ "\$attempt" -eq 2 ]]; then
+  # Resumed attempt: succeed with ISSUE_COMPLETED so the orchestrator
+  # proceeds to the next queue iteration and we can assert that
+  # --session was used.
+  printf '%s\n' '{"type":"text","sessionID":"sess-resume-1","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+  exit 0
+fi
+
+# Subsequent attempts: report an empty queue so the orchestrator exits.
+printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+PROLOG
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-luna" \
+    "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||medium|false"
+
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  RUNNER_TEST_COUNTER_FILE="$counter" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Black-box OpenCode resume did not finish its first attempt'
+
+  grep -Fxq -- '--session' "$args_file" || \
+    fail 'OpenCode adapter did not pass --session on a captured session'
+  grep -Fxq -- 'sess-resume-1' "$args_file" || \
+    fail 'OpenCode adapter did not pass the captured session id to --session'
+
+  pass 'opencode adapter passes --session <session_id> when a session is safely captured'
+}
+
+test_black_box_opencode_profile_drains_queue_through_status_marker() {
+  local repo="${TEST_ROOT}/opencode-drain-repo"
+  local fake="${TEST_ROOT}/opencode-drain-worker"
+  local counter="${TEST_ROOT}/opencode-drain-counter"
+  local config_path="${TEST_ROOT}/opencode-drain-config.toml"
+  local output="${TEST_ROOT}/opencode-drain-output.log"
+
+  new_repo "$repo"
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+counter="$RUNNER_TEST_COUNTER_FILE"
+iteration=0
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
+fi
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -eq 1 ]]; then
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+PROLOG
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-luna" \
+    "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||low|false"
+
+  RUNNER_TEST_COUNTER_FILE="$counter" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'OpenCode queue drain did not exit cleanly'
+
+  grep -Fq 'Worker 1 completed one issue.' "$output" || \
+    fail 'OpenCode worker did not report the first issue as completed'
+  grep -Fq 'No pending, available, non-epic issues remain.' "$output" || \
+    fail 'OpenCode worker did not drain the queue'
+
+  pass 'opencode profile drains a two-issue queue through the generic status marker'
+}
+
 test_default_profile_used_without_tty
 test_missing_default_profile_rejects_non_tty
 test_config_rejects_unknown_top_level_key
@@ -3119,5 +3546,14 @@ test_codex_profile_validation_rejects_auto_approve_with_read_only_sandbox
 test_black_box_codex_profile_rejects_invalid_options_before_launch
 test_black_box_codex_profile_resumes_thread_when_session_captured
 test_black_box_codex_profile_drains_queue_through_status_marker
+test_black_box_opencode_profile_invokes_opencode_run_with_expected_args
+test_black_box_opencode_profile_decodes_json_progress_events
+test_black_box_opencode_profile_captures_session_id
+test_opencode_profile_validation_rejects_unknown_options
+test_opencode_profile_validation_rejects_invalid_variant
+test_opencode_profile_validation_rejects_invalid_model_format
+test_black_box_opencode_profile_rejects_invalid_options_before_launch
+test_black_box_opencode_profile_resumes_session_when_captured
+test_black_box_opencode_profile_drains_queue_through_status_marker
 
 printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
