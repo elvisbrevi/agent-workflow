@@ -339,6 +339,7 @@ EOF
 test_legacy_checkpoint_with_ambiguous_profile_mapping_fails_closed() {
   local repo="${TEST_ROOT}/ambiguous-profile-repo"
   local fake_worker="${TEST_ROOT}/ambiguous-profile-worker"
+  local secondary_worker="${TEST_ROOT}/ambiguous-profile-secondary-worker"
   local config="${TEST_ROOT}/ambiguous-profile-config.toml"
   local bin_dir="${TEST_ROOT}/ambiguous-profile-bin"
   local output="${TEST_ROOT}/ambiguous-profile-output.log"
@@ -351,7 +352,9 @@ test_legacy_checkpoint_with_ambiguous_profile_mapping_fails_closed() {
   printf '%s\n' '#!/usr/bin/env bash' \
     "touch '$marker'" \
     'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake_worker"
-  chmod +x "$fake_worker"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$secondary_worker"
+  chmod +x "$fake_worker" "$secondary_worker"
   common="$(cd "$repo" && common=$(git rev-parse --git-common-dir) && cd "$common" && pwd -P)"
   legacy_checkpoint="${common}/claude-minimax-issue-runner.checkpoint"
   canonical_checkpoint="${common}/issue-killer.checkpoint"
@@ -367,10 +370,16 @@ session_id=sess-legacy
 state=mutating
 profile=claude-minimax
 cli=claude
-model=another-model
-command=${fake_worker}
 EOF
   common_config "$config" "$fake_worker"
+  cat >> "$config" <<EOF
+
+[profiles.claude-secondary]
+label = "Claude secondary"
+cli = "claude"
+command = "${secondary_worker}"
+model = "claude-secondary-model"
+EOF
 
   set +e
   PATH="${bin_dir}:$PATH" \
