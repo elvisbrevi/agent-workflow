@@ -662,6 +662,12 @@ record_identified_issue() {
     return
   fi
 
+  if [[ -n "${CHECKPOINT_ISSUE:-}" && "$CHECKPOINT_ISSUE" != "$issue_number" ]]; then
+    printf '[%s] Ignoring tracker identity %s; issue %s is already fixed for this worker\n' \
+      "$RUNNER_NAME" "$issue_number" "$CHECKPOINT_ISSUE" >&2
+    return
+  fi
+
   CHECKPOINT_ISSUE="$issue_number"
   write_checkpoint "issue_selected"
   write_lock_status "issue_selected" 0

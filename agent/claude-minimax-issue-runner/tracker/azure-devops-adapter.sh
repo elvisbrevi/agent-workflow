@@ -19,12 +19,14 @@ AZURE_CLAIM_IDENTITY=""
 AZURE_PREDECESSOR_RELATION=""
 AZURE_CLOSED_STATE=""
 AZURE_GUARD_DIR=""
+AZURE_ORIGINAL_PATH=""
 
 tracker_prepare_worker_environment() {
   local guard_bin real_az adapter_dir
 
   real_az="$(command -v az 2>/dev/null || true)"
   [[ -x "$real_az" ]] || return 1
+  AZURE_ORIGINAL_PATH="$PATH"
   adapter_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   AZURE_GUARD_DIR="${TMPDIR:-/tmp}/${RUNNER_NAME:-issue-killer}.azure-az.$$"
   mkdir -p "$AZURE_GUARD_DIR" || return 1
@@ -43,6 +45,10 @@ tracker_cleanup_worker_environment() {
   [[ -n "$AZURE_GUARD_DIR" ]] || return 0
   rm -rf "$AZURE_GUARD_DIR"
   AZURE_GUARD_DIR=""
+  if [[ -n "$AZURE_ORIGINAL_PATH" ]]; then
+    export PATH="$AZURE_ORIGINAL_PATH"
+    AZURE_ORIGINAL_PATH=""
+  fi
 }
 
 azure_config_raw_value() {
@@ -168,12 +174,10 @@ azure_organization_url() {
 }
 
 azure_validate_process_mappings() {
-  local process_types type type_json state
-  local configured_types configured_states
+  local process_types type type_json state state_catalog state_lines available_category
+  local configured_types
 
   configured_types="$(printf '%s\n%s\n' "$AZURE_ELIGIBLE_TYPES" "$AZURE_EPIC_TYPES" | awk 'NF && !seen[$0]++')"
-  configured_states="$(printf '%s\n%s\n' "$AZURE_OPEN_STATES" "$AZURE_CLOSED_STATES" | awk 'NF && !seen[$0]++')"
-
   process_types="$(az devops invoke \
     --area wit \
     --resource workitemtypes \
@@ -186,6 +190,7 @@ azure_validate_process_mappings() {
       return 1
     }
 
+  state_catalog=""
   while IFS= read -r type; do
     [[ -n "$type" ]] || continue
     jq -e --arg type "$type" \
@@ -207,17 +212,38 @@ azure_validate_process_mappings() {
           "${RUNNER_NAME:-issue-killer}" "$type" >&2
         return 1
       }
-    while IFS= read -r state; do
-      [[ -n "$state" ]] || continue
-      jq -e --arg state "$state" \
-        'any((.states // .value // [])[]?; (.name // "") == $state)' \
-        <<<"$type_json" >/dev/null || {
-          printf '%s: configured Azure state is not present for work-item type %s: %s\n' \
-            "${RUNNER_NAME:-issue-killer}" "$type" "$state" >&2
-          return 1
-        }
-    done <<<"$configured_states"
+    state_lines=$(jq -r '.states // .value // [] | .[]? | [(.name // ""), (.category // .stateCategory // "")] | @tsv' <<<"$type_json")
+    state_catalog="${state_catalog}${state_lines}"$'\n'
   done <<<"$configured_types"
+
+  while IFS= read -r state; do
+    [[ -n "$state" ]] || continue
+    azure_list_contains "$state" "$AZURE_CLOSED_STATES" && {
+      printf '%s: Azure state cannot be both open and closed: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$state" >&2
+      return 1
+    }
+    available_category=$(awk -F '\t' -v wanted="$state" \
+      '$1 == wanted && $2 != "Completed" && $2 != "Removed" && $2 != "" { print $2; exit }' \
+      <<<"$state_catalog")
+    [[ -n "$available_category" ]] || {
+      printf '%s: configured Azure open state is absent or terminal: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$state" >&2
+      return 1
+    }
+  done <<<"$AZURE_OPEN_STATES"
+
+  while IFS= read -r state; do
+    [[ -n "$state" ]] || continue
+    available_category=$(awk -F '\t' -v wanted="$state" \
+      '$1 == wanted && ($2 == "Completed" || $2 == "Removed") { print $2; exit }' \
+      <<<"$state_catalog")
+    [[ -n "$available_category" ]] || {
+      printf '%s: configured Azure closed state is absent or non-terminal: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$state" >&2
+      return 1
+    }
+  done <<<"$AZURE_CLOSED_STATES"
 
 }
 

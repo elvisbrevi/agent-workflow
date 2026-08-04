@@ -92,7 +92,13 @@ case "$1 $2 $3" in
   "boards work-item update") printf '%s\n' '{"id":1,"fields":{"System.State":"Done"}}' ;;
   "repos pr create") printf '%s\n' '{"pullRequestId":42,"status":"active"}' ;;
   "repos pr update") printf '%s\n' '{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded"}' ;;
-  "repos pr list") printf '%s\n' '[{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]' ;;
+  "repos pr list")
+    case "${AZURE_TEST_PR_MODE:-merged}" in
+      ambiguous) printf '%s\n' '[{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"},{"pullRequestId":43,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]' ;;
+      active) printf '%s\n' '[{"pullRequestId":42,"status":"active","mergeStatus":"notSet","targetRefName":"refs/heads/main"}]' ;;
+      *) printf '%s\n' '[{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]' ;;
+    esac
+    ;;
   *) exit 1 ;;
 esac
 AZ
@@ -155,6 +161,11 @@ pr_json="$(tracker_prs_for_branch feature/issue-16)"
   fail 'Azure adapter did not reject ambiguous PR state'
 tracker_item_completion_verified 10 feature/issue-16 || \
   fail 'Azure adapter did not verify a closed work item with a merged PR'
+tracker_prepare_worker_environment || fail 'Azure guarded CLI environment was not prepared'
+if AZURE_TEST_PR_MODE=ambiguous az boards work-item update --id 1 --state Done >/dev/null 2>&1; then
+  fail 'Azure guarded CLI allowed closure with an ambiguous PR'
+fi
+tracker_cleanup_worker_environment
 [[ "$(tracker_runtime_decode_command 'az repos pr update --id 42 --status completed')" == $'tracker\t' ]] || \
   fail 'Azure runtime decoder advanced the checkpoint before merge verification'
 [[ "$(tracker_runtime_decode_command 'az boards work-item update --id 10 --state Done')" == $'tracker\t' ]] || \
@@ -252,6 +263,54 @@ grep -Fq 'Worker 1 completed one issue.' "$completion_output" || \
 grep -Fq 'No pending, available, non-epic issues remain.' "$completion_output" || \
   fail 'Runner did not drain the verified Azure completion fixture'
 pass 'Runner verifies Azure work-item closure and merged PR state before accepting completion'
+
+recovery_repo="${TEST_ROOT}/recovery-repo"
+recovery_worker="${TEST_ROOT}/recovery-worker"
+recovery_counter="${TEST_ROOT}/recovery-counter"
+recovery_config="${TEST_ROOT}/recovery-config.toml"
+recovery_output="${TEST_ROOT}/recovery-output.log"
+cp -R "$repo" "$recovery_repo"
+cat > "$recovery_worker" <<'WORKER'
+#!/usr/bin/env bash
+count=0
+if [[ -r "$AZURE_RECOVERY_COUNTER" ]]; then count="$(<"$AZURE_RECOVERY_COUNTER")"; fi
+count=$((count + 1))
+printf '%s' "$count" > "$AZURE_RECOVERY_COUNTER"
+git switch -c feature/recovery-1 >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"az boards work-item show --id 1"}}]}}'
+printf '%s\n' 'connection reset by peer' >&2
+exit 1
+WORKER
+chmod +x "$recovery_worker"
+cat > "$recovery_config" <<CONFIG
+default_profile = "azure-recovery"
+
+[profiles.azure-recovery]
+label = "Claude Azure recovery fixture"
+cli = "claude"
+command = "$recovery_worker"
+model = "fixture-model"
+
+[profiles.azure-recovery.options]
+permission_mode = "bypassPermissions"
+CONFIG
+if AZURE_RECOVERY_COUNTER="$recovery_counter" \
+  ISSUE_RUNNER_RETRY_LIMIT=2 \
+  ISSUE_RUNNER_RETRY_DELAYS=1 \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$recovery_config" \
+  "$RUNNER" "$recovery_repo" >"$recovery_output" 2>&1; then
+  fail 'Azure recovery accepted partial work instead of requiring recovery'
+else
+  recovery_status=$?
+fi
+[[ "$recovery_status" -eq 4 ]] || \
+  fail "Azure partial recovery returned ${recovery_status}, expected 4"
+grep -Fq 'RECOVERY_REQUIRED' "$recovery_output" || \
+  fail 'Azure partial recovery did not emit RECOVERY_REQUIRED'
+[[ "$(<"$recovery_counter")" == 1 ]] || \
+  fail 'Azure partial recovery launched a second worker'
+pass 'Runner stops Azure partial recovery without selecting another work item'
 
 invalid_mapping_repo="${TEST_ROOT}/invalid-mapping-repo"
 invalid_mapping_output="${TEST_ROOT}/invalid-mapping-output.log"
