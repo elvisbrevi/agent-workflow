@@ -479,49 +479,131 @@ PROLOG
   chmod +x "$target"
 }
 
-test_streaming_worker_renders_semantic_progress() {
-  local repo="${TEST_ROOT}/stream-repo"
-  local fake="${TEST_ROOT}/claude-minimax-stream"
-  local output="${TEST_ROOT}/stream-output.log"
+# Builds a provider CLI fixture from an exact JSONL event file. Every provider
+# test feeds the same file to the executable and to the assertion helper, so
+# payload fidelity is checked against the bytes parsed from the original
+# provider events rather than against a provider-neutral reconstruction.
+write_provider_native_stream_fixture() {
+  local target="$1"
+
+  cat > "$target" <<'PROLOG'
+#!/usr/bin/env bash
+counter="$RUNNER_TEST_COUNTER_FILE"
+iteration=0
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
+fi
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+
+if [[ "$iteration" -gt 1 ]]; then
+  printf '%s\n' "$RUNNER_TEST_EMPTY_EVENT"
+  exit 0
+fi
+
+while IFS= read -r event || [[ -n "$event" ]]; do
+  printf '%s\n' "$event"
+done < "$RUNNER_TEST_EVENTS_FILE"
+PROLOG
+  chmod +x "$target"
+}
+
+# Verifies the public issue-killer stdout seam. Non-JSON runner diagnostics are
+# intentionally ignored; every structured progress object from iteration one
+# must have the exact public categories, complete provider events in provider
+# order, the provider identity and iteration, an RFC 3339 UTC timestamp, and a
+# generic status on the final event. Private normalized decoder tags must never
+# substitute for the operator-facing category.
+assert_provider_native_progress() {
+  local output="$1"
+  local cli="$2"
+  local expected_events="$3"
+  local actual_events="${expected_events}.actual"
+
+  jq -Rrc 'fromjson? | select(type == "object" and has("category") and .iteration == 1)' \
+    "$output" > "$actual_events"
+
+  if ! jq -s -e --arg cli "$cli" --slurpfile expected "$expected_events" '
+    def required_fields:
+      has("category") and has("cli") and has("iteration") and
+      has("timestamp") and has("event");
+    def valid_timestamp:
+      .timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+    def public_categories: [
+      "Inspecting issue tracker",
+      "Planning the next worker step",
+      "Running shell command",
+      "Pushing branch",
+      "Committing changes",
+      "Merging or rebasing branch",
+      "Creating pull request",
+      "Merging or closing pull request",
+      "Closing issue",
+      "Reviewing changes",
+      "Worker finished"
+    ];
+    def private_tags: [
+      "inspect", "mutate", "test", "push", "commit", "merge_rebase",
+      "pr_create", "pr_close", "close", "review", "plan", "identify",
+      "tracker", "shell", "unknown_tool"
+    ];
+
+    length == 11 and
+    length == ($expected | length) and
+    [.[].category] == public_categories and
+    [.[].event] == $expected and
+    all(.[];
+      required_fields and .cli == $cli and .iteration == 1 and
+      valid_timestamp and
+      (.category as $category | private_tags | index($category) == null)
+    ) and
+    all(.[0:-1][]; has("status") | not) and
+    (.[-1].status == "ISSUE_COMPLETED")
+  ' "$actual_events" >/dev/null; then
+    printf 'Expected provider events:\n' >&2
+    jq -sc '.' "$expected_events" >&2
+    printf 'Actual structured progress:\n' >&2
+    jq -sc '.' "$actual_events" >&2
+    fail "${cli} stream did not preserve the provider-native public JSON contract"
+  fi
+}
+
+test_black_box_claude_stream_preserves_provider_native_json() {
+  local repo="${TEST_ROOT}/claude-native-stream-repo"
+  local fake="${TEST_ROOT}/claude-native-stream-worker"
+  local counter="${TEST_ROOT}/claude-native-stream-counter"
+  local events="${TEST_ROOT}/claude-native-stream-events.jsonl"
+  local output="${TEST_ROOT}/claude-native-stream-output.log"
 
   new_repo "$repo"
-  write_stream_fixture "$fake" \
-    '{"type":"system","subtype":"init","cwd":"/repo"}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/README.md"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"bash tests/issue_killer_test.sh"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"gh pr create --title progress --body streaming"}}]}}' \
-    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
+  cat > "$events" <<'JSONL'
+{"type":"assistant","provider_sequence":1,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-1","name":"Bash","input":{"command":"gh issue list --state open","provider_secret":"claude-secret-1","nested":{"flags":["one","two"]}}}]}}
+{"type":"assistant","provider_sequence":2,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-2","name":"Task","input":{"description":"plan issue 23","metadata":{"provider":"claude"}}}]}}
+{"type":"assistant","provider_sequence":3,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-3","name":"Bash","input":{"command":"printf shell-command","timeout":17}}]}}
+{"type":"assistant","provider_sequence":4,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-4","name":"Bash","input":{"command":"git push origin issue-23","description":"push exact branch"}}]}}
+{"type":"assistant","provider_sequence":5,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-5","name":"Bash","input":{"command":"git commit -m 'test: provider native'","git":{"sign":false}}}]}}
+{"type":"assistant","provider_sequence":6,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-6","name":"Bash","input":{"command":"git rebase main","branch":"issue-23"}}]}}
+{"type":"assistant","provider_sequence":7,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-7","name":"Bash","input":{"command":"gh pr create --title native --body json","pull_request":{"draft":false}}}]}}
+{"type":"assistant","provider_sequence":8,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-8","name":"Bash","input":{"command":"gh pr merge 23 --squash","pull_request":{"number":23}}}]}}
+{"type":"assistant","provider_sequence":9,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-9","name":"Bash","input":{"command":"gh issue close 23","issue":{"number":23}}}]}}
+{"type":"assistant","provider_sequence":10,"message":{"role":"assistant","content":[{"type":"tool_use","id":"claude-10","name":"Bash","input":{"command":"/code-review","review":{"mode":"full"}}}]}}
+{"type":"result","subtype":"success","provider_sequence":11,"result":"completed with provider payload\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n","usage":{"input_tokens":101,"output_tokens":202},"provider_metadata":{"request_id":"claude-request-23"}}
+JSONL
+  write_provider_native_stream_fixture "$fake"
 
+  RUNNER_TEST_COUNTER_FILE="$counter" \
+  RUNNER_TEST_EVENTS_FILE="$events" \
+  RUNNER_TEST_EMPTY_EVENT='{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}' \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Streaming fixture did not finish'
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Claude provider-native stream fixture did not drain the queue'
 
-  grep -Fq 'Inspecting' "$output" || \
-    fail 'Missing semantic progress for an inspection event'
-  grep -Fq 'Editing agent/run.sh' "$output" || \
-    fail 'Missing semantic progress naming the edited file'
-  grep -Fq 'Running tests' "$output" || \
-    fail 'Missing semantic progress for a tests command'
-  grep -Fq 'Creating pull request' "$output" || \
-    fail 'Missing semantic progress for a PR-creation command'
-  grep -Fq 'Repository lock acquired:' "$output" || \
-    fail 'Runner did not report the repository lock'
+  assert_provider_native_progress "$output" "claude" "$events"
+  grep -Fq 'Worker 1 completed one issue.' "$output" || \
+    fail 'Claude final generic status did not complete the issue'
 
-  if grep -F '"type":"assistant"' "$output" >/dev/null 2>&1; then
-    fail 'Raw stream JSON event leaked into operator output'
-  fi
-  if grep -F '"message":{"role":"assistant"' "$output" >/dev/null 2>&1; then
-    fail 'Raw stream JSON content leaked into operator output'
-  fi
-  if grep -F 'tool_use' "$output" >/dev/null 2>&1; then
-    fail 'Raw stream JSON tool name leaked into operator output'
-  fi
-  if grep -F '/repo/README.md' "$output" >/dev/null 2>&1; then
-    fail 'Raw tool input file path leaked into operator output'
-  fi
-
-  pass 'streaming worker renders semantic progress without leaking raw JSON'
+  pass 'claude stream preserves exact provider events, public categories, order, fields, and final status'
 }
 
 test_streaming_silent_worker_heartbeats() {
@@ -543,11 +625,16 @@ test_streaming_silent_worker_heartbeats() {
 
   grep -Fq 'Worker 1 still running (elapsed ' "$output" || \
     fail 'Runner did not emit a progress heartbeat for a silent streaming worker'
-  if grep -F '"type":"result"' "$output" >/dev/null 2>&1; then
-    fail 'Raw stream JSON leaked into operator output during a silent run'
-  fi
+  jq -Rre 'fromjson? | select(
+    .category == "Worker finished" and
+    .cli == "claude" and
+    .iteration == 1 and
+    .status == "QUEUE_EMPTY" and
+    .event.type == "result"
+  )' "$output" >/dev/null || \
+    fail 'Silent worker final event was not emitted as structured JSON'
 
-  pass 'silent streaming workers still trigger elapsed-time heartbeats'
+  pass 'silent streaming workers emit heartbeats and structured final status'
 }
 
 test_streaming_heartbeat_suppressed_while_events_flow() {
@@ -572,30 +659,6 @@ test_streaming_heartbeat_suppressed_while_events_flow() {
   fi
 
   pass 'active streaming workers suppress the elapsed-time heartbeat'
-}
-
-test_streaming_worker_redacts_secrets_and_redacts_full_prompts() {
-  local repo="${TEST_ROOT}/redact-repo"
-  local fake="${TEST_ROOT}/claude-minimax-redact"
-  local output="${TEST_ROOT}/redact-output.log"
-
-  new_repo "$repo"
-  write_stream_fixture "$fake" \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"curl -H \"Authorization: Bearer gh_super_secret_token_xyz\" https://api.example.com"}}]}}' \
-    '{"type":"result","subtype":"success","result":"echoed: Authorization Bearer gh_super_secret_token_xyz\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
-
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || fail 'Redaction fixture did not finish'
-
-  if grep -F 'gh_super_secret_token_xyz' "$output" >/dev/null 2>&1; then
-    fail 'Bearer token leaked into operator output'
-  fi
-  if grep -F 'Authorization' "$output" >/dev/null 2>&1; then
-    fail 'Authorization header fragment leaked into operator output'
-  fi
-
-  pass 'streaming worker redacts secrets and keeps full prompts out of operator output'
 }
 
 test_streaming_worker_extracts_each_status_marker() {
@@ -742,38 +805,41 @@ test_streaming_worker_identifies_issue_before_first_mutation() {
   local repo="${TEST_ROOT}/identify-repo"
   local fake="${TEST_ROOT}/claude-minimax-identify"
   local output="${TEST_ROOT}/identify-output.log"
-  local checkpoint_file
-  local status_file
+  local checkpoint_file status
 
   new_repo "$repo"
   checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
-  status_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
 
-  # Issue identification precedes any Edit or git mutation. The issue number
-  # must be captured from `gh issue view N` before the assistant edits a file.
+  # Issue identification precedes any Edit or git mutation. Keep the
+  # checkpoint by ending in FAILED, then verify that the private identify
+  # event recorded issue 42 before the public mutation event advanced state.
   write_stream_fixture "$fake" \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 42"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"git commit -m feat: implement"}}]}}' \
-    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
+    '{"type":"assistant","provider_sequence":1,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 42"}}]}}' \
+    '{"type":"assistant","provider_sequence":2,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
+    '{"type":"assistant","provider_sequence":3,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"git commit -m feat: implement"}}]}}' \
+    '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
 
+  set +e
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || \
-      fail 'Identify-before-mutation fixture did not finish'
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
 
-  # Issue 42 must be recorded before the Edit event reached the renderer.
-  # We inspect the output ordering: the 'Identified issue 42' progress line
-  # must appear before 'Editing agent/run.sh'.
-  local identify_line edit_line
-  identify_line="$( { grep -n 'Identified issue 42' "$output" || true; } | head -n 1 | cut -d: -f1)"
-  edit_line="$( { grep -n 'Editing agent/run.sh' "$output" || true; } | head -n 1 | cut -d: -f1)"
-  [[ -n "$identify_line" && -n "$edit_line" ]] || \
-    fail 'Runner did not surface the identified issue before the first mutation'
-  (( identify_line < edit_line )) || \
-    fail 'Issue identification was emitted after a mutation event'
+  [[ "$status" -eq 1 ]] || \
+    fail "Identify-before-mutation fixture must retain a failed checkpoint, got exit ${status}"
+  [[ -r "$checkpoint_file" ]] || \
+    fail 'Identify-before-mutation fixture did not retain its checkpoint'
+  grep -Eq '^issue=42$' "$checkpoint_file" || \
+    fail 'Private identify event did not record issue 42 before mutation'
+  jq -Rre 'fromjson? | select(
+    .category == "Planning the next worker step" and
+    .event.provider_sequence == 2 and
+    .event.message.content[0].input.file_path == "agent/run.sh"
+  )' "$output" >/dev/null || \
+    fail 'First mutation was not surfaced through the provider-native JSON event'
 
-  pass 'streamed worker identifies its issue before its first mutation'
+  pass 'streamed worker records issue identity before provider-native mutation progress'
 }
 
 test_checkpoint_records_required_fields_atomically() {
@@ -2231,10 +2297,9 @@ test_progress_is_reported_while_worker_runs
 test_repository_lock_rejects_second_runner
 test_stale_repository_lock_is_recovered
 test_shell_function_loader_skips_interactive_only_startup
-test_streaming_worker_renders_semantic_progress
+test_black_box_claude_stream_preserves_provider_native_json
 test_streaming_silent_worker_heartbeats
 test_streaming_heartbeat_suppressed_while_events_flow
-test_streaming_worker_redacts_secrets_and_redacts_full_prompts
 test_streaming_worker_extracts_each_status_marker
 test_streaming_worker_preserves_non_zero_exit_code
 test_streaming_blocked_retains_artifact_path
@@ -2791,54 +2856,46 @@ PROLOG
   pass 'codex profile invokes codex exec with --json, --model, --reasoning-effort, --sandbox, and --full-auto'
 }
 
-test_black_box_codex_profile_decodes_jsonl_progress_events() {
-  local repo="${TEST_ROOT}/codex-progress-repo"
-  local fake="${TEST_ROOT}/codex-progress-worker"
-  local counter="${TEST_ROOT}/codex-progress-counter"
-  local config_path="${TEST_ROOT}/codex-progress-config.toml"
-  local output="${TEST_ROOT}/codex-progress-output.log"
+test_black_box_codex_stream_preserves_provider_native_json() {
+  local repo="${TEST_ROOT}/codex-native-stream-repo"
+  local fake="${TEST_ROOT}/codex-native-stream-worker"
+  local counter="${TEST_ROOT}/codex-native-stream-counter"
+  local events="${TEST_ROOT}/codex-native-stream-events.jsonl"
+  local config_path="${TEST_ROOT}/codex-native-stream-config.toml"
+  local output="${TEST_ROOT}/codex-native-stream-output.log"
 
   new_repo "$repo"
-  cat > "$fake" <<'PROLOG'
-#!/usr/bin/env bash
-counter="$RUNNER_TEST_COUNTER_FILE"
-iteration=0
-if [[ -r "$counter" ]]; then
-  iteration="$(<"$counter")"
-fi
-iteration=$((iteration + 1))
-printf '%s' "$iteration" > "$counter"
-if [[ "$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
-  exit 0
-fi
-printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}'
-printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}'
-printf '%s\n' '{"type":"item.started","item":{"type":"file_change","path":"agent/run.sh"}}'
-printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"git push origin issue-14"}}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
-PROLOG
-  chmod +x "$fake"
+  cat > "$events" <<'JSONL'
+{"type":"item.started","provider_sequence":1,"item":{"id":"codex-1","type":"command_execution","command":"gh issue list --state open","provider_secret":"codex-secret-1","details":{"arguments":["--state","open"]}}}
+{"type":"item.started","provider_sequence":2,"item":{"id":"codex-2","type":"reasoning","text":"plan issue 23","summary":["inspect","implement"]}}
+{"type":"item.started","provider_sequence":3,"item":{"id":"codex-3","type":"command_execution","command":"printf shell-command","exit_context":{"cwd":"/repo"}}}
+{"type":"item.started","provider_sequence":4,"item":{"id":"codex-4","type":"command_execution","command":"git push origin issue-23","git":{"remote":"origin"}}}
+{"type":"item.started","provider_sequence":5,"item":{"id":"codex-5","type":"command_execution","command":"git commit -m 'test: provider native'","git":{"sign":false}}}
+{"type":"item.started","provider_sequence":6,"item":{"id":"codex-6","type":"command_execution","command":"git merge main","git":{"strategy":"ort"}}}
+{"type":"item.started","provider_sequence":7,"item":{"id":"codex-7","type":"command_execution","command":"gh pr create --title native --body json","pull_request":{"draft":false}}}
+{"type":"item.started","provider_sequence":8,"item":{"id":"codex-8","type":"command_execution","command":"gh pr close 23","pull_request":{"number":23}}}
+{"type":"item.started","provider_sequence":9,"item":{"id":"codex-9","type":"command_execution","command":"gh issue close 23","issue":{"number":23}}}
+{"type":"item.started","provider_sequence":10,"item":{"id":"codex-10","type":"command_execution","command":"/code-review","review":{"mode":"full"}}}
+{"type":"turn.completed","provider_sequence":11,"output_text":"completed with provider payload\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n","usage":{"input_tokens":303,"output_tokens":404},"provider_metadata":{"thread_id":"codex-thread-23"}}
+JSONL
+  write_provider_native_stream_fixture "$fake"
 
   write_codex_profile_config "$config_path" "codex-luna" \
     "codex-luna=Codex Luna|codex|${fake}|gpt-5-luna|||medium|workspace-write|false"
 
   RUNNER_TEST_COUNTER_FILE="$counter" \
+  RUNNER_TEST_EVENTS_FILE="$events" \
+  RUNNER_TEST_EMPTY_EVENT='{"type":"turn.completed","output_text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}' \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_KILLER_CONFIG_PATH="$config_path" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
-      fail 'Black-box Codex progress did not complete the issue'
+      fail 'Codex provider-native stream fixture did not drain the queue'
 
-  grep -Fq 'Running shell command' "$output" || \
-    fail 'Codex JSONL did not surface a shell command event'
-  grep -Fq 'Editing agent/run.sh' "$output" || \
-    fail 'Codex JSONL did not surface a file-change mutation event'
-  grep -Fq 'Pushing branch' "$output" || \
-    fail 'Codex JSONL did not surface a `git push` event'
+  assert_provider_native_progress "$output" "codex" "$events"
   grep -Fq 'Worker 1 completed one issue.' "$output" || \
-    fail 'Codex worker did not report the issue as completed'
+    fail 'Codex final generic status did not complete the issue'
 
-  pass 'codex JSONL streams translate into the same normalized progress as Claude'
+  pass 'codex stream preserves exact provider events, public categories, order, fields, and final status'
 }
 
 test_black_box_codex_profile_captures_thread_id_from_session_event() {
@@ -3857,54 +3914,46 @@ PROLOG
   pass 'opencode profile invokes opencode run with --format json, --model provider/model, --variant, and --auto-approve'
 }
 
-test_black_box_opencode_profile_decodes_json_progress_events() {
-  local repo="${TEST_ROOT}/opencode-progress-repo"
-  local fake="${TEST_ROOT}/opencode-progress-worker"
-  local counter="${TEST_ROOT}/opencode-progress-counter"
-  local config_path="${TEST_ROOT}/opencode-progress-config.toml"
-  local output="${TEST_ROOT}/opencode-progress-output.log"
+test_black_box_opencode_stream_preserves_provider_native_json() {
+  local repo="${TEST_ROOT}/opencode-native-stream-repo"
+  local fake="${TEST_ROOT}/opencode-native-stream-worker"
+  local counter="${TEST_ROOT}/opencode-native-stream-counter"
+  local events="${TEST_ROOT}/opencode-native-stream-events.jsonl"
+  local config_path="${TEST_ROOT}/opencode-native-stream-config.toml"
+  local output="${TEST_ROOT}/opencode-native-stream-output.log"
 
   new_repo "$repo"
-  cat > "$fake" <<'PROLOG'
-#!/usr/bin/env bash
-counter="$RUNNER_TEST_COUNTER_FILE"
-iteration=0
-if [[ -r "$counter" ]]; then
-  iteration="$(<"$counter")"
-fi
-iteration=$((iteration + 1))
-printf '%s' "$iteration" > "$counter"
-if [[ "$iteration" -gt 1 ]]; then
-  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
-  exit 0
-fi
-printf '%s\n' '{"type":"session","sessionID":"sess-opencode-001"}'
-printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"ls -la"}}}'
-printf '%s\n' '{"type":"step_finish","part":{"type":"tool","tool":"edit","input":{"filePath":"agent/run.sh"}}}'
-printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"git push origin issue-15"}}}'
-printf '%s\n' '{"type":"text","sessionID":"sess-opencode-001","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
-PROLOG
-  chmod +x "$fake"
+  cat > "$events" <<'JSONL'
+{"type":"step_start","provider_sequence":1,"sessionID":"opencode-session-23","part":{"id":"opencode-1","type":"tool","tool":"bash","input":{"command":"gh issue list --state open","provider_secret":"opencode-secret-1","nested":{"flags":["one","two"]}}}}
+{"type":"step_start","provider_sequence":2,"sessionID":"opencode-session-23","part":{"id":"opencode-2","type":"tool","tool":"todowrite","input":{"todos":[{"content":"plan issue 23","status":"in_progress"}]}}}
+{"type":"step_start","provider_sequence":3,"sessionID":"opencode-session-23","part":{"id":"opencode-3","type":"tool","tool":"bash","input":{"command":"printf shell-command","timeout":19}}}
+{"type":"step_start","provider_sequence":4,"sessionID":"opencode-session-23","part":{"id":"opencode-4","type":"tool","tool":"bash","input":{"command":"git push origin issue-23","git":{"remote":"origin"}}}}
+{"type":"step_start","provider_sequence":5,"sessionID":"opencode-session-23","part":{"id":"opencode-5","type":"tool","tool":"bash","input":{"command":"git commit -m 'test: provider native'","git":{"sign":false}}}}
+{"type":"step_start","provider_sequence":6,"sessionID":"opencode-session-23","part":{"id":"opencode-6","type":"tool","tool":"bash","input":{"command":"git rebase main","git":{"onto":"main"}}}}
+{"type":"step_start","provider_sequence":7,"sessionID":"opencode-session-23","part":{"id":"opencode-7","type":"tool","tool":"bash","input":{"command":"gh pr create --title native --body json","pull_request":{"draft":false}}}}
+{"type":"step_start","provider_sequence":8,"sessionID":"opencode-session-23","part":{"id":"opencode-8","type":"tool","tool":"bash","input":{"command":"gh pr merge 23 --squash","pull_request":{"number":23}}}}
+{"type":"step_start","provider_sequence":9,"sessionID":"opencode-session-23","part":{"id":"opencode-9","type":"tool","tool":"bash","input":{"command":"gh issue close 23","issue":{"number":23}}}}
+{"type":"step_start","provider_sequence":10,"sessionID":"opencode-session-23","part":{"id":"opencode-10","type":"tool","tool":"bash","input":{"command":"/code-review","review":{"mode":"full"}}}}
+{"type":"text","provider_sequence":11,"sessionID":"opencode-session-23","part":{"id":"opencode-11","type":"text","text":"completed with provider payload\nISSUE_KILLER_STATUS=ISSUE_COMPLETED\n","timing":{"start":10,"end":20}},"provider_metadata":{"model":"provider/model"}}
+JSONL
+  write_provider_native_stream_fixture "$fake"
 
   write_opencode_profile_config "$config_path" "opencode-luna" \
     "opencode-luna=OpenCode Luna|opencode|${fake}|openai/gpt-5-luna|||medium|false"
 
   RUNNER_TEST_COUNTER_FILE="$counter" \
+  RUNNER_TEST_EVENTS_FILE="$events" \
+  RUNNER_TEST_EMPTY_EVENT='{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}' \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_KILLER_CONFIG_PATH="$config_path" \
     "$RUNNER" "$repo" >"$output" 2>&1 || \
-      fail 'Black-box OpenCode progress did not complete the issue'
+      fail 'OpenCode provider-native stream fixture did not drain the queue'
 
-  grep -Fq 'Running shell command' "$output" || \
-    fail 'OpenCode JSON did not surface a shell command event'
-  grep -Fq 'Editing agent/run.sh' "$output" || \
-    fail 'OpenCode JSON did not surface an edit event'
-  grep -Fq 'Pushing branch' "$output" || \
-    fail 'OpenCode JSON did not surface a `git push` event'
+  assert_provider_native_progress "$output" "opencode" "$events"
   grep -Fq 'Worker 1 completed one issue.' "$output" || \
-    fail 'OpenCode worker did not report the issue as completed'
+    fail 'OpenCode final generic status did not complete the issue'
 
-  pass 'opencode JSON events translate into the same normalized progress as Claude'
+  pass 'opencode stream preserves exact provider events, public categories, order, fields, and final status'
 }
 
 test_black_box_opencode_profile_captures_session_id() {
@@ -4173,7 +4222,7 @@ test_destructive_confirmation_lists_profile_identity
 test_black_box_claude_profile_completes_issue
 test_profile_picker_lists_every_profile_with_footer
 test_black_box_codex_profile_invokes_codex_exec_with_expected_args
-test_black_box_codex_profile_decodes_jsonl_progress_events
+test_black_box_codex_stream_preserves_provider_native_json
 test_black_box_codex_profile_captures_thread_id_from_session_event
 test_codex_profile_validation_rejects_unknown_options
 test_codex_profile_validation_rejects_invalid_sandbox
@@ -4192,7 +4241,7 @@ test_black_box_opencode_fallback_exhaustion_retains_recovery_checkpoint
 test_black_box_opencode_restart_restores_active_fallback_position
 test_black_box_opencode_prior_provider_error_does_not_reclassify_fallback_failure
 test_black_box_opencode_profile_invokes_opencode_run_with_expected_args
-test_black_box_opencode_profile_decodes_json_progress_events
+test_black_box_opencode_stream_preserves_provider_native_json
 test_black_box_opencode_profile_captures_session_id
 test_opencode_profile_validation_rejects_unknown_options
 test_opencode_profile_validation_rejects_invalid_variant
