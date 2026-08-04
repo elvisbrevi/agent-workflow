@@ -211,6 +211,13 @@ runner_worker="${TEST_ROOT}/runner-worker"
 runner_output="${TEST_ROOT}/runner-output.log"
 cp -R "$repo" "$runner_repo"
 mkdir -p "$runner_bin"
+# Each runner scenario needs the HU integration branch to exist so
+# the bootstrap reuses it without prompting the operator. The
+# tracker adapter tests cover multiple HUs (1, 8, and 100); without
+# seeded titles, the default slug is "hu".
+for branch in feature/1-hu feature/8-hu feature/100-payments-hu; do
+  git -C "$runner_repo" branch "$branch" main >/dev/null 2>&1 || true
+done
 cat > "$runner_worker" <<'WORKER'
 #!/usr/bin/env bash
 printf '%s\n' '{"type":"result","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
@@ -294,6 +301,12 @@ recovery_counter="${TEST_ROOT}/recovery-counter"
 recovery_config="${TEST_ROOT}/recovery-config.toml"
 recovery_output="${TEST_ROOT}/recovery-output.log"
 cp -R "$repo" "$recovery_repo"
+# The recovery scenario targets HU 1 with no title, so the
+# deterministic HU branch is feature/1-hu. Pre-create it so the
+# bootstrap reuses it instead of asking the operator.
+for branch in feature/1-hu feature/100-payments-hu; do
+  git -C "$recovery_repo" branch "$branch" main >/dev/null 2>&1 || true
+done
 cat > "$recovery_worker" <<'WORKER'
 #!/usr/bin/env bash
 count=0

@@ -31,8 +31,20 @@ AZURE_SCOPE_CANDIDATES=""
 TRACKER_SCOPE_STATUS=""
 TRACKER_SCOPE_HU=""
 TRACKER_SCOPE_ITEM=""
+TRACKER_HU_BRANCH=""
+TRACKER_HU_BRANCH_CATEGORY=""
+TRACKER_HU_BRANCH_ORIGIN=""
+TRACKER_HU_BRANCH_ORIGIN_SHA=""
+TRACKER_HU_BRANCH_REUSED=""
 AZURE_GUARD_DIR=""
 AZURE_ORIGINAL_PATH=""
+
+# The HU branch bootstrap module owns the deterministic naming, the
+# origin prompt, and the recovery reconciliation. It is sourced here
+# so the supervisor, the worker, and the recovery guards all share
+# the same closed list of branches and categories.
+# shellcheck source=agent/issue-killer/tracker/azure-hu-branch.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/azure-hu-branch.sh"
 
 tracker_prepare_worker_environment() {
   local guard_bin real_az adapter_dir
@@ -795,6 +807,28 @@ tracker_worker_scope_prompt() {
       "- The pinned delivery HU is ${AZURE_SCOPE_HU}; the active delivery ticket is ${AZURE_SCOPE_ITEM}." \
       "- Inspect, claim, implement, test, review, and publish only ticket ${AZURE_SCOPE_ITEM} under HU ${AZURE_SCOPE_HU}; do not select or inspect another HU or queue item." \
       '- Re-read the pinned HU, the active ticket, its direct parent relation, and its configured predecessors before mutation.'
+    if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+      printf '%s\n' \
+        "- The HU integration branch is ${TRACKER_HU_BRANCH}; every ticket branch must start from it and every ticket pull request must target it." \
+        "- Never create or merge a pull request from ${TRACKER_HU_BRANCH} to ${BASE_BRANCH:-main} or another repository mainline."
+    fi
+  fi
+}
+
+# Promotes the internal HU branch bootstrap state into the
+# worker-visible globals. Called by the supervisor after
+# tracker_prepare_hu_branch returns so the worker prompt, the
+# checkpoint, and the lock status can all reference the same
+# identifiers. The function is read-only: it never recomputes the
+# branch or asks the operator again.
+tracker_publish_hu_branch() {
+  TRACKER_HU_BRANCH="${AZURE_HU_BRANCH_NAME:-}"
+  TRACKER_HU_BRANCH_CATEGORY="${AZURE_HU_BRANCH_CATEGORY:-}"
+  TRACKER_HU_BRANCH_ORIGIN="${AZURE_HU_BRANCH_ORIGIN:-}"
+  TRACKER_HU_BRANCH_ORIGIN_SHA=""
+  TRACKER_HU_BRANCH_REUSED="${AZURE_HU_BRANCH_REUSED:-false}"
+  if [[ -n "${AZURE_HU_BRANCH_ORIGIN:-}" ]]; then
+    TRACKER_HU_BRANCH_ORIGIN_SHA="$(azure_hu_branch_origin_sha "${AZURE_HU_BRANCH_ORIGIN}" 2>/dev/null || true)"
   fi
 }
 

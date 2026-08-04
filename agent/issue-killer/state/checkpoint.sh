@@ -81,6 +81,18 @@ write_checkpoint() {
     printf 'branch=%s\n' "$(current_branch)"
     printf 'base_branch=%s\n' "$BASE_BRANCH"
     printf 'base_sha=%s\n' "$(current_base_sha)"
+    if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+      printf 'hu_branch=%s\n' "$TRACKER_HU_BRANCH"
+    fi
+    if [[ -n "${TRACKER_HU_BRANCH_CATEGORY:-}" ]]; then
+      printf 'hu_category=%s\n' "$TRACKER_HU_BRANCH_CATEGORY"
+    fi
+    if [[ -n "${TRACKER_HU_BRANCH_ORIGIN:-}" ]]; then
+      printf 'hu_origin=%s\n' "$TRACKER_HU_BRANCH_ORIGIN"
+    fi
+    if [[ -n "${TRACKER_HU_BRANCH_ORIGIN_SHA:-}" ]]; then
+      printf 'hu_origin_sha=%s\n' "$TRACKER_HU_BRANCH_ORIGIN_SHA"
+    fi
     if [[ -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
       printf 'session_id=%s\n' "${CHECKPOINT_SESSION_ID}"
     else

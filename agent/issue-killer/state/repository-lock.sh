@@ -26,6 +26,15 @@ write_lock_status() {
     fi
     printf 'branch=%s\n' "$(current_branch)"
     printf 'base_branch=%s\n' "$BASE_BRANCH"
+    if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+      printf 'hu_branch=%s\n' "$TRACKER_HU_BRANCH"
+    fi
+    if [[ -n "${TRACKER_HU_BRANCH_CATEGORY:-}" ]]; then
+      printf 'hu_category=%s\n' "$TRACKER_HU_BRANCH_CATEGORY"
+    fi
+    if [[ -n "${TRACKER_HU_BRANCH_ORIGIN:-}" ]]; then
+      printf 'hu_origin=%s\n' "$TRACKER_HU_BRANCH_ORIGIN"
+    fi
     if [[ -n "${RECOVERY_ATTEMPT:-}" && "${RECOVERY_ATTEMPT:-0}" -gt 0 ]]; then
       printf 'recovery_attempt=%s\n' "${RECOVERY_ATTEMPT}"
     fi
