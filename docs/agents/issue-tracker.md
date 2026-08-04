@@ -58,10 +58,10 @@ open_states = ["New", "Active", "Committed"]
 closed_states = ["Closed", "Done"]
 ready_tag = "ready-for-agent"
 claim_identity = "operator@example.com"
-predecessor_relation = "System.LinkTypes.Dependency"
+predecessor_relation = "System.LinkTypes.Dependency-Reverse"
 closed_state = "Done"
 ```
 
-`eligible_work_item_types`, `epic_work_item_types`, `open_states`, and `closed_states` are the process mappings. `ready_tag`, `claim_identity`, `predecessor_relation`, and `closed_state` are the role mappings. The adapter rejects missing mappings, a `closed_state` outside `closed_states`, a remote that does not match the mapped organization/project/repository, missing `az`, unavailable authentication, or an unavailable project before starting a worker.
+`eligible_work_item_types`, `epic_work_item_types`, `open_states`, and `closed_states` are the process mappings. `ready_tag`, `claim_identity`, `predecessor_relation`, and `closed_state` are the role mappings. The adapter rejects missing or malformed mappings, a `closed_state` outside `closed_states`, a remote that does not match the mapped organization/project/repository, missing `az`, unavailable authentication, an unavailable project or repository, or an unsupported predecessor relation before starting a worker.
 
 Azure queue discovery uses `az boards query`, excludes assigned or non-ready work items, excludes configured epic types, and checks each configured predecessor relation for an open predecessor. Work-item claims and closure use `az boards work-item update`. Pull-request lookup and merge verification use `az repos pr list`; a PR is complete only when its status is `completed`, merge status is `succeeded`, and target branch matches the configured base branch.

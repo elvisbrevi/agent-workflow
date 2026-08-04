@@ -12,6 +12,12 @@ Rules:
    operation: GitHub uses `gh`; Azure DevOps uses `az boards` for work items
    and relations and `az repos` for pull requests. Do not assume GitHub issue
    commands when the repository declares Azure DevOps.
+   For Azure DevOps, the delivery order is: identify and read the work item,
+   claim it, implement and test it, create the pull request with `az repos pr
+   create`, complete it with `az repos pr update`, verify with `az repos pr
+   list` that exactly one pull request is completed and succeeded into the
+   configured base branch, and only then close the work item with `az boards
+   work-item update --state`.
 3. Use `/implement`, `/tdd`, and `/code-review` in that order as applicable.
    Finish the implementation and verification before publishing.
 4. Create a PR to the configured base branch, merge it automatically, verify

@@ -428,7 +428,7 @@ confirm_destructive_run() {
   printf '  cli:          %s\n' "$ISSUE_KILLER_PROFILE_CLI" >/dev/tty
   printf '  model:        %s\n' "$ISSUE_KILLER_PROFILE_MODEL" >/dev/tty
   printf '  autonomy:     permission_mode=%s\n' "$PERMISSION_MODE" >/dev/tty
-  printf '  tracker:      github\n' >/dev/tty
+  printf '  tracker:      %s\n' "${TRACKER_KIND:-unknown}" >/dev/tty
   printf '  base branch:  %s\n' "$BASE_BRANCH" >/dev/tty
   if [[ -n "$ISSUE_KILLER_PROFILE_FALLBACKS" ]]; then
     printf '  fallbacks:    %s\n' \
