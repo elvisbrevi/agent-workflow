@@ -52,6 +52,7 @@ Usage: $(basename "$0") [OPTIONS]
 Install agent-workflow skills and agents via symlinks.
 
 Options:
+  --all-global          Install every supported global integration
   --claude-global       Install skills, Claude agents, and runners globally
   --claude-local        Install skills, Claude agents, and runners in D
   --global              Install to ~/.agents/skills/ and ~/.agents/agents/
@@ -67,6 +68,7 @@ Options:
 
 Examples:
   $(basename "$0")                                  # Interactive menu (TTY required)
+  $(basename "$0") --all-global                    # All supported clients, all projects
   $(basename "$0") --claude-global                 # Claude Code, all projects
   $(basename "$0") --claude-local --target ~/proj  # Claude Code, one project
   $(basename "$0") --global                        # Shared ~/.agents/ install
@@ -86,6 +88,7 @@ UNINSTALL=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --all-global)    MODE="all-global"; shift ;;
     --claude-global) MODE="claude-global"; shift ;;
     --claude-local)  MODE="claude-local"; shift ;;
     --global)        MODE="global"; shift ;;
@@ -587,29 +590,31 @@ interactive_menu() {
   echo ""
   echo "¿Dónde instalar las skills y agents?"
   echo ""
-  echo -e "  ${CYAN}1)${NC} Claude Code global  → ~/.claude/ + ~/.local/bin/"
-  echo -e "  ${CYAN}2)${NC} Claude Code local   → {proyecto}/.claude/"
-  echo -e "  ${CYAN}3)${NC} Shared global       → ~/.agents/skills/ + ~/.agents/agents/"
-  echo -e "  ${CYAN}4)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
-  echo -e "  ${CYAN}5)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
-  echo -e "  ${CYAN}6)${NC} Ambas locales       → .agents/ + .opencode/"
+  echo -e "  ${CYAN}1)${NC} Todo global         → ~/.claude/ + ~/.agents/ + ~/.local/bin/"
+  echo -e "  ${CYAN}2)${NC} Claude Code global  → ~/.claude/ + ~/.local/bin/"
+  echo -e "  ${CYAN}3)${NC} Claude Code local   → {proyecto}/.claude/"
+  echo -e "  ${CYAN}4)${NC} Shared global       → ~/.agents/skills/ + ~/.agents/agents/"
+  echo -e "  ${CYAN}5)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
+  echo -e "  ${CYAN}6)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
+  echo -e "  ${CYAN}7)${NC} Ambas locales       → .agents/ + .opencode/"
   echo ""
 
   local choice input_target ans
-  prompt_tty "Selecciona [1-6]: " "Interactive mode requires a TTY. Pass an explicit mode such as --claude-global or --global."
+  prompt_tty "Selecciona [1-7]: " "Interactive mode requires a TTY. Pass an explicit mode such as --all-global."
   choice="$TTY_RESPONSE"
 
   case "$choice" in
-    1) MODE="claude-global" ;;
-    2) MODE="claude-local" ;;
-    3) MODE="global" ;;
-    4) MODE="local" ;;
-    5) MODE="opencode" ;;
-    6) MODE="both" ;;
+    1) MODE="all-global" ;;
+    2) MODE="claude-global" ;;
+    3) MODE="claude-local" ;;
+    4) MODE="global" ;;
+    5) MODE="local" ;;
+    6) MODE="opencode" ;;
+    7) MODE="both" ;;
     *) die "Opción inválida: $choice" ;;
   esac
 
-  if [[ "$MODE" != "global" && "$MODE" != "claude-global" ]]; then
+  if [[ "$MODE" != "all-global" && "$MODE" != "global" && "$MODE" != "claude-global" ]]; then
     prompt_tty "Ruta del proyecto (Enter para cwd): " "Interactive mode requires a TTY. Pass --target with an explicit mode."
     input_target="$TTY_RESPONSE"
     if [[ -n "$input_target" ]]; then
@@ -627,6 +632,13 @@ interactive_menu() {
 # ── Dispatch table — emits "kind:path" lines per destination
 dispatch_destinations() {
   case "$MODE" in
+    all-global)
+      echo "skills:${HOME}/.claude/skills"
+      echo "claude-agents:${HOME}/.claude/agents"
+      echo "runners:${HOME}/.local/bin"
+      echo "skills:${HOME}/.agents/skills"
+      echo "agents:${HOME}/.agents/agents"
+      ;;
     claude-global)
       echo "skills:${HOME}/.claude/skills"
       echo "claude-agents:${HOME}/.claude/agents"

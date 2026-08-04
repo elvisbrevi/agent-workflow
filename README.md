@@ -13,12 +13,20 @@ The installer replaces its managed cache with a fresh clone and reconciles the
 selected destinations on every run. Links owned by this repository are removed
 before the current skills and agents are installed, so renamed or deleted
 artifacts do not survive an update. Files and links owned by other tools are
-left untouched. Use an explicit mode in automation:
+left untouched. The recommended command installs every supported global
+integration for the current user:
 
 ```bash
-# Claude Code, all projects
+# Claude Code, shared agent clients, and command-line runners
 curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
-  | bash -s -- --claude-global
+  | bash -s -- --all-global
+```
+
+Use a narrower mode only when a client or project must be isolated:
+
+```bash
+# Claude Code only, all projects
+./install.sh --claude-global
 
 # Shared skills/agents, all projects
 ./install.sh --global

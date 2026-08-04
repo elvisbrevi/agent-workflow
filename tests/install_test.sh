@@ -213,6 +213,40 @@ test_claude_destinations() {
   pass 'Claude Code destinations install and uninstall skills, agents, and runners'
 }
 
+test_all_global_round_trip() {
+  local home="${TEST_ROOT}/all-global-home"
+  local install_output="${TEST_ROOT}/all-global-install.log"
+  local uninstall_output="${TEST_ROOT}/all-global-uninstall.log"
+
+  seed_cache "$home"
+
+  HOME="$home" "$BASH_BIN" "$INSTALLER" --all-global >"$install_output" 2>&1 || \
+    fail 'Unified global install failed'
+
+  assert_symlink "${home}/.claude/skills/alpha"
+  assert_symlink "${home}/.agents/skills/alpha"
+  assert_file_symlink "${home}/.claude/agents/runner.md"
+  [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected shared runner agent symlink'
+  assert_file_symlink "${home}/.local/bin/runner"
+  assert_contains "$install_output" 'Installing skills → all-global'
+  assert_contains "$install_output" 'Installing Claude agents → all-global'
+  assert_contains "$install_output" 'Installing agents → all-global'
+  assert_contains "$install_output" 'Installing runners → all-global'
+
+  HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --all-global \
+    >"$uninstall_output" 2>&1 || fail 'Unified global uninstall failed'
+
+  [[ ! -L "${home}/.claude/skills/alpha" ]] || fail 'Claude skill survived unified uninstall'
+  [[ ! -L "${home}/.agents/skills/alpha" ]] || fail 'Shared skill survived unified uninstall'
+  [[ ! -L "${home}/.claude/agents/runner.md" ]] || \
+    fail 'Claude agent survived unified uninstall'
+  [[ ! -L "${home}/.agents/agents/runner" ]] || \
+    fail 'Shared agent survived unified uninstall'
+  [[ ! -L "${home}/.local/bin/runner" ]] || fail 'Runner survived unified uninstall'
+
+  pass 'unified global mode installs and uninstalls every global integration'
+}
+
 test_install_reconciles_dirty_cache_and_stale_managed_links() {
   local home="${TEST_ROOT}/reconcile-home"
   local source="${TEST_ROOT}/reconcile-source"
@@ -288,6 +322,7 @@ test_no_tty_error
 test_piped_explicit_mode
 test_shared_global_round_trip
 test_claude_destinations
+test_all_global_round_trip
 test_install_reconciles_dirty_cache_and_stale_managed_links
 
 printf '%s installer tests passed.\n' "$TESTS_RUN"
