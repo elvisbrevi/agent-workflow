@@ -1,3 +1,5 @@
+<img width="1280" height="640" alt="banner" src="https://github.com/user-attachments/assets/3a8a2e6d-a721-4aed-af24-6e3f159a0461" />
+
 # agent-workflow
 
 Reusable AI-agent workflows for software engineering: **18 prompt-driven
