@@ -2801,14 +2801,14 @@ test_black_box_codex_profile_decodes_jsonl_progress_events() {
   new_repo "$repo"
   cat > "$fake" <<'PROLOG'
 #!/usr/bin/env bash
-counter="\$RUNNER_TEST_COUNTER_FILE"
+counter="$RUNNER_TEST_COUNTER_FILE"
 iteration=0
-if [[ -r "\$counter" ]]; then
-  iteration="\$(<"\$counter")"
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
 fi
-iteration=\$((iteration + 1))
-printf '%s' "\$iteration" > "\$counter"
-if [[ "\$iteration" -gt 1 ]]; then
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -gt 1 ]]; then
   printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
   exit 0
 fi
@@ -2851,14 +2851,14 @@ test_black_box_codex_profile_captures_thread_id_from_session_event() {
   new_repo "$repo"
   cat > "$fake" <<'PROLOG'
 #!/usr/bin/env bash
-counter="\$RUNNER_TEST_COUNTER_FILE"
+counter="$RUNNER_TEST_COUNTER_FILE"
 iteration=0
-if [[ -r "\$counter" ]]; then
-  iteration="\$(<"\$counter")"
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
 fi
-iteration=\$((iteration + 1))
-printf '%s' "\$iteration" > "\$counter"
-if [[ "\$iteration" -gt 1 ]]; then
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -gt 1 ]]; then
   printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
   exit 0
 fi
@@ -3027,7 +3027,7 @@ if [[ "\$attempt" -eq 1 ]]; then
   exit 1
 fi
 
-if [[ "$attempt" -eq 2 ]]; then
+if [[ "\$attempt" -eq 2 ]]; then
   # Resumed attempt: succeed with ISSUE_COMPLETED so the orchestrator
   # proceeds to the next queue iteration and we can assert that
   # --resume was used.
@@ -3069,14 +3069,14 @@ test_black_box_codex_profile_drains_queue_through_status_marker() {
   new_repo "$repo"
   cat > "$fake" <<'PROLOG'
 #!/usr/bin/env bash
-counter="\$RUNNER_TEST_COUNTER_FILE"
+counter="$RUNNER_TEST_COUNTER_FILE"
 iteration=0
-if [[ -r "\$counter" ]]; then
-  iteration="\$(<"\$counter")"
+if [[ -r "$counter" ]]; then
+  iteration="$(<"$counter")"
 fi
-iteration=\$((iteration + 1))
-printf '%s' "\$iteration" > "\$counter"
-if [[ "\$iteration" -eq 1 ]]; then
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$counter"
+if [[ "$iteration" -eq 1 ]]; then
   printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
   exit 0
 fi
@@ -3105,9 +3105,10 @@ PROLOG
 
 # Writes an OpenCode profile configuration. The arguments are
 # pipe-delimited records of the form:
-#   name=label|cli|command|model|shell|init_file|variant|auto_approve
-# Empty fields are skipped. Tests for issue #15 use this helper to
-# configure a profile whose CLI is `opencode` and whose options include
+#   name=label|cli|command|model|shell|init_file|variant|auto_approve|fallbacks
+# Empty fields are skipped. The optional fallbacks field is a TOML array
+# literal, for example `["opencode-backup"]`.
+# Tests configure profiles whose CLI is `opencode` and whose options include
 # `variant` and `auto_approve`. The parser walks the pipe-separated
 # fields one delimiter at a time so empty values (e.g. when `shell`
 # and `init_file` are unset) are preserved correctly.
@@ -3119,7 +3120,7 @@ write_opencode_profile_config() {
   printf 'default_profile = "%s"\n' "$default_name" > "$target"
   for entry in "$@"; do
     local name label cli command model shell init_file
-    local variant auto_approve field_idx field
+    local variant auto_approve fallbacks field_idx field
     name="${entry%%=*}"
     local rest="${entry#*=}"
     label=""
@@ -3130,6 +3131,7 @@ write_opencode_profile_config() {
     init_file=""
     variant=""
     auto_approve=""
+    fallbacks=""
     field_idx=0
     while [[ -n "$rest" ]]; do
       field="${rest%%|*}"
@@ -3147,6 +3149,7 @@ write_opencode_profile_config() {
         5) init_file="$field" ;;
         6) variant="$field" ;;
         7) auto_approve="$field" ;;
+        8) fallbacks="$field" ;;
       esac
       field_idx=$((field_idx + 1))
     done
@@ -3163,6 +3166,9 @@ write_opencode_profile_config() {
       if [[ -n "$init_file" ]]; then
         printf 'init_file = "%s"\n' "$init_file"
       fi
+      if [[ -n "$fallbacks" ]]; then
+        printf 'fallbacks = %s\n' "$fallbacks"
+      fi
       printf '\n[profiles.%s.options]\n' "$name"
       [[ -n "$variant" ]] && \
         printf 'variant = "%s"\n' "$variant"
@@ -3170,6 +3176,632 @@ write_opencode_profile_config() {
         printf 'auto_approve = "%s"\n' "$auto_approve"
     } >> "$target"
   done
+}
+
+test_black_box_opencode_fallback_validation_rejects_missing_profile() {
+  local repo="${TEST_ROOT}/opencode-missing-fallback-repo"
+  local fake="${TEST_ROOT}/opencode-missing-fallback-worker"
+  local marker="${TEST_ROOT}/opencode-missing-fallback-ran"
+  local config_path="${TEST_ROOT}/opencode-missing-fallback-config.toml"
+  local output="${TEST_ROOT}/opencode-missing-fallback-output.log"
+  local status
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '${marker}'" > "$fake"
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"opencode-missing\"]"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || \
+    fail 'A missing OpenCode fallback reference must reject the launch'
+  [[ ! -e "$marker" ]] || \
+    fail 'Worker launched despite a missing OpenCode fallback reference'
+  grep -Fq 'fallback profile opencode-missing is not configured' "$output" || \
+    fail 'Missing fallback validation diagnostic did not name the unknown profile'
+
+  pass 'opencode fallback validation rejects missing profile references'
+}
+
+test_black_box_opencode_fallback_validation_rejects_invalid_chains() {
+  local case_name config_path output status
+  local repo="${TEST_ROOT}/opencode-invalid-fallback-repo"
+  local fake="${TEST_ROOT}/opencode-invalid-fallback-worker"
+  local marker="${TEST_ROOT}/opencode-invalid-fallback-ran"
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '${marker}'" > "$fake"
+  chmod +x "$fake"
+
+  for case_name in duplicate cross-cli cycle; do
+    config_path="${TEST_ROOT}/opencode-${case_name}-fallback-config.toml"
+    output="${TEST_ROOT}/opencode-${case_name}-fallback-output.log"
+    case "$case_name" in
+      duplicate)
+        write_opencode_profile_config "$config_path" "opencode-primary" \
+          "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"opencode-backup\", \"opencode-backup\"]" \
+          "opencode-backup=OpenCode Backup|opencode|${fake}|provider/backup|||medium|true"
+        ;;
+      cross-cli)
+        write_opencode_profile_config "$config_path" "opencode-primary" \
+          "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"codex-backup\"]" \
+          "codex-backup=Codex Backup|codex|${fake}|codex-model||||false"
+        ;;
+      cycle)
+        write_opencode_profile_config "$config_path" "opencode-primary" \
+          "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"opencode-backup\"]" \
+          "opencode-backup=OpenCode Backup|opencode|${fake}|provider/backup|||medium|true|[\"opencode-primary\"]"
+        ;;
+    esac
+
+    set +e
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_KILLER_CONFIG_PATH="$config_path" \
+      "$RUNNER" "$repo" >"$output" 2>&1
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || \
+      fail "An invalid ${case_name} fallback chain must reject the launch"
+    [[ ! -e "$marker" ]] || \
+      fail "Worker launched despite an invalid ${case_name} fallback chain"
+  done
+
+  grep -Fq 'duplicate fallback opencode-backup' \
+    "${TEST_ROOT}/opencode-duplicate-fallback-output.log" || \
+    fail 'Duplicate fallback validation diagnostic did not name the repeated profile'
+  grep -Fq 'fallback profile codex-backup uses cli codex' \
+    "${TEST_ROOT}/opencode-cross-cli-fallback-output.log" || \
+    fail 'Cross-CLI fallback validation diagnostic did not name the invalid CLI'
+  grep -Fq 'fallback chain contains a cycle through profile' \
+    "${TEST_ROOT}/opencode-cycle-fallback-output.log" || \
+    fail 'Cycle validation diagnostic did not identify the repeated profile'
+
+  pass 'opencode fallback validation rejects duplicates, cycles, and cross-CLI entries'
+}
+
+test_tty_opencode_fallback_picker_builds_ordered_unique_chain() {
+  local repo="${TEST_ROOT}/opencode-fallback-picker-repo"
+  local fake="${TEST_ROOT}/opencode-fallback-picker-worker"
+  local config_path="${TEST_ROOT}/opencode-fallback-picker-config.toml"
+  local expect_script="${TEST_ROOT}/opencode-fallback-picker.expect"
+  local output="${TEST_ROOT}/opencode-fallback-picker-output.log"
+
+  new_repo "$repo"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo should-not-run; exit 1' > "$fake"
+  chmod +x "$fake"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true" \
+    "opencode-backup-a=OpenCode Backup A|opencode|${fake}|provider/backup-a|||medium|true" \
+    "opencode-backup-b=OpenCode Backup B|opencode|${fake}|provider/backup-b|||low|true" \
+    "codex-other=Codex Other|codex|${fake}|codex-model||||false"
+
+  cat > "$expect_script" <<PROLOG
+set timeout 15
+log_user 1
+set fallback_prompt 0
+spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path $RUNNER "$repo"
+expect {
+  -re {Profile \\[4\\]:} {
+    send "\r"
+    exp_continue
+  }
+  -re {Fallback \\[0\\]:} {
+    incr fallback_prompt
+    if {\$fallback_prompt == 1} {
+      send "2\r"
+    } else {
+      send "1\r"
+    }
+    exp_continue
+  }
+  -re {Continue\\? \\[y/N\\]} {
+    send "n\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script" >"$output" 2>&1 || \
+    fail 'TTY OpenCode fallback selector did not render the expected menus'
+
+  grep -Fq 'Select the next OpenCode fallback profile:' "$output" || \
+    fail 'OpenCode selection did not open the fallback-chain builder'
+  [[ "$(grep -Fc 'Codex Other' "$output")" -eq 1 ]] || \
+    fail 'Non-OpenCode profile was offered outside the primary profile menu'
+  grep -Fq 'fallbacks:    opencode-backup-b, opencode-backup-a' "$output" || \
+    fail 'Destructive confirmation did not preserve the selected fallback order'
+
+  pass 'TTY OpenCode picker builds an ordered chain from unused OpenCode profiles only'
+}
+
+test_black_box_opencode_quota_failure_advances_fallback_with_same_session() {
+  local repo="${TEST_ROOT}/opencode-quota-fallback-repo"
+  local primary="${TEST_ROOT}/opencode-quota-primary"
+  local backup="${TEST_ROOT}/opencode-quota-backup"
+  local primary_count="${TEST_ROOT}/opencode-quota-primary-count"
+  local backup_count="${TEST_ROOT}/opencode-quota-backup-count"
+  local args_file="${TEST_ROOT}/opencode-quota-backup-args"
+  local checkpoint_snapshot="${TEST_ROOT}/opencode-quota-checkpoint-snapshot"
+  local config_path="${TEST_ROOT}/opencode-quota-fallback-config.toml"
+  local output="${TEST_ROOT}/opencode-quota-fallback-output.log"
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_PRIMARY_COUNT" ]] && count="$(<"$RUNNER_TEST_PRIMARY_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_PRIMARY_COUNT"
+printf '%s\n' '{"type":"session","sessionID":"sess-fallback-18"}'
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'subscription quota exhausted for provider' >&2
+exit 1
+PROLOG
+  cat > "$backup" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_BACKUP_COUNT" ]] && count="$(<"$RUNNER_TEST_BACKUP_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_BACKUP_COUNT"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done
+printf '%s\n' 'EOF' >> "$RUNNER_TEST_ARGS_FILE"
+if [[ "$count" -eq 1 ]]; then
+  cp "$RUNNER_TEST_CHECKPOINT" "$RUNNER_TEST_CHECKPOINT_SNAPSHOT"
+  printf '%s\n' '{"type":"text","sessionID":"sess-fallback-18","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$primary" "$backup"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\", \"opencode-tertiary\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true" \
+    "opencode-tertiary=OpenCode Tertiary|opencode|${backup}|provider/tertiary|||low|true"
+
+  RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
+  RUNNER_TEST_BACKUP_COUNT="$backup_count" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  RUNNER_TEST_CHECKPOINT="${repo}/.git/claude-minimax-issue-runner.checkpoint" \
+  RUNNER_TEST_CHECKPOINT_SNAPSHOT="$checkpoint_snapshot" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1" \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'OpenCode quota failure did not continue through the fallback profile'
+
+  [[ "$(<"$primary_count")" -eq 1 ]] || \
+    fail 'Quota exhaustion retried the failed primary profile before fallback'
+  [[ "$(<"$backup_count")" -eq 2 ]] || \
+    fail 'Fallback profile did not complete the issue and verify the empty queue'
+  grep -Fxq -- 'provider/backup' "$args_file" || \
+    fail 'Fallback worker did not use the next profile model'
+  grep -Fxq -- '--session' "$args_file" || \
+    fail 'Fallback worker did not continue the compatible OpenCode session'
+  grep -Fxq -- 'sess-fallback-18' "$args_file" || \
+    fail 'Fallback worker did not receive the captured session identity'
+  grep -Fq 'Advancing OpenCode fallback: opencode-primary -> opencode-backup' "$output" || \
+    fail 'Runner did not report the ordered fallback transition'
+  grep -Eq '^profile=opencode-backup$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the active fallback profile'
+  grep -Eq '^failed_profile=opencode-primary$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the failed profile'
+  grep -Eq '^next_profile=opencode-backup$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the next profile'
+  grep -Eq '^fallback_remaining=opencode-tertiary$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not retain the remaining fallback order'
+  grep -Eq '^fallback_position=1$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not advance the fallback position'
+
+  local reconcile_line fallback_line
+  reconcile_line="$(grep -n 'Reconciling recovery state' "$output" | head -n 1 | cut -d: -f1)"
+  fallback_line="$(grep -n 'Advancing OpenCode fallback' "$output" | head -n 1 | cut -d: -f1)"
+  [[ -n "$reconcile_line" && -n "$fallback_line" && "$reconcile_line" -lt "$fallback_line" ]] || \
+    fail 'Fallback profile was activated before tracker and PR reconciliation'
+
+  pass 'explicit OpenCode quota exhaustion advances the same issue and compatible session'
+}
+
+test_black_box_opencode_rate_limit_retries_before_fallback() {
+  local repo="${TEST_ROOT}/opencode-rate-limit-repo"
+  local primary="${TEST_ROOT}/opencode-rate-limit-primary"
+  local backup="${TEST_ROOT}/opencode-rate-limit-backup"
+  local primary_count="${TEST_ROOT}/opencode-rate-limit-primary-count"
+  local backup_count="${TEST_ROOT}/opencode-rate-limit-backup-count"
+  local config_path="${TEST_ROOT}/opencode-rate-limit-config.toml"
+  local output="${TEST_ROOT}/opencode-rate-limit-output.log"
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_PRIMARY_COUNT" ]] && count="$(<"$RUNNER_TEST_PRIMARY_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_PRIMARY_COUNT"
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'HTTP 429: provider rate limit reached' >&2
+exit 1
+PROLOG
+  cat > "$backup" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_BACKUP_COUNT" ]] && count="$(<"$RUNNER_TEST_BACKUP_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_BACKUP_COUNT"
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$primary" "$backup"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true"
+
+  RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
+  RUNNER_TEST_BACKUP_COUNT="$backup_count" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1" \
+  ISSUE_RUNNER_RETRY_LIMIT=2 \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Persistent OpenCode rate limiting did not reach the fallback profile'
+
+  [[ "$(<"$primary_count")" -eq 2 ]] || \
+    fail 'Rate-limited profile did not consume its bounded retry before fallback'
+  [[ "$(<"$backup_count")" -eq 2 ]] || \
+    fail 'Fallback profile did not complete the rate-limited issue and drain the queue'
+  grep -Fq 'recovery_category=provider_rate_limit' "$output" || \
+    fail 'Rate-limit retry did not retain its provider failure category'
+  grep -Fq 'Advancing OpenCode fallback: opencode-primary -> opencode-backup' "$output" || \
+    fail 'Persistent rate limiting did not advance the fallback chain'
+
+  pass 'persistent OpenCode rate limiting retries before consuming a fallback'
+}
+
+test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback() {
+  local repo="${TEST_ROOT}/opencode-model-fallback-repo"
+  local primary="${TEST_ROOT}/opencode-model-primary"
+  local backup="${TEST_ROOT}/opencode-model-backup"
+  local backup_count="${TEST_ROOT}/opencode-model-backup-count"
+  local args_file="${TEST_ROOT}/opencode-model-backup-args"
+  local config_path="${TEST_ROOT}/opencode-model-fallback-config.toml"
+  local output="${TEST_ROOT}/opencode-model-fallback-output.log"
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'requested model provider/primary is unavailable' >&2
+exit 1
+PROLOG
+  cat > "$backup" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_BACKUP_COUNT" ]] && count="$(<"$RUNNER_TEST_BACKUP_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_BACKUP_COUNT"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done
+printf '%s\n' 'EOF' >> "$RUNNER_TEST_ARGS_FILE"
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$primary" "$backup"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true"
+
+  RUNNER_TEST_BACKUP_COUNT="$backup_count" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Model-unavailable failure did not launch a fresh fallback worker'
+
+  if grep -Fxq -- '--session' "$args_file"; then
+    fail 'Fallback without a captured session attempted unsafe session continuation'
+  fi
+  grep -Fq 'Continue exactly issue #18; do not select or inspect another issue.' "$args_file" || \
+    fail 'Fresh fallback prompt was not constrained to the identified issue'
+  grep -Fq 'provider_model_unavailable' "$output" || \
+    fail 'Model-unavailable transition did not retain its failure classification'
+
+  pass 'model unavailability launches a fresh fallback constrained to the same issue'
+}
+
+test_black_box_opencode_excluded_failures_never_consume_fallbacks() {
+  local kind expected repo primary backup marker config_path output status
+
+  for kind in context network worker malformed blocked failed implementation; do
+    repo="${TEST_ROOT}/opencode-excluded-${kind}-repo"
+    primary="${TEST_ROOT}/opencode-excluded-${kind}-primary"
+    backup="${TEST_ROOT}/opencode-excluded-${kind}-backup"
+    marker="${TEST_ROOT}/opencode-excluded-${kind}-backup-ran"
+    config_path="${TEST_ROOT}/opencode-excluded-${kind}-config.toml"
+    output="${TEST_ROOT}/opencode-excluded-${kind}-output.log"
+
+    new_repo "$repo"
+    cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+case "$RUNNER_TEST_FAILURE_KIND" in
+  context) printf '%s\n' 'context window exhausted'; exit 1 ;;
+  network) printf '%s\n' 'connection reset by peer'; exit 1 ;;
+  worker) printf '%s\n' 'worker process crashed unexpectedly'; exit 7 ;;
+  malformed) printf '%s\n' '{"type":"text","part":{"text":"finished without status"}}'; exit 0 ;;
+  blocked) printf '%s\n' '{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=BLOCKED\n"}}'; exit 0 ;;
+  failed) printf '%s\n' '{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=FAILED\n"}}'; exit 0 ;;
+  implementation) printf '%s\n' 'implementation failed because tests did not pass'; exit 1 ;;
+esac
+PROLOG
+    printf '%s\n' '#!/usr/bin/env bash' "touch '${marker}'" > "$backup"
+    chmod +x "$primary" "$backup"
+
+    write_opencode_profile_config "$config_path" "opencode-primary" \
+      "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\"]" \
+      "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true"
+
+    case "$kind" in
+      network) expected=4 ;;
+      blocked) expected=2 ;;
+      *) expected=1 ;;
+    esac
+
+    set +e
+    RUNNER_TEST_FAILURE_KIND="$kind" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_LIMIT=1 \
+    ISSUE_RUNNER_RETRY_DELAYS="1" \
+    ISSUE_KILLER_CONFIG_PATH="$config_path" \
+      "$RUNNER" "$repo" >"$output" 2>&1
+    status=$?
+    set -e
+
+    [[ "$status" -eq "$expected" ]] || \
+      fail "Excluded ${kind} failure exited ${status}, expected ${expected}"
+    [[ ! -e "$marker" ]] || \
+      fail "Excluded ${kind} failure consumed an OpenCode fallback"
+  done
+
+  pass 'context, network, worker, malformed, BLOCKED, FAILED, and implementation failures never consume fallbacks'
+}
+
+test_black_box_opencode_fallback_exhaustion_retains_recovery_checkpoint() {
+  local repo="${TEST_ROOT}/opencode-fallback-exhausted-repo"
+  local primary="${TEST_ROOT}/opencode-fallback-exhausted-primary"
+  local backup="${TEST_ROOT}/opencode-fallback-exhausted-backup"
+  local primary_count="${TEST_ROOT}/opencode-fallback-exhausted-primary-count"
+  local backup_count="${TEST_ROOT}/opencode-fallback-exhausted-backup-count"
+  local config_path="${TEST_ROOT}/opencode-fallback-exhausted-config.toml"
+  local output="${TEST_ROOT}/opencode-fallback-exhausted-output.log"
+  local checkpoint status
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_PRIMARY_COUNT" ]] && count="$(<"$RUNNER_TEST_PRIMARY_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_PRIMARY_COUNT"
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'Authorization: Bearer ghp_fallback_secret subscription quota exhausted for provider primary' >&2
+exit 1
+PROLOG
+  cat > "$backup" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_BACKUP_COUNT" ]] && count="$(<"$RUNNER_TEST_BACKUP_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_BACKUP_COUNT"
+printf '%s\n' 'insufficient_quota for provider backup' >&2
+exit 1
+PROLOG
+  chmod +x "$primary" "$backup"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true"
+
+  set +e
+  RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
+  RUNNER_TEST_BACKUP_COUNT="$backup_count" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Exhausted OpenCode fallback chain must exit 4, got ${status}"
+  [[ "$(<"$primary_count")" -eq 1 && "$(<"$backup_count")" -eq 1 ]] || \
+    fail 'Fallback exhaustion launched a profile more than once or advanced the queue'
+  checkpoint="${repo}/.git/claude-minimax-issue-runner.checkpoint"
+  grep -Eq '^profile=opencode-backup$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain the active fallback profile'
+  grep -Eq '^selected_profile=opencode-primary$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain the original selected profile'
+  grep -Eq '^fallback_position=1$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain the fallback position'
+  grep -Eq '^failed_profile=opencode-backup$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain the final failed profile'
+  grep -Eq '^fallback_failure=provider_quota$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain the provider failure classification'
+  grep -Eq '^state=fallback_exhausted$' "$checkpoint" || \
+    fail 'Exhausted checkpoint did not retain its recoverable lifecycle state'
+  if grep -Eqi 'authorization|ghp_fallback_secret' "$checkpoint"; then
+    fail 'Fallback checkpoint persisted credentials from provider diagnostics'
+  fi
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Fallback exhaustion did not emit RECOVERY_REQUIRED diagnostics'
+
+  pass 'fallback exhaustion retains non-secret diagnostics and never advances the queue'
+}
+
+test_black_box_opencode_restart_restores_active_fallback_position() {
+  local repo="${TEST_ROOT}/opencode-fallback-restart-repo"
+  local primary="${TEST_ROOT}/opencode-fallback-restart-primary"
+  local backup="${TEST_ROOT}/opencode-fallback-restart-backup"
+  local primary_count="${TEST_ROOT}/opencode-fallback-restart-primary-count"
+  local backup_count="${TEST_ROOT}/opencode-fallback-restart-backup-count"
+  local dirty_file="${repo}/partial-fallback-work.txt"
+  local config_path="${TEST_ROOT}/opencode-fallback-restart-config.toml"
+  local first_output="${TEST_ROOT}/opencode-fallback-restart-first.log"
+  local expect_script="${TEST_ROOT}/opencode-fallback-restart.expect"
+  local restart_output="${TEST_ROOT}/opencode-fallback-restart-second.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_PRIMARY_COUNT" ]] && count="$(<"$RUNNER_TEST_PRIMARY_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_PRIMARY_COUNT"
+printf '%s\n' '{"type":"session","sessionID":"sess-restart-fallback-18"}'
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'subscription quota exhausted for primary' >&2
+exit 1
+PROLOG
+  cat > "$backup" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_BACKUP_COUNT" ]] && count="$(<"$RUNNER_TEST_BACKUP_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_BACKUP_COUNT"
+case "$count" in
+  1)
+    printf '%s\n' 'partial work' > "$RUNNER_TEST_DIRTY_FILE"
+    printf '%s\n' '{"type":"text","sessionID":"sess-restart-fallback-18","part":{"type":"text","text":"ISSUE_KILLER_STATUS=FAILED\n"}}'
+    ;;
+  2)
+    rm -f "$RUNNER_TEST_DIRTY_FILE"
+    printf '%s\n' '{"type":"text","sessionID":"sess-restart-fallback-18","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"text","sessionID":"","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+    ;;
+esac
+PROLOG
+  chmod +x "$primary" "$backup"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\", \"opencode-tertiary\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true" \
+    "opencode-tertiary=OpenCode Tertiary|opencode|${backup}|provider/tertiary|||low|true"
+
+  set +e
+  RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
+  RUNNER_TEST_BACKUP_COUNT="$backup_count" \
+  RUNNER_TEST_DIRTY_FILE="$dirty_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$first_output" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || \
+    fail "Initial fallback interruption must exit 1, got ${status}"
+  [[ -e "$dirty_file" ]] || \
+    fail 'Initial fallback interruption did not leave recoverable dirty work'
+
+  cat > "$expect_script" <<PROLOG
+set timeout 20
+log_user 1
+set fallback_prompt 0
+spawn env PATH=$PATH RUNNER_TEST_PRIMARY_COUNT=$primary_count RUNNER_TEST_BACKUP_COUNT=$backup_count RUNNER_TEST_DIRTY_FILE=$dirty_file ISSUE_RUNNER_ASSUME_YES=true ISSUE_KILLER_CONFIG_PATH=$config_path $RUNNER "$repo"
+expect {
+  -re {Profile \\[2\\]:} {
+    send "\r"
+    exp_continue
+  }
+  -re {Fallback \\[0\\]:} {
+    incr fallback_prompt
+    send "1\r"
+    exp_continue
+  }
+  -re {Recover issue 18.*Continue\\? \\[y/N\\]} {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script" >"$restart_output" 2>&1 || \
+    fail 'Restart recovery did not complete the checkpointed fallback issue'
+
+  [[ "$(<"$primary_count")" -eq 1 ]] || \
+    fail 'Restart recovery silently returned to the original failed profile'
+  [[ "$(<"$backup_count")" -eq 3 ]] || \
+    fail 'Restart recovery did not reuse the active fallback and then verify the queue'
+  [[ ! -e "$dirty_file" ]] || \
+    fail 'Restart recovery did not preserve and complete the dirty fallback work'
+  grep -Fq 'Restored OpenCode fallback checkpoint at position 1 with profile opencode-backup' "$restart_output" || \
+    fail 'Restart did not report the restored active fallback position'
+  grep -Fq 'resuming Claude session sess-restart-fallback-18' "$restart_output" || \
+    fail 'Restart did not preserve the compatible session identity on the fallback profile'
+
+  pass 'restart recovery restores the active OpenCode profile, position, remaining chain, and session'
+}
+
+test_black_box_opencode_prior_provider_error_does_not_reclassify_fallback_failure() {
+  local repo="${TEST_ROOT}/opencode-fallback-reclassification-repo"
+  local primary="${TEST_ROOT}/opencode-fallback-reclassification-primary"
+  local backup="${TEST_ROOT}/opencode-fallback-reclassification-backup"
+  local tertiary="${TEST_ROOT}/opencode-fallback-reclassification-tertiary"
+  local tertiary_marker="${TEST_ROOT}/opencode-fallback-reclassification-tertiary-ran"
+  local config_path="${TEST_ROOT}/opencode-fallback-reclassification-config.toml"
+  local output="${TEST_ROOT}/opencode-fallback-reclassification-output.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 18"}}}'
+printf '%s\n' 'subscription quota exhausted for primary' >&2
+exit 1
+PROLOG
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\n" "implementation failed because verification broke" >&2' \
+    'exit 1' > "$backup"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "touch '${tertiary_marker}'" \
+    'printf "%s\n" '\''{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}}'\''' > "$tertiary"
+  chmod +x "$primary" "$backup" "$tertiary"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|${primary}|provider/primary|||high|true|[\"opencode-backup\", \"opencode-tertiary\"]" \
+    "opencode-backup=OpenCode Backup|opencode|${backup}|provider/backup|||medium|true" \
+    "opencode-tertiary=OpenCode Tertiary|opencode|${tertiary}|provider/tertiary|||low|true"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || \
+    fail "Fallback implementation failure must exit 1, got ${status}"
+  [[ ! -e "$tertiary_marker" ]] || \
+    fail 'A prior provider error reclassified a fallback implementation failure'
+
+  pass 'provider classification is scoped to the current attempt after fallback'
 }
 
 test_black_box_opencode_profile_invokes_opencode_run_with_expected_args() {
@@ -3546,6 +4178,16 @@ test_codex_profile_validation_rejects_auto_approve_with_read_only_sandbox
 test_black_box_codex_profile_rejects_invalid_options_before_launch
 test_black_box_codex_profile_resumes_thread_when_session_captured
 test_black_box_codex_profile_drains_queue_through_status_marker
+test_black_box_opencode_fallback_validation_rejects_missing_profile
+test_black_box_opencode_fallback_validation_rejects_invalid_chains
+test_tty_opencode_fallback_picker_builds_ordered_unique_chain
+test_black_box_opencode_quota_failure_advances_fallback_with_same_session
+test_black_box_opencode_rate_limit_retries_before_fallback
+test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback
+test_black_box_opencode_excluded_failures_never_consume_fallbacks
+test_black_box_opencode_fallback_exhaustion_retains_recovery_checkpoint
+test_black_box_opencode_restart_restores_active_fallback_position
+test_black_box_opencode_prior_provider_error_does_not_reclassify_fallback_failure
 test_black_box_opencode_profile_invokes_opencode_run_with_expected_args
 test_black_box_opencode_profile_decodes_json_progress_events
 test_black_box_opencode_profile_captures_session_id

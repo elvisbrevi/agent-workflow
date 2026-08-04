@@ -160,6 +160,39 @@ opencode_runtime_validate_profile() {
   return 0
 }
 
+# Classifies only explicit provider failures that are eligible for an
+# OpenCode fallback. The orchestrator handles status markers first, so a
+# worker-reported BLOCKED or FAILED outcome can never be reclassified here.
+# Returns quota, rate_limit, model_unavailable, or none.
+opencode_runtime_classify_provider_failure() {
+  local output_file="$1"
+
+  [[ -r "$output_file" ]] || {
+    printf 'none\n'
+    return 0
+  }
+
+  if grep -Eqi -- \
+    'insufficient[_ -]?quota|(quota|credits?|usage allowance).*(exhaust|exceed|deplet|used up|limit reached)|(subscription|billing plan).*(exhaust|expired|inactive|quota|credits?|usage allowance)' \
+    "$output_file" 2>/dev/null; then
+    printf 'quota\n'
+  elif grep -Eqi -- \
+    '(^|[^0-9])429([^0-9]|$)|rate[ _-]?limit|too many requests' \
+    "$output_file" 2>/dev/null; then
+    printf 'rate_limit\n'
+  elif grep -Eqi -- \
+    '(subscription|billing plan).*(limit.*reached|allowance.*used)' \
+    "$output_file" 2>/dev/null; then
+    printf 'quota\n'
+  elif grep -Eqi -- \
+    'model.*(unavailable|not available|not found|does not exist|unsupported)|(unavailable|not available).*model' \
+    "$output_file" 2>/dev/null; then
+    printf 'model_unavailable\n'
+  else
+    printf 'none\n'
+  fi
+}
+
 # Decodes an OpenCode JSON event into a normalized event tag and
 # detail. The orchestrator dispatches the tag to checkpoint/progress
 # helpers. Output is a single line of the form `<tag>\t<detail>`; the
@@ -513,6 +546,7 @@ runtime_dispatch_event()  { opencode_runtime_dispatch_event "$@"; }
 runtime_invoke_args()     { opencode_runtime_invoke_args "$@"; }
 runtime_invoke()          { opencode_runtime_invoke "$@"; }
 runtime_render_stream()   { opencode_runtime_render_stream "$@"; }
+runtime_classify_provider_failure() { opencode_runtime_classify_provider_failure "$@"; }
 
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
