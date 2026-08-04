@@ -1,6 +1,6 @@
 # Workflow Skills
 
-A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`claude-minimax-issue-runner`) is original to this repo.
+A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`issue-killer`) is original to this repo.
 
 ## Philosophy
 
@@ -33,13 +33,13 @@ curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/inst
 ```
 
 Claude Code discovers personal skills from `~/.claude/skills/` and project skills from
-`.claude/skills/`. These modes also install the `claude-minimax-issue-runner` supervisor
+`.claude/skills/`. These modes also install the `issue-killer` supervisor
 as a Claude agent and as an executable command:
 
 | Scope | Agent definition | Runner command |
 |---|---|---|
-| Personal | `~/.claude/agents/claude-minimax-issue-runner.md` | `~/.local/bin/claude-minimax-issue-runner` |
-| Project | `.claude/agents/claude-minimax-issue-runner.md` | `.claude/bin/claude-minimax-issue-runner` |
+| Personal | `~/.claude/agents/issue-killer.md` | `~/.local/bin/issue-killer` |
+| Project | `.claude/agents/issue-killer.md` | `.claude/bin/issue-killer` |
 
 If you want to inspect the downloaded script before executing it:
 
@@ -103,8 +103,8 @@ The menu offers:
 
 | Flag | Description |
 |------|-------------|
-| `--claude-global` | Install skills and the Claude-MiniMax agent/runner globally |
-| `--claude-local` | Install skills and the Claude-MiniMax agent/runner in `{target}` |
+| `--claude-global` | Install skills and the `issue-killer` agent/runner globally |
+| `--claude-local` | Install skills and the `issue-killer` agent/runner in `{target}` |
 | `--global` | Install skills and agents to `~/.agents/skills/` and `~/.agents/agents/` |
 | `--local` | Install skills and agents to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
 | `--opencode` | Install skills and agents to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
@@ -150,7 +150,7 @@ Claude Code uses these skill locations:
 It uses `~/.claude/agents/*.md` and `.claude/agents/*.md` for custom agents. The
 installer also exposes the external runner in `~/.local/bin/` (personal mode) or
 `.claude/bin/` (project mode). The external command is what creates and terminates a
-fresh Claude-MiniMax CLI process for every issue.
+fresh CLI worker process for every issue.
 
 After installation, invoke a skill with its slash command, for example:
 
@@ -166,9 +166,10 @@ skills directory does not appear in the current session, start a new Claude Code
 ### Codex and OpenCode
 
 Codex discovers global skills from `~/.agents/skills` and project skills from
-`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. Those modes
-can discover the supervisor definition, but its worker runtime is intentionally
-`claude-minimax`; it is not an OpenCode session-clearing loop.
+`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. The
+supervisor is CLI-neutral: its selected execution profile determines whether
+each iteration runs under Codex, OpenCode, or Claude, and OpenCode profiles
+may declare an ordered fallback chain for additional resilience.
 
 After installing, Codex normally detects new skills automatically. If a skill does not
 appear in `/skills` or when typing `$`, restart Codex or open a new session. To verify a
@@ -687,11 +688,14 @@ workflow/
 │       └── agents/openai.yaml
 │
 └── agent/
-    └── claude-minimax-issue-runner/
+    └── issue-killer/
         ├── AGENT.md
         ├── PROMPT.md
         ├── REFERENCE.md
-        └── run.sh
+        ├── run.sh
+        ├── config/issue-killer-config.sh
+        ├── runtime/{claude,codex,opencode}-adapter.sh
+        └── tracker/{github,azure-devops,selector,...}.sh
 ```
 
 ---
@@ -703,72 +707,184 @@ In addition to the 18 prompt-driven skills above, this repo ships one **autonomo
 | Type | What it is | Where it lives |
 |------|-----------|----------------|
 | **Skill** (18) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
-| **Agent** (1) | A supervisor plus executable loop that launches a fresh Claude-MiniMax process for each issue. | `agent/<name>/AGENT.md` + `run.sh` |
+| **Agent** (1) | A supervisor plus executable loop that launches a fresh CLI worker for each issue. | `agent/<name>/AGENT.md` + `run.sh` |
 
-### `claude-minimax-issue-runner` — isolated Claude-MiniMax issue drainer
+### `issue-killer` — isolated, CLI-neutral issue drainer
 
-Launches the customized `claude-minimax` CLI with a single-issue prompt. Each fresh
-worker takes exactly one available non-epic issue, uses `/implement`, `/tdd`, and
-`/code-review`, opens a PR to the configured base branch, merges it automatically, and
-closes the issue. The process exits, then the supervisor launches a new non-persistent
-worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
-failure, unexplained dirty work, or an invalid worker status.
+Launches a non-persistent worker process selected from a personal execution
+profile. Each fresh worker takes exactly one available non-epic issue, uses
+`/implement`, `/tdd`, and `/code-review`, opens a PR to the configured base
+branch, merges it automatically, and closes the issue. The process exits, then
+the supervisor launches a new non-persistent worker. The loop ends when the
+eligible queue is empty and stops safely on blocked work, failure, unexplained
+dirty work, or an invalid worker status.
 
-Tracker selection follows the repository remote and
-`docs/agents/issue-tracker.md`: GitHub uses `gh`, while Azure DevOps uses
-`az boards` and `az repos` with repository-owned organization, project,
-repository, work-item, state, relation, claim, and closure mappings validated
-before worker launch.
+The supervisor is CLI-neutral: Claude, Codex, and OpenCode are interchangeable
+options bound to the worker process. Tracker selection follows the repository
+remote and `docs/agents/issue-tracker.md`: GitHub uses `gh`, while Azure
+DevOps uses `az boards` and `az repos` with repository-owned organization,
+project, repository, work-item, state, relation, claim, and closure mappings
+validated before worker launch.
 
-Worker output is streamed live as Claude's `stream-json` events, rendered by
-the supervisor as concise, iteration-aware progress lines
-(inspecting/editing/creating PR/closing issue). While a worker is silent the
-supervisor still prints an elapsed-time heartbeat every 30 seconds by default.
-The full raw stream stays available in each iteration's artifact file for
-diagnostics, and the repository lock keeps a status snapshot in the Git
-common directory so progress can be checked from another terminal:
+### Configuration
+
+Execution profiles live in `~/.config/issue-killer/config.toml`. Every profile
+binds a CLI, a command, a model, an optional shell launcher, and CLI-specific
+adapter options. `--config <path>` replaces the default for one invocation.
+
+```toml
+# ~/.config/issue-killer/config.toml
+default_profile = "claude-main"
+
+[profiles.claude-main]
+label = "Claude | test-model"
+cli = "claude"
+command = "claude"          # executable or shell function name
+model = "claude-test-model" # example placeholder; replace with your installed model
+shell = "bash"              # optional; required when `command` is a shell function
+init_file = "~/.bashrc"     # optional; required when `shell` is set
+
+[profiles.claude-main.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-fast]
+label = "Codex | test-model"
+cli = "codex"
+command = "codex"
+model = "codex-test-model"  # example placeholder
+
+[profiles.codex-fast.options]
+reasoning_effort = "medium"
+sandbox = "danger-full-access"
+
+[profiles.opencode-main]
+label = "OpenCode | test-model"
+cli = "opencode"
+command = "opencode"
+model = "provider/test-model" # example placeholder; replace with a provider-qualified model
+fallbacks = ["opencode-gpt"]  # OpenCode-only ordered fallback chain
+
+[profiles.opencode-main.options]
+variant = "high"
+auto_approve = true
+
+[profiles.opencode-gpt]
+label = "OpenCode | gpt"
+cli = "opencode"
+command = "opencode"
+model = "provider/gpt-model" # example placeholder
+```
+
+**Placeholder model identifiers.** Every `model = "..."` value above is an
+example. Discover the identifiers your installed CLI exposes and substitute
+them in your personal TOML. Common discovery paths: `claude models`,
+`codex models list`, and `opencode models --provider <provider>`. The runner
+never assumes a universal catalog and never falls back to a guessed
+identifier.
+
+### Selector and fallback behavior
+
+When launched from a TTY, the supervisor lists every configured profile with
+its label, CLI, model, and the active TOML path, then asks the operator to
+pick one. Editing the TOML adds or removes profiles; the selector footer
+always points at the file.
+
+After picking an OpenCode profile, the operator is repeatedly offered the
+remaining OpenCode profiles to build an ordered fallback chain. Each chosen
+profile is removed from later choices and `None` terminates the chain.
+Non-OpenCode profiles skip this menu.
+
+Without a TTY (CI, automation, agent invocations), the supervisor uses
+`default_profile` and reads that profile's declared `fallbacks` list
+deterministically. Missing or invalid `default_profile`, duplicate chain
+entries, cycles, or non-OpenCode fallback references are rejected before
+worker launch.
+
+### CLI adapters
+
+| Adapter | Invocation | Event format | Notes |
+|---------|------------|--------------|-------|
+| Claude  | `claude --print --no-session-persistence --output-format stream-json --permission-mode <mode>` | Stream JSON | `--resume <session>` resumes an in-flight session; `--no-session-persistence` is the default for fresh workers. |
+| Codex   | `codex exec --json --sandbox <mode>` | JSONL | `reasoning_effort` and `sandbox` are CLI-specific options. |
+| OpenCode| `opencode run --format json` | JSON events | `--variant <v>` and `--auto-approve` (or `true`/`false`) are CLI-specific options; supports profile fallback chain. |
+
+Every adapter exposes the same `runtime_*` surface so the orchestrator never
+branches on the selected CLI. The status marker stays `ISSUE_KILLER_STATUS`
+with `ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`, or
+`RECOVERY_REQUIRED`. Worker skill invocation is portable: the worker contract
+references `/implement`, `/tdd`, and `/code-review` without assuming one
+client's exact slash syntax.
+
+### Tracker adapters
+
+| Tracker | CLI | Operations |
+|---------|-----|------------|
+| GitHub  | `gh` | Issue/work-item discovery, dependency checks, claim, PR reconciliation, merge verification, closure. |
+| Azure DevOps | `az boards`, `az repos` (with the `azure-devops` extension) | Work-item discovery, dependency checks, claim, PR reconciliation, merge verification, closure. Requires the repository's tracker document to declare organization, project, repository, work-item types, states, and role mappings. |
+
+A remote that does not match `docs/agents/issue-tracker.md` or that lacks
+the required CLI/authentication fails the supervisor before a worker is
+launched. Tracker selection is inferred from the Git remote and is not part
+of any execution profile.
+
+### Migration from the historical binary
+
+The supervisor is the renamed, expanded form of the historical
+`claude-minimax-issue-runner` binary. Existing per-repository state owned
+by the legacy binary is detected at startup:
+
+- A live legacy lock (or one that is still owned by a running legacy
+  process) blocks the new supervisor and points at the surviving owner.
+- A stale legacy lock is recovered once its owner metadata validates
+  against the current repository path; unrecognized siblings are
+  quarantined rather than deleted.
+- A valid legacy checkpoint is migrated atomically into the canonical
+  `issue-killer.checkpoint` namespace; partial or cross-repository state
+  fails closed with a recoverable error.
+- No permanent `claude-minimax-issue-runner` alias is added to
+  `PATH`. The `install.sh` script also removes any installed legacy
+  symlinks during install or uninstall, and the legacy agent and binary
+  directories are no longer shipped.
+
+### Safety boundary
+
+This agent performs destructive operations: it pushes branches, creates
+and merges PRs into the base branch, and closes issues. The supervisor
+requires an interactive confirmation that explicitly displays the selected
+profile, model, fallback chain, tracker, repository, autonomy mode, and
+base branch. It verifies a clean worktree before every normal worker and
+refuses to continue after ambiguous or partial results. If startup finds
+dirty work with a valid recovery checkpoint, it displays the issue,
+branch, base SHA, last state, dirty files, and strategy, reconciles live
+issue/PR state, then requires TTY confirmation before resuming. Dirty
+legacy work without a checkpoint requires
+`ISSUE_RUNNER_ADOPT_ISSUE=<number>` and is never inferred from branch
+names or files. An atomic lock in the Git common directory prevents
+concurrent runners across the repository and its linked worktrees; stale
+locks are recovered when their owner process no longer exists. Set
+`ISSUE_RUNNER_BASE_BRANCH` when the target is not `main`.
+
+### Invoke
+
+From the target repository:
 
 ```bash
-cat "$(git rev-parse --git-common-dir)/claude-minimax-issue-runner.lock/status"
+issue-killer
+```
+
+For a project-local install (Claude Code mode):
+
+```bash
+./.claude/bin/issue-killer
+```
+
+```bash
+cat "$(git rev-parse --git-common-dir)/issue-killer.lock/status"
 ```
 
 Set `ISSUE_RUNNER_PROGRESS_INTERVAL` to change the heartbeat interval (`0`
 disables it).
 
-**Invoke globally** from the target repository:
-
-```bash
-claude-minimax-issue-runner
-```
-
-For a project-local install:
-
-```bash
-./.claude/bin/claude-minimax-issue-runner
-```
-
-The default worker command is exactly `claude-minimax`. It may be an executable or a
-function loaded from `~/.bashrc`. Function loading uses a clean, non-interactive
-Bash child and skips Flyline's dynamic prompt library, avoiding terminal/job-control
-startup errors. `CLAUDE_MINIMAX_RC_FILE` can point to a dedicated initialization
-file. The runner uses `--print`,
-`--no-session-persistence`, and Claude Code's `bypassPermissions` mode by default.
-`CLAUDE_MINIMAX_PERMISSION_MODE` remains available as an explicit override.
-
-**Safety** — this agent performs destructive operations: it pushes branches, creates
-and merges PRs into the base branch, and closes issues. It requires an initial
-confirmation that explicitly displays the permission mode, verifies a clean worktree
-before every normal worker, and refuses to continue
-after ambiguous or partial results. If startup finds dirty work with a valid recovery
-checkpoint, it displays the issue, branch, base SHA, last state, dirty files, and
-strategy, reconciles live issue/PR state, then requires TTY confirmation before
-resuming. Dirty legacy work without a checkpoint requires
-`ISSUE_RUNNER_ADOPT_ISSUE=<number>` and is never inferred from branch names or files.
-An atomic lock in the Git common directory
-prevents concurrent runners across the repository and its linked worktrees; stale
-locks are recovered when their owner process no longer exists. Set
-`ISSUE_RUNNER_BASE_BRANCH` when the target is not `main`.
-
-See [agent/claude-minimax-issue-runner/AGENT.md](agent/claude-minimax-issue-runner/AGENT.md),
-[PROMPT.md](agent/claude-minimax-issue-runner/PROMPT.md), and
-[REFERENCE.md](agent/claude-minimax-issue-runner/REFERENCE.md).
+See [agent/issue-killer/AGENT.md](agent/issue-killer/AGENT.md),
+[PROMPT.md](agent/issue-killer/PROMPT.md), and
+[REFERENCE.md](agent/issue-killer/REFERENCE.md).
