@@ -305,6 +305,16 @@ if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
 fi
 
 BASE_PROMPT="$(<"$PROMPT_FILE")"
+# Compose the tracker-specific supplement by delegating to the
+# selected adapter. The shared PROMPT.md remains the source of
+# truth for safety, status reporting, and recovery semantics; the
+# supplement only contributes tracker-specific lifecycle rules
+# (issue vs. HU+child unit, branch target, merge verification,
+# closure semantics). The supplement is intentionally excluded
+# from checkpoints and lock status so secret-bearing or sensitive
+# wording can never leak through persistent recovery state.
+TRACKER_SUPPLEMENT="$(tracker_worker_supplement)" || \
+  die "tracker adapter did not provide a worker supplement"
 
 while true; do
   ITERATION=$((ITERATION + 1))
@@ -342,6 +352,8 @@ while true; do
   if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
     WORKER_PROMPT="${BASE_PROMPT}
 
+${TRACKER_SUPPLEMENT}
+
 ${STARTUP_RECOVERY_PROMPT}
 
 Runtime configuration:
@@ -352,6 +364,8 @@ Runtime configuration:
 Do not inspect the queue for another issue. Continue only the recovery target."
   else
     WORKER_PROMPT="${BASE_PROMPT}
+
+${TRACKER_SUPPLEMENT}
 
 Runtime configuration:
 - Repository root: ${REPO_ROOT}

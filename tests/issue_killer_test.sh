@@ -4190,6 +4190,159 @@ PROLOG
   pass 'opencode adapter passes --session <session_id> when a session is safely captured'
 }
 
+test_github_tracker_supplement_is_delivered_to_worker() {
+  local repo="${TEST_ROOT}/github-supplement-repo"
+  local fake="${TEST_ROOT}/claude-minimax-github-supplement"
+  local output="${TEST_ROOT}/github-supplement-output.log"
+  local args="${TEST_ROOT}/github-supplement-args"
+  local prompt="${TEST_ROOT}/github-supplement-prompt"
+
+  new_repo "$repo"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'for arg in "$@"; do printf "%s\\n" "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done' \
+    'last_arg="${@: -1}"' \
+    'printf "%s\\n" "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+  RUNNER_TEST_ARGS_FILE="$args" \
+  RUNNER_TEST_PROMPT_FILE="$prompt" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Runner did not deliver the GitHub tracker supplement'
+
+  grep -Fq 'GitHub tracker supplement:' "$prompt" || \
+    fail 'Effective worker prompt did not include the GitHub tracker supplement'
+  grep -Fq 'single delivery unit' "$prompt" || \
+    fail 'GitHub supplement did not declare the single-issue delivery unit'
+  grep -Fq 'configured base branch' "$prompt" || \
+    fail 'GitHub supplement did not name the configured base branch target'
+
+  pass 'github tracker supplement is composed into the worker prompt'
+}
+
+test_runtime_config_section_follows_supplement() {
+  local repo="${TEST_ROOT}/prompt-order-repo"
+  local fake="${TEST_ROOT}/claude-minimax-prompt-order"
+  local output="${TEST_ROOT}/prompt-order-output.log"
+  local prompt="${TEST_ROOT}/prompt-order-prompt"
+
+  new_repo "$repo"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'last_arg="${@: -1}"' \
+    'printf "%s\\n" "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+  RUNNER_TEST_PROMPT_FILE="$prompt" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Runner did not deliver the composed worker prompt'
+
+  local supplement_at config_at shared_at
+  shared_at="$(grep -n 'ISSUE_KILLER_STATUS=ISSUE_COMPLETED' "$prompt" | head -n 1 | cut -d: -f1)"
+  supplement_at="$(grep -n 'GitHub tracker supplement:' "$prompt" | head -n 1 | cut -d: -f1)"
+  config_at="$(grep -n 'Runtime configuration:' "$prompt" | head -n 1 | cut -d: -f1)"
+
+  [[ -n "$shared_at" && -n "$supplement_at" && -n "$config_at" ]] || \
+    fail 'Effective worker prompt is missing the shared contract, supplement, or runtime section'
+
+  if (( supplement_at <= shared_at )); then
+    fail 'Tracker supplement appeared before the shared contract'
+  fi
+  if (( config_at <= supplement_at )); then
+    fail 'Runtime configuration appeared before the tracker supplement'
+  fi
+
+  pass 'worker prompt orders shared contract, tracker supplement, then runtime configuration'
+}
+
+test_tracker_supplement_excluded_from_checkpoint_and_status() {
+  local repo="${TEST_ROOT}/checkpoint-redaction-repo"
+  local fake="${TEST_ROOT}/claude-minimax-checkpoint-redaction"
+  local output="${TEST_ROOT}/checkpoint-redaction-output.log"
+  local checkpoint lock_status
+
+  new_repo "$repo"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=FAILED"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || true
+
+  checkpoint="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  lock_status="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  [[ -r "$checkpoint" ]] || fail 'Failed worker did not retain its checkpoint'
+  if grep -F 'tracker supplement' "$checkpoint"; then
+    fail 'Tracker supplement leaked into the persisted checkpoint'
+  fi
+  if grep -F 'tracker supplement' "$lock_status" 2>/dev/null; then
+    fail 'Tracker supplement leaked into the lock status snapshot'
+  fi
+
+  pass 'tracker supplement stays out of checkpoint and lock-status files'
+}
+
+test_azure_tracker_supplement_is_loaded_from_adapter() {
+  local adapter="${ROOT_DIR}/agent/issue-killer/tracker/azure-devops-adapter.sh"
+  local captured tmp
+
+  tmp="$(mktemp)"
+  # Source the adapter with minimal globals so the supplement function
+  # is available without invoking full tracker initialization.
+  (
+    export RUNNER_NAME=tracker-test
+    source "$adapter"
+    tracker_worker_supplement
+  ) > "$tmp"
+  captured="$(<"$tmp")"
+  rm -f "$tmp"
+
+  grep -Fq 'Azure DevOps tracker supplement:' <<<"$captured" || \
+    fail 'Azure adapter did not expose a tracker worker supplement'
+  grep -Fq 'integration container' <<<"$captured" || \
+    fail 'Azure supplement did not declare the HU integration container'
+  grep -Fq 'pinned Azure delivery HU' <<<"$captured" || \
+    fail 'Azure supplement did not name the pinned HU delivery model'
+  grep -Fq 'direct hierarchical child Task or Bug' <<<"$captured" || \
+    fail 'Azure supplement did not scope the worker unit to direct hierarchical children'
+
+  pass 'azure adapter exposes a tracker worker supplement'
+}
+
+test_github_tracker_supplement_is_loaded_from_adapter() {
+  local adapter="${ROOT_DIR}/agent/issue-killer/tracker/github-adapter.sh"
+  local captured tmp
+
+  tmp="$(mktemp)"
+  (
+    export RUNNER_NAME=tracker-test
+    source "$adapter"
+    tracker_worker_supplement
+  ) > "$tmp"
+  captured="$(<"$tmp")"
+  rm -f "$tmp"
+
+  grep -Fq 'GitHub tracker supplement:' <<<"$captured" || \
+    fail 'GitHub adapter did not expose a tracker worker supplement'
+  grep -Fq 'single delivery unit' <<<"$captured" || \
+    fail 'GitHub supplement did not declare the single-issue delivery unit'
+
+  pass 'github adapter exposes a tracker worker supplement'
+}
+
 test_black_box_opencode_profile_drains_queue_through_status_marker() {
   local repo="${TEST_ROOT}/opencode-drain-repo"
   local fake="${TEST_ROOT}/opencode-drain-worker"
@@ -4269,5 +4422,164 @@ test_opencode_profile_validation_rejects_invalid_model_format
 test_black_box_opencode_profile_rejects_invalid_options_before_launch
 test_black_box_opencode_profile_resumes_session_when_captured
 test_black_box_opencode_profile_drains_queue_through_status_marker
+
+test_github_tracker_supplement_is_delivered_to_worker() {
+  local repo="${TEST_ROOT}/github-supplement-repo"
+  local fake="${TEST_ROOT}/claude-minimax-github-supplement"
+  local output="${TEST_ROOT}/github-supplement-output.log"
+  local args="${TEST_ROOT}/github-supplement-args"
+  local prompt="${TEST_ROOT}/github-supplement-prompt"
+
+  new_repo "$repo"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'for arg in "$@"; do printf "%s\\n" "$arg" >> "$RUNNER_TEST_ARGS_FILE"; done' \
+    'last_arg="${@: -1}"' \
+    'printf "%s\\n" "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+  RUNNER_TEST_ARGS_FILE="$args" \
+  RUNNER_TEST_PROMPT_FILE="$prompt" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Runner did not deliver the GitHub tracker supplement'
+
+  grep -Fq 'GitHub tracker supplement:' "$prompt" || \
+    fail 'Effective worker prompt did not include the GitHub tracker supplement'
+  grep -Fq 'single delivery unit' "$prompt" || \
+    fail 'GitHub supplement did not declare the single-issue delivery unit'
+  grep -Fq 'configured base branch' "$prompt" || \
+    fail 'GitHub supplement did not name the configured base branch target'
+
+  pass 'github tracker supplement is composed into the worker prompt'
+}
+
+test_runtime_config_section_follows_supplement() {
+  local repo="${TEST_ROOT}/prompt-order-repo"
+  local fake="${TEST_ROOT}/claude-minimax-prompt-order"
+  local output="${TEST_ROOT}/prompt-order-output.log"
+  local prompt="${TEST_ROOT}/prompt-order-prompt"
+
+  new_repo "$repo"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'last_arg="${@: -1}"' \
+    'printf "%s\\n" "$last_arg" > "$RUNNER_TEST_PROMPT_FILE"' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+  RUNNER_TEST_PROMPT_FILE="$prompt" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Runner did not deliver the composed worker prompt'
+
+  local supplement_at config_at shared_at
+  shared_at="$(grep -n 'ISSUE_KILLER_STATUS=ISSUE_COMPLETED' "$prompt" | head -n 1 | cut -d: -f1)"
+  supplement_at="$(grep -n 'GitHub tracker supplement:' "$prompt" | head -n 1 | cut -d: -f1)"
+  config_at="$(grep -n 'Runtime configuration:' "$prompt" | head -n 1 | cut -d: -f1)"
+
+  [[ -n "$shared_at" && -n "$supplement_at" && -n "$config_at" ]] || \
+    fail 'Effective worker prompt is missing the shared contract, supplement, or runtime section'
+
+  if (( supplement_at <= shared_at )); then
+    fail 'Tracker supplement appeared before the shared contract'
+  fi
+  if (( config_at <= supplement_at )); then
+    fail 'Runtime configuration appeared before the tracker supplement'
+  fi
+
+  pass 'worker prompt orders shared contract, tracker supplement, then runtime configuration'
+}
+
+test_tracker_supplement_excluded_from_checkpoint_and_status() {
+  local repo="${TEST_ROOT}/checkpoint-redaction-repo"
+  local fake="${TEST_ROOT}/claude-minimax-checkpoint-redaction"
+  local output="${TEST_ROOT}/checkpoint-redaction-output.log"
+  local checkpoint lock_status
+
+  new_repo "$repo"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=FAILED"' \
+    > "$fake"
+  chmod +x "$fake"
+
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || true
+
+  checkpoint="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+  lock_status="$(checkpoint_path "$repo")/${RUNNER_NAME}.lock/status"
+
+  [[ -r "$checkpoint" ]] || fail 'Failed worker did not retain its checkpoint'
+  if grep -F 'tracker supplement' "$checkpoint"; then
+    fail 'Tracker supplement leaked into the persisted checkpoint'
+  fi
+  if grep -F 'tracker supplement' "$lock_status" 2>/dev/null; then
+    fail 'Tracker supplement leaked into the lock status snapshot'
+  fi
+
+  pass 'tracker supplement stays out of checkpoint and lock-status files'
+}
+
+test_azure_tracker_supplement_is_loaded_from_adapter() {
+  local adapter="${ROOT_DIR}/agent/issue-killer/tracker/azure-devops-adapter.sh"
+  local captured tmp
+
+  tmp="$(mktemp)"
+  # Source the adapter with minimal globals so the supplement function
+  # is available without invoking full tracker initialization.
+  (
+    export RUNNER_NAME=tracker-test
+    source "$adapter"
+    tracker_worker_supplement
+  ) > "$tmp"
+  captured="$(<"$tmp")"
+  rm -f "$tmp"
+
+  grep -Fq 'Azure DevOps tracker supplement:' <<<"$captured" || \
+    fail 'Azure adapter did not expose a tracker worker supplement'
+  grep -Fq 'integration container' <<<"$captured" || \
+    fail 'Azure supplement did not declare the HU integration container'
+  grep -Fq 'pinned Azure delivery HU' <<<"$captured" || \
+    fail 'Azure supplement did not name the pinned HU delivery model'
+  grep -Fq 'direct hierarchical child Task or Bug' <<<"$captured" || \
+    fail 'Azure supplement did not scope the worker unit to direct hierarchical children'
+
+  pass 'azure adapter exposes a tracker worker supplement'
+}
+
+test_github_tracker_supplement_is_loaded_from_adapter() {
+  local adapter="${ROOT_DIR}/agent/issue-killer/tracker/github-adapter.sh"
+  local captured tmp
+
+  tmp="$(mktemp)"
+  (
+    export RUNNER_NAME=tracker-test
+    source "$adapter"
+    tracker_worker_supplement
+  ) > "$tmp"
+  captured="$(<"$tmp")"
+  rm -f "$tmp"
+
+  grep -Fq 'GitHub tracker supplement:' <<<"$captured" || \
+    fail 'GitHub adapter did not expose a tracker worker supplement'
+  grep -Fq 'single delivery unit' <<<"$captured" || \
+    fail 'GitHub supplement did not declare the single-issue delivery unit'
+
+  pass 'github adapter exposes a tracker worker supplement'
+}
+
+test_github_tracker_supplement_is_delivered_to_worker
+test_runtime_config_section_follows_supplement
+test_tracker_supplement_excluded_from_checkpoint_and_status
+test_github_tracker_supplement_is_loaded_from_adapter
+test_azure_tracker_supplement_is_loaded_from_adapter
 
 printf '%s issue-killer tests passed.\n' "$TESTS_RUN"
