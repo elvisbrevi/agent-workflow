@@ -81,6 +81,7 @@ azure_remote_parts() {
   case "$url" in
     https://dev.azure.com/*|http://dev.azure.com/*)
       path="${url#*://dev.azure.com/}"
+      [[ "$path" == */_git/* ]] || return 1
       org="${path%%/*}"
       path="${path#*/}"
       project="${path%%/_git/*}"
@@ -90,6 +91,7 @@ azure_remote_parts() {
       host="${url#*://}"
       org="${host%%.visualstudio.com/*}"
       path="${host#*.visualstudio.com/}"
+      [[ "$path" == */_git/* ]] || return 1
       project="${path%%/_git/*}"
       repository="${path#*/_git/}"
       ;;
@@ -132,10 +134,67 @@ azure_require_mapping() {
   }
 }
 
+azure_organization_url() {
+  printf 'https://dev.azure.com/%s\n' "$AZURE_ORGANIZATION"
+}
+
+azure_validate_process_mappings() {
+  local process_types type type_json state
+  local configured_types configured_states
+
+  configured_types="$(printf '%s\n%s\n' "$AZURE_ELIGIBLE_TYPES" "$AZURE_EPIC_TYPES" | awk 'NF && !seen[$0]++')"
+  configured_states="$(printf '%s\n%s\n' "$AZURE_OPEN_STATES" "$AZURE_CLOSED_STATES" | awk 'NF && !seen[$0]++')"
+
+  process_types="$(az devops invoke \
+    --area wit \
+    --resource workitemtypes \
+    --route-parameters project="$AZURE_PROJECT" \
+    --org "$(azure_organization_url)" \
+    --api-version 7.1 \
+    --output json)" || {
+      printf '%s: Azure process work-item type validation failed for %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$AZURE_PROJECT" >&2
+      return 1
+    }
+
+  while IFS= read -r type; do
+    [[ -n "$type" ]] || continue
+    jq -e --arg type "$type" \
+      'any((.value // .)[]?; (.name // .referenceName // "") == $type)' \
+      <<<"$process_types" >/dev/null || {
+        printf '%s: configured Azure work-item type is not present in project process: %s\n' \
+          "${RUNNER_NAME:-issue-killer}" "$type" >&2
+        return 1
+      }
+
+    type_json="$(az devops invoke \
+      --area wit \
+      --resource workitemtypes \
+      --route-parameters project="$AZURE_PROJECT" type="$type" \
+      --org "$(azure_organization_url)" \
+      --api-version 7.1 \
+      --output json)" || {
+        printf '%s: Azure process state validation failed for work-item type: %s\n' \
+          "${RUNNER_NAME:-issue-killer}" "$type" >&2
+        return 1
+      }
+    while IFS= read -r state; do
+      [[ -n "$state" ]] || continue
+      jq -e --arg state "$state" \
+        'any((.states // .value // [])[]?; (.name // "") == $state)' \
+        <<<"$type_json" >/dev/null || {
+          printf '%s: configured Azure state is not present for work-item type %s: %s\n' \
+            "${RUNNER_NAME:-issue-killer}" "$type" "$state" >&2
+          return 1
+        }
+    done <<<"$configured_states"
+  done <<<"$configured_types"
+}
+
 tracker_initialize() {
   local repo_root="$1"
   local docs="$repo_root/docs/agents/issue-tracker.md"
-  local remote url parts discovered="" count=0
+  local remote url urls parts discovered="" count=0
   local mapped_org mapped_project mapped_repository
 
   command -v az >/dev/null 2>&1 || {
@@ -195,20 +254,26 @@ tracker_initialize() {
 
   while IFS= read -r remote; do
     [[ -n "$remote" ]] || continue
-    url="$(git -C "$repo_root" config --get "remote.${remote}.url" 2>/dev/null || true)"
-    parts="$(azure_remote_parts "$url" 2>/dev/null || true)"
-    [[ -n "$parts" ]] || {
-      printf '%s: invalid Azure DevOps remote: %s (%s)\n' \
-        "${RUNNER_NAME:-issue-killer}" "$remote" "${url:-missing URL}" >&2
-      return 1
-    }
-    if [[ -n "$discovered" && "$parts" != "$discovered" ]]; then
-      printf '%s: ambiguous Azure DevOps remotes resolve to different repositories\n' \
-        "${RUNNER_NAME:-issue-killer}" >&2
-      return 1
-    fi
-    discovered="$parts"
-    count=$((count + 1))
+    urls="$({
+      git -C "$repo_root" config --get-all "remote.${remote}.url" 2>/dev/null || true
+      git -C "$repo_root" config --get-all "remote.${remote}.pushurl" 2>/dev/null || true
+    })"
+    while IFS= read -r url; do
+      [[ -n "$url" ]] || continue
+      parts="$(azure_remote_parts "$url" 2>/dev/null || true)"
+      [[ -n "$parts" ]] || {
+        printf '%s: invalid Azure DevOps remote: %s (%s)\n' \
+          "${RUNNER_NAME:-issue-killer}" "$remote" "${url:-missing URL}" >&2
+        return 1
+      }
+      if [[ -n "$discovered" && "$parts" != "$discovered" ]]; then
+        printf '%s: ambiguous Azure DevOps remotes resolve to different repositories\n' \
+          "${RUNNER_NAME:-issue-killer}" >&2
+        return 1
+      fi
+      discovered="$parts"
+      count=$((count + 1))
+    done <<<"$urls"
   done < <(git -C "$repo_root" remote 2>/dev/null)
 
   [[ "$count" -gt 0 && -n "$discovered" ]] || {
@@ -226,7 +291,7 @@ tracker_initialize() {
   }
 
   az devops project show \
-    --organization "$AZURE_ORGANIZATION" \
+    --organization "$(azure_organization_url)" \
     --project "$AZURE_PROJECT" \
     --output json >/dev/null || {
       printf '%s: Azure DevOps authentication or project validation failed for %s/%s\n' \
@@ -236,7 +301,7 @@ tracker_initialize() {
 
   az repos show \
     --repository "$AZURE_REPOSITORY" \
-    --organization "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --organization "$(azure_organization_url)" \
     --project "$AZURE_PROJECT" \
     --output json >/dev/null || {
       printf '%s: Azure DevOps repository validation failed for %s/%s/%s\n' \
@@ -258,6 +323,16 @@ tracker_initialize() {
         "${RUNNER_NAME:-issue-killer}" "$AZURE_PREDECESSOR_RELATION" >&2
       return 1
     }
+
+  az devops user show \
+    --user "$AZURE_CLAIM_IDENTITY" \
+    --org "$(azure_organization_url)" \
+    --output json >/dev/null || {
+      printf '%s: Azure claim identity is unavailable: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$AZURE_CLAIM_IDENTITY" >&2
+      return 1
+    }
+  azure_validate_process_mappings || return 1
 
   TRACKER_KIND="azure-devops"
   TRACKER_REPO_SLUG="${AZURE_ORGANIZATION}/${AZURE_PROJECT}/${AZURE_REPOSITORY}"
@@ -403,6 +478,19 @@ tracker_item_close() {
     --output json
 }
 
+tracker_item_completion_verified() {
+  local issue_number="$1"
+  local branch="$2"
+  local item_json item_state pr_json
+
+  [[ -n "$branch" && "$branch" != "unknown" ]] || return 1
+  item_json="$(tracker_item_read "$issue_number")" || return 1
+  item_state="$(tracker_item_state "$item_json")"
+  azure_list_contains "$item_state" "$AZURE_CLOSED_STATES" || return 1
+  pr_json="$(tracker_prs_for_branch "$branch")" || return 1
+  [[ "$(tracker_pr_is_merged "$pr_json")" == "true" ]]
+}
+
 tracker_prs_for_branch() {
   az repos pr list \
     --repository "$AZURE_REPOSITORY" \
@@ -531,7 +619,7 @@ tracker_runtime_decode_command() {
       fi
       ;;
     "az repos pr create"*) printf 'pr_create\t\n' ;;
-    "az repos pr update"*|"az repos pr set"*) printf 'pr_close\t\n' ;;
+    "az repos pr update"*|"az repos pr set"*) printf 'tracker\t\n' ;;
     "az boards work-item update"*) printf 'tracker\t\n' ;;
     "az boards"*|"az repos pr list"*) printf 'tracker\t\n' ;;
     *) return 1 ;;

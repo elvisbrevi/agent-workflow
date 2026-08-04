@@ -1280,6 +1280,22 @@ non-epic issue in this session."
 
   case "$WORKER_STATUS" in
     ISSUE_COMPLETED)
+      if [[ "$TRACKER_KIND" == "azure-devops" && "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
+        completion_branch="$(current_branch)"
+        if [[ "$completion_branch" == "$BASE_BRANCH" || "$completion_branch" == "unknown" ]]; then
+          completion_branch="$(checkpoint_value branch "$(checkpoint_file)")"
+        fi
+        if ! tracker_item_completion_verified "$CHECKPOINT_ISSUE" "$completion_branch"; then
+          finalize_attempt_state "recovery_required"
+          write_lock_status "recovery_required" 0
+          printf '%s%s\n' "$STATUS_PREFIX" "RECOVERY_REQUIRED" >> "$OUTPUT_FILE"
+          printf '%s: Azure completion marker was not confirmed by live work-item and PR state; output retained at %s\n' \
+            "$RUNNER_NAME" "$OUTPUT_FILE" >&2
+          exit 4
+        fi
+        advance_checkpoint_state "pr_merged" "$OUTPUT_FILE"
+        advance_checkpoint_state "issue_closed" "$OUTPUT_FILE"
+      fi
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       clear_checkpoint
       printf '[%s] Worker %s completed one issue.\n' "$RUNNER_NAME" "$ITERATION"

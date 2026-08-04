@@ -20,24 +20,30 @@ tracker_remote_kind() {
 
 tracker_select_adapter() {
   local repo_root="$1"
-  local remote url kind selected="" count=0
+  local remote url urls kind selected="" count=0
 
   while IFS= read -r remote; do
     [[ -n "$remote" ]] || continue
-    url="$(git -C "$repo_root" config --get "remote.${remote}.url" 2>/dev/null || true)"
-    kind="$(tracker_remote_kind "$url" 2>/dev/null || true)"
-    [[ -n "$kind" ]] || {
-      printf '%s: unsupported or ambiguous tracker remote: %s (%s)\n' \
-        "${RUNNER_NAME:-issue-killer}" "$remote" "${url:-missing URL}" >&2
-      return 1
-    }
-    if [[ -n "$selected" && "$selected" != "$kind" ]]; then
-      printf '%s: ambiguous tracker remotes resolve to %s and %s\n' \
-        "${RUNNER_NAME:-issue-killer}" "$selected" "$kind" >&2
-      return 1
-    fi
-    selected="$kind"
-    count=$((count + 1))
+    urls="$({
+      git -C "$repo_root" config --get-all "remote.${remote}.url" 2>/dev/null || true
+      git -C "$repo_root" config --get-all "remote.${remote}.pushurl" 2>/dev/null || true
+    })"
+    while IFS= read -r url; do
+      [[ -n "$url" ]] || continue
+      kind="$(tracker_remote_kind "$url" 2>/dev/null || true)"
+      [[ -n "$kind" ]] || {
+        printf '%s: unsupported or ambiguous tracker remote: %s (%s)\n' \
+          "${RUNNER_NAME:-issue-killer}" "$remote" "${url:-missing URL}" >&2
+        return 1
+      }
+      if [[ -n "$selected" && "$selected" != "$kind" ]]; then
+        printf '%s: ambiguous tracker remotes resolve to %s and %s\n' \
+          "${RUNNER_NAME:-issue-killer}" "$selected" "$kind" >&2
+        return 1
+      fi
+      selected="$kind"
+      count=$((count + 1))
+    done <<<"$urls"
   done < <(git -C "$repo_root" remote 2>/dev/null)
 
   [[ "$count" -gt 0 && -n "$selected" ]] || {
