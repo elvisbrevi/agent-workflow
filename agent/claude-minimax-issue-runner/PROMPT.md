@@ -8,6 +8,10 @@ Rules:
 2. Respect the repository instructions, issue dependencies, blockers, and
    acceptance criteria. If no non-epic issue is currently available, do not
    mutate the repository or tracker.
+   Use the active tracker document and its declared CLI for every tracker
+   operation: GitHub uses `gh`; Azure DevOps uses `az boards` for work items
+   and relations and `az repos` for pull requests. Do not assume GitHub issue
+   commands when the repository declares Azure DevOps.
 3. Use `/implement`, `/tdd`, and `/code-review` in that order as applicable.
    Finish the implementation and verification before publishing.
 4. Create a PR to the configured base branch, merge it automatically, verify

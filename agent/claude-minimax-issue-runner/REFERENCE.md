@@ -19,6 +19,15 @@ shell so prompt initialization cannot interfere with the non-interactive
 worker. This matches a common setup where the function injects the MiniMax
 Anthropic-compatible endpoint and selected model.
 
+## Tracker selection
+
+The supervisor selects the tracker adapter from the repository's Git remote and
+validates it against `docs/agents/issue-tracker.md` before launching a worker.
+GitHub repositories use `gh`; Azure DevOps repositories use `az boards` and
+`az repos` with the `azure-devops` extension. Azure requires repository-owned
+organization, project, repository, work-item type, state, predecessor, ready,
+claim, and closure mappings.
+
 ## Configuration
 
 | Environment variable | Default | Effect |
@@ -143,13 +152,14 @@ checkout and all linked worktrees.
 ### Lifecycle states
 
 The checkpoint state advances as the worker emits recognizable events. The
-runner records the issue identity as soon as the assistant calls
-`gh issue view N`, before any edit, push, PR creation, or merge:
+runner records the work identity as soon as the assistant reads it through the
+active tracker (`gh issue view N` or `az boards work-item show --id N`), before
+any edit, push, PR creation, or merge:
 
 | State | Reached when |
 |---|---|
 | `starting` | The attempt has been recorded but the worker has not yet identified its issue |
-| `issue_selected` | The worker inspected `gh issue view N` and the issue number was captured |
+| `issue_selected` | The worker inspected the active tracker and the issue/work-item number was captured |
 | `mutating` | The worker edited, committed, or ran tests |
 | `branch_pushed` | The worker pushed the feature branch |
 | `pr_created` | The worker created the pull request |
@@ -221,8 +231,8 @@ there is enough recovery identity to continue safely. The supervisor first
 checks the Git common directory for `claude-minimax-issue-runner.checkpoint`.
 When the checkpoint is valid and matches the current worktree, the runner
 prints the exact issue number, branch, base SHA, last checkpoint state, dirty
-files, and recovery strategy. It then reconciles the issue and PR state with
-GitHub before any worker is launched.
+files, and recovery strategy. It then reconciles the issue/work-item and PR
+state with the active tracker before any worker is launched.
 
 Recovery only proceeds after explicit TTY confirmation. A declined prompt,
 missing TTY, stale base SHA, branch mismatch, missing issue number, ambiguous
