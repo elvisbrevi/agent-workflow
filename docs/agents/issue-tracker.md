@@ -62,7 +62,11 @@ ready_tag = "ready-for-agent"
 claim_identity = "operator@example.com"
 predecessor_relation = "System.LinkTypes.Dependency-Reverse"
 closed_state = "Done"
+completion_evidence_field = "Completion Evidence"
+real_effort_field = "Real Effort"
 ```
+
+The adapter discovers each intent by querying Azure's field catalog, then persists the exact editable `referenceName` as `completion_evidence_field_name` or `real_effort_field_name`. HTML evidence fields must be editable HTML fields and effort fields must be editable numeric fields. Missing, localized/ambiguous, incompatible, or read-only matches fail closed before ticket mutation. Persisted reference names are reused and never rediscovered; mappings contain no credentials or machine-global defaults.
 
 `eligible_work_item_types`, `epic_work_item_types`, `delivery_hu_work_item_types`, `delivery_ticket_work_item_types`, `open_states`, and `closed_states` are the process mappings. The delivery-role mappings must be declared together: they identify which configured type is the Azure delivery HU and which direct-child types are Azure delivery tickets. `ready_tag`, `claim_identity`, `predecessor_relation`, and `closed_state` are the role mappings. The adapter rejects missing or malformed mappings, a `closed_state` outside `closed_states`, a remote that does not match the mapped organization/project/repository, missing `az`, unavailable authentication, an unavailable project or repository, or an unsupported predecessor relation before starting a worker.
 

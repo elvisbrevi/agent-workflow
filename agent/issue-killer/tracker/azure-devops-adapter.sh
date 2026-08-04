@@ -20,6 +20,9 @@ AZURE_PREDECESSOR_RELATION=""
 AZURE_CLOSED_STATE=""
 AZURE_HU_TYPES=""
 AZURE_TICKET_TYPES=""
+AZURE_COMPLETION_EVIDENCE_FIELD=""
+AZURE_REAL_EFFORT_FIELD=""
+AZURE_CONFIG_DOC=""
 AZURE_HU_SCOPE_ENABLED=false
 AZURE_HIERARCHY_RELATION="System.LinkTypes.Hierarchy-Forward"
 AZURE_SCOPE_STATUS=""
@@ -119,6 +122,54 @@ azure_config_array() {
     [[ -n "$item" ]] || return 1
     printf '%s\n' "$item"
   done
+}
+
+azure_resolve_field_mapping() {
+  local catalog="$1" intent="$2" expected_type="$3" matches
+  matches="$(jq -c --arg intent "$intent" --arg type "$expected_type" '
+    [(.value // .)[]?
+      | select((.name // .displayName // "") == $intent)
+      | select((.referenceName // "") != "")
+      | select((.readOnly // false) == false)
+      | select((.type // .fieldType // "") == $type)]' <<<"$catalog")" || return 1
+  [[ "$(jq 'length' <<<"$matches")" == 1 ]] || {
+    printf '%s: Azure field mapping is missing, ambiguous, incompatible, or non-editable: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$intent" >&2
+    return 1
+  }
+  jq -r '.[0].referenceName' <<<"$matches"
+}
+
+azure_persist_field_mapping() {
+  local docs="$1" key="$2" value="$3" tmp
+  tmp="${docs}.tmp.$$"
+  awk -v key="$key" -v value="$value" '
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { print key " = \"" value "\""; found=1; next }
+    { print }
+    END { if (!found) print key " = \"" value "\"" }
+  ' "$docs" >"$tmp" && mv "$tmp" "$docs"
+}
+
+azure_validate_or_discover_field_mappings() {
+  local docs="$1" catalog evidence_name effort_name
+  evidence_name="$(azure_config_string "$docs" completion_evidence_field_name 2>/dev/null || true)"
+  effort_name="$(azure_config_string "$docs" real_effort_field_name 2>/dev/null || true)"
+  if [[ -n "$evidence_name" && -n "$effort_name" ]]; then
+    AZURE_COMPLETION_EVIDENCE_FIELD="$evidence_name"
+    AZURE_REAL_EFFORT_FIELD="$effort_name"
+    return 0
+  fi
+  evidence_name="$(azure_config_string "$docs" completion_evidence_field 2>/dev/null || true)"
+  effort_name="$(azure_config_string "$docs" real_effort_field 2>/dev/null || true)"
+  [[ -n "$evidence_name" && -n "$effort_name" ]] || {
+    printf '%s: Azure field intent mappings are required: completion_evidence_field and real_effort_field\n' "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  catalog="$(az devops invoke --area wit --resource fields --org "$(azure_organization_url)" --api-version 7.1 --output json)" || return 1
+  AZURE_COMPLETION_EVIDENCE_FIELD="$(azure_resolve_field_mapping "$catalog" "$evidence_name" "html")" || return 1
+  AZURE_REAL_EFFORT_FIELD="$(azure_resolve_field_mapping "$catalog" "$effort_name" "double")" || return 1
+  azure_persist_field_mapping "$docs" completion_evidence_field_name "$AZURE_COMPLETION_EVIDENCE_FIELD" || return 1
+  azure_persist_field_mapping "$docs" real_effort_field_name "$AZURE_REAL_EFFORT_FIELD" || return 1
 }
 
 azure_list_contains() {
@@ -317,6 +368,7 @@ tracker_initialize() {
   AZURE_CLOSED_STATE="$(azure_config_string "$docs" closed_state 2>/dev/null || true)"
   AZURE_HU_TYPES="$(azure_config_array "$docs" delivery_hu_work_item_types 2>/dev/null || true)"
   AZURE_TICKET_TYPES="$(azure_config_array "$docs" delivery_ticket_work_item_types 2>/dev/null || true)"
+  AZURE_CONFIG_DOC="$docs"
 
   [[ -n "$AZURE_HU_TYPES" && -n "$AZURE_TICKET_TYPES" ]] || {
     printf '%s: Azure delivery_hu_work_item_types and delivery_ticket_work_item_types mappings are required\n' \
@@ -447,6 +499,7 @@ tracker_initialize() {
       return 1
     }
   azure_validate_process_mappings || return 1
+  azure_validate_or_discover_field_mappings "$docs" || return 1
 
   TRACKER_KIND="azure-devops"
   TRACKER_REPO_SLUG="${AZURE_ORGANIZATION}/${AZURE_PROJECT}/${AZURE_REPOSITORY}"
