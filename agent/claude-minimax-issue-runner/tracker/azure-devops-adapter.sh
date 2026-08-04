@@ -18,6 +18,32 @@ AZURE_READY_TAG=""
 AZURE_CLAIM_IDENTITY=""
 AZURE_PREDECESSOR_RELATION=""
 AZURE_CLOSED_STATE=""
+AZURE_GUARD_DIR=""
+
+tracker_prepare_worker_environment() {
+  local guard_bin real_az adapter_dir
+
+  real_az="$(command -v az 2>/dev/null || true)"
+  [[ -x "$real_az" ]] || return 1
+  adapter_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  AZURE_GUARD_DIR="${TMPDIR:-/tmp}/${RUNNER_NAME:-issue-killer}.azure-az.$$"
+  mkdir -p "$AZURE_GUARD_DIR" || return 1
+  guard_bin="${AZURE_GUARD_DIR}/az"
+  ln -s "${adapter_dir}/azure-guarded-az.sh" "$guard_bin" || return 1
+  export AZURE_GUARD_REAL_AZ="$real_az"
+  export AZURE_GUARD_CLOSED_STATE="$AZURE_CLOSED_STATE"
+  export AZURE_GUARD_ORGANIZATION_URL="$(azure_organization_url)"
+  export AZURE_GUARD_PROJECT="$AZURE_PROJECT"
+  export AZURE_GUARD_REPOSITORY="$AZURE_REPOSITORY"
+  export AZURE_GUARD_BASE_BRANCH="${BASE_BRANCH:-main}"
+  export PATH="${AZURE_GUARD_DIR}:$PATH"
+}
+
+tracker_cleanup_worker_environment() {
+  [[ -n "$AZURE_GUARD_DIR" ]] || return 0
+  rm -rf "$AZURE_GUARD_DIR"
+  AZURE_GUARD_DIR=""
+}
 
 azure_config_raw_value() {
   local doc="$1"
@@ -79,16 +105,19 @@ azure_remote_parts() {
   local path host org project repository
 
   case "$url" in
-    https://dev.azure.com/*|http://dev.azure.com/*)
-      path="${url#*://dev.azure.com/}"
+    https://dev.azure.com/*|http://dev.azure.com/*|https://*@dev.azure.com/*|http://*@dev.azure.com/*)
+      path="${url#*://}"
+      path="${path#*@}"
+      path="${path#dev.azure.com/}"
       [[ "$path" == */_git/* ]] || return 1
       org="${path%%/*}"
       path="${path#*/}"
       project="${path%%/_git/*}"
       repository="${path#*/_git/}"
       ;;
-    https://*.visualstudio.com/*|http://*.visualstudio.com/*)
+    https://*.visualstudio.com/*|http://*.visualstudio.com/*|https://*@*.visualstudio.com/*|http://*@*.visualstudio.com/*)
       host="${url#*://}"
+      host="${host#*@}"
       org="${host%%.visualstudio.com/*}"
       path="${host#*.visualstudio.com/}"
       [[ "$path" == */_git/* ]] || return 1
@@ -189,6 +218,7 @@ azure_validate_process_mappings() {
         }
     done <<<"$configured_states"
   done <<<"$configured_types"
+
 }
 
 tracker_initialize() {
@@ -358,7 +388,6 @@ tracker_item_read() {
     --id "$1" \
     --expand all \
     --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
-    --project "$AZURE_PROJECT" \
     --output json
 }
 
@@ -378,6 +407,24 @@ azure_item_has_ready_tag() {
     tag="${tag#${tag%%[![:space:]]*}}"
     tag="${tag%${tag##*[![:space:]]}}"
     [[ "$tag" == "$AZURE_READY_TAG" ]] && return 0
+  done
+  return 1
+}
+
+azure_item_is_epic() {
+  local item_json="$1"
+  local item_type title tags tag
+
+  item_type="$(tracker_item_type "$item_json")"
+  azure_list_contains "$item_type" "$AZURE_EPIC_TYPES" && return 0
+  title="$(jq -r '.fields["System.Title"] // .title // empty' <<<"$item_json")"
+  [[ "$title" == \[Epic\]* ]] && return 0
+  tags="$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"
+  IFS=';' read -r -a tag_values <<<"$tags"
+  for tag in "${tag_values[@]}"; do
+    tag="${tag#${tag%%[![:space:]]*}}"
+    tag="${tag%${tag##*[![:space:]]}}"
+    [[ "$(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]')" == 'epic' ]] && return 0
   done
   return 1
 }
@@ -426,7 +473,7 @@ tracker_list_eligible_items() {
     assigned="$(jq -r '.fields["System.AssignedTo"] // empty | if type == "object" then (.uniqueName // .displayName // "assigned") else . end' <<<"$item_json")"
     tags="$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"
     azure_list_contains "$item_type" "$AZURE_ELIGIBLE_TYPES" || continue
-    ! azure_list_contains "$item_type" "$AZURE_EPIC_TYPES" || continue
+    ! azure_item_is_epic "$item_json" || continue
     azure_list_contains "$item_state" "$AZURE_OPEN_STATES" || continue
     [[ -z "$assigned" ]] || continue
     azure_item_has_ready_tag "$tags" || continue
@@ -441,7 +488,6 @@ tracker_item_claim() {
     --id "$1" \
     --assigned-to "$AZURE_CLAIM_IDENTITY" \
     --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
-    --project "$AZURE_PROJECT" \
     --output json
 }
 
@@ -474,7 +520,6 @@ tracker_item_close() {
     --id "$issue_number" \
     --state "$AZURE_CLOSED_STATE" \
     --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
-    --project "$AZURE_PROJECT" \
     --output json
 }
 

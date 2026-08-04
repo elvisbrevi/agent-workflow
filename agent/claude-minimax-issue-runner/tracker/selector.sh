@@ -9,7 +9,7 @@ tracker_remote_kind() {
     git@github.com:*|ssh://git@github.com/*|https://github.com/*|http://github.com/*)
       printf '%s\n' 'github'
       ;;
-    https://dev.azure.com/*|http://dev.azure.com/*|https://*.visualstudio.com/*|http://*.visualstudio.com/*|ssh://*@vs-ssh.visualstudio.com/*|ssh://*@vs-ssh.visualstudio.com:v3/*|ssh://git@ssh.dev.azure.com/*|*@ssh.dev.azure.com:v3/*|*@vs-ssh.visualstudio.com:v3/*)
+    https://dev.azure.com/*|http://dev.azure.com/*|https://*@dev.azure.com/*|http://*@dev.azure.com/*|https://*.visualstudio.com/*|http://*.visualstudio.com/*|https://*@*.visualstudio.com/*|http://*@*.visualstudio.com/*|ssh://*@vs-ssh.visualstudio.com/*|ssh://*@vs-ssh.visualstudio.com:v3/*|ssh://git@ssh.dev.azure.com/*|*@ssh.dev.azure.com:v3/*|*@vs-ssh.visualstudio.com:v3/*)
       printf '%s\n' 'azure-devops'
       ;;
     *)
