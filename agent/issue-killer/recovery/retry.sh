@@ -238,7 +238,8 @@ activate_staged_opencode_fallback() {
 # included so lifecycle rules remain consistent with the fresh-worker prompt
 # while the orchestrator's recovery constraints continue to lead.
 build_fallback_worker_prompt() {
-  printf '%s\n\n%s\n\n%s\n' "$BASE_PROMPT" "$TRACKER_SUPPLEMENT" "Provider fallback recovery:
+  printf '%s\n\n%s\n\n%s\n\n%s\n' \
+    "$BASE_PROMPT" "$TRACKER_SUPPLEMENT" "${TRACKER_SCOPE_PROMPT:-}" "Provider fallback recovery:
 - Continue exactly issue #${CHECKPOINT_ISSUE}; do not select or inspect another issue.
 - Preserve the existing branch and dirty work; do not discard, reset, stash, or overwrite partial work.
 - The failed profile was ${ISSUE_KILLER_FAILED_PROFILE}; continue with ${ISSUE_KILLER_PROFILE_NAME} at fallback position ${ISSUE_KILLER_FALLBACK_POSITION}.

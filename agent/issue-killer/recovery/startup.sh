@@ -111,6 +111,17 @@ validate_checkpoint_for_dirty_recovery() {
 
   [[ "$issue" =~ ^[0-9]+$ ]] || \
     emit_recovery_required "checkpoint is missing a concrete issue number"
+  if [[ "${TRACKER_KIND:-}" == "azure-devops" ]]; then
+    local hu ticket
+    hu="$(checkpoint_value hu "$checkpoint")"
+    ticket="$(checkpoint_value ticket "$checkpoint")"
+    [[ "$hu" =~ ^[1-9][0-9]*$ ]] || \
+      emit_recovery_required "Azure checkpoint is missing a pinned HU identity"
+    [[ "$ticket" =~ ^[1-9][0-9]*$ ]] || \
+      emit_recovery_required "Azure checkpoint is missing an active ticket identity"
+    [[ "$ticket" == "$issue" ]] || \
+      emit_recovery_required "Azure checkpoint issue ${issue} does not match ticket ${ticket}"
+  fi
   [[ -n "$branch" && "$branch" != "unknown" ]] || \
     emit_recovery_required "checkpoint is missing a concrete branch"
   [[ "$current" == "$branch" ]] || \
@@ -190,6 +201,7 @@ prepare_dirty_startup_recovery() {
   local checkpoint
   local dirty_files
   local issue branch base_sha state session_id strategy
+  local hu ticket
 
   dirty_files="$(dirty_worktree_snapshot)"
   [[ -n "$dirty_files" ]] || return 0
@@ -207,6 +219,10 @@ prepare_dirty_startup_recovery() {
     base_sha="$(checkpoint_value base_sha "$checkpoint")"
     state="$(checkpoint_value state "$checkpoint")"
     session_id="$(checkpoint_value session_id "$checkpoint")"
+    hu="$(checkpoint_value hu "$checkpoint")"
+    ticket="$(checkpoint_value ticket "$checkpoint")"
+    CHECKPOINT_HU="$hu"
+    CHECKPOINT_TICKET="$ticket"
     if is_session_resumable "$session_id" "$branch" "$base_sha"; then
       strategy="resume captured Claude session"
       STARTUP_RECOVERY_SESSION="$session_id"
@@ -229,6 +245,10 @@ prepare_dirty_startup_recovery() {
 - Preserve and inspect the existing dirty files; do not discard, reset, stash, or overwrite partial work.
 - The checkpoint branch is ${branch}, base SHA is ${base_sha}, and last state is ${state}.
 - Reconcile live issue and PR state before any mutation, then complete the existing work."
+    if [[ "${TRACKER_KIND:-}" == "azure-devops" ]]; then
+      STARTUP_RECOVERY_PROMPT="${STARTUP_RECOVERY_PROMPT}
+- Continue only Azure delivery ticket ${ticket} under pinned HU ${hu}; do not discover or switch either identity."
+    fi
     return 0
   fi
 
@@ -238,6 +258,9 @@ prepare_dirty_startup_recovery() {
   fi
   [[ "${ISSUE_RUNNER_ADOPT_ISSUE}" =~ ^[0-9]+$ ]] || \
     emit_recovery_required "ISSUE_RUNNER_ADOPT_ISSUE must be a numeric issue number"
+  if [[ "${TRACKER_KIND:-}" == "azure-devops" ]]; then
+    emit_recovery_required "Azure legacy adoption requires an existing checkpoint with both HU and ticket identity"
+  fi
 
   issue="$ISSUE_RUNNER_ADOPT_ISSUE"
   branch="$(current_branch)"
@@ -264,10 +287,18 @@ prepare_dirty_startup_recovery() {
 # Adopts the canonical checkpoint produced by one-way legacy migration.
 adopt_migrated_checkpoint() {
   local checkpoint issue branch base_branch base_sha state session_id profile cli model command
+  local hu ticket
 
   [[ -r "$(checkpoint_file)" ]] || return 1
   issue="$(checkpoint_value issue "$(checkpoint_file)" || true)"
   [[ "$issue" =~ ^[0-9]+$ ]] || return 1
+  if [[ "${TRACKER_KIND:-}" == "azure-devops" ]]; then
+    hu="$(checkpoint_value hu "$(checkpoint_file)" || true)"
+    ticket="$(checkpoint_value ticket "$(checkpoint_file)" || true)"
+    [[ "$hu" =~ ^[1-9][0-9]*$ && "$ticket" =~ ^[1-9][0-9]*$ && "$ticket" == "$issue" ]] || return 1
+    CHECKPOINT_HU="$hu"
+    CHECKPOINT_TICKET="$ticket"
+  fi
   branch="$(checkpoint_value branch "$(checkpoint_file)" || true)"
   base_branch="$(checkpoint_value base_branch "$(checkpoint_file)" || true)"
   base_sha="$(checkpoint_value base_sha "$(checkpoint_file)" || true)"

@@ -82,6 +82,8 @@ bash -n agent/issue-killer/run.sh agent/issue-killer/**/*.sh
 bash tests/issue_killer_test.sh
 bash tests/issue_killer_migration_test.sh
 bash tests/azure_devops_tracker_adapter_test.sh
+bash tests/azure_hu_selection_test.sh
+bash tests/azure_hu_runner_test.sh
 bash tests/github_tracker_adapter_test.sh
 bash tests/install_test.sh
 git diff --check
