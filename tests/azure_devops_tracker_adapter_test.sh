@@ -35,7 +35,7 @@ open_states = ["New", "Active"]
 closed_states = ["Closed", "Done"]
 ready_tag = "ready-for-agent"
 claim_identity = "@me"
-predecessor_relation = "System.LinkTypes.Dependency"
+predecessor_relation = "System.LinkTypes.Dependency-Reverse"
 closed_state = "Done"
 DOC
 git -C "$repo" add .
@@ -49,6 +49,8 @@ printf '%s\n' "$*" >> "$AZURE_TEST_CALLS"
 case "$1 $2 $3" in
   "extension show --name") printf '%s\n' '{"name":"azure-devops"}' ;;
   "devops project show") printf '%s\n' '{"id":"project-id","name":"example-project"}' ;;
+  "repos show --repository") printf '%s\n' '{"id":"repository-id","name":"example-repo"}' ;;
+  "boards work-item relation") printf '%s\n' '[{"referenceName":"System.LinkTypes.Dependency-Reverse"}]' ;;
   "boards query --wiql") printf '%s\n' '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6},{"id":8}]' ;;
   "boards work-item show")
     id=""
@@ -63,9 +65,9 @@ case "$1 $2 $3" in
       3) printf '%s\n' '{"id":3,"fields":{"System.WorkItemType":"Task","System.State":"Closed","System.Tags":"ready-for-agent"},"relations":[]}' ;;
       4) printf '%s\n' '{"id":4,"fields":{"System.WorkItemType":"Epic","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}' ;;
       5) printf '%s\n' '{"id":5,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"other"},"relations":[]}' ;;
-      6) printf '%s\n' '{"id":6,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/7"}]}' ;;
+      6) printf '%s\n' '{"id":6,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/7"}]}' ;;
       7) printf '%s\n' '{"id":7,"fields":{"System.WorkItemType":"Task","System.State":"Active"},"relations":[]}' ;;
-      8) printf '%s\n' '{"id":8,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/9"}]}' ;;
+      8) printf '%s\n' '{"id":8,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/9"}]}' ;;
       9) printf '%s\n' '{"id":9,"fields":{"System.WorkItemType":"Task","System.State":"Done"},"relations":[]}' ;;
       *) exit 1 ;;
     esac
@@ -87,6 +89,10 @@ adapter_path="$(tracker_select_adapter "$repo")" || \
 [[ "$adapter_path" == "$ADAPTER" ]] || \
   fail "Unexpected tracker adapter: $adapter_path"
 source "$adapter_path"
+[[ "$(tracker_remote_kind 'git@ssh.dev.azure.com:v3/example-org/example-project/example-repo')" == 'azure-devops' ]] || \
+  fail 'Azure scp-style SSH remote was not recognized by tracker selection'
+[[ "$(azure_remote_parts 'git@ssh.dev.azure.com:v3/example-org/example-project/example-repo')" == $'example-org\texample-project\texample-repo' ]] || \
+  fail 'Azure scp-style SSH remote was not parsed into its repository tuple'
 tracker_initialize "$repo" >/dev/null || \
   fail 'Azure tracker initialization failed'
 
@@ -100,12 +106,21 @@ tracker_initialize "$repo" >/dev/null || \
   fail 'Repository mapping was not loaded'
 grep -Fq 'devops project show' "$calls" || \
   fail 'Azure project/authentication preflight was not performed'
+grep -Fq 'repos show' "$calls" || \
+  fail 'Azure repository preflight was not performed'
+grep -Fq 'work-item relation list-type' "$calls" || \
+  fail 'Azure predecessor relation preflight was not performed'
 
 eligible="$(tracker_list_eligible_items)"
 [[ "$eligible" == $'1\n8' ]] || \
   fail "Unexpected Azure queue: ${eligible}"
 tracker_item_claim 1 >/dev/null || fail 'Azure claim operation failed'
-tracker_item_close 1 >/dev/null || fail 'Azure close operation failed'
+if tracker_item_close 1 >"${TEST_ROOT}/close-without-branch.log" 2>&1; then
+  fail 'Azure close operation accepted a missing source branch'
+fi
+grep -Fq 'source branch is required' "${TEST_ROOT}/close-without-branch.log" || \
+  fail 'Azure close guard did not explain the missing source branch'
+tracker_item_close 1 feature/issue-16 >/dev/null || fail 'Azure close operation failed'
 pr_json="$(tracker_prs_for_branch feature/issue-16)"
 [[ "$(tracker_pr_is_merged "$pr_json")" == true ]] || \
   fail 'Azure merged PR state was not normalized'
@@ -197,4 +212,4 @@ grep -Fq 'azure-devops Azure CLI extension is required' "$extension_output" || \
   fail 'Missing Azure extension diagnostic was not actionable'
 pass 'Azure preflight rejects a missing azure-devops extension'
 
-printf '%s Azure DevOps tracker adapter tests passed.\n' 6
+printf '%s Azure DevOps tracker adapter tests passed.\n' 8

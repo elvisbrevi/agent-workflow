@@ -107,6 +107,13 @@ azure_remote_parts() {
       project="${path%%/*}"
       repository="${path#*/}"
       ;;
+    *@ssh.dev.azure.com:v3/*|*@vs-ssh.visualstudio.com:v3/*)
+      path="${url#*:v3/}"
+      org="${path%%/*}"
+      path="${path#*/}"
+      project="${path%%/*}"
+      repository="${path#*/}"
+      ;;
     *) return 1 ;;
   esac
 
@@ -227,6 +234,31 @@ tracker_initialize() {
       return 1
     }
 
+  az repos show \
+    --repository "$AZURE_REPOSITORY" \
+    --organization "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --project "$AZURE_PROJECT" \
+    --output json >/dev/null || {
+      printf '%s: Azure DevOps repository validation failed for %s/%s/%s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$AZURE_ORGANIZATION" "$AZURE_PROJECT" "$AZURE_REPOSITORY" >&2
+      return 1
+    }
+
+  local relation_types
+  relation_types="$(az boards work-item relation list-type \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --output json)" || {
+      printf '%s: Azure DevOps work-item relation validation failed for %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$AZURE_PREDECESSOR_RELATION" >&2
+      return 1
+    }
+  jq -e --arg relation "$AZURE_PREDECESSOR_RELATION" \
+    'any(.. | scalars; . == $relation)' <<<"$relation_types" >/dev/null || {
+      printf '%s: configured predecessor relation is not supported: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$AZURE_PREDECESSOR_RELATION" >&2
+      return 1
+    }
+
   TRACKER_KIND="azure-devops"
   TRACKER_REPO_SLUG="${AZURE_ORGANIZATION}/${AZURE_PROJECT}/${AZURE_REPOSITORY}"
   printf '[%s] Tracker validated: Azure DevOps (%s)\n' \
@@ -339,8 +371,32 @@ tracker_item_claim() {
 }
 
 tracker_item_close() {
+  local issue_number="$1"
+  local branch="${2:-}"
+  local pr_json pr_state
+
+  if [[ -z "$branch" ]] && declare -F current_branch >/dev/null 2>&1; then
+    branch="$(current_branch)"
+  fi
+  [[ -n "$branch" && "$branch" != "unknown" ]] || {
+    printf '%s: source branch is required before closing Azure work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$issue_number" >&2
+    return 1
+  }
+  pr_json="$(tracker_prs_for_branch "$branch")" || {
+    printf '%s: unable to verify Azure pull request before closing work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$issue_number" >&2
+    return 1
+  }
+  pr_state="$(tracker_pr_is_merged "$pr_json")"
+  [[ "$pr_state" == "true" ]] || {
+    printf '%s: Azure pull request for branch %s is not uniquely merged into %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$branch" "${BASE_BRANCH:-main}" >&2
+    return 1
+  }
+
   az boards work-item update \
-    --id "$1" \
+    --id "$issue_number" \
     --state "$AZURE_CLOSED_STATE" \
     --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
     --project "$AZURE_PROJECT" \
