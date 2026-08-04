@@ -1135,6 +1135,9 @@ case "$ISSUE_KILLER_PROFILE_CLI" in
   codex)
     RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/codex-adapter.sh"
     ;;
+  opencode)
+    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/opencode-adapter.sh"
+    ;;
   *)
     die "runtime adapter is not available for CLI: ${ISSUE_KILLER_PROFILE_CLI:-unset}"
     ;;
@@ -1144,11 +1147,17 @@ esac
 source "$RUNTIME_ADAPTER"
 # Validate CLI-specific profile options. The Claude adapter tolerates
 # any permission_mode string; the Codex adapter strictly rejects
-# malformed reasoning_effort, sandbox, and auto_approve values so a
-# misspelled safety setting is never silently ignored.
+# malformed reasoning_effort, sandbox, and auto_approve values, and
+# the OpenCode adapter strictly rejects malformed variant,
+# auto_approve, and provider/model values so a misspelled safety
+# setting is never silently ignored.
 if [[ "$ISSUE_KILLER_PROFILE_CLI" == "codex" ]]; then
   codex_runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || \
     die "codex profile ${ISSUE_KILLER_PROFILE_NAME} has invalid options"
+fi
+if [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]]; then
+  opencode_runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || \
+    die "opencode profile ${ISSUE_KILLER_PROFILE_NAME} has invalid options"
 fi
 
 [[ -f "$PROMPT_FILE" ]] || die "worker prompt not found: ${PROMPT_FILE}"
