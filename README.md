@@ -714,6 +714,12 @@ closes the issue. The process exits, then the supervisor launches a new non-pers
 worker. The loop ends when the eligible queue is empty and stops safely on blocked work,
 failure, unexplained dirty work, or an invalid worker status.
 
+Tracker selection follows the repository remote and
+`docs/agents/issue-tracker.md`: GitHub uses `gh`, while Azure DevOps uses
+`az boards` and `az repos` with repository-owned organization, project,
+repository, work-item, state, relation, claim, and closure mappings validated
+before worker launch.
+
 Worker output is streamed live as Claude's `stream-json` events, rendered by
 the supervisor as concise, iteration-aware progress lines
 (inspecting/editing/creating PR/closing issue). While a worker is silent the

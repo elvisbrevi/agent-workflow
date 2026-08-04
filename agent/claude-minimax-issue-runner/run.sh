@@ -345,6 +345,9 @@ release_repository_lock() {
     rm -f "${LOCK_DIR}/status" "${LOCK_DIR}/status.$$" "${LOCK_DIR}/owner"
     rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
+  if declare -F tracker_cleanup_worker_environment >/dev/null 2>&1; then
+    tracker_cleanup_worker_environment
+  fi
   LOCK_HELD=false
 }
 
@@ -428,7 +431,7 @@ confirm_destructive_run() {
   printf '  cli:          %s\n' "$ISSUE_KILLER_PROFILE_CLI" >/dev/tty
   printf '  model:        %s\n' "$ISSUE_KILLER_PROFILE_MODEL" >/dev/tty
   printf '  autonomy:     permission_mode=%s\n' "$PERMISSION_MODE" >/dev/tty
-  printf '  tracker:      github\n' >/dev/tty
+  printf '  tracker:      %s\n' "${TRACKER_KIND:-unknown}" >/dev/tty
   printf '  base branch:  %s\n' "$BASE_BRANCH" >/dev/tty
   if [[ -n "$ISSUE_KILLER_PROFILE_FALLBACKS" ]]; then
     printf '  fallbacks:    %s\n' \
@@ -656,6 +659,12 @@ record_identified_issue() {
   local output_file="${2:-}"
 
   if [[ -z "$issue_number" || ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    return
+  fi
+
+  if [[ -n "${CHECKPOINT_ISSUE:-}" && "$CHECKPOINT_ISSUE" != "$issue_number" ]]; then
+    printf '[%s] Ignoring tracker identity %s; issue %s is already fixed for this worker\n' \
+      "$RUNNER_NAME" "$issue_number" "$CHECKPOINT_ISSUE" >&2
     return
   fi
 
@@ -937,17 +946,19 @@ attempt_with_recovery() {
     if [[ -r "$(checkpoint_file)" ]]; then
       persisted_state="$(sed -n 's/^state=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
     fi
-    case "${persisted_state:-${CHECKPOINT_STATE:-}}" in
-      pr_merged|issue_closed)
-        printf '[%s] Recovery detected an already-completed issue (checkpoint state=%s); advancing without retry\n' \
-          "$RUNNER_NAME" "${persisted_state:-${CHECKPOINT_STATE:-}}"
-        write_lock_status "worker_finished" 0
-        printf '%s\n' "${STATUS_PREFIX}ISSUE_COMPLETED" >> "$output_file"
-        WORKER_STATUS="ISSUE_COMPLETED"
-        WORKER_EXIT=0
-        return 0
-        ;;
-    esac
+    if [[ "$TRACKER_KIND" != "azure-devops" ]]; then
+      case "${persisted_state:-${CHECKPOINT_STATE:-}}" in
+        pr_merged|issue_closed)
+          printf '[%s] Recovery detected an already-completed issue (checkpoint state=%s); advancing without retry\n' \
+            "$RUNNER_NAME" "${persisted_state:-${CHECKPOINT_STATE:-}}"
+          write_lock_status "worker_finished" 0
+          printf '%s\n' "${STATUS_PREFIX}ISSUE_COMPLETED" >> "$output_file"
+          WORKER_STATUS="ISSUE_COMPLETED"
+          WORKER_EXIT=0
+          return 0
+          ;;
+      esac
+    fi
 
     # Reconcile the checkpoint against live Git, PR, and issue state before
     # touching the worktree again. A "completed" reconciliation means the
@@ -973,6 +984,11 @@ attempt_with_recovery() {
       return 0
     fi
 
+    if [[ "$TRACKER_KIND" == "azure-devops" && "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
+      RECOVERY_CATEGORY="recovery_required"
+      return 1
+    fi
+
     if [[ "$attempt" -ge "$max_attempts" ]]; then
       RECOVERY_CATEGORY="recovery_required"
       return 1
@@ -987,20 +1003,20 @@ attempt_with_recovery() {
   done
 }
 
-# Source the tracker and config adapters before entering orchestration.
+# Source the tracker selector and config adapter before entering orchestration.
 # The runtime adapter is sourced later, after the active profile is
 # known, so the orchestrator picks the right adapter (claude, codex,
 # ...) without depending on a single hardcoded path. The supervisor
 # consumes normalized tracker operations and lifecycle events only;
 # provider-specific command construction remains inside the adapters.
 SCRIPT_DIR="$(resolve_script_dir)"
-TRACKER_ADAPTER="${SCRIPT_DIR}/tracker/github-adapter.sh"
+TRACKER_SELECTOR="${SCRIPT_DIR}/tracker/selector.sh"
 RUNTIME_ADAPTER_DIR="${SCRIPT_DIR}/runtime"
 CONFIG_ADAPTER="${SCRIPT_DIR}/config/issue-killer-config.sh"
 # shellcheck source=agent/claude-minimax-issue-runner/config/issue-killer-config.sh
 source "$CONFIG_ADAPTER"
-# shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
-source "$TRACKER_ADAPTER"
+# shellcheck source=agent/claude-minimax-issue-runner/tracker/selector.sh
+source "$TRACKER_SELECTOR"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 
 # Parse the optional positional repository argument together with the
@@ -1169,7 +1185,13 @@ if ! git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}" &&
   die "base branch not found locally or at origin: ${BASE_BRANCH}"
 fi
 
+TRACKER_ADAPTER="$(tracker_select_adapter "$REPO_ROOT")" || \
+  die "unable to select a tracker adapter"
+[[ -r "$TRACKER_ADAPTER" ]] || die "tracker adapter not found: ${TRACKER_ADAPTER}"
+# shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
+source "$TRACKER_ADAPTER"
 tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elvis-brevi-skills and retry"
+tracker_prepare_worker_environment || die "unable to prepare the selected tracker runtime environment"
 
 acquire_repository_lock
 confirm_destructive_run
@@ -1275,6 +1297,30 @@ non-epic issue in this session."
 
   case "$WORKER_STATUS" in
     ISSUE_COMPLETED)
+      if [[ "$TRACKER_KIND" == "azure-devops" ]]; then
+        if [[ ! "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
+          finalize_attempt_state "recovery_required"
+          write_lock_status "recovery_required" 0
+          printf '%s%s\n' "$STATUS_PREFIX" "RECOVERY_REQUIRED" >> "$OUTPUT_FILE"
+          printf '%s: Azure completion marker did not identify a numeric work item; output retained at %s\n' \
+            "$RUNNER_NAME" "$OUTPUT_FILE" >&2
+          exit 4
+        fi
+        completion_branch="$(current_branch)"
+        if [[ "$completion_branch" == "$BASE_BRANCH" || "$completion_branch" == "unknown" ]]; then
+          completion_branch="$(checkpoint_value branch "$(checkpoint_file)")"
+        fi
+        if ! tracker_item_completion_verified "$CHECKPOINT_ISSUE" "$completion_branch"; then
+          finalize_attempt_state "recovery_required"
+          write_lock_status "recovery_required" 0
+          printf '%s%s\n' "$STATUS_PREFIX" "RECOVERY_REQUIRED" >> "$OUTPUT_FILE"
+          printf '%s: Azure completion marker was not confirmed by live work-item and PR state; output retained at %s\n' \
+            "$RUNNER_NAME" "$OUTPUT_FILE" >&2
+          exit 4
+        fi
+        advance_checkpoint_state "pr_merged" "$OUTPUT_FILE"
+        advance_checkpoint_state "issue_closed" "$OUTPUT_FILE"
+      fi
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       clear_checkpoint
       printf '[%s] Worker %s completed one issue.\n' "$RUNNER_NAME" "$ITERATION"

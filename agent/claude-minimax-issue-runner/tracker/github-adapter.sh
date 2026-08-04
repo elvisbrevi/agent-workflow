@@ -8,6 +8,9 @@
 TRACKER_KIND=""
 TRACKER_REPO_SLUG=""
 
+tracker_prepare_worker_environment() { :; }
+tracker_cleanup_worker_environment() { :; }
+
 tracker_slug_from_url() {
   local url="$1"
   local slug
