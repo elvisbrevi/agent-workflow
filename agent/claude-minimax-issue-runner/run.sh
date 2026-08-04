@@ -1434,12 +1434,14 @@ stage_next_opencode_fallback() {
 
   if [[ ! "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
     write_checkpoint "recovery_required"
+    write_lock_status "recovery_required" 0
     printf '[%s] OpenCode fallback stopped because the failed worker did not identify an issue\n' \
       "$RUNNER_NAME" >&2
     return 1
   fi
   if [[ -z "$next" ]]; then
     write_checkpoint "fallback_exhausted"
+    write_lock_status "fallback_exhausted" 0
     printf '[%s] OpenCode fallback chain exhausted after %s (%s)\n' \
       "$RUNNER_NAME" "$ISSUE_KILLER_FAILED_PROFILE" "$failure" >&2
     return 1
@@ -1524,8 +1526,9 @@ attempt_with_recovery() {
     RECOVERY_CATEGORY=""
     should_transition=false
 
-    # Decide whether the captured Claude session is safe to resume. The
-    # first attempt has no checkpoint session and always launches fresh.
+    # Resume a captured session on retries, fallback transitions, or restart
+    # recovery when branch and base identity still match. A normal first
+    # attempt has no checkpoint session and therefore launches fresh.
     resume_session=""
     if [[ "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
       resume_session="$initial_session_id"
@@ -1687,6 +1690,8 @@ attempt_with_recovery() {
 
     if [[ "$should_transition" == "true" && "$reconciled" == "unknown" ]]; then
       RECOVERY_CATEGORY="recovery_required"
+      write_checkpoint "recovery_required"
+      write_lock_status "recovery_required" 0
       printf '[%s] OpenCode fallback reconciliation was ambiguous; checkpoint retained\n' \
         "$RUNNER_NAME" >&2
       return 1
@@ -1702,6 +1707,8 @@ attempt_with_recovery() {
     if [[ "$should_transition" == "true" ]]; then
       if ! activate_staged_opencode_fallback; then
         RECOVERY_CATEGORY="recovery_required"
+        write_checkpoint "recovery_required"
+        write_lock_status "recovery_required" 0
         return 1
       fi
       prompt="$(build_fallback_worker_prompt)"

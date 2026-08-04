@@ -3282,6 +3282,7 @@ test_tty_opencode_fallback_picker_builds_ordered_unique_chain() {
     "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true" \
     "opencode-backup-a=OpenCode Backup A|opencode|${fake}|provider/backup-a|||medium|true" \
     "opencode-backup-b=OpenCode Backup B|opencode|${fake}|provider/backup-b|||low|true" \
+    "opencode-backup-c=OpenCode Backup C|opencode|${fake}|provider/backup-c|||low|true" \
     "codex-other=Codex Other|codex|${fake}|codex-model||||false"
 
   cat > "$expect_script" <<PROLOG
@@ -3290,7 +3291,7 @@ log_user 1
 set fallback_prompt 0
 spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path $RUNNER "$repo"
 expect {
-  -re {Profile \\[4\\]:} {
+  -re {Profile \\[5\\]:} {
     send "\r"
     exp_continue
   }
@@ -3298,8 +3299,10 @@ expect {
     incr fallback_prompt
     if {\$fallback_prompt == 1} {
       send "2\r"
-    } else {
+    } elseif {\$fallback_prompt == 2} {
       send "1\r"
+    } else {
+      send "0\r"
     }
     exp_continue
   }
