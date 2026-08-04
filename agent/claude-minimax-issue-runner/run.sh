@@ -77,6 +77,16 @@ write_lock_status() {
       printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
       printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
       printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+      printf 'fallback_position=%s\n' "${ISSUE_KILLER_FALLBACK_POSITION:-0}"
+      if [[ -n "${ISSUE_KILLER_FALLBACK_REMAINING:-}" ]]; then
+        printf 'fallback_remaining=%s\n' "${ISSUE_KILLER_FALLBACK_REMAINING//$'\n'/,}"
+      fi
+      if [[ -n "${ISSUE_KILLER_FAILED_PROFILE:-}" ]]; then
+        printf 'failed_profile=%s\n' "$ISSUE_KILLER_FAILED_PROFILE"
+      fi
+      if [[ -n "${ISSUE_KILLER_NEXT_PROFILE:-}" ]]; then
+        printf 'next_profile=%s\n' "$ISSUE_KILLER_NEXT_PROFILE"
+      fi
     fi
   } > "$status_tmp"
   mv -f "$status_tmp" "${LOCK_DIR}/status"
@@ -411,6 +421,20 @@ current_base_sha() {
   printf 'unknown\n'
 }
 
+# Writes a newline-separated list as repeated metadata keys. Profile names
+# are identifier-safe and contain no newlines, so the checkpoint remains a
+# simple line-oriented, non-secret record.
+write_checkpoint_list() {
+  local key="$1"
+  local values="$2"
+  local value
+
+  while IFS= read -r value; do
+    [[ -n "$value" ]] || continue
+    printf '%s=%s\n' "$key" "$value"
+  done <<<"$values"
+}
+
 # Writes a non-sensitive checkpoint describing the worker's progress. The
 # write is atomic: the destination is replaced by `mv` from a sibling temp
 # file so partial checkpoints never appear. The function deliberately
@@ -450,6 +474,21 @@ write_checkpoint() {
       printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
       printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
       printf 'command=%s\n' "$ISSUE_KILLER_PROFILE_COMMAND"
+      if [[ -n "${ISSUE_KILLER_SELECTED_PROFILE_NAME:-}" ]]; then
+        printf 'selected_profile=%s\n' "$ISSUE_KILLER_SELECTED_PROFILE_NAME"
+        printf 'fallback_position=%s\n' "${ISSUE_KILLER_FALLBACK_POSITION:-0}"
+        write_checkpoint_list fallback_chain "${ISSUE_KILLER_FALLBACK_CHAIN:-}"
+        write_checkpoint_list fallback_remaining "${ISSUE_KILLER_FALLBACK_REMAINING:-}"
+      fi
+      if [[ -n "${ISSUE_KILLER_FAILED_PROFILE:-}" ]]; then
+        printf 'failed_profile=%s\n' "$ISSUE_KILLER_FAILED_PROFILE"
+      fi
+      if [[ -n "${ISSUE_KILLER_NEXT_PROFILE:-}" ]]; then
+        printf 'next_profile=%s\n' "$ISSUE_KILLER_NEXT_PROFILE"
+      fi
+      if [[ -n "${ISSUE_KILLER_FALLBACK_FAILURE:-}" ]]; then
+        printf 'fallback_failure=%s\n' "$ISSUE_KILLER_FALLBACK_FAILURE"
+      fi
     fi
     printf 'state=%s\n' "$state"
     printf 'updated_at=%s\n' "$(timestamp)"
@@ -557,6 +596,7 @@ classify_failure() {
   local output_file="$1"
   local exit_code="$2"
   local status_marker="$3"
+  local provider_failure="none"
 
   case "$status_marker" in
     ISSUE_COMPLETED|QUEUE_EMPTY)
@@ -576,6 +616,16 @@ classify_failure() {
   if [[ "$exit_code" -eq 0 ]]; then
     printf 'invalid_marker\n'
     return 0
+  fi
+
+  if [[ "${ISSUE_KILLER_PROFILE_CLI:-}" == "opencode" ]] &&
+     declare -F runtime_classify_provider_failure >/dev/null 2>&1; then
+    provider_failure="$(runtime_classify_provider_failure "$output_file")"
+    case "$provider_failure" in
+      quota) printf 'provider_quota\n'; return 0 ;;
+      rate_limit) printf 'provider_rate_limit\n'; return 0 ;;
+      model_unavailable) printf 'provider_model_unavailable\n'; return 0 ;;
+    esac
   fi
 
   if output_matches_transient_pattern "$output_file"; then
@@ -911,6 +961,88 @@ checkpoint_value() {
   sed -n "s/^${field}=//p" "$file" 2>/dev/null | head -n 1
 }
 
+checkpoint_values() {
+  local field="$1"
+  local file="${2:-}"
+  [[ -n "$file" ]] || file="$(checkpoint_file)"
+  sed -n "s/^${field}=//p" "$file" 2>/dev/null
+}
+
+# Restores a fallback checkpoint after the operator has selected the same
+# primary profile and chain. The persisted active profile, position, remaining
+# order, and provider-safe identity must all agree with the current config;
+# otherwise recovery fails closed before confirmation or worker launch.
+restore_opencode_fallback_checkpoint() {
+  local checkpoint="$(checkpoint_file)"
+  local selected active cli model command_name position chain remaining
+  local failed next failure entry expected_active expected_remaining=""
+  local index=0 found=false
+
+  [[ -r "$checkpoint" ]] || return 0
+  selected="$(checkpoint_value selected_profile "$checkpoint")"
+  position="$(checkpoint_value fallback_position "$checkpoint")"
+  chain="$(checkpoint_values fallback_chain "$checkpoint")"
+  remaining="$(checkpoint_values fallback_remaining "$checkpoint")"
+  failed="$(checkpoint_value failed_profile "$checkpoint")"
+  next="$(checkpoint_value next_profile "$checkpoint")"
+  failure="$(checkpoint_value fallback_failure "$checkpoint")"
+
+  if [[ -z "$selected" || -z "$position" ]]; then
+    return 0
+  fi
+  if [[ "$position" == "0" && -z "$chain" && -z "$failed" ]]; then
+    return 0
+  fi
+  [[ "$position" =~ ^[0-9]+$ ]] || return 1
+  [[ "$selected" == "$ISSUE_KILLER_SELECTED_PROFILE_NAME" ]] || return 1
+  [[ "$chain" == "$ISSUE_KILLER_FALLBACK_CHAIN" ]] || return 1
+
+  expected_active="$selected"
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    index=$((index + 1))
+    if [[ "$index" -eq "$position" ]]; then
+      expected_active="$entry"
+      found=true
+    elif [[ "$index" -gt "$position" ]]; then
+      if [[ -z "$expected_remaining" ]]; then
+        expected_remaining="$entry"
+      else
+        expected_remaining+=$'\n'"$entry"
+      fi
+    fi
+  done <<<"$chain"
+  if [[ "$position" -gt 0 && "$found" != "true" ]]; then
+    return 1
+  fi
+  [[ "$remaining" == "$expected_remaining" ]] || return 1
+
+  active="$(checkpoint_value profile "$checkpoint")"
+  cli="$(checkpoint_value cli "$checkpoint")"
+  model="$(checkpoint_value model "$checkpoint")"
+  command_name="$(checkpoint_value command "$checkpoint")"
+  [[ "$active" == "$expected_active" ]] || return 1
+  issue_killer_config_apply_profile "$active" || return 1
+  [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" && "$cli" == "opencode" ]] || return 1
+  [[ "$ISSUE_KILLER_PROFILE_MODEL" == "$model" ]] || return 1
+  [[ "$ISSUE_KILLER_PROFILE_COMMAND" == "$command_name" ]] || return 1
+  opencode_runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || return 1
+
+  ISSUE_KILLER_FALLBACK_POSITION="$position"
+  ISSUE_KILLER_FALLBACK_CHAIN="$chain"
+  ISSUE_KILLER_FALLBACK_REMAINING="$remaining"
+  ISSUE_KILLER_PROFILE_FALLBACKS="$remaining"
+  ISSUE_KILLER_FAILED_PROFILE="$failed"
+  ISSUE_KILLER_NEXT_PROFILE="$next"
+  ISSUE_KILLER_FALLBACK_FAILURE="$failure"
+  CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
+  CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
+  CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
+  printf '[%s] Restored OpenCode fallback checkpoint at position %s with profile %s\n' \
+    "$RUNNER_NAME" "$position" "$active"
+  return 0
+}
+
 emit_recovery_required() {
   local message="$1"
   local checkpoint="${2:-$(checkpoint_file)}"
@@ -947,7 +1079,8 @@ require_recovery_tty_confirmation() {
 validate_checkpoint_for_dirty_recovery() {
   local checkpoint="$1"
   local issue branch base_branch base_sha state
-  local current profile cli model command_name
+  local current profile cli model command_name selected_profile fallback_position
+  local fallback_chain fallback_remaining
 
   [[ -r "$checkpoint" ]] || \
     emit_recovery_required "dirty worktree requires a readable checkpoint or explicit legacy adoption"
@@ -992,6 +1125,20 @@ validate_checkpoint_for_dirty_recovery() {
       emit_recovery_required "checkpoint model ${model:-unknown} does not match selected model ${ISSUE_KILLER_PROFILE_MODEL:-unknown}"
     [[ "$command_name" == "$ISSUE_KILLER_PROFILE_COMMAND" ]] || \
       emit_recovery_required "checkpoint command ${command_name:-unknown} does not match selected command ${ISSUE_KILLER_PROFILE_COMMAND:-unknown}"
+    selected_profile="$(checkpoint_value selected_profile "$checkpoint")"
+    fallback_position="$(checkpoint_value fallback_position "$checkpoint")"
+    fallback_chain="$(checkpoint_values fallback_chain "$checkpoint")"
+    fallback_remaining="$(checkpoint_values fallback_remaining "$checkpoint")"
+    if [[ -n "$selected_profile" || -n "$fallback_position" || -n "$fallback_chain" ]]; then
+      [[ "$selected_profile" == "$ISSUE_KILLER_SELECTED_PROFILE_NAME" ]] || \
+        emit_recovery_required "checkpoint selected profile ${selected_profile:-unknown} does not match ${ISSUE_KILLER_SELECTED_PROFILE_NAME:-unknown}"
+      [[ "$fallback_position" == "$ISSUE_KILLER_FALLBACK_POSITION" ]] || \
+        emit_recovery_required "checkpoint fallback position ${fallback_position:-unknown} does not match restored position ${ISSUE_KILLER_FALLBACK_POSITION:-unknown}"
+      [[ "$fallback_chain" == "$ISSUE_KILLER_FALLBACK_CHAIN" ]] || \
+        emit_recovery_required "checkpoint fallback chain does not match the selected chain"
+      [[ "$fallback_remaining" == "$ISSUE_KILLER_FALLBACK_REMAINING" ]] || \
+        emit_recovery_required "checkpoint remaining fallback order does not match restored state"
+    fi
   fi
 }
 
@@ -1256,6 +1403,89 @@ run_worker_with_progress() {
     "$RUNNER_NAME" "$ITERATION" "$elapsed" "$WORKER_EXIT"
 }
 
+
+# Stages the next OpenCode fallback in the checkpoint before tracker
+# reconciliation. Returns 1 when the issue identity is unknown or the chain is
+# exhausted; both states require operator recovery rather than queue advance.
+stage_next_opencode_fallback() {
+  local failure="$1"
+  local next=""
+  local remaining=""
+  local entry skipped=false
+
+  ISSUE_KILLER_FAILED_PROFILE="$ISSUE_KILLER_PROFILE_NAME"
+  ISSUE_KILLER_NEXT_PROFILE=""
+  ISSUE_KILLER_FALLBACK_FAILURE="$failure"
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$skipped" == "false" ]]; then
+      next="$entry"
+      skipped=true
+    elif [[ -z "$remaining" ]]; then
+      remaining="$entry"
+    else
+      remaining+=$'\n'"$entry"
+    fi
+  done <<<"${ISSUE_KILLER_FALLBACK_REMAINING:-}"
+
+  ISSUE_KILLER_NEXT_PROFILE="$next"
+  ISSUE_KILLER_FALLBACK_REMAINING="$remaining"
+
+  if [[ ! "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
+    write_checkpoint "recovery_required"
+    write_lock_status "recovery_required" 0
+    printf '[%s] OpenCode fallback stopped because the failed worker did not identify an issue\n' \
+      "$RUNNER_NAME" >&2
+    return 1
+  fi
+  if [[ -z "$next" ]]; then
+    write_checkpoint "fallback_exhausted"
+    write_lock_status "fallback_exhausted" 0
+    printf '[%s] OpenCode fallback chain exhausted after %s (%s)\n' \
+      "$RUNNER_NAME" "$ISSUE_KILLER_FAILED_PROFILE" "$failure" >&2
+    return 1
+  fi
+
+  write_checkpoint "fallback_pending"
+  write_lock_status "fallback_pending" 0
+  return 0
+}
+
+# Activates the staged fallback after tracker/PR reconciliation. Every target
+# was validated as OpenCode during config load; adapter validation is repeated
+# here because model and option safety belong to the active profile.
+activate_staged_opencode_fallback() {
+  local next="$ISSUE_KILLER_NEXT_PROFILE"
+  local failed="$ISSUE_KILLER_FAILED_PROFILE"
+
+  issue_killer_config_apply_profile "$next" || return 1
+  [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]] || return 1
+  opencode_runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || return 1
+
+  ISSUE_KILLER_FALLBACK_POSITION=$((ISSUE_KILLER_FALLBACK_POSITION + 1))
+  CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
+  CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
+  CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
+  write_checkpoint "fallback_ready"
+  write_lock_status "fallback_ready" 0
+  printf '[%s] Advancing OpenCode fallback: %s -> %s (%s)\n' \
+    "$RUNNER_NAME" "$failed" "$next" "$ISSUE_KILLER_FALLBACK_FAILURE"
+}
+
+# Produces a fresh-worker prompt that pins fallback recovery to the already
+# identified issue and existing worktree. Compatible OpenCode sessions receive
+# the same constraint when resumed; workers without a session cannot inspect
+# the queue for a replacement issue.
+build_fallback_worker_prompt() {
+  printf '%s\n\n%s\n' "$BASE_PROMPT" "Provider fallback recovery:
+- Continue exactly issue #${CHECKPOINT_ISSUE}; do not select or inspect another issue.
+- Preserve the existing branch and dirty work; do not discard, reset, stash, or overwrite partial work.
+- The failed profile was ${ISSUE_KILLER_FAILED_PROFILE}; continue with ${ISSUE_KILLER_PROFILE_NAME} at fallback position ${ISSUE_KILLER_FALLBACK_POSITION}.
+- Tracker and pull-request state were reconciled before this transition.
+- Finish implementation, verification, merge, and closure for this issue only."
+}
+
 # Drives the worker with optional transient retry and reconciliation. The
 # function loops until the worker produces a recognized status, exits with
 # a non-retryable failure, or exhausts the configured retry budget.
@@ -1268,9 +1498,11 @@ attempt_with_recovery() {
   local initial_session_id="${3:-}"
   local session_id="$initial_session_id"
   local attempt=0
+  local total_attempt=0
+  local attempt_output
   local max_attempts=$(( ${#RETRY_DELAY_VALUES[@]} + 1 ))
   local configured_limit=""
-  local category reconciled last_safe
+  local category reconciled last_safe should_transition
   local checkpoint_branch checkpoint_base_sha resume_session
 
   # The configured retry limit caps the total number of attempts
@@ -1285,16 +1517,22 @@ attempt_with_recovery() {
 
   while true; do
     attempt=$((attempt + 1))
+    total_attempt=$((total_attempt + 1))
+    attempt_output="${output_file}.attempt-${total_attempt}"
+    rm -f "$attempt_output" "${attempt_output}.issue" \
+      "${attempt_output}.session" "${attempt_output}.touch"
     RECOVERY_ATTEMPT="$attempt"
     RECOVERY_DELAY=""
     RECOVERY_CATEGORY=""
+    should_transition=false
 
-    # Decide whether the captured Claude session is safe to resume. The
-    # first attempt has no checkpoint session and always launches fresh.
+    # Resume a captured session on retries, fallback transitions, or restart
+    # recovery when branch and base identity still match. A normal first
+    # attempt has no checkpoint session and therefore launches fresh.
     resume_session=""
     if [[ "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
       resume_session="$initial_session_id"
-    elif [[ "$attempt" -gt 1 && -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
+    elif [[ -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
       checkpoint_branch="$(sed -n 's/^branch=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       checkpoint_base_sha="$(sed -n 's/^base_sha=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       if is_session_resumable "${CHECKPOINT_SESSION_ID}" "$checkpoint_branch" "$checkpoint_base_sha"; then
@@ -1313,7 +1551,10 @@ attempt_with_recovery() {
         "$RUNNER_NAME" "$attempt"
     fi
 
-    run_worker_with_progress "$prompt" "$output_file" "$resume_session"
+    run_worker_with_progress "$prompt" "$attempt_output" "$resume_session"
+    if [[ -r "$attempt_output" ]]; then
+      cat "$attempt_output" >> "$output_file"
+    fi
 
     # Adopt the issue identity from the renderer side-channel. The
     # renderer's CHECKPOINT_ISSUE write does not propagate back to the
@@ -1325,28 +1566,31 @@ attempt_with_recovery() {
     # was processed (e.g. an immediate transport failure on a fresh
     # checkout).
     local waited=0
-    while [[ $waited -lt 20 && -z "${CHECKPOINT_ISSUE:-}" && ! -s "${output_file}.issue" ]]; do
+    while [[ $waited -lt 20 && -z "${CHECKPOINT_ISSUE:-}" && ! -s "${attempt_output}.issue" ]]; do
       sleep 0.05
       waited=$((waited + 1))
     done
-    if [[ -s "${output_file}.issue" ]]; then
-      CHECKPOINT_ISSUE="$(<"${output_file}.issue")"
+    if [[ -s "${attempt_output}.issue" ]]; then
+      CHECKPOINT_ISSUE="$(<"${attempt_output}.issue")"
+      printf '%s' "$CHECKPOINT_ISSUE" > "${output_file}.issue"
     fi
 
     # Adopt the captured session id from the worker side-channel so the
     # next attempt (if any) can resume it.
-    session_id="$(read_captured_session_id "${output_file}.session")"
+    session_id="$(read_captured_session_id "${attempt_output}.session")"
     if [[ -n "$session_id" ]]; then
       CHECKPOINT_SESSION_ID="$session_id"
       write_checkpoint "${CHECKPOINT_STATE:-starting}"
     fi
 
     WORKER_STATUS="$(
-      sed -n "s/^${STATUS_PREFIX}//p" "$output_file" | tail -n 1
+      sed -n "s/^${STATUS_PREFIX}//p" "$attempt_output" | tail -n 1
     )"
 
-    category="$(classify_failure "$output_file" "$WORKER_EXIT" "$WORKER_STATUS")"
+    category="$(classify_failure "$attempt_output" "$WORKER_EXIT" "$WORKER_STATUS")"
     RECOVERY_CATEGORY="$category"
+    rm -f "$attempt_output" "${attempt_output}.issue" \
+      "${attempt_output}.session" "${attempt_output}.touch"
 
     case "$category" in
       completed)
@@ -1376,13 +1620,22 @@ attempt_with_recovery() {
         return 0
         ;;
       transient_transport)
-        # Fall through to retry handling below.
-        :
+        printf '[%s] Recovering from transient transport failure (attempt %s of %s)\n' \
+          "$RUNNER_NAME" "$attempt" "$max_attempts"
+        ;;
+      provider_rate_limit)
+        printf '[%s] OpenCode provider rate limit persists (attempt %s of %s)\n' \
+          "$RUNNER_NAME" "$attempt" "$max_attempts"
+        if [[ "$attempt" -ge "$max_attempts" ]]; then
+          should_transition=true
+          stage_next_opencode_fallback "$category" || return 1
+        fi
+        ;;
+      provider_quota|provider_model_unavailable)
+        should_transition=true
+        stage_next_opencode_fallback "$category" || return 1
         ;;
     esac
-
-    printf '[%s] Recovering from transient transport failure (attempt %s of %s)\n' \
-      "$RUNNER_NAME" "$attempt" "$max_attempts"
 
     # Treat a checkpoint that already reached the PR-merged or
     # issue-closed lifecycle as a no-op recovery: the previous attempt
@@ -1435,9 +1688,33 @@ attempt_with_recovery() {
       return 0
     fi
 
-    if [[ "$TRACKER_KIND" == "azure-devops" && "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
+    if [[ "$should_transition" == "true" && "$reconciled" == "unknown" ]]; then
+      RECOVERY_CATEGORY="recovery_required"
+      write_checkpoint "recovery_required"
+      write_lock_status "recovery_required" 0
+      printf '[%s] OpenCode fallback reconciliation was ambiguous; checkpoint retained\n' \
+        "$RUNNER_NAME" >&2
+      return 1
+    fi
+
+    if [[ "$TRACKER_KIND" == "azure-devops" &&
+          "$should_transition" != "true" &&
+          "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
       RECOVERY_CATEGORY="recovery_required"
       return 1
+    fi
+
+    if [[ "$should_transition" == "true" ]]; then
+      if ! activate_staged_opencode_fallback; then
+        RECOVERY_CATEGORY="recovery_required"
+        write_checkpoint "recovery_required"
+        write_lock_status "recovery_required" 0
+        return 1
+      fi
+      prompt="$(build_fallback_worker_prompt)"
+      initial_session_id=""
+      attempt=0
+      continue
     fi
 
     if [[ "$attempt" -ge "$max_attempts" ]]; then
@@ -1521,6 +1798,13 @@ ISSUE_KILLER_PROFILE_SHELL=""
 ISSUE_KILLER_PROFILE_INIT_FILE=""
 ISSUE_KILLER_PROFILE_OPTIONS=""
 ISSUE_KILLER_PROFILE_FALLBACKS=""
+ISSUE_KILLER_SELECTED_PROFILE_NAME=""
+ISSUE_KILLER_FALLBACK_CHAIN=""
+ISSUE_KILLER_FALLBACK_REMAINING=""
+ISSUE_KILLER_FALLBACK_POSITION=0
+ISSUE_KILLER_FAILED_PROFILE=""
+ISSUE_KILLER_NEXT_PROFILE=""
+ISSUE_KILLER_FALLBACK_FAILURE=""
 
 # Resolve and load the operator's TOML configuration. The runner
 # refuses to launch without a profile: the destructive confirmation,
@@ -1539,14 +1823,27 @@ if [[ -r /dev/tty && -t 0 && -t 1 ]]; then
     issue_killer_config_prompt_profile \
       "$(issue_killer_config_lookup top.default_profile)"
   )" || die "unable to select an execution profile"
+  issue_killer_config_apply_profile "$SELECTED_PROFILE" || \
+    die "profile ${SELECTED_PROFILE} is invalid"
+  if [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]]; then
+    ISSUE_KILLER_PROFILE_FALLBACKS="$(
+      issue_killer_config_prompt_fallbacks "$SELECTED_PROFILE"
+    )" || die "unable to select an OpenCode fallback chain"
+  fi
 else
   SELECTED_PROFILE=""
   issue_killer_config_select_default_profile || \
     die "non-interactive launch requires a valid default_profile in ${ISSUE_KILLER_CONFIG_PATH}"
   SELECTED_PROFILE="$ISSUE_KILLER_PROFILE_NAME"
 fi
-issue_killer_config_apply_profile "$SELECTED_PROFILE" || \
-  die "profile ${SELECTED_PROFILE} is invalid"
+
+# Keep the operator-selected profile separate from the active profile. The
+# active profile changes as the chain advances, while this immutable chain
+# identity is persisted for restart validation and ordered recovery.
+ISSUE_KILLER_SELECTED_PROFILE_NAME="$SELECTED_PROFILE"
+ISSUE_KILLER_FALLBACK_CHAIN="$ISSUE_KILLER_PROFILE_FALLBACKS"
+ISSUE_KILLER_FALLBACK_REMAINING="$ISSUE_KILLER_PROFILE_FALLBACKS"
+ISSUE_KILLER_FALLBACK_POSITION=0
 
 # Project the selected profile onto the legacy runtime variables the
 # adapter consumes. The adapter treats these as the single source of
@@ -1654,7 +1951,8 @@ tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elv
 tracker_prepare_worker_environment || die "unable to prepare the selected tracker runtime environment"
 
 prepare_legacy_state || die "issue-killer cannot start: legacy runner state could not be migrated safely"
-
+restore_opencode_fallback_checkpoint || \
+  emit_recovery_required "fallback checkpoint does not match the selected OpenCode profile chain or current config"
 adopt_migrated_checkpoint() {
   local checkpoint issue branch base_branch base_sha state session_id profile cli model command
 
@@ -1711,7 +2009,7 @@ adopt_migrated_checkpoint() {
 
 acquire_repository_lock
 confirm_destructive_run
-if [[ "$CANONICAL_MODE" == "true" ]] && [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
   adopt_migrated_checkpoint || :
 fi
 prepare_dirty_startup_recovery

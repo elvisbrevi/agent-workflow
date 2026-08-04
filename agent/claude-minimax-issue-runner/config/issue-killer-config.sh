@@ -388,8 +388,14 @@ issue_killer_config_record_field() {
     profiles.*)
       local profile="${section#profiles.}"
       case "$key" in
-        label|cli|command|model|shell|init_file|fallbacks)
+        label|cli|command|model|shell|init_file)
           printf 'profiles.%s.%s=%s\n' "$profile" "$key" "$value" >> "$state_file"
+          ;;
+        fallbacks)
+          while IFS= read -r fallback; do
+            [[ -n "$fallback" ]] || continue
+            printf 'profiles.%s.fallbacks=%s\n' "$profile" "$fallback" >> "$state_file"
+          done <<<"$value"
           ;;
         *)
           printf '%s: unknown profile field: %s\n' "$RUNNER_NAME" "$key" >&2
@@ -532,6 +538,11 @@ issue_killer_config_load() {
       fi
     done
   done
+
+  # Fallback declarations form a validated OpenCode-only graph. Validate
+  # every profile at load time so interactive and non-interactive launches
+  # fail before the tracker, repository, or worker can be mutated.
+  issue_killer_config_validate_fallbacks || return 1
 }
 
 # Returns the profile names defined in the loaded configuration, one
@@ -567,18 +578,86 @@ issue_killer_config_profile_fallbacks() {
   local profile="$1"
   local state_file="${ISSUE_KILLER_CONFIG_STATE_FILE:-}"
   [[ -r "$state_file" ]] || return 0
-  local value
-  value="$(grep -E "^profiles\\.${profile}\\.fallbacks=" "$state_file" | \
-    head -n 1 | sed -e "s/^profiles\\.${profile}\\.fallbacks=//")"
-  if [[ -z "$value" ]]; then
-    return 0
-  fi
-  printf '%s\n' "$value"
+  { grep -E "^profiles\\.${profile}\\.fallbacks=" "$state_file" || true; } | \
+    sed -e "s/^profiles\\.${profile}\\.fallbacks=//"
+  return 0
 }
 
-# Validates that the named profile's `cli` is one of the supported
-# values. claude, codex, and opencode are allowed; an unknown CLI
-# fails closed because the orchestrator has no adapter to handle it.
+# Returns 0 when a profile exists in the loaded state.
+issue_killer_config_profile_exists() {
+  local profile="$1"
+  local state_file="${ISSUE_KILLER_CONFIG_STATE_FILE:-}"
+  [[ -r "$state_file" ]] || return 1
+  grep -Eq "^profiles\\.${profile}\\.cli=" "$state_file"
+}
+
+# Walks fallback edges from one profile and rejects cycles. The path is a
+# newline-separated list so profile names are compared exactly without
+# relying on Bash 4 associative arrays.
+issue_killer_config_validate_fallback_path() {
+  local profile="$1"
+  local path="$2"
+  local fallback
+
+  while IFS= read -r fallback; do
+    [[ -n "$fallback" ]] || continue
+    if grep -Fqx -- "$fallback" <<<"$path"; then
+      printf '%s: fallback chain contains a cycle through profile %s\n' \
+        "$RUNNER_NAME" "$fallback" >&2
+      return 1
+    fi
+    issue_killer_config_validate_fallback_path \
+      "$fallback" "${path}"$'\n'"${fallback}" || return 1
+  done < <(issue_killer_config_profile_fallbacks "$profile")
+}
+
+# Validates all declared fallback chains before profile selection. Sources and
+# targets must be OpenCode profiles, references must exist, entries must be
+# unique within each ordered chain, and the complete graph must be acyclic.
+issue_killer_config_validate_fallbacks() {
+  local profile cli fallback fallback_cli seen
+
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    seen=""
+    cli="$(issue_killer_config_lookup "profiles.${profile}.cli")"
+    while IFS= read -r fallback; do
+      [[ -n "$fallback" ]] || continue
+      if [[ "$cli" != "opencode" ]]; then
+        printf '%s: profile %s declares fallbacks but its cli is %s, not opencode\n' \
+          "$RUNNER_NAME" "$profile" "${cli:-unset}" >&2
+        return 1
+      fi
+      if ! issue_killer_config_profile_exists "$fallback"; then
+        printf '%s: fallback profile %s is not configured\n' \
+          "$RUNNER_NAME" "$fallback" >&2
+        return 1
+      fi
+      fallback_cli="$(issue_killer_config_lookup "profiles.${fallback}.cli")"
+      if [[ "$fallback_cli" != "opencode" ]]; then
+        printf '%s: fallback profile %s uses cli %s; fallbacks must use opencode\n' \
+          "$RUNNER_NAME" "$fallback" "${fallback_cli:-unset}" >&2
+        return 1
+      fi
+      if [[ -n "$seen" ]] && grep -Fqx -- "$fallback" <<<"$seen"; then
+        printf '%s: profile %s contains duplicate fallback %s\n' \
+          "$RUNNER_NAME" "$profile" "$fallback" >&2
+        return 1
+      fi
+      if [[ -z "$seen" ]]; then
+        seen="$fallback"
+      else
+        seen+=$'\n'"$fallback"
+      fi
+    done < <(issue_killer_config_profile_fallbacks "$profile")
+  done < <(issue_killer_config_profile_names)
+
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    issue_killer_config_validate_fallback_path "$profile" "$profile" || return 1
+  done < <(issue_killer_config_profile_names)
+}
+
 issue_killer_config_validate_profile_cli() {
   local profile="$1"
   local cli
@@ -796,6 +875,71 @@ issue_killer_config_prompt_profile() {
     return 1
   fi
   printf '%s\n' "${names[$choice]}"
+}
+
+# Builds an ordered fallback chain after an interactive OpenCode profile
+# selection. Only unused OpenCode profiles are offered; selecting `None`
+# finishes the chain. Echoes the chosen profile names one per line.
+issue_killer_config_prompt_fallbacks() {
+  local selected_profile="$1"
+  local chosen=""
+  local entry answer choice index
+  local -a names=()
+  local -a labels=()
+  local -a models=()
+
+  while true; do
+    names=()
+    labels=()
+    models=()
+    while IFS= read -r entry; do
+      [[ -n "$entry" && "$entry" != "$selected_profile" ]] || continue
+      [[ "$(issue_killer_config_lookup "profiles.${entry}.cli")" == "opencode" ]] || continue
+      if [[ -n "$chosen" ]] && grep -Fqx -- "$entry" <<<"$chosen"; then
+        continue
+      fi
+      names+=("$entry")
+      labels+=("$(issue_killer_config_lookup "profiles.${entry}.label")")
+      models+=("$(issue_killer_config_lookup "profiles.${entry}.model")")
+    done < <(issue_killer_config_profile_names)
+
+    [[ "${#names[@]}" -gt 0 ]] || break
+
+    printf 'Select the next OpenCode fallback profile:\n' >/dev/tty
+    printf '  0) None\n' >/dev/tty
+    index=0
+    while [[ $index -lt ${#names[@]} ]]; do
+      printf '  %d) %s  cli=opencode model=%s\n' \
+        $((index + 1)) "${labels[$index]}" "${models[$index]}" >/dev/tty
+      index=$((index + 1))
+    done
+    printf 'Fallback [0]: ' >/dev/tty
+    IFS= read -r answer </dev/tty || {
+      printf '%s: unable to read fallback selection from /dev/tty\n' \
+        "$RUNNER_NAME" >&2
+      return 1
+    }
+    [[ -n "$answer" ]] || answer=0
+    if [[ "$answer" == "0" ]]; then
+      break
+    fi
+    if [[ ! "$answer" =~ ^[0-9]+$ ]]; then
+      printf '%s: invalid fallback selection: %s\n' "$RUNNER_NAME" "$answer" >&2
+      return 1
+    fi
+    choice=$((answer - 1))
+    if (( choice < 0 )) || (( choice >= ${#names[@]} )); then
+      printf '%s: fallback selection out of range: %s\n' "$RUNNER_NAME" "$answer" >&2
+      return 1
+    fi
+    if [[ -z "$chosen" ]]; then
+      chosen="${names[$choice]}"
+    else
+      chosen+=$'\n'"${names[$choice]}"
+    fi
+  done
+
+  [[ -n "$chosen" ]] && printf '%s\n' "$chosen"
 }
 
 # Cleans up the temporary state file produced by the loader. Safe to
