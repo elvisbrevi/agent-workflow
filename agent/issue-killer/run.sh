@@ -230,7 +230,7 @@ legacy_checkpoint_file() {
 # default Claude profile because the legacy runner was Claude-only.
 legacy_checkpoint_is_migratable() {
   local checkpoint="$1"
-  local issue branch base_branch base_sha state current_sha
+  local issue branch base_branch base_sha state current_sha cli model command
 
   [[ -r "$checkpoint" ]] || return 1
   issue="$(legacy_metadata_value issue "$(<"$checkpoint")" || true)"
@@ -238,6 +238,9 @@ legacy_checkpoint_is_migratable() {
   base_branch="$(legacy_metadata_value base_branch "$(<"$checkpoint")" || true)"
   base_sha="$(legacy_metadata_value base_sha "$(<"$checkpoint")" || true)"
   state="$(legacy_metadata_value state "$(<"$checkpoint")" || true)"
+  cli="$(legacy_metadata_value cli "$(<"$checkpoint")" || true)"
+  model="$(legacy_metadata_value model "$(<"$checkpoint")" || true)"
+  command="$(legacy_metadata_value command "$(<"$checkpoint")" || true)"
   current_sha="$(current_base_sha)"
 
   [[ "$issue" =~ ^[0-9]+$ ]] || return 1
@@ -245,6 +248,10 @@ legacy_checkpoint_is_migratable() {
   [[ "$base_branch" == "$BASE_BRANCH" ]] || return 1
   [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   [[ "$base_sha" == "$current_sha" ]] || return 1
+  [[ "$ISSUE_KILLER_PROFILE_CLI" == "claude" ]] || return 1
+  [[ -z "$cli" || "$cli" == "$ISSUE_KILLER_PROFILE_CLI" ]] || return 1
+  [[ -z "$model" || "$model" == "$ISSUE_KILLER_PROFILE_MODEL" ]] || return 1
+  [[ -z "$command" || "$command" == "$ISSUE_KILLER_PROFILE_COMMAND" ]] || return 1
   case "$state" in
     starting|issue_selected|mutating|branch_pushed|pr_created|pr_merged|issue_closed|blocked|failed|malformed|legacy_adopted) return 0 ;;
     *) return 1 ;;
@@ -280,24 +287,10 @@ legacy_checkpoint_snapshot() {
   else
     printf 'session_id=unavailable\n'
   fi
-  if [[ -n "$profile" ]]; then
-    printf 'profile=%s\n' "$profile"
-  else
-    printf 'profile=claude-main\n'
-  fi
-  if [[ -n "$cli" ]]; then
-    printf 'cli=%s\n' "$cli"
-  else
-    printf 'cli=claude\n'
-  fi
-  if [[ -n "$model" ]]; then
-    printf 'model=%s\n' "$model"
-  else
-    printf 'model=claude-test-model\n'
-  fi
-  if [[ -n "$command" ]]; then
-    printf 'command=%s\n' "$command"
-  fi
+  printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
+  printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
+  printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+  printf 'command=%s\n' "$ISSUE_KILLER_PROFILE_COMMAND"
 }
 
 # Quarantines a legacy lock whose metadata is corrupt, partial, or
@@ -857,7 +850,8 @@ prepare_legacy_state() {
     fi
   fi
 
-  if [[ "$recovered" -ne 0 ]]; then
+  if [[ "$recovered" -ne 0 ]] ||
+     compgen -G "${GIT_COMMON_DIR}/${LEGACY_RUNNER_NAME}.checkpoint.migrated-*" >/dev/null; then
     printf '[%s] Legacy namespace resolved before canonical lock acquisition.\n' \
       "$RUNNER_NAME" >&2
   fi
@@ -1175,13 +1169,13 @@ prepare_dirty_startup_recovery() {
   local dirty_files
   local issue branch base_sha state session_id strategy
 
+  dirty_files="$(dirty_worktree_snapshot)"
+  [[ -n "$dirty_files" ]] || return 0
+
   STARTUP_RECOVERY_MODE=""
   STARTUP_RECOVERY_ISSUE=""
   STARTUP_RECOVERY_SESSION=""
   STARTUP_RECOVERY_PROMPT=""
-
-  dirty_files="$(dirty_worktree_snapshot)"
-  [[ -n "$dirty_files" ]] || return 0
 
   checkpoint="$(checkpoint_file)"
   if [[ -r "$checkpoint" ]]; then
@@ -2169,7 +2163,9 @@ non-epic issue in this session."
       ;;
     QUEUE_EMPTY)
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
-      clear_checkpoint
+      if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+        clear_checkpoint
+      fi
       printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
       exit 0
       ;;
