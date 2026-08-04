@@ -336,6 +336,76 @@ EOF
   pass 'legacy checkpoint is migrated atomically and is not re-migrated'
 }
 
+test_legacy_checkpoint_with_ambiguous_profile_mapping_fails_closed() {
+  local repo="${TEST_ROOT}/ambiguous-profile-repo"
+  local fake_worker="${TEST_ROOT}/ambiguous-profile-worker"
+  local secondary_worker="${TEST_ROOT}/ambiguous-profile-secondary-worker"
+  local config="${TEST_ROOT}/ambiguous-profile-config.toml"
+  local bin_dir="${TEST_ROOT}/ambiguous-profile-bin"
+  local output="${TEST_ROOT}/ambiguous-profile-output.log"
+  local marker="${TEST_ROOT}/ambiguous-profile-worker-ran"
+  local common legacy_checkpoint canonical_checkpoint base_sha status
+
+  mkdir -p "$repo" "$bin_dir"
+  new_repo "$repo"
+  fake_gh "${bin_dir}/gh"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "touch '$marker'" \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$fake_worker"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\\n" "ISSUE_KILLER_STATUS=QUEUE_EMPTY"' > "$secondary_worker"
+  chmod +x "$fake_worker" "$secondary_worker"
+  common="$(cd "$repo" && common=$(git rev-parse --git-common-dir) && cd "$common" && pwd -P)"
+  legacy_checkpoint="${common}/claude-minimax-issue-runner.checkpoint"
+  canonical_checkpoint="${common}/issue-killer.checkpoint"
+  base_sha="$(git -C "$repo" rev-parse main)"
+  cat > "$legacy_checkpoint" <<EOF
+pid=$$
+iteration=2
+issue=171
+branch=main
+base_branch=main
+base_sha=${base_sha}
+session_id=sess-legacy
+state=mutating
+profile=claude-minimax
+cli=claude
+EOF
+  common_config "$config" "$fake_worker"
+  cat >> "$config" <<EOF
+
+[profiles.claude-secondary]
+label = "Claude secondary"
+cli = "claude"
+command = "${secondary_worker}"
+model = "claude-secondary-model"
+EOF
+
+  set +e
+  PATH="${bin_dir}:$PATH" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+  ISSUE_KILLER_CONFIG_PATH="$config" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || {
+    cat "$output" >&2
+    fail "Ambiguous legacy profile mapping must fail closed, got status $status"
+  }
+  [[ -e "$legacy_checkpoint" ]] || \
+    fail 'Ambiguous legacy checkpoint was consumed'
+  [[ ! -e "$canonical_checkpoint" ]] || \
+    fail 'Ambiguous legacy checkpoint was copied into the canonical namespace'
+  [[ ! -e "$marker" ]] || \
+    fail 'Worker launched despite an ambiguous legacy profile mapping'
+  grep -Fq 'legacy runner state could not be migrated safely' "$output" || \
+    fail 'Missing closed-failure diagnostic for ambiguous profile mapping'
+
+  pass 'ambiguous legacy profile mapping fails closed and preserves evidence'
+}
+
 test_legacy_checkpoint_with_partial_fields_fails_closed() {
   local repo="${TEST_ROOT}/partial-repo"
   local fake_worker="${TEST_ROOT}/partial-worker"
@@ -413,7 +483,9 @@ test_migration_does_not_run_when_legacy_state_absent() {
       fail 'Canonical runner failed on a clean repository'
     }
 
-  [[ -d "$canonical_lock_dir" ]] || \
+  [[ ! -d "$canonical_lock_dir" ]] || \
+    fail 'Canonical lock was not released after a clean run'
+  grep -Fq 'Repository lock acquired' "$output" || \
     fail 'Canonical lock was not acquired on a clean repository'
   if grep -Fq 'Legacy namespace resolved' "$output"; then
     fail 'Migration diagnostic appeared when no legacy state was present'
@@ -426,6 +498,7 @@ test_stale_legacy_lock_is_recovered_before_new_lock
 test_legacy_lock_quarantines_unreadable_owner
 test_legacy_lock_rejects_live_owner
 test_legacy_checkpoint_migrates_atomically_once
+test_legacy_checkpoint_with_ambiguous_profile_mapping_fails_closed
 test_legacy_checkpoint_with_partial_fields_fails_closed
 test_migration_does_not_run_when_legacy_state_absent
 

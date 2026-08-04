@@ -222,15 +222,51 @@ legacy_checkpoint_file() {
   printf '%s/%s.checkpoint\n' "$GIT_COMMON_DIR" "$LEGACY_RUNNER_NAME"
 }
 
+# Resolves the one configured Claude profile compatible with the legacy
+# checkpoint identity. Missing legacy identity fields act as wildcards, but
+# migration remains safe only when exactly one configured profile matches.
+legacy_checkpoint_matching_profile() {
+  local checkpoint="$1"
+  local metadata legacy_profile legacy_cli legacy_model legacy_command
+  local candidate candidate_cli candidate_model candidate_command
+  local match="" matches=0
+
+  metadata="$(<"$checkpoint")"
+  legacy_profile="$(legacy_metadata_value profile "$metadata" || true)"
+  legacy_cli="$(legacy_metadata_value cli "$metadata" || true)"
+  legacy_model="$(legacy_metadata_value model "$metadata" || true)"
+  legacy_command="$(legacy_metadata_value command "$metadata" || true)"
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    candidate_cli="$(issue_killer_config_lookup "profiles.${candidate}.cli")"
+    [[ "$candidate_cli" == "claude" ]] || continue
+    if [[ -n "$legacy_profile" ]] &&
+       issue_killer_config_profile_exists "$legacy_profile" &&
+       [[ "$candidate" != "$legacy_profile" ]]; then
+      continue
+    fi
+    [[ -z "$legacy_cli" || "$legacy_cli" == "$candidate_cli" ]] || continue
+    candidate_model="$(issue_killer_config_lookup "profiles.${candidate}.model")"
+    [[ -z "$legacy_model" || "$legacy_model" == "$candidate_model" ]] || continue
+    candidate_command="$(issue_killer_config_lookup "profiles.${candidate}.command")"
+    [[ -z "$legacy_command" || "$legacy_command" == "$candidate_command" ]] || continue
+    match="$candidate"
+    matches=$((matches + 1))
+  done < <(issue_killer_config_profile_names)
+
+  [[ "$matches" -eq 1 ]] || return 1
+  printf '%s\n' "$match"
+}
+
 # Validates a legacy checkpoint for migration. The legacy checkpoint must
 # carry a numeric issue, a base branch matching the configured base, a
 # base SHA that resolves in the current repository, and a known lifecycle
-# state. Profile/CLI/model/command are tolerated but not required; a
-# legacy checkpoint without profile identity is migrated against the
-# default Claude profile because the legacy runner was Claude-only.
+# state. Profile/CLI/model/command are tolerated but not required; they must
+# resolve to exactly one configured Claude execution profile.
 legacy_checkpoint_is_migratable() {
   local checkpoint="$1"
-  local issue branch base_branch base_sha state current_sha
+  local issue branch base_branch base_sha state current_sha matching_profile
 
   [[ -r "$checkpoint" ]] || return 1
   issue="$(legacy_metadata_value issue "$(<"$checkpoint")" || true)"
@@ -239,12 +275,14 @@ legacy_checkpoint_is_migratable() {
   base_sha="$(legacy_metadata_value base_sha "$(<"$checkpoint")" || true)"
   state="$(legacy_metadata_value state "$(<"$checkpoint")" || true)"
   current_sha="$(current_base_sha)"
+  matching_profile="$(legacy_checkpoint_matching_profile "$checkpoint")" || return 1
 
   [[ "$issue" =~ ^[0-9]+$ ]] || return 1
   [[ -n "$branch" && "$branch" != "unknown" ]] || return 1
   [[ "$base_branch" == "$BASE_BRANCH" ]] || return 1
   [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   [[ "$base_sha" == "$current_sha" ]] || return 1
+  [[ "$matching_profile" == "$ISSUE_KILLER_PROFILE_NAME" ]] || return 1
   case "$state" in
     starting|issue_selected|mutating|branch_pushed|pr_created|pr_merged|issue_closed|blocked|failed|malformed|legacy_adopted) return 0 ;;
     *) return 1 ;;
@@ -256,7 +294,7 @@ legacy_checkpoint_is_migratable() {
 # supervisor never depends on a hidden mapping.
 legacy_checkpoint_snapshot() {
   local checkpoint="$1"
-  local issue iteration branch base_branch base_sha state session_id profile cli model command
+  local issue iteration branch base_branch base_sha state session_id
   local metadata
 
   metadata="$(<"$checkpoint")"
@@ -267,10 +305,6 @@ legacy_checkpoint_snapshot() {
   base_sha="$(legacy_metadata_value base_sha "$metadata" || true)"
   state="$(legacy_metadata_value state "$metadata" || true)"
   session_id="$(legacy_metadata_value session_id "$metadata" || true)"
-  profile="$(legacy_metadata_value profile "$metadata" || true)"
-  cli="$(legacy_metadata_value cli "$metadata" || true)"
-  model="$(legacy_metadata_value model "$metadata" || true)"
-  command="$(legacy_metadata_value command "$metadata" || true)"
 
   printf 'pid=%s\niteration=%s\n' "$$" "${iteration:-1}"
   printf 'issue=%s\nbranch=%s\nbase_branch=%s\nbase_sha=%s\nstate=%s\n' \
@@ -280,24 +314,10 @@ legacy_checkpoint_snapshot() {
   else
     printf 'session_id=unavailable\n'
   fi
-  if [[ -n "$profile" ]]; then
-    printf 'profile=%s\n' "$profile"
-  else
-    printf 'profile=claude-main\n'
-  fi
-  if [[ -n "$cli" ]]; then
-    printf 'cli=%s\n' "$cli"
-  else
-    printf 'cli=claude\n'
-  fi
-  if [[ -n "$model" ]]; then
-    printf 'model=%s\n' "$model"
-  else
-    printf 'model=claude-test-model\n'
-  fi
-  if [[ -n "$command" ]]; then
-    printf 'command=%s\n' "$command"
-  fi
+  printf 'profile=%s\n' "$ISSUE_KILLER_PROFILE_NAME"
+  printf 'cli=%s\n' "$ISSUE_KILLER_PROFILE_CLI"
+  printf 'model=%s\n' "$ISSUE_KILLER_PROFILE_MODEL"
+  printf 'command=%s\n' "$ISSUE_KILLER_PROFILE_COMMAND"
 }
 
 # Quarantines a legacy lock whose metadata is corrupt, partial, or
@@ -857,7 +877,8 @@ prepare_legacy_state() {
     fi
   fi
 
-  if [[ "$recovered" -ne 0 ]]; then
+  if [[ "$recovered" -ne 0 ]] ||
+     compgen -G "${GIT_COMMON_DIR}/${LEGACY_RUNNER_NAME}.checkpoint.migrated-*" >/dev/null; then
     printf '[%s] Legacy namespace resolved before canonical lock acquisition.\n' \
       "$RUNNER_NAME" >&2
   fi
@@ -1175,13 +1196,13 @@ prepare_dirty_startup_recovery() {
   local dirty_files
   local issue branch base_sha state session_id strategy
 
+  dirty_files="$(dirty_worktree_snapshot)"
+  [[ -n "$dirty_files" ]] || return 0
+
   STARTUP_RECOVERY_MODE=""
   STARTUP_RECOVERY_ISSUE=""
   STARTUP_RECOVERY_SESSION=""
   STARTUP_RECOVERY_PROMPT=""
-
-  dirty_files="$(dirty_worktree_snapshot)"
-  [[ -n "$dirty_files" ]] || return 0
 
   checkpoint="$(checkpoint_file)"
   if [[ -r "$checkpoint" ]]; then
@@ -2169,7 +2190,9 @@ non-epic issue in this session."
       ;;
     QUEUE_EMPTY)
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
-      clear_checkpoint
+      if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+        clear_checkpoint
+      fi
       printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
       exit 0
       ;;
