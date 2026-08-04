@@ -1,897 +1,223 @@
-# Workflow Skills
+# agent-workflow
 
-A curated subset of 18 skills + 1 autonomous agent adapted from [mattpocock/skills](https://github.com/mattpocock/skills), organized into a logical workflow pipeline for software engineering with AI agents. Skills are grouped by their phase in the development lifecycle; `setup-elvis-brevi-skills` is the namespaced setup entry point for this distribution. The agent (`issue-killer`) is original to this repo.
+Reusable AI-agent workflows for software engineering: **18 prompt-driven
+skills** and one autonomous agent, [`issue-killer`](agent/issue-killer/AGENT.md).
 
-## Philosophy
+Skills describe a process that an AI session follows. Agents are executable
+supervisors that launch worker processes and can perform repository or tracker
+mutations. They are intentionally documented separately.
 
-These skills form a **discipline stack** — each one solves a specific problem at a specific phase. They chain together into workflows, but each is independently useful. The core insight: **separate understanding from designing, designing from planning, planning from implementing, and implementing from reviewing.** Mixing phases produces rework.
+## Install
 
-All skills share a common thread: they are **prompt-driven, not script-driven**. They give the agent a structured process to follow, not a deterministic algorithm to execute. The agent is the executor; the skill is the process.
-
----
-
-## Installation
-
-The installer creates symlinks to a cached checkout, so the installed skills remain
-synchronized with the selected branch or tag without copying or forking their source.
-There are separate destinations for Claude Code, shared `.agents` consumers, and
-OpenCode.
-
-### Quick Install for Claude Code
-
-Use an explicit mode when running from a pipe. This avoids the interactive menu, which
-requires a controlling terminal:
+The installer clones this repository into a cache and creates symlinks. Use an
+explicit mode in automation:
 
 ```bash
-# Personal installation, available in every Claude Code project
+# Claude Code, all projects
 curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
   | bash -s -- --claude-global
 
-# Project-only installation
-curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
-  | bash -s -- --claude-local --target "$PWD"
-```
-
-Claude Code discovers personal skills from `~/.claude/skills/` and project skills from
-`.claude/skills/`. These modes also install the `issue-killer` supervisor
-as a Claude agent and as an executable command:
-
-| Scope | Agent definition | Runner command |
-|---|---|---|
-| Personal | `~/.claude/agents/issue-killer.md` | `~/.local/bin/issue-killer` |
-| Project | `.claude/agents/issue-killer.md` | `.claude/bin/issue-killer` |
-
-If you want to inspect the downloaded script before executing it:
-
-```bash
-curl -fsSLo /tmp/agent-workflow-install.sh \
-  https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh
-bash /tmp/agent-workflow-install.sh --claude-global
-```
-
-### Interactive Installation
-
-Running the installer without a mode opens a menu. It must be run from a shell with a
-controlling TTY; a `curl | bash` process launched by a non-interactive runner cannot use
-`/dev/tty`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh | bash
-```
-
-The menu offers:
-
-```
-¿Dónde instalar las skills y agents?
-  1) Claude Code global  → ~/.claude/ + ~/.local/bin/
-  2) Claude Code local   → {proyecto}/.claude/
-  3) Shared global       → ~/.agents/skills/ + ~/.agents/agents/
-  4) Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/
-  5) Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/
-  6) Ambas locales       → .agents/ + .opencode/
-```
-
-### Non-Interactive Usage
-
-```bash
-# Claude Code (all projects)
-./install.sh --claude-global
-
-# Claude Code (one project)
-./install.sh --claude-local --target ~/my-project
-
-# Shared .agents installation (skills and autonomous agents)
+# Shared skills/agents, all projects
 ./install.sh --global
 
-# Shared .agents installation for one project
+# Shared skills/agents, one project
 ./install.sh --local --target ~/my-project
 
-# OpenCode installation
+# OpenCode, one project
 ./install.sh --opencode --target ~/my-project
-
-# Both shared local directories
-./install.sh --both --target ~/my-project
-
-# Preview without changes
-./install.sh --dry-run --claude-global
-
-# Uninstall
-./install.sh --uninstall --claude-global
 ```
 
-### Options
+Other useful options are `--claude-local`, `--both`, `--dry-run`,
+`--uninstall`, `--force`, and `--ref <branch-or-tag>`. Run `./install.sh
+--help` for the complete list. Without a mode, the installer opens an
+interactive menu and requires a controlling TTY.
 
-| Flag | Description |
-|------|-------------|
-| `--claude-global` | Install skills and the `issue-killer` agent/runner globally |
-| `--claude-local` | Install skills and the `issue-killer` agent/runner in `{target}` |
-| `--global` | Install skills and agents to `~/.agents/skills/` and `~/.agents/agents/` |
-| `--local` | Install skills and agents to `{target}/.agents/skills/` and `{target}/.agents/agents/` |
-| `--opencode` | Install skills and agents to `{target}/.opencode/skills/` and `{target}/.opencode/agent/` |
-| `--both` | Install to both local `.agents/` and `.opencode/` directories |
-| `--target DIR` | Project directory for a local mode (default: cwd) |
-| `--uninstall` | Remove installed symlinks |
-| `--dry-run` | Preview without making changes |
-| `--force` | Overwrite existing paths without prompting |
-| `--ref REF` | Branch or tag to install from (default: `main`) |
+## Skills
 
-### How It Works
+Skills are stored as `SKILL.md` files and do not execute shell commands by
+themselves. Invoke them explicitly using the client syntax (`/skill-name` in
+Claude Code or `$skill-name` in Codex), or let the client select them when its
+trigger matches the request.
 
-1. Clones `elvisbrevi/agent-workflow` to `~/.cache/agent-workflow/` or updates the existing checkout.
-2. Discovers skills, agents, and executable runners from the cache.
-3. Creates symlinks in the selected destination.
-4. Re-running the installer updates the cache and points new installations at the selected revision.
+| Phase | Skills | Use when |
+|---|---|---|
+| Discovery | `zoom-out` | The code or problem is unfamiliar |
+| Design | `domain-modeling`, `grill-with-docs`, `prototype`, `improve-codebase-architecture` | Terms, decisions, prototypes, or structure need work |
+| Planning | `wayfinder`, `to-spec`, `to-tickets`, `triage` | Work must be mapped, specified, decomposed, or classified |
+| Implementation | `implement`, `tdd` | A ticket/spec is ready to build and test |
+| Diagnosis | `diagnose` | A defect needs reproduction and a regression test |
+| Review | `code-review`, `handoff` | Changes need independent review or session transfer |
+| Utility | `caveman`, `grilling`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, setup, or new skill authoring |
 
-The installer is compatible with Bash 3.2 and newer Bash releases. Explicit modes are
-preferred for automation because they do not require a TTY.
-
-### Testing the installer
-
-The regression suite uses temporary homes and a fake cache, so it does not modify your
-real installation or require network access:
-
-```bash
-# Use the default Bash on the host
-bash tests/install_test.sh
-
-# Explicitly exercise a modern Bash on macOS
-BASH_BIN=/opt/homebrew/bin/bash bash tests/install_test.sh
-```
-
-### Claude Code
-
-Claude Code uses these skill locations:
-
-| Scope | Location | Applies to |
-|-------|----------|------------|
-| Personal | `~/.claude/skills/<name>/SKILL.md` | Every project |
-| Project | `.claude/skills/<name>/SKILL.md` | The current project |
-
-It uses `~/.claude/agents/*.md` and `.claude/agents/*.md` for custom agents. The
-installer also exposes the external runner in `~/.local/bin/` (personal mode) or
-`.claude/bin/` (project mode). The external command is what creates and terminates a
-fresh CLI worker process for every issue.
-
-After installation, invoke a skill with its slash command, for example:
+Typical paths:
 
 ```text
-/zoom-out
-/grill-with-docs
+Unfamiliar code: zoom-out → relevant design/planning skill
+New feature: grill-with-docs → to-spec → to-tickets → implement → tdd → code-review
+Bug: diagnose → implement/tdd → code-review
+Structural refactor: improve-codebase-architecture → implement → code-review
 ```
 
-Skills whose frontmatter sets `disable-model-invocation: true` are explicit-only: they can
-be invoked by the user, but Claude will not select them automatically. If a newly created
-skills directory does not appear in the current session, start a new Claude Code session.
+Skills with `disable-model-invocation: true` are explicit-only. See each
+`SKILL.md` for its exact trigger and output contract.
 
-### Codex and OpenCode
+## Autonomous agents
 
-Codex discovers global skills from `~/.agents/skills` and project skills from
-`.agents/skills`. OpenCode uses `.opencode/skills` and `.opencode/agent`. The
-supervisor is CLI-neutral: its selected execution profile determines whether
-each iteration runs under Codex, OpenCode, or Claude, and OpenCode profiles
-may declare an ordered fallback chain for additional resilience.
+| Agent | Purpose | Source |
+|---|---|---|
+| `issue-killer` | Drains eligible issues one at a time with isolated workers | [`agent/issue-killer/`](agent/issue-killer/) |
 
-After installing, Codex normally detects new skills automatically. If a skill does not
-appear in `/skills` or when typing `$`, restart Codex or open a new session. To verify a
-shared global installation of `grill-with-docs`:
+More agents can be added under `agent/<name>/`; each must have its own
+contract, executable entrypoint, state namespace, tests, and README entry.
 
-```bash
-test -f ~/.agents/skills/grill-with-docs/SKILL.md
-```
+## issue-killer
 
-### Install from Specific Version
+`issue-killer` is a destructive, CLI-neutral supervisor. For each iteration it:
 
-```bash
-# Install from a specific tag or branch
-./install.sh --claude-global --ref v1.0.0
-./install.sh --claude-local --target ~/my-project --ref develop
-```
+1. Detects and validates the repository tracker (`gh` for GitHub; `az boards`
+   and `az repos` for Azure DevOps).
+2. Selects one open, ready, non-epic, unblocked issue.
+3. Starts a fresh worker CLI process using the selected execution profile.
+4. Requires the worker to implement, test, review, push, create and merge a PR,
+   and close the issue.
+5. Starts the next worker only after the previous one emits
+   `ISSUE_COMPLETED`; otherwise it stops safely.
 
----
+The worker contract requires these skills:
 
-## Quick Start: Using the Skills
+- `/implement` for the change;
+- `/tdd` where a suitable test seam exists;
+- `/code-review` before completion.
 
-Skills are **prompt templates** that the AI agent reads and follows. They are not
-executable scripts — the agent is the executor, the skill is the process.
+The loop stops on an empty queue, blocked work, failed or malformed worker
+output, ambiguous recovery, dirty state, or exhausted retries. It uses a shared
+Git-common-directory lock and checkpoint so linked worktrees cannot run two
+supervisors concurrently.
 
-### How Skills Are Discovered
+### Configure a profile
 
-Once installed, the agent automatically reads skill descriptions from the selected
-`skills/` directory. When your request matches a skill's trigger phrases, the agent
-loads and follows it.
-
-### Manual Invocation
-
-You can always invoke a skill explicitly by name.
-
-For Claude Code, use its slash command:
-
-```text
-/zoom-out
-/grill-with-docs
-```
-
-For Codex, use `/skills` to browse installed skills or type `$` to mention one:
-
-```text
-$grill-with-docs challenge my current plan
-```
-
-In agents that support natural-language skill selection:
-
-```
-Use the grill-with-docs skill on my current plan
-Run the tdd workflow for this feature
-Diagnose this bug using the diagnose skill
-```
-
-### Auto-Trigger Phrases
-
-Each skill has trigger phrases in its description. Examples:
-
-| Skill | Trigger Phrases |
-|-------|----------------|
-| **prototype** | "prototype this", "let me play with it", "try a few designs" |
-| **implement** | "implement this spec", "build these tickets", "implement the work" |
-| **tdd** | "use tdd", "red-green-refactor", "test-driven" |
-| **diagnose** | "debug this", "find the bug", "diagnose the issue" |
-| **triage** | "show items needing attention", "triage #42", "move to ready-for-agent" |
-| **wayfinder** | "map this huge effort", "chart the decisions", "work through this map" |
-| **code-review** | "review this diff", "check against spec", "code review" |
-| **handoff** | "handoff session", "transfer context", "summarize for next agent" |
-| **caveman** | "caveman mode", "talk like caveman", "be brief" |
-
-Skills with `disable-model-invocation: true` are intentionally explicit-only. Invoke them
-manually with their client-specific command, such as `/grill-with-docs` in Claude Code or
-`$grill-with-docs` in Codex.
-
-### Choosing a Workflow
-
-Not sure which workflow to use? Here's a decision guide:
-
-```
-Do you understand the code?
-  ├─ No  → zoom-out (DISCOVERY)
-  └─ Yes
-      │
-      Are you fixing a bug?
-      ├─ Yes → diagnose (DIAGNOSIS)
-      └─ No
-          │
-          Are you refactoring?
-          ├─ Yes → improve-codebase-architecture → grill-with-docs → implement (DESIGN→IMPLEMENT)
-          └─ No
-              │
-              Is the effort too large or uncertain for one session?
-              ├─ Yes → wayfinder → to-spec → to-tickets (PLANNING)
-              └─ No
-                  │
-                  Do you have a clear plan?
-                  ├─ No  → grill-with-docs → prototype (DESIGN)
-                  └─ Yes → to-spec → to-tickets → implement (PLANNING→IMPLEMENT)
-
-`implement` uses `tdd` where possible and ends with `code-review`.
-Need to switch agents? → handoff (REVIEW)
-```
-
-### Example: Full Feature Workflow
-
-```
-You: I want to add a notification system to the app
-
-Agent: [loads grill-with-docs] Let me challenge this plan against your domain...
-       [asks 10 questions, updates CONTEXT.md]
-
-Agent: [loads prototype] Building a throwaway prototype to validate the state machine...
-       [creates prototype, tests it, captures answer, deletes code]
-
-Agent: [loads to-spec] Creating a spec on the configured issue tracker...
-       [publishes tracker item #42]
-
-Agent: [loads to-tickets] Decomposing into tracer-bullet tickets...
-       [publishes issues #43, #44, #45]
-
-Agent: [loads implement] Implementing issue #43...
-       [uses tdd at the agreed seams, typechecks, and runs the test suite]
-
-Agent: [loads code-review] Reviewing the diff against spec and standards...
-       [reports findings]
-```
-
----
-
-## Classification
-
-### UTILITY (meta / communication)
-
-Skills that modify how the agent operates, not what it produces.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **caveman** | Ultra-compressed communication mode. Drops ~75% of tokens by stripping filler, articles, and pleasantries while preserving technical accuracy. Persists across turns until explicitly disabled. Temporarily exits compression for security warnings and destructive operations. | Reads: nothing. Creates: nothing. Modifies: nothing (communication style only). |
-| **grilling** | Relentless one-question-at-a-time interview for stress-testing a plan, decision, or idea. Looks up discoverable facts, leaves decisions to the user, and does not act until shared understanding is confirmed. | Reads: conversation and relevant environment facts. Creates: nothing. Modifies: nothing. |
-| **setup-elvis-brevi-skills** | Configures a repository's issue tracker, optional triage-role vocabulary, and domain-document layout for the engineering skills. Supports GitHub, GitLab, Azure Boards, local Markdown, or a documented custom tracker; Azure uses `az` canonically with optional `yp` shortcuts. | Reads: repo configuration, agent instructions, domain docs, installed skills. Creates: `docs/agents/*.md` and optionally `AGENTS.md` or `CLAUDE.md`. Modifies: an existing agent-instructions file when present. |
-| **write-a-skill** | Creates new agent skills with proper structure, progressive disclosure, and bundled resources. Enforces SKILL.md under 100 lines, description with triggers, and reference docs one level deep. The meta-skill that bootstraps the workflow itself. | Reads: nothing. Creates: `SKILL.md` + reference docs + optional scripts. Modifies: nothing. |
-
-### DISCOVERY (understand / explore)
-
-Skills for building a mental model of unfamiliar code.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **zoom-out** | One-line instruction to the agent: "Go up a layer of abstraction. Give me a map of all relevant modules and callers, using the project's domain glossary vocabulary." The simplest and most frequently used skill. Has `disable-model-invocation: true` — never auto-triggers, always manually invoked. | Reads: `CONTEXT.md`, source code in the area of interest. Creates: nothing. Modifies: nothing (output is conversational). |
-
-### DESIGN (explore / validate ideas)
-
-Skills for shaping ideas before committing to code. This is where expensive mistakes are prevented.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **domain-modeling** | Actively sharpens the project's ubiquitous language, challenges ambiguous terms and code contradictions, updates `CONTEXT.md` inline, and offers ADRs only for hard-to-reverse, surprising trade-offs. | Reads: `CONTEXT.md`, `CONTEXT-MAP.md`, ADRs and relevant source code. Creates: domain docs lazily. Modifies: `CONTEXT.md`. |
-| **grill-with-docs** | User-invoked composition of `grilling` with `domain-modeling`: stress-tests a plan while maintaining the project's glossary and architectural decisions. | Reads and writes through the two composed skills. |
-| **prototype** | Builds throwaway code to answer exactly one question, then deletes everything. Two branches: **LOGIC** (interactive terminal app that drives a state machine through hard cases — pure reducer behind a TUI shell) and **UI** (several radically different UI variations on a single route, toggleable via `?variant=` and a floating bottom bar). The answer is captured in a commit/ADR/issue; the code is deleted. | Reads: source code in the area, existing routing/tooling conventions. Creates: prototype files + task runner script + `NOTES.md`. Modifies: `package.json` (temporarily, for run script). Then **deletes everything** except the captured answer. |
-| **improve-codebase-architecture** | Three-phase architectural diagnosis: (1) explore codebase for shallow modules, leakage, poor locality; (2) generate a self-contained HTML report with Tailwind+Mermaid diagrams showing before/after for each deepening candidate; (3) grilling loop to design the chosen candidate's new shape. Uses a precise architectural vocabulary (module, interface, seam, adapter, depth, leverage, locality) defined in `LANGUAGE.md`. | Reads: `CONTEXT.md`, `docs/adr/*.md`, entire codebase (via explore sub-agent). Creates: `/tmp/architecture-review-<timestamp>.html` (visual report). Modifies: `CONTEXT.md` (if deepening names new domain concepts). |
-
-**Associated docs for improve-codebase-architecture:**
-- **LANGUAGE.md** — Glossary of 8 mandatory architectural terms. Prohibits synonyms (component, service, API, boundary). Defines the deletion test, the interface-as-test-surface principle, and the one-adapter-vs-two-adapters seam rule.
-- **DEEPENING.md** — How to safely deepen modules based on their dependency category: in-process (always deepenable), local-substitutable (stand-in required), remote-but-owned (ports & adapters), true external (mock). Testing strategy: replace old shallow tests, don't layer.
-- **HTML-REPORT.md** — Full scaffold for the visual report. Mermaid for graph-shaped diagrams; hand-built divs/SVG for editorial visuals (mass diagrams, cross-sections). Style rules: editorial, not corporate; 320px diagram height; glossary-only vocabulary.
-- **INTERFACE-DESIGN.md** — Parallel sub-agent pattern for exploring alternative interfaces (Design It Twice). Spawns 3+ sub-agents with different constraints, compares by depth, locality, and seam placement.
-
-### PLANNING (document / decompose)
-
-Skills for turning ideas into actionable, agent-ready work items.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **to-spec** | Synthesizes the current conversation into a spec without re-interviewing the user. Confirms the highest practical testing seams, then records the problem, solution, user stories, implementation and testing decisions, out-of-scope, and notes. Publishes a **single tracker item** with the `ready-for-agent` role. | Reads: conversation context, codebase, `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: 1 item on tracker. Modifies: nothing. |
-| **to-tickets** | Decomposes a plan, spec, or conversation into **tracer-bullet tickets** with explicit blocking edges. Supports local ticket files or a real tracker, keeps each slice within one fresh context window, and uses expand–contract sequencing for wide refactors. Quizzes the user before publishing in dependency order. | Reads: conversation context or referenced spec/issue, codebase (optional), `CONTEXT.md`, `docs/adr/*.md`, tracker configuration. Creates: N local ticket files or tracker issues. Modifies: nothing (never closes parent). |
-| **triage** | Moves tracker items through category and state roles, verifies claims against the codebase, and writes durable agent briefs. On Azure Boards it uses the configured Tags, fields, states, and discussions while preserving unrelated Tags. | Reads: tracker items and discussion, code, domain docs, ADRs, `.out-of-scope/`. Creates: tracker comments and optional out-of-scope records. Modifies: tracker roles/states and rejected-enhancement records. |
-| **wayfinder** | Maps work too large for one session as a parent map plus decision tickets, advances the open frontier one decision at a time, and records durable resolutions. On Azure Boards it uses Parent/Child and Predecessor/Successor relations. | Reads: map, child tickets, dependencies, domain docs. Creates: map and decision work items. Modifies: claims, discussions, states, relations, and the map index. |
-
-**Key distinction:** `wayfinder` resolves uncertainty before execution, `to-spec` produces one panoramic specification (the compass), `to-tickets` produces N executable tickets with explicit blocking edges (the steps), and `triage` controls readiness at tracker intake.
-
-### IMPLEMENTATION (write code)
-
-Skills for producing tested, production-ready code.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **implement** | Implements a spec or ticket set, uses `tdd` where possible at pre-agreed seams, runs focused and full validation, invokes `code-review`, then commits to the current branch. | Reads: spec or tickets, codebase, test and typecheck commands. Creates: implementation, tests, and a commit. Modifies: source and tests. |
-| **tdd** | Runs the red → green implementation loop one vertical slice at a time. Tests must verify behavior through pre-agreed public seams, use independent expected values, and avoid implementation coupling, tautologies, and horizontal slicing. Refactoring belongs to `code-review`, outside the loop. | Reads: `CONTEXT.md`, ADRs, existing tests, source code. Creates: one test and its minimal implementation per cycle. Modifies: tests and source code. |
-
-**Associated docs for tdd:**
-- **tests.md** — Good tests (integration-style, observable behavior, independent expected values) vs bad tests (mock internals, test private methods, tautological assertions).
-- **mocking.md** — Mock at system boundaries only (external APIs, DB, time, filesystem). Never mock own modules or internal collaborators. Prefer dependency injection and SDK-style interfaces over generic fetchers.
-
-### DIAGNOSIS (fix bugs)
-
-Skills for finding and fixing defects with scientific rigor.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **diagnose** | Six-phase scientific debugging process. Phase 1 (feedback loop) is 90% of the skill — 10 methods ranked from failing test to HITL bash script. Phase 2: reproduce. Phase 3: 3-5 ranked falsifiable hypotheses. Phase 4: instrument one variable at a time (debugger > targeted logs > never log-everything). Phase 5: regression test before fix, but only at a correct seam. Phase 6: cleanup instrumentation, post-mortem in commit message, hand-off to improve-codebase-architecture if architecture prevented a good test seam. | Reads: source code, tests, logs, error traces. Creates: regression test (at correct seam), `NOTES.md` (post-mortem). Modifies: source code (the fix). Deletes: all `[DEBUG-*]` instrumentation, throwaway prototypes. |
-
-**Associated docs for diagnose:**
-- **scripts/hitl-loop.template.sh** — Last-resort bash template for human-in-the-loop debugging. Provides `step` (show instruction, wait for Enter) and `capture` (ask question, read response) helpers. Agent runs the script; human follows terminal prompts. Captured values printed as `KEY=VALUE` for the agent to parse.
-
-### REVIEW (validate / hand over)
-
-Skills for validating changes and preserving session continuity.
-
-| Skill | Description | I/O |
-|-------|-------------|-----|
-| **code-review** | Current upstream two-axis review: checks the diff against documented standards plus a Fowler smell baseline, and independently against the originating spec. Validates the fixed point before launching parallel sub-agents and keeps findings separated by axis. | Reads: diff, commits, issue/spec, tracker configuration, documented standards. Creates: nothing. Modifies: nothing. |
-| **handoff** | Compresses the current conversation into a transfer document for another agent. Includes suggested skills for the next session. References existing specs, plans, ADRs, issues, commits, and diffs by path/URL rather than duplicating them. Redacts sensitive information. Saves to the OS temp directory, not the workspace. | Reads: conversation context. Creates: handoff document in OS temp directory. Modifies: nothing. |
-
----
-
-## Complete Workflows
-
-### WF-1: New Feature (full happy path)
-
-```
-UTILITY:   (caveman — optional, enable if token-constrained)
-
-DISCOVERY: (zoom-out — skip if you already know the code)
-
-DESIGN:    grill-with-docs ──→ prototype (LOGIC)
-                │                    │
-                │   sharpens terms   │   validates state machine
-                ▼                    ▼
-           CONTEXT.md          throwaway TUI
-           (updated)           (deleted after answer)
-
-PLANNING:  to-spec ──→ to-tickets
-                │           │
-                │  1 spec   │  N tickets (vertical slices)
-                ▼           ▼
-           Tracker item   Child tracker items
-           #100 (spec)    #101, #102, #103...
-
-IMPLEMENT: implement ──→ tdd ──→ tests + code (1 slice at a time)
-
-REVIEW:    code-review ──→ Standards + Spec report
-                │
-                │   (if changing agents mid-stream)
-                ▼
-           handoff ──→ transfer doc for next agent
-```
-
-### WF-2: Bug in Unfamiliar Code
-
-```
-DISCOVERY: zoom-out ──→ map of modules + callers
-
-DIAGNOSIS: diagnose
-              │
-              ├── Phase 1: feedback loop (failing test)
-              ├── Phase 2: reproduce
-              ├── Phase 3: 3-5 hypotheses
-              ├── Phase 4: instrument
-              ├── Phase 5: fix + regression test
-              └── Phase 6: cleanup + post-mortem
-                             │
-                             │   (if architecture prevented good test)
-                             ▼
-                        improve-codebase-architecture
-
-REVIEW:    code-review ──→ verify fix against spec and standards
-```
-
-### WF-3: Structural Refactor
-
-```
-DISCOVERY: zoom-out ──→ module map
-
-DESIGN:    improve-codebase-architecture
-              │
-              ├── Explore codebase
-              ├── Generate /tmp/architecture-review-*.html
-              ├── User picks candidate
-              └── Grilling loop → design new shape
-                     │
-                     ├── Updates CONTEXT.md
-                     └── Optionally creates ADR
-
-DESIGN:    grill-with-docs ──→ validate new design against domain
-
-PLANNING:  to-tickets ──→ N refactor tickets
-
-IMPLEMENT: implement ──→ refactor with test safety net
-
-REVIEW:    code-review ──→ verify refactor matches design
-```
-
-### WF-4: Early-Stage Idea (no code yet)
-
-```
-DESIGN:    grill-with-docs ──→ clarify domain terms
-                │
-                ▼
-           prototype (UI or LOGIC) ──→ validate concept fast
-                │
-                ▼
-           (capture answer in NOTES.md, delete prototype)
-
-PLANNING:  to-spec ──→ document as a formal spec
-                │
-                ▼
-           to-tickets ──→ decompose into tickets
-                │
-                ▼
-           implement ──→ tdd ──→ code-review
-```
-
-### WF-5: Multi-Agent Session
-
-```
-[Agent A]
-  grill-with-docs ──→ to-spec ──→ to-tickets
-                                       │
-                                       ▼
-                                  handoff ──→ saves to /tmp/
-                                                  │
-[Agent B]                                         │
-  reads handoff doc ◄─────────────────────────────┘
-       │
-       ▼
-  implement ──→ tdd ──→ code-review
-```
-
-### WF-6: Token-Constrained Session
-
-```
-caveman ──→ [any workflow above]
-  │
-  │   Active for every response until "stop caveman"
-  │   Temporarily exits for security warnings
-  │   Cuts ~75% tokens
-  ▼
-```
-
----
-
-## Skill I/O Summary
-
-| Skill | Reads | Creates | Modifies | Deletes |
-|-------|-------|---------|----------|---------|
-| caveman | — | — | — | — |
-| grilling | conversation, environment facts | — | — | — |
-| setup-elvis-brevi-skills | repo config, agent instructions, domain docs | `docs/agents/*.md`, optionally agent instructions | existing `AGENTS.md` or `CLAUDE.md` | — |
-| write-a-skill | — | SKILL.md + docs | — | — |
-| zoom-out | CONTEXT.md, code | — | — | — |
-| domain-modeling | CONTEXT.md, ADRs, code | CONTEXT.md, ADRs | CONTEXT.md | — |
-| grill-with-docs | CONTEXT.md, ADRs, code | CONTEXT.md, ADRs | CONTEXT.md | — |
-| prototype | code, tooling | prototype files, script, NOTES.md | package.json (temp) | prototype files |
-| improve-codebase-architecture | CONTEXT.md, ADRs, code | HTML report in /tmp | CONTEXT.md | — |
-| wayfinder | destination, tracker map, decision tickets | map and child work items | claims, discussions, states, relations, map index | — |
-| to-spec | conversation, code, CONTEXT.md | 1 spec issue | — | — |
-| to-tickets | conversation or referenced spec/issue, CONTEXT.md | N local files or tracker issues | — | — |
-| triage | tracker items, code, domain docs, `.out-of-scope/` | comments, agent briefs, optional rejection records | roles, states, rejection records | — |
-| implement | spec or tickets, code, validation commands | implementation, tests, commit | source and tests | — |
-| tdd | CONTEXT.md, ADRs, tests, code | tests + code | may delete old tests | — |
-| diagnose | code, tests, logs | regression test, NOTES.md | code (fix) | [DEBUG-*], prototypes |
-| code-review | diff, commits, spec, standards | — | — | — |
-| handoff | conversation | handoff doc in /tmp | — | — |
-
----
-
-## Dependency Graph
-
-```
-write-a-skill ◄── (bootstraps new skills, optional)
-
-caveman ◄──────── (wraps any workflow, optional)
-
-zoom-out ──────── (entry point when code is unfamiliar)
-    │
-    ▼
-grill-with-docs ───── prototype
-    │                      │
-    │   (domain clarity)    │   (concept validation)
-    │                      │
-    ├──────────────────────┤
-    │                      │
-    ▼                      ▼
-improve-codebase-architecture
-    │   (structural diagnosis)
-    │
-    ├──────────────────────┐
-    │                      │
-    ▼                      ▼
-wayfinder ───► to-spec ─────► to-tickets
-                                  │
-                                  ▼
-                             implement
-                                  │
-                                  ▼
-                                tdd
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-                diagnose                  code-review
-                    │                           │
-                    └─────────────┬─────────────┘
-                                  ▼
-                               handoff
-```
-
----
-
-## Glossary of Key Concepts
-
-**Vertical slice (tracer bullet):** A thin implementation that cuts through ALL layers (schema, API, UI, tests) end-to-end. Each slice is independently demoable. Contrasts with horizontal slicing (doing all of one layer first).
-
-**HITL (Human In The Loop):** A task that requires human judgment — architectural decisions, design reviews, external access. Contrasts with AFK (Away From Keyboard), which an agent can complete autonomously.
-
-**Deep module:** A module with a small interface and a large implementation. High leverage for callers, high locality for maintainers. The ideal building block.
-
-**Shallow module:** A module whose interface is nearly as complex as its implementation. Pass-throughs, thin wrappers, one-liners that add no abstraction. The deletion test reveals them.
-
-**Seam:** A place where behavior can be altered without editing in place. The location where an interface lives. From Michael Feathers' "Working Effectively with Legacy Code."
-
-**CONTEXT.md:** A domain glossary file. Defines the canonical terms for a project's domain concepts and explicitly lists synonyms to avoid. Not a spec, not a scratch pad, not implementation details.
-
-**ADR (Architecture Decision Record):** A short document (often one paragraph) recording that a decision was made and why. Numbered sequentially in `docs/adr/`. Only created when the decision is hard to reverse, surprising without context, and the result of a real trade-off.
-
----
-
-## File Tree
-
-```
-workflow/
-├── README.md
-├── install.sh
-├── tests/
-│   └── install_test.sh
-│
-├── utility/
-│   ├── caveman/
-│   │   └── SKILL.md
-│   ├── grilling/
-│   │   └── SKILL.md
-│   ├── setup-elvis-brevi-skills/
-│   │   ├── SKILL.md
-│   │   ├── agents/openai.yaml
-│   │   ├── domain.md
-│   │   ├── issue-tracker-azure-devops.md
-│   │   ├── issue-tracker-github.md
-│   │   ├── issue-tracker-gitlab.md
-│   │   ├── issue-tracker-local.md
-│   │   └── triage-labels.md
-│   └── write-a-skill/
-│       └── SKILL.md
-│
-├── discovery/
-│   └── zoom-out/
-│       └── SKILL.md
-│
-├── design/
-│   ├── domain-modeling/
-│   │   ├── SKILL.md
-│   │   ├── ADR-FORMAT.md
-│   │   └── CONTEXT-FORMAT.md
-│   ├── grill-with-docs/
-│   │   ├── SKILL.md
-│   │   ├── ADR-FORMAT.md
-│   │   └── CONTEXT-FORMAT.md
-│   ├── prototype/
-│   │   ├── SKILL.md
-│   │   ├── LOGIC.md
-│   │   └── UI.md
-│   └── improve-codebase-architecture/
-│       ├── SKILL.md
-│       ├── LANGUAGE.md
-│       ├── DEEPENING.md
-│       ├── HTML-REPORT.md
-│       └── INTERFACE-DESIGN.md
-│
-├── planning/
-│   ├── triage/
-│   │   ├── SKILL.md
-│   │   ├── AGENT-BRIEF.md
-│   │   ├── OUT-OF-SCOPE.md
-│   │   └── agents/openai.yaml
-│   ├── wayfinder/
-│   │   ├── SKILL.md
-│   │   └── agents/openai.yaml
-│   ├── to-spec/
-│   │   ├── SKILL.md
-│   │   └── agents/openai.yaml
-│   └── to-tickets/
-│       ├── SKILL.md
-│       └── agents/openai.yaml
-│
-├── implementation/
-│   ├── implement/
-│   │   ├── SKILL.md
-│   │   └── agents/openai.yaml
-│   └── tdd/
-│       ├── SKILL.md
-│       ├── agents/openai.yaml
-│       ├── tests.md
-│       └── mocking.md
-│
-├── diagnosis/
-│   └── diagnose/
-│       ├── SKILL.md
-│       └── scripts/
-│           └── hitl-loop.template.sh
-│
-├── review/
-│   ├── code-review/
-│   │   ├── SKILL.md
-│   │   └── agents/openai.yaml
-│   └── handoff/
-│       ├── SKILL.md
-│       └── agents/openai.yaml
-│
-└── agent/
-    └── issue-killer/
-        ├── AGENT.md
-        ├── PROMPT.md
-        ├── REFERENCE.md
-        ├── run.sh
-        ├── config/{issue-killer-config,toml-parser,profile-catalog}.sh
-        ├── operator/session.sh
-        ├── state/{checkpoint,repository-lock}.sh
-        ├── recovery/{legacy-migration,startup,retry}.sh
-        ├── runtime/{supervisor,claude-adapter,codex-adapter,opencode-adapter}.sh
-        └── tracker/{github,azure-devops,selector,...}.sh
-```
-
----
-
-## Agents
-
-In addition to the 18 prompt-driven skills above, this repo ships one **autonomous subagent** — a different kind of artifact:
-
-| Type | What it is | Where it lives |
-|------|-----------|----------------|
-| **Skill** (18) | A prompt template that augments a session. The agent reads it and follows the process. | `category/<skill>/SKILL.md` |
-| **Agent** (1) | A supervisor plus executable loop that launches a fresh CLI worker for each issue. | `agent/<name>/AGENT.md` + `run.sh` |
-
-### `issue-killer` — isolated, CLI-neutral issue drainer
-
-Launches a non-persistent worker process selected from a personal execution
-profile. Each fresh worker takes exactly one available non-epic issue, uses
-`/implement`, `/tdd`, and `/code-review`, opens a PR to the configured base
-branch, merges it automatically, and closes the issue. The process exits, then
-the supervisor launches a new non-persistent worker. The loop ends when the
-eligible queue is empty and stops safely on blocked work, failure, unexplained
-dirty work, or an invalid worker status.
-
-The supervisor is CLI-neutral: Claude, Codex, and OpenCode are interchangeable
-options bound to the worker process. Tracker selection follows the repository
-remote and `docs/agents/issue-tracker.md`: GitHub uses `gh`, while Azure
-DevOps uses `az boards` and `az repos` with repository-owned organization,
-project, repository, work-item, state, relation, claim, and closure mappings
-validated before worker launch.
-
-### Configuration
-
-Execution profiles live in `~/.config/issue-killer/config.toml`. Every profile
-binds a CLI, a command, a model, an optional shell launcher, and CLI-specific
-adapter options. `--config <path>` replaces the default for one invocation.
+Create `~/.config/issue-killer/config.toml`. The file contains no credentials;
+each CLI must already be installed and authenticated independently.
 
 ```toml
-# ~/.config/issue-killer/config.toml
 default_profile = "claude-main"
 
 [profiles.claude-main]
-label = "Claude | test-model"
+label = "Claude main"
 cli = "claude"
-command = "claude"          # executable or shell function name
-model = "claude-test-model" # example placeholder; replace with your installed model
-shell = "bash"              # optional; required when `command` is a shell function
-init_file = "~/.bashrc"     # optional; required when `shell` is set
+command = "claude"          # executable or shell function
+model = "your-claude-model"
 
 [profiles.claude-main.options]
 permission_mode = "bypassPermissions"
 
-[profiles.codex-fast]
-label = "Codex | test-model"
+[profiles.codex-main]
+label = "Codex main"
 cli = "codex"
 command = "codex"
-model = "codex-test-model"  # example placeholder
+model = "your-codex-model"
 
-[profiles.codex-fast.options]
-reasoning_effort = "medium"
+[profiles.codex-main.options]
+reasoning_effort = "high"
 sandbox = "danger-full-access"
 
 [profiles.opencode-main]
-label = "OpenCode | test-model"
+label = "OpenCode main"
 cli = "opencode"
 command = "opencode"
-model = "provider/test-model" # example placeholder; replace with a provider-qualified model
-fallbacks = ["opencode-gpt"]  # OpenCode-only ordered fallback chain
+model = "provider/your-model"
+fallbacks = ["opencode-backup"]
 
 [profiles.opencode-main.options]
 variant = "high"
 auto_approve = true
 
-[profiles.opencode-gpt]
-label = "OpenCode | gpt"
+[profiles.opencode-backup]
+label = "OpenCode backup"
 cli = "opencode"
 command = "opencode"
-model = "provider/gpt-model" # example placeholder
+model = "provider/backup-model"
 ```
 
-**Placeholder model identifiers.** Every `model = "..."` value above is an
-example. Discover the identifiers your installed CLI exposes and substitute
-them in your personal TOML. Common discovery paths: `claude models`,
-`codex models list`, and `opencode models --provider <provider>`. The runner
-never assumes a universal catalog and never falls back to a guessed
-identifier.
+`default_profile` is used for non-interactive launches. With a TTY, the agent
+shows the configured profiles and asks the operator to select one; OpenCode
+also offers an ordered fallback chain. Fallbacks are OpenCode-only and are
+used only for approved provider availability/rate-limit failures, not for
+implementation failures.
 
-### Selector and fallback behavior
+If `command` is a shell function, add `shell = "bash"` and
+`init_file = "~/.bashrc"` (or the appropriate initialization file). Profile
+commands and option values are strictly validated; arbitrary shell expressions
+and `eval` are not supported.
 
-When launched from a TTY, the supervisor lists every configured profile with
-its label, CLI, model, and the active TOML path, then asks the operator to
-pick one. Editing the TOML adds or removes profiles; the selector footer
-always points at the file.
+### Use it
 
-After picking an OpenCode profile, the operator is repeatedly offered the
-remaining OpenCode profiles to build an ordered fallback chain. Each chosen
-profile is removed from later choices and `None` terminates the chain.
-Non-OpenCode profiles skip this menu.
-
-Without a TTY (CI, automation, agent invocations), the supervisor uses
-`default_profile` and reads that profile's declared `fallbacks` list
-deterministically. Missing or invalid `default_profile`, duplicate chain
-entries, cycles, or non-OpenCode fallback references are rejected before
-worker launch.
-
-### Worker event output
-
-The default worker stream is complete structured JSON. Each object includes the operator-facing `category`, CLI identity, iteration, UTC timestamp, and the complete provider event under `event`; provider order and payload fidelity are preserved. The `Worker finished` object also carries the generic issue-killer status when present. Provider events may expose prompts, commands, paths, tool inputs, credentials, tokens, or other sensitive values. Treat default output as sensitive and avoid publishing or storing it in shared logs.
-
-### CLI adapters
-
-| Adapter | Invocation | Event format | Notes |
-|---------|------------|--------------|-------|
-| Claude  | `claude --print --no-session-persistence --output-format stream-json --permission-mode <mode>` | Stream JSON | `--resume <session>` resumes an in-flight session; `--no-session-persistence` is the default for fresh workers. |
-| Codex   | `codex exec --json --sandbox <mode>` | JSONL | `reasoning_effort` and `sandbox` are CLI-specific options. |
-| OpenCode| `opencode run --format json` | JSON events | `--variant <v>` and `--auto-approve` (or `true`/`false`) are CLI-specific options; supports profile fallback chain. |
-
-Every adapter exposes the same `runtime_*` surface so the orchestrator never
-branches on the selected CLI. The status marker stays `ISSUE_KILLER_STATUS`
-with `ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`, or
-`RECOVERY_REQUIRED`. Worker skill invocation is portable: the worker contract
-references `/implement`, `/tdd`, and `/code-review` without assuming one
-client's exact slash syntax.
-
-### Tracker adapters
-
-| Tracker | CLI | Operations |
-|---------|-----|------------|
-| GitHub  | `gh` | Issue/work-item discovery, dependency checks, claim, PR reconciliation, merge verification, closure. |
-| Azure DevOps | `az boards`, `az repos` (with the `azure-devops` extension) | Work-item discovery, dependency checks, claim, PR reconciliation, merge verification, closure. Requires the repository's tracker document to declare organization, project, repository, work-item types, states, and role mappings. |
-
-A remote that does not match `docs/agents/issue-tracker.md` or that lacks
-the required CLI/authentication fails the supervisor before a worker is
-launched. Tracker selection is inferred from the Git remote and is not part
-of any execution profile.
-
-### Migration from the historical binary
-
-The supervisor is the renamed, expanded form of the historical
-`claude-minimax-issue-runner` binary. Existing per-repository state owned
-by the legacy binary is detected at startup:
-
-- A live legacy lock (or one that is still owned by a running legacy
-  process) blocks the new supervisor and points at the surviving owner.
-- A stale legacy lock is recovered once its owner metadata validates
-  against the current repository path; unrecognized siblings are
-  quarantined rather than deleted.
-- A valid legacy checkpoint is migrated atomically into the canonical
-  `issue-killer.checkpoint` namespace; partial or cross-repository state
-  fails closed with a recoverable error.
-- No permanent `claude-minimax-issue-runner` alias is added to
-  `PATH`. The `install.sh` script also removes any installed legacy
-  symlinks during install or uninstall, and the legacy agent and binary
-  directories are no longer shipped.
-
-### Safety boundary
-
-This agent performs destructive operations: it pushes branches, creates
-and merges PRs into the base branch, and closes issues. The supervisor
-requires an interactive confirmation that explicitly displays the selected
-profile, model, fallback chain, tracker, repository, autonomy mode, and
-base branch. It verifies a clean worktree before every normal worker and
-refuses to continue after ambiguous or partial results. If startup finds
-dirty work with a valid recovery checkpoint, it displays the issue,
-branch, base SHA, last state, dirty files, and strategy, reconciles live
-issue/PR state, then requires TTY confirmation before resuming. Dirty
-legacy work without a checkpoint requires
-`ISSUE_RUNNER_ADOPT_ISSUE=<number>` and is never inferred from branch
-names or files. An atomic lock in the Git common directory prevents
-concurrent runners across the repository and its linked worktrees; stale
-locks are recovered when their owner process no longer exists. Set
-`ISSUE_RUNNER_BASE_BRANCH` when the target is not `main`.
-
-### Invoke
-
-From the target repository:
+From the target Git repository:
 
 ```bash
 issue-killer
-```
 
-For a project-local install (Claude Code mode):
+# Explicit configuration and repository
+issue-killer --config ~/.config/issue-killer/config.toml /path/to/repository
 
-```bash
+# Local Claude Code installation
 ./.claude/bin/issue-killer
 ```
 
+The command accepts `[--config <path>] [repository]`. Defaults are:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `ISSUE_RUNNER_BASE_BRANCH` | `main` | PR target and integration branch |
+| `ISSUE_RUNNER_MAX_ITERATIONS` | `0` | Completed issues limit; `0` means unlimited |
+| `ISSUE_RUNNER_PROGRESS_INTERVAL` | `30` | Heartbeat seconds; `0` disables it |
+| `ISSUE_RUNNER_ASSUME_YES` | `false` | Skip destructive confirmation; use only with explicit authorization |
+| `ISSUE_RUNNER_STREAM_OUTPUT` | `true` | Render structured provider progress |
+| `ISSUE_RUNNER_RETRY_DELAYS` | `15,30,60` | Backoff for transient worker transport failures |
+| `ISSUE_RUNNER_RETRY_LIMIT` | derived | Maximum attempts per issue, including the first |
+| `ISSUE_RUNNER_TRANSIENT_PATTERNS` | built-in | Newline-separated regex overrides for transient failures |
+| `ISSUE_RUNNER_ADOPT_ISSUE` | unset | Explicit issue number required to adopt dirty legacy work |
+
+For live status and checkpoint inspection:
+
 ```bash
 cat "$(git rev-parse --git-common-dir)/issue-killer.lock/status"
+cat "$(git rev-parse --git-common-dir)/issue-killer.checkpoint"
 ```
 
-Set `ISSUE_RUNNER_PROGRESS_INTERVAL` to change the heartbeat interval (`0`
-disables it).
+The default structured stream can contain sensitive provider event data; do not
+publish raw output or checkpoint files. Set `ISSUE_RUNNER_STREAM_OUTPUT=false`
+for legacy plain output. `jq` is required for the default stream mode.
 
-See [agent/issue-killer/AGENT.md](agent/issue-killer/AGENT.md),
-[PROMPT.md](agent/issue-killer/PROMPT.md), and
-[REFERENCE.md](agent/issue-killer/REFERENCE.md).
+### Safety boundary
+
+Before normal execution the supervisor validates the tracker, profile,
+authentication prerequisites, base branch, and clean worktree, then requests
+confirmation for the destructive loop. It never guesses a recovery issue from
+a branch or file name. A missing status marker or partial PR/issue result stops
+the loop with `RECOVERY_REQUIRED`.
+
+Details about recovery, adapters, checkpoint fields, migration, and exit
+statuses are in [`agent/issue-killer/REFERENCE.md`](agent/issue-killer/REFERENCE.md).
+The worker instructions are in [`PROMPT.md`](agent/issue-killer/PROMPT.md).
+
+## Repository documentation
+
+- [`AGENTS.md`](AGENTS.md): where to modify code, invariants, and validation.
+- [`CONTEXT.md`](CONTEXT.md): domain vocabulary.
+- [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md): tracker contract.
+- [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md): canonical roles.
+- [`docs/design/issue-killer.md`](docs/design/issue-killer.md): design and adapter boundaries.
+
+## Tests
+
+```bash
+bash tests/install_test.sh
+bash tests/issue_killer_test.sh
+bash tests/issue_killer_migration_test.sh
+bash tests/github_tracker_adapter_test.sh
+bash tests/azure_devops_tracker_adapter_test.sh
+```
+
+The runner is expected to remain compatible with Bash 3.2 and a current Bash
+release. Do not use real credentials or a real backlog in the test suites.
