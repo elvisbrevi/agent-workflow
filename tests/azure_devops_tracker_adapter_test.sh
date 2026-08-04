@@ -34,7 +34,7 @@ epic_work_item_types = ["Epic"]
 open_states = ["New", "Active"]
 closed_states = ["Closed", "Done"]
 ready_tag = "ready-for-agent"
-claim_identity = "@me"
+claim_identity = "operator@example.com"
 predecessor_relation = "System.LinkTypes.Dependency-Reverse"
 closed_state = "Done"
 DOC
@@ -49,9 +49,23 @@ printf '%s\n' "$*" >> "$AZURE_TEST_CALLS"
 case "$1 $2 $3" in
   "extension show --name") printf '%s\n' '{"name":"azure-devops"}' ;;
   "devops project show") printf '%s\n' '{"id":"project-id","name":"example-project"}' ;;
+  "devops user show") printf '%s\n' '{"user":{"mail":"operator@example.com"}}' ;;
+  "devops invoke --area")
+    if [[ "$*" == *'type='* ]]; then
+      printf '%s\n' '{"states":[{"name":"New"},{"name":"Active"},{"name":"Closed"},{"name":"Done"}]}'
+    else
+      printf '%s\n' '{"value":[{"name":"User Story"},{"name":"Bug"},{"name":"Task"},{"name":"Epic"}]}'
+    fi
+    ;;
   "repos show --repository") printf '%s\n' '{"id":"repository-id","name":"example-repo"}' ;;
   "boards work-item relation") printf '%s\n' '[{"referenceName":"System.LinkTypes.Dependency-Reverse"}]' ;;
-  "boards query --wiql") printf '%s\n' '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6},{"id":8}]' ;;
+  "boards query --wiql")
+    case "${AZURE_TEST_QUERY_MODE:-normal}" in
+      empty) printf '%s\n' '[]' ;;
+      blocked) printf '%s\n' '[{"id":6}]' ;;
+      *) printf '%s\n' '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6},{"id":8}]' ;;
+    esac
+    ;;
   "boards work-item show")
     id=""
     previous=""
@@ -69,10 +83,13 @@ case "$1 $2 $3" in
       7) printf '%s\n' '{"id":7,"fields":{"System.WorkItemType":"Task","System.State":"Active"},"relations":[]}' ;;
       8) printf '%s\n' '{"id":8,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/9"}]}' ;;
       9) printf '%s\n' '{"id":9,"fields":{"System.WorkItemType":"Task","System.State":"Done"},"relations":[]}' ;;
+      10) printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent"},"relations":[]}' ;;
       *) exit 1 ;;
     esac
     ;;
   "boards work-item update") printf '%s\n' '{"id":1,"fields":{"System.State":"Done"}}' ;;
+  "repos pr create") printf '%s\n' '{"pullRequestId":42,"status":"active"}' ;;
+  "repos pr update") printf '%s\n' '{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded"}' ;;
   "repos pr list") printf '%s\n' '[{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]' ;;
   *) exit 1 ;;
 esac
@@ -89,6 +106,8 @@ adapter_path="$(tracker_select_adapter "$repo")" || \
 [[ "$adapter_path" == "$ADAPTER" ]] || \
   fail "Unexpected tracker adapter: $adapter_path"
 source "$adapter_path"
+current_branch() { printf '%s\n' 'feature/issue-16'; }
+emit_recovery_required() { exit 4; }
 [[ "$(tracker_remote_kind 'git@ssh.dev.azure.com:v3/example-org/example-project/example-repo')" == 'azure-devops' ]] || \
   fail 'Azure scp-style SSH remote was not recognized by tracker selection'
 [[ "$(azure_remote_parts 'git@ssh.dev.azure.com:v3/example-org/example-project/example-repo')" == $'example-org\texample-project\texample-repo' ]] || \
@@ -114,16 +133,35 @@ grep -Fq 'work-item relation list-type' "$calls" || \
 eligible="$(tracker_list_eligible_items)"
 [[ "$eligible" == $'1\n8' ]] || \
   fail "Unexpected Azure queue: ${eligible}"
+[[ -z "$(AZURE_TEST_QUERY_MODE=empty tracker_list_eligible_items)" ]] || \
+  fail 'Azure adapter did not recognize an actually empty queue'
+[[ -z "$(AZURE_TEST_QUERY_MODE=blocked tracker_list_eligible_items)" ]] || \
+  fail 'Azure adapter admitted a work item with an open predecessor'
 tracker_item_claim 1 >/dev/null || fail 'Azure claim operation failed'
+unset -f current_branch
 if tracker_item_close 1 >"${TEST_ROOT}/close-without-branch.log" 2>&1; then
   fail 'Azure close operation accepted a missing source branch'
 fi
 grep -Fq 'source branch is required' "${TEST_ROOT}/close-without-branch.log" || \
   fail 'Azure close guard did not explain the missing source branch'
 tracker_item_close 1 feature/issue-16 >/dev/null || fail 'Azure close operation failed'
+current_branch() { printf '%s\n' 'feature/issue-16'; }
 pr_json="$(tracker_prs_for_branch feature/issue-16)"
 [[ "$(tracker_pr_is_merged "$pr_json")" == true ]] || \
   fail 'Azure merged PR state was not normalized'
+[[ "$(tracker_pr_is_merged '[{"status":"completed"},{"status":"completed"}]')" == ambiguous ]] || \
+  fail 'Azure adapter did not reject ambiguous PR state'
+tracker_item_completion_verified 10 feature/issue-16 || \
+  fail 'Azure adapter did not verify a closed work item with a merged PR'
+[[ "$(tracker_runtime_decode_command 'az repos pr update --id 42 --status completed')" == $'tracker\t' ]] || \
+  fail 'Azure runtime decoder advanced the checkpoint before merge verification'
+[[ "$(tracker_runtime_decode_command 'az boards work-item update --id 10 --state Done')" == $'tracker\t' ]] || \
+  fail 'Azure runtime decoder classified a direct closure as verified'
+[[ "$(tracker_reconcile_recovery_state 10)" == completed ]] || \
+  fail 'Azure recovery did not reconcile an already-completed work item'
+if (tracker_reconcile_startup_state 10 feature/issue-10) >/dev/null 2>&1; then
+  fail 'Azure recovery accepted a dirty branch for an already-closed work item'
+fi
 grep -Fq 'boards work-item update' "$calls" || \
   fail 'Azure claim/close operations were not delegated to az'
 grep -Fq 'repos pr list' "$calls" || \
@@ -165,6 +203,53 @@ grep -Fq 'Tracker validated: Azure DevOps' "$runner_output" || \
 grep -Fq 'No pending, available, non-epic issues remain.' "$runner_output" || \
   fail 'Runner did not complete the Azure queue-empty lifecycle'
 pass 'Runner selects Azure DevOps before launching the worker'
+
+completion_worker="${TEST_ROOT}/completion-worker"
+completion_counter="${TEST_ROOT}/completion-counter"
+completion_config="${TEST_ROOT}/completion-config.toml"
+completion_output="${TEST_ROOT}/completion-output.log"
+cat > "$completion_worker" <<'WORKER'
+#!/usr/bin/env bash
+iteration=0
+if [[ -r "$AZURE_COMPLETION_COUNTER" ]]; then
+  iteration="$(<"$AZURE_COMPLETION_COUNTER")"
+fi
+iteration=$((iteration + 1))
+printf '%s' "$iteration" > "$AZURE_COMPLETION_COUNTER"
+if [[ "$iteration" -eq 1 ]]; then
+  git switch -c feature/issue-10 >/dev/null
+  az repos pr create --repository example-repo --source-branch feature/issue-10 --target-branch main >/dev/null
+  az repos pr update --id 42 --status completed >/dev/null
+  az boards work-item update --id 10 --state Done >/dev/null
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"az boards work-item show --id 10"}}]}}'
+  printf '%s\n' '{"type":"result","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
+else
+  printf '%s\n' '{"type":"result","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+fi
+WORKER
+chmod +x "$completion_worker"
+cat > "$completion_config" <<CONFIG
+default_profile = "azure-completion"
+
+[profiles.azure-completion]
+label = "Claude Azure completion fixture"
+cli = "claude"
+command = "$completion_worker"
+model = "fixture-model"
+
+[profiles.azure-completion.options]
+permission_mode = "bypassPermissions"
+CONFIG
+AZURE_COMPLETION_COUNTER="$completion_counter" \
+ISSUE_RUNNER_ASSUME_YES=true \
+ISSUE_KILLER_CONFIG_PATH="$completion_config" \
+  "$RUNNER" "$runner_repo" >"$completion_output" 2>&1 || \
+  fail 'Runner did not verify an Azure completion end to end'
+grep -Fq 'Worker 1 completed one issue.' "$completion_output" || \
+  fail 'Runner did not accept the verified Azure completion'
+grep -Fq 'No pending, available, non-epic issues remain.' "$completion_output" || \
+  fail 'Runner did not drain the verified Azure completion fixture'
+pass 'Runner verifies Azure work-item closure and merged PR state before accepting completion'
 
 invalid_mapping_repo="${TEST_ROOT}/invalid-mapping-repo"
 invalid_mapping_output="${TEST_ROOT}/invalid-mapping-output.log"
