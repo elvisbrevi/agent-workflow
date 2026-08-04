@@ -129,6 +129,9 @@ claude_runtime_decode_event() {
 # Translate a Bash shell command into a normalized event. The orchestrator
 # never pattern-matches shell strings; this helper is the only place that
 # knows what shell commands correspond to inspect/push/PR/close events.
+# Tracker adapters deliberately emit a generic tracker event for provider
+# merge/close commands. The supervisor accepts completion only after the
+# selected adapter verifies the resulting live state.
 claude_runtime_decode_bash() {
   local cmd="$1"
 
