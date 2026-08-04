@@ -987,20 +987,20 @@ attempt_with_recovery() {
   done
 }
 
-# Source the tracker and config adapters before entering orchestration.
+# Source the tracker selector and config adapter before entering orchestration.
 # The runtime adapter is sourced later, after the active profile is
 # known, so the orchestrator picks the right adapter (claude, codex,
 # ...) without depending on a single hardcoded path. The supervisor
 # consumes normalized tracker operations and lifecycle events only;
 # provider-specific command construction remains inside the adapters.
 SCRIPT_DIR="$(resolve_script_dir)"
-TRACKER_ADAPTER="${SCRIPT_DIR}/tracker/github-adapter.sh"
+TRACKER_SELECTOR="${SCRIPT_DIR}/tracker/selector.sh"
 RUNTIME_ADAPTER_DIR="${SCRIPT_DIR}/runtime"
 CONFIG_ADAPTER="${SCRIPT_DIR}/config/issue-killer-config.sh"
 # shellcheck source=agent/claude-minimax-issue-runner/config/issue-killer-config.sh
 source "$CONFIG_ADAPTER"
-# shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
-source "$TRACKER_ADAPTER"
+# shellcheck source=agent/claude-minimax-issue-runner/tracker/selector.sh
+source "$TRACKER_SELECTOR"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 
 # Parse the optional positional repository argument together with the
@@ -1169,6 +1169,11 @@ if ! git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}" &&
   die "base branch not found locally or at origin: ${BASE_BRANCH}"
 fi
 
+TRACKER_ADAPTER="$(tracker_select_adapter "$REPO_ROOT")" || \
+  die "unable to select a tracker adapter"
+[[ -r "$TRACKER_ADAPTER" ]] || die "tracker adapter not found: ${TRACKER_ADAPTER}"
+# shellcheck source=agent/claude-minimax-issue-runner/tracker/github-adapter.sh
+source "$TRACKER_ADAPTER"
 tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elvis-brevi-skills and retry"
 
 acquire_repository_lock

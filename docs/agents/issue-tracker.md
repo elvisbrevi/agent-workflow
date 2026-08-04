@@ -39,3 +39,29 @@ When a skill says to publish to the issue tracker, create a GitHub issue. When i
 - Claim work with `gh issue edit <number> --add-assignee @me` when a workflow requires a claim.
 - Verify that the pull request reached its target branch before closing the issue.
 - Record relevant completion context in the issue discussion before closure when it is not already captured by the linked pull request.
+
+## Azure DevOps repository mode
+
+For an Azure Repos checkout, change the active heading to `# Issue Tracker: Azure DevOps` and keep the repository-owned mappings below in this document. The runner selects Azure DevOps from a `dev.azure.com`, `visualstudio.com`, or supported Azure SSH remote; it does not infer organization, project, repository, work-item types, states, or role mappings from the machine.
+
+Use the `az` CLI with the `azure-devops` extension. The mapping block is required before launch:
+
+```text
+## Azure DevOps configuration
+
+organization = "example-organization"
+project = "example-project"
+repository = "example-repository"
+eligible_work_item_types = ["User Story", "Bug", "Task"]
+epic_work_item_types = ["Epic"]
+open_states = ["New", "Active", "Committed"]
+closed_states = ["Closed", "Done"]
+ready_tag = "ready-for-agent"
+claim_identity = "operator@example.com"
+predecessor_relation = "System.LinkTypes.Dependency"
+closed_state = "Done"
+```
+
+`eligible_work_item_types`, `epic_work_item_types`, `open_states`, and `closed_states` are the process mappings. `ready_tag`, `claim_identity`, `predecessor_relation`, and `closed_state` are the role mappings. The adapter rejects missing mappings, a `closed_state` outside `closed_states`, a remote that does not match the mapped organization/project/repository, missing `az`, unavailable authentication, or an unavailable project before starting a worker.
+
+Azure queue discovery uses `az boards query`, excludes assigned or non-ready work items, excludes configured epic types, and checks each configured predecessor relation for an open predecessor. Work-item claims and closure use `az boards work-item update`. Pull-request lookup and merge verification use `az repos pr list`; a PR is complete only when its status is `completed`, merge status is `succeeded`, and target branch matches the configured base branch.
