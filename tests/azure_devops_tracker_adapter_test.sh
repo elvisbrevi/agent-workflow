@@ -52,7 +52,7 @@ case "$1 $2 $3" in
   "devops user show") printf '%s\n' '{"user":{"mail":"operator@example.com"}}' ;;
   "devops invoke --area")
     if [[ "$*" == *'type='* ]]; then
-      printf '%s\n' '{"states":[{"name":"New"},{"name":"Active"},{"name":"Closed"},{"name":"Done"}]}'
+      printf '%s\n' '{"states":[{"name":"New","category":"Proposed"},{"name":"Active","category":"InProgress"},{"name":"Closed","category":"Completed"},{"name":"Done","category":"Completed"}]}'
     else
       printf '%s\n' '{"value":[{"name":"User Story"},{"name":"Bug"},{"name":"Task"},{"name":"Epic"}]}'
     fi
@@ -63,7 +63,7 @@ case "$1 $2 $3" in
     case "${AZURE_TEST_QUERY_MODE:-normal}" in
       empty) printf '%s\n' '[]' ;;
       blocked) printf '%s\n' '[{"id":6}]' ;;
-      *) printf '%s\n' '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6},{"id":8}]' ;;
+      *) printf '%s\n' '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6},{"id":8},{"id":11},{"id":12}]' ;;
     esac
     ;;
   "boards work-item show")
@@ -84,6 +84,8 @@ case "$1 $2 $3" in
       8) printf '%s\n' '{"id":8,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/9"}]}' ;;
       9) printf '%s\n' '{"id":9,"fields":{"System.WorkItemType":"Task","System.State":"Done"},"relations":[]}' ;;
       10) printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent"},"relations":[]}' ;;
+      11) printf '%s\n' '{"id":11,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent;epic","System.Title":"Tagged epic"},"relations":[]}' ;;
+      12) printf '%s\n' '{"id":12,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent","System.Title":"[Epic] titled epic"},"relations":[]}' ;;
       *) exit 1 ;;
     esac
     ;;
