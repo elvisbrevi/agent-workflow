@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${ROOT_DIR}/agent/claude-minimax-issue-runner/run.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claude-minimax-runner.XXXXXX")"
+RUNNER="${ROOT_DIR}/agent/issue-killer/run.sh"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/issue-killer-runner.XXXXXX")"
 TEST_BIN="${TEST_ROOT}/bin"
 mkdir -p "$TEST_BIN"
 printf '%s\n' \
@@ -154,7 +154,7 @@ test_fresh_shell_per_issue() {
 
 test_unknown_status_stops_loop() {
   local repo="${TEST_ROOT}/unknown-repo"
-  local fake="${TEST_ROOT}/claude-minimax-no-status"
+  local fake="${TEST_ROOT}/issue-killer-no-status"
   local output="${TEST_ROOT}/unknown-output.log"
   local status
 
@@ -205,7 +205,7 @@ test_dirty_worktree_is_rejected() {
 
 test_progress_is_reported_while_worker_runs() {
   local repo="${TEST_ROOT}/progress-repo"
-  local fake="${TEST_ROOT}/claude-minimax-progress"
+  local fake="${TEST_ROOT}/issue-killer-progress"
   local output="${TEST_ROOT}/progress-output.log"
 
   new_repo "$repo"
@@ -231,7 +231,7 @@ test_progress_is_reported_while_worker_runs() {
 test_repository_lock_rejects_second_runner() {
   local repo="${TEST_ROOT}/locked-repo"
   local worktree="${TEST_ROOT}/locked-worktree"
-  local fake="${TEST_ROOT}/claude-minimax-wait"
+  local fake="${TEST_ROOT}/issue-killer-wait"
   local started="${TEST_ROOT}/locked-started"
   local release="${TEST_ROOT}/locked-release"
   local first_output="${TEST_ROOT}/locked-first.log"
@@ -262,7 +262,7 @@ test_repository_lock_rejects_second_runner() {
   [[ -e "$started" ]] || fail 'First runner did not start its worker'
 
   grep -Fq 'state=worker_running' \
-    "${repo}/.git/claude-minimax-issue-runner.lock/status" || \
+    "${repo}/.git/issue-killer.lock/status" || \
     fail 'Repository lock did not expose the current worker state'
 
   set +e
@@ -280,7 +280,7 @@ test_repository_lock_rejects_second_runner() {
     fail 'Missing active repository lock diagnostic'
   grep -Fq 'state=worker_running' "$second_output" || \
     fail 'Second runner did not report the active runner status'
-  [[ ! -e "${repo}/.git/claude-minimax-issue-runner.lock" ]] || \
+  [[ ! -e "${repo}/.git/issue-killer.lock" ]] || \
     fail 'Repository lock was not released when the runner exited'
 
   pass 'repository lock covers linked worktrees and exposes its status'
@@ -288,12 +288,12 @@ test_repository_lock_rejects_second_runner() {
 
 test_stale_repository_lock_is_recovered() {
   local repo="${TEST_ROOT}/stale-lock-repo"
-  local fake="${TEST_ROOT}/claude-minimax-stale-lock"
+  local fake="${TEST_ROOT}/issue-killer-stale-lock"
   local output="${TEST_ROOT}/stale-lock-output.log"
   local lock_dir
 
   new_repo "$repo"
-  lock_dir="${repo}/.git/claude-minimax-issue-runner.lock"
+  lock_dir="${repo}/.git/issue-killer.lock"
   mkdir "$lock_dir"
   printf '%s\n' \
     'pid=999999' \
@@ -489,7 +489,7 @@ test_streaming_worker_renders_semantic_progress() {
     '{"type":"system","subtype":"init","cwd":"/repo"}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/README.md"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"agent/run.sh"}}]}}' \
-    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"bash tests/claude_minimax_issue_runner_test.sh"}}]}}' \
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"bash tests/issue_killer_test.sh"}}]}}' \
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"gh pr create --title progress --body streaming"}}]}}' \
     '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
 
@@ -723,7 +723,7 @@ test_streaming_invokes_worker_with_stream_json_output_flag() {
 
 # --- Checkpoint persistence tests (issue #2) -------------------------------
 
-RUNNER_NAME="claude-minimax-issue-runner"
+RUNNER_NAME="issue-killer"
 
 # Absolute path to the Git common directory, matching how the runner
 # resolves the lock and checkpoint destinations.
@@ -2378,7 +2378,7 @@ test_missing_default_profile_rejects_non_tty() {
     fail "Missing default_profile must exit 1, got ${status}"
   grep -Fq 'requires a valid default_profile' "$output" || \
     fail 'Missing default_profile diagnostic not surfaced'
-  [[ ! -e "$repo/.git/claude-minimax-issue-runner.lock" ]] || \
+  [[ ! -e "$repo/.git/issue-killer.lock" ]] || \
     fail 'Runner acquired a lock with an invalid default profile'
 
   pass 'non-interactive launch fails closed without a valid default_profile'
@@ -2522,7 +2522,7 @@ test_destructive_confirmation_lists_profile_identity() {
   cat > "$expect_script" <<PROLOG
 set timeout 15
 log_user 1
-spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/claude-minimax-issue-runner/run.sh "$repo"
+spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/issue-killer/run.sh "$repo"
 expect {
   -re {Profile \[1\]} {
     send "\r"
@@ -2604,7 +2604,7 @@ test_profile_picker_lists_every_profile_with_footer() {
   cat > "$expect_script" <<PROLOG
 set timeout 15
 log_user 1
-spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/claude-minimax-issue-runner/run.sh "$repo"
+spawn env PATH=$PATH ISSUE_KILLER_CONFIG_PATH=$config_path /Users/elvis/Code/tools/workflow/agent/issue-killer/run.sh "$repo"
 expect {
   -re {Profile \[1\]:} {
     send "2\r"
@@ -2884,7 +2884,7 @@ PROLOG
   # The orchestrator records the captured thread id into the
   # checkpoint when the worker emits `thread.started`. FAILED
   # preserves the checkpoint so the runtime observable is durable.
-  checkpoint="${repo}/.git/claude-minimax-issue-runner.checkpoint"
+  checkpoint="${repo}/.git/issue-killer.checkpoint"
   grep -Eq '^session_id=thread-xyz-001' "$checkpoint" || \
     fail 'Codex adapter did not capture the thread id from thread.started'
   grep -Eq '^cli=codex' "$checkpoint" || \
@@ -2894,11 +2894,11 @@ PROLOG
 }
 
 test_codex_profile_validation_rejects_unknown_options() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/codex-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/codex-adapter.sh"
   local output
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   bash -c "source '${adapter}' && codex_runtime_validate_profile 'unknown_option=1'" \
     >"$TEST_ROOT/codex-validate-unknown.out" \
     2>"$TEST_ROOT/codex-validate-unknown.err"
@@ -2913,10 +2913,10 @@ test_codex_profile_validation_rejects_unknown_options() {
 }
 
 test_codex_profile_validation_rejects_invalid_sandbox() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/codex-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/codex-adapter.sh"
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   bash -c "source '${adapter}' && codex_runtime_validate_profile 'sandbox=not-a-mode'" \
     >"$TEST_ROOT/codex-validate-sandbox.out" \
     2>"$TEST_ROOT/codex-validate-sandbox.err"
@@ -2931,10 +2931,10 @@ test_codex_profile_validation_rejects_invalid_sandbox() {
 }
 
 test_codex_profile_validation_rejects_auto_approve_with_read_only_sandbox() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/codex-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/codex-adapter.sh"
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   bash -c "source '${adapter}' && codex_runtime_validate_profile $'sandbox=read-only\nauto_approve=true'" \
     >"$TEST_ROOT/codex-validate-conflict.out" \
     2>"$TEST_ROOT/codex-validate-conflict.err"
@@ -3375,7 +3375,7 @@ PROLOG
   RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
   RUNNER_TEST_BACKUP_COUNT="$backup_count" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
-  RUNNER_TEST_CHECKPOINT="${repo}/.git/claude-minimax-issue-runner.checkpoint" \
+  RUNNER_TEST_CHECKPOINT="${repo}/.git/issue-killer.checkpoint" \
   RUNNER_TEST_CHECKPOINT_SNAPSHOT="$checkpoint_snapshot" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1" \
@@ -3634,7 +3634,7 @@ PROLOG
     fail "Exhausted OpenCode fallback chain must exit 4, got ${status}"
   [[ "$(<"$primary_count")" -eq 1 && "$(<"$backup_count")" -eq 1 ]] || \
     fail 'Fallback exhaustion launched a profile more than once or advanced the queue'
-  checkpoint="${repo}/.git/claude-minimax-issue-runner.checkpoint"
+  checkpoint="${repo}/.git/issue-killer.checkpoint"
   grep -Eq '^profile=opencode-backup$' "$checkpoint" || \
     fail 'Exhausted checkpoint did not retain the active fallback profile'
   grep -Eq '^selected_profile=opencode-primary$' "$checkpoint" || \
@@ -3950,7 +3950,7 @@ PROLOG
   # The orchestrator records the captured session id into the
   # checkpoint when the worker emits a session event. FAILED
   # preserves the checkpoint so the runtime observable is durable.
-  checkpoint="${repo}/.git/claude-minimax-issue-runner.checkpoint"
+  checkpoint="${repo}/.git/issue-killer.checkpoint"
   grep -Eq '^session_id=sess-opencode-capture' "$checkpoint" || \
     fail 'OpenCode adapter did not capture the session id from the session event'
   grep -Eq '^cli=opencode' "$checkpoint" || \
@@ -3960,10 +3960,10 @@ PROLOG
 }
 
 test_opencode_profile_validation_rejects_unknown_options() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/opencode-adapter.sh"
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   bash -c "source '${adapter}' && opencode_runtime_validate_profile 'unknown_option=1'" \
     >"$TEST_ROOT/opencode-validate-unknown.out" \
     2>"$TEST_ROOT/opencode-validate-unknown.err"
@@ -3978,10 +3978,10 @@ test_opencode_profile_validation_rejects_unknown_options() {
 }
 
 test_opencode_profile_validation_rejects_invalid_variant() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/opencode-adapter.sh"
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   bash -c "source '${adapter}' && opencode_runtime_validate_profile 'variant=banana'" \
     >"$TEST_ROOT/opencode-validate-variant.out" \
     2>"$TEST_ROOT/opencode-validate-variant.err"
@@ -3996,10 +3996,10 @@ test_opencode_profile_validation_rejects_invalid_variant() {
 }
 
 test_opencode_profile_validation_rejects_invalid_model_format() {
-  local adapter="${ROOT_DIR}/agent/claude-minimax-issue-runner/runtime/opencode-adapter.sh"
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/opencode-adapter.sh"
 
   set +e
-  RUNNER_NAME="claude-minimax-issue-runner" \
+  RUNNER_NAME="issue-killer" \
   ISSUE_KILLER_PROFILE_MODEL="not-a-provider-model" \
   bash -c "source '${adapter}' && opencode_runtime_validate_profile ''" \
     >"$TEST_ROOT/opencode-validate-model.out" \
@@ -4201,4 +4201,4 @@ test_black_box_opencode_profile_rejects_invalid_options_before_launch
 test_black_box_opencode_profile_resumes_session_when_captured
 test_black_box_opencode_profile_drains_queue_through_status_marker
 
-printf '%s Claude-MiniMax runner tests passed.\n' "$TESTS_RUN"
+printf '%s issue-killer tests passed.\n' "$TESTS_RUN"

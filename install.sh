@@ -13,6 +13,11 @@ CACHE_DIR="${HOME}/.cache/agent-workflow"
 CATEGORIES=(utility discovery design planning implementation diagnosis review)
 AGENT_CATEGORIES=(agent)
 LEGACY_AGENT_NAMES=(afk-issuemerger)
+# Historical binary name that the canonical agent renamed away from.
+# Obsolete symlinks to it are removed safely during install/uninstall so
+# the published product surface only exposes `issue-killer`.
+LEGACY_BINARY_NAMES=(claude-minimax-issue-runner)
+LEGACY_BINARY_FILES=(AGENT.md run.sh)
 
 # ── Colors ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -321,6 +326,39 @@ remove_legacy_agent_links() {
   done
 }
 
+# Removes obsolete symlinks that point at the historical
+# `claude-minimax-issue-runner` binary. The canonical product surface is
+# `issue-killer`; keeping the legacy name on PATH would let an old shell
+# script or third-party installer silently invoke the obsolete version.
+remove_legacy_binary_links() {
+  local cache="$1" dest_base="$2"
+  local legacy candidate suffix target file
+
+  for legacy in "${LEGACY_BINARY_NAMES[@]}"; do
+    for suffix in "" ".md"; do
+      candidate="${dest_base}/${legacy}${suffix}"
+      [[ -L "$candidate" ]] || continue
+      target="$(readlink "$candidate")"
+      matched=false
+      for file in "${LEGACY_BINARY_FILES[@]}"; do
+        case "$target" in
+          "${cache}/agent/${legacy}/${file}"|"${cache}/agent/${legacy}")
+            matched=true
+            ;;
+        esac
+      done
+      if [[ "$matched" == "true" ]]; then
+        if [[ "$DRY_RUN" == true ]]; then
+          echo -e "  ${YELLOW}dry-run${NC}  remove legacy ${CYAN}${candidate}${NC}"
+        else
+          rm "$candidate"
+          ok "Removed legacy binary link: ${candidate}"
+        fi
+      fi
+    done
+  done
+}
+
 # ── Install agents to a destination ─────────────────────────
 install_agents_to() {
   local cache="$1" dest_base="$2" label="$3"
@@ -434,6 +472,7 @@ process_claude_agents() {
   fi
 
   remove_legacy_agent_links "$cache" "$dest_base"
+  remove_legacy_binary_links "$cache" "$dest_base"
 
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
@@ -514,6 +553,7 @@ process_runners() {
   fi
 
   remove_legacy_agent_links "$cache" "$dest_base"
+  remove_legacy_binary_links "$cache" "$dest_base"
 
   while IFS= read -r agent; do
     [[ -z "$agent" ]] && continue
