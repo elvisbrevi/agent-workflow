@@ -94,6 +94,8 @@ PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 # optional `--config <path>` flag. The legacy positional form is
 # preserved so existing shell invocations keep working.
 CONFIG_PATH_OVERRIDE=""
+HU_ID_OVERRIDE=""
+HU_OPTION_SET=false
 REPOSITORY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,8 +109,26 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --help|-h)
-      printf 'usage: %s [--config <path>] [repository]\n' "$RUNNER_NAME"
+      printf 'usage: %s [--config <path>] [--hu <id>] [repository]\n' "$RUNNER_NAME"
       exit 0
+      ;;
+    --hu)
+      [[ $# -ge 2 ]] || die "--hu requires a numeric Azure delivery HU ID"
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || \
+        die "Azure HU identifier must be a positive numeric ID: $2"
+      [[ "$HU_OPTION_SET" == "false" ]] || die "--hu may be specified only once"
+      HU_ID_OVERRIDE="$2"
+      HU_OPTION_SET=true
+      shift 2
+      ;;
+    --hu=*)
+      hu_value="${1#--hu=}"
+      [[ "$hu_value" =~ ^[1-9][0-9]*$ ]] || \
+        die "Azure HU identifier must be a positive numeric ID: ${hu_value:-empty}"
+      [[ "$HU_OPTION_SET" == "false" ]] || die "--hu may be specified only once"
+      HU_ID_OVERRIDE="$hu_value"
+      HU_OPTION_SET=true
+      shift
       ;;
     -*)
       die "unknown option: $1"
@@ -148,6 +168,11 @@ ISSUE_KILLER_FALLBACK_POSITION=0
 ISSUE_KILLER_FAILED_PROFILE=""
 ISSUE_KILLER_NEXT_PROFILE=""
 ISSUE_KILLER_FALLBACK_FAILURE=""
+TRACKER_SCOPE_STATUS=""
+TRACKER_SCOPE_HU=""
+TRACKER_SCOPE_ITEM=""
+CHECKPOINT_HU=""
+CHECKPOINT_TICKET=""
 
 # Resolve and load the operator's TOML configuration. The runner
 # refuses to launch without a profile: the destructive confirmation,
@@ -281,6 +306,7 @@ TRACKER_ADAPTER="$(tracker_select_adapter "$REPO_ROOT")" || \
 # shellcheck source=agent/issue-killer/tracker/github-adapter.sh
 source "$TRACKER_ADAPTER"
 tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elvis-brevi-skills and retry"
+tracker_validate_run_options "$HU_ID_OVERRIDE" || die "invalid tracker-specific run options"
 tracker_prepare_worker_environment || die "unable to prepare the selected tracker runtime environment"
 
 prepare_legacy_state || die "issue-killer cannot start: legacy runner state could not be migrated safely"
@@ -304,7 +330,51 @@ if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
   fi
 fi
 
+# Azure selects and pins one HU plus its first eligible direct child before a
+# worker is launched. GitHub leaves selection to the worker, preserving its
+# existing queue lifecycle. Selection is read-only and occurs while the
+# repository-wide lock is held, so concurrent runs cannot choose the same
+# delivery scope independently.
+tracker_prepare_worker_scope "$HU_ID_OVERRIDE" || \
+  die "unable to select a safe tracker delivery scope"
+case "${TRACKER_SCOPE_STATUS:-worker_selects}" in
+  worker_selects)
+    ;;
+  queue_empty)
+    clear_checkpoint
+    printf '[%s] No prepared Azure delivery HU is available.\n' "$RUNNER_NAME"
+    exit 0
+    ;;
+  empty)
+    clear_checkpoint
+    printf '[%s] Azure delivery HU %s has no pending direct child tickets.\n' \
+      "$RUNNER_NAME" "$TRACKER_SCOPE_HU"
+    printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
+    exit 0
+    ;;
+  blocked)
+    CHECKPOINT_HU="$TRACKER_SCOPE_HU"
+    write_lock_status "blocked" 0
+    printf '%s: Azure delivery HU %s has pending child tickets, but all are blocked by open predecessors\n' \
+      "$RUNNER_NAME" "$TRACKER_SCOPE_HU" >&2
+    exit 2
+    ;;
+  ready)
+    [[ "$TRACKER_SCOPE_HU" =~ ^[1-9][0-9]*$ && \
+       "$TRACKER_SCOPE_ITEM" =~ ^[1-9][0-9]*$ ]] || \
+      die "tracker returned an invalid Azure HU/ticket scope"
+    CHECKPOINT_HU="$TRACKER_SCOPE_HU"
+    CHECKPOINT_TICKET="$TRACKER_SCOPE_ITEM"
+    CHECKPOINT_ISSUE="$TRACKER_SCOPE_ITEM"
+    write_lock_status "scope_selected" 0
+    ;;
+  *)
+    die "tracker returned an unknown delivery scope status: ${TRACKER_SCOPE_STATUS:-unknown}"
+    ;;
+esac
+
 BASE_PROMPT="$(<"$PROMPT_FILE")"
+TRACKER_SCOPE_PROMPT="$(tracker_worker_scope_prompt)"
 # Compose the tracker-specific supplement by delegating to the
 # selected adapter. The shared PROMPT.md remains the source of
 # truth for safety, status reporting, and recovery semantics; the
@@ -322,8 +392,12 @@ while true; do
     CHECKPOINT_ISSUE="$STARTUP_RECOVERY_ISSUE"
     CHECKPOINT_STATE="$(checkpoint_value state "$(checkpoint_file)")"
     CHECKPOINT_SESSION_ID="$(checkpoint_value session_id "$(checkpoint_file)")"
+    CHECKPOINT_HU="$(checkpoint_value hu "$(checkpoint_file)")"
+    CHECKPOINT_TICKET="$(checkpoint_value ticket "$(checkpoint_file)")"
   else
-    CHECKPOINT_ISSUE=""
+    CHECKPOINT_ISSUE="${TRACKER_SCOPE_ITEM:-}"
+    CHECKPOINT_HU="${TRACKER_SCOPE_HU:-}"
+    CHECKPOINT_TICKET="${TRACKER_SCOPE_ITEM:-}"
     CHECKPOINT_STATE="starting"
     CHECKPOINT_SESSION_ID=""
   fi
@@ -341,9 +415,7 @@ while true; do
     # checkpoint already carries the previous iteration's identity; keep
     # it intact so the restart recovery can re-adopt the original issue
     # exactly once.
-    if [[ -z "$CHECKPOINT_ISSUE" ]]; then
-      write_checkpoint "starting"
-    fi
+    write_checkpoint "starting"
     write_lock_status "starting" 0
   else
     write_lock_status "recovery_starting" 0
@@ -353,6 +425,8 @@ while true; do
     WORKER_PROMPT="${BASE_PROMPT}
 
 ${TRACKER_SUPPLEMENT}
+
+${TRACKER_SCOPE_PROMPT}
 
 ${STARTUP_RECOVERY_PROMPT}
 
@@ -366,6 +440,8 @@ Do not inspect the queue for another issue. Continue only the recovery target."
     WORKER_PROMPT="${BASE_PROMPT}
 
 ${TRACKER_SUPPLEMENT}
+
+${TRACKER_SCOPE_PROMPT}
 
 Runtime configuration:
 - Repository root: ${REPO_ROOT}

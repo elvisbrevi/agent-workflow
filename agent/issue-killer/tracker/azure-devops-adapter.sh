@@ -18,6 +18,19 @@ AZURE_READY_TAG=""
 AZURE_CLAIM_IDENTITY=""
 AZURE_PREDECESSOR_RELATION=""
 AZURE_CLOSED_STATE=""
+AZURE_HU_TYPES=""
+AZURE_TICKET_TYPES=""
+AZURE_HU_SCOPE_ENABLED=false
+AZURE_HIERARCHY_RELATION="System.LinkTypes.Hierarchy-Forward"
+AZURE_SCOPE_STATUS=""
+AZURE_SCOPE_HU=""
+AZURE_SCOPE_ITEM=""
+AZURE_SCOPE_BLOCKED_COUNT=0
+AZURE_SCOPE_PENDING_COUNT=0
+AZURE_SCOPE_CANDIDATES=""
+TRACKER_SCOPE_STATUS=""
+TRACKER_SCOPE_HU=""
+TRACKER_SCOPE_ITEM=""
 AZURE_GUARD_DIR=""
 AZURE_ORIGINAL_PATH=""
 
@@ -290,6 +303,42 @@ tracker_initialize() {
   AZURE_CLAIM_IDENTITY="$(azure_config_string "$docs" claim_identity 2>/dev/null || true)"
   AZURE_PREDECESSOR_RELATION="$(azure_config_string "$docs" predecessor_relation 2>/dev/null || true)"
   AZURE_CLOSED_STATE="$(azure_config_string "$docs" closed_state 2>/dev/null || true)"
+  AZURE_HU_TYPES="$(azure_config_array "$docs" delivery_hu_work_item_types 2>/dev/null || true)"
+  if [[ -z "$AZURE_HU_TYPES" ]]; then
+    AZURE_HU_TYPES="$(azure_config_array "$docs" hu_work_item_types 2>/dev/null || true)"
+  fi
+  AZURE_TICKET_TYPES="$(azure_config_array "$docs" delivery_ticket_work_item_types 2>/dev/null || true)"
+  if [[ -z "$AZURE_TICKET_TYPES" ]]; then
+    AZURE_TICKET_TYPES="$(azure_config_array "$docs" ticket_work_item_types 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$AZURE_HU_TYPES" && -n "$AZURE_TICKET_TYPES" ]]; then
+    AZURE_HU_SCOPE_ENABLED=true
+  elif [[ -n "$AZURE_HU_TYPES" || -n "$AZURE_TICKET_TYPES" ]]; then
+    printf '%s: Azure HU and ticket type mappings must be declared together\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  else
+    AZURE_HU_SCOPE_ENABLED=false
+  fi
+
+  # Preserve existing repository contracts while giving the HU and ticket
+  # roles explicit names when the newer mappings are present. The domain
+  # defaults are accepted only when those exact types already belong to the
+  # repository-owned eligible type set.
+  if [[ -z "$AZURE_HU_TYPES" ]] && azure_list_contains "User Story" "$AZURE_ELIGIBLE_TYPES"; then
+    AZURE_HU_TYPES="User Story"
+  fi
+  if [[ -z "$AZURE_TICKET_TYPES" ]]; then
+    azure_list_contains "Task" "$AZURE_ELIGIBLE_TYPES" && AZURE_TICKET_TYPES="Task"
+    if azure_list_contains "Bug" "$AZURE_ELIGIBLE_TYPES"; then
+      if [[ -n "$AZURE_TICKET_TYPES" ]]; then
+        AZURE_TICKET_TYPES="${AZURE_TICKET_TYPES}"$'\n'"Bug"
+      else
+        AZURE_TICKET_TYPES="Bug"
+      fi
+    fi
+  fi
 
   azure_require_mapping organization "$AZURE_ORGANIZATION" || return 1
   azure_require_mapping project "$AZURE_PROJECT" || return 1
@@ -302,6 +351,30 @@ tracker_initialize() {
   azure_require_mapping claim_identity "$AZURE_CLAIM_IDENTITY" || return 1
   azure_require_mapping predecessor_relation "$AZURE_PREDECESSOR_RELATION" || return 1
   azure_require_mapping closed_state "$AZURE_CLOSED_STATE" || return 1
+  azure_require_mapping delivery_hu_work_item_types "$AZURE_HU_TYPES" || return 1
+  azure_require_mapping delivery_ticket_work_item_types "$AZURE_TICKET_TYPES" || return 1
+  local role_type
+  while IFS= read -r role_type; do
+    [[ -n "$role_type" ]] || continue
+    azure_list_contains "$role_type" "$AZURE_ELIGIBLE_TYPES" || {
+      printf '%s: Azure HU type is not included in eligible_work_item_types: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$role_type" >&2
+      return 1
+    }
+    azure_list_contains "$role_type" "$AZURE_TICKET_TYPES" && {
+      printf '%s: Azure work-item type cannot be both an HU and a ticket: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$role_type" >&2
+      return 1
+    }
+  done <<<"$AZURE_HU_TYPES"
+  while IFS= read -r role_type; do
+    [[ -n "$role_type" ]] || continue
+    azure_list_contains "$role_type" "$AZURE_ELIGIBLE_TYPES" || {
+      printf '%s: Azure ticket type is not included in eligible_work_item_types: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$role_type" >&2
+      return 1
+    }
+  done <<<"$AZURE_TICKET_TYPES"
   azure_list_contains "$AZURE_CLOSED_STATE" "$AZURE_CLOSED_STATES" || {
     printf '%s: closed_state is not included in closed_states\n' \
       "${RUNNER_NAME:-issue-killer}" >&2
@@ -425,6 +498,310 @@ tracker_item_type() {
   jq -r '.fields["System.WorkItemType"] // empty' <<<"$1"
 }
 
+tracker_validate_run_options() {
+  local hu_id="${1:-}"
+
+  if [[ -n "$hu_id" && "$AZURE_HU_SCOPE_ENABLED" != "true" ]]; then
+    printf '%s: --hu requires repository-owned Azure HU and ticket type mappings\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  fi
+  if [[ -n "$hu_id" && ! "$hu_id" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s: Azure HU identifier must be a positive numeric ID: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  fi
+}
+
+azure_item_id() {
+  jq -r '.id // .fields["System.Id"] // empty' <<<"$1"
+}
+
+azure_item_created_date() {
+  jq -r '.fields["System.CreatedDate"] // empty' <<<"$1"
+}
+
+azure_item_is_delivery_hu() {
+  local item_json="$1"
+  local item_type item_state tags
+
+  item_type="$(tracker_item_type "$item_json")"
+  item_state="$(tracker_item_state "$item_json")"
+  tags="$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"
+  azure_list_contains "$item_type" "$AZURE_HU_TYPES" || return 1
+  azure_list_contains "$item_state" "$AZURE_OPEN_STATES" || return 1
+  azure_item_is_epic "$item_json" && return 1
+  azure_item_has_ready_tag "$tags" || return 1
+}
+
+azure_validate_direct_child_relations() {
+  jq -e --arg relation "$AZURE_HIERARCHY_RELATION" '
+    all(.relations[]? | select(.rel == $relation);
+      ((.url // "") | type == "string" and test("/[1-9][0-9]*$")))
+  ' <<<"$1" >/dev/null
+}
+
+azure_hu_direct_child_ids() {
+  azure_validate_direct_child_relations "$1" || return 1
+  jq -r --arg relation "$AZURE_HIERARCHY_RELATION" \
+    '.relations[]? | select(.rel == $relation) | .url // empty | capture("/(?<id>[0-9]+)$").id' \
+    <<<"$1"
+}
+
+tracker_validate_delivery_hu() {
+  local hu_id="$1"
+  local item_json item_type item_state blocked actual_id
+
+  tracker_validate_run_options "$hu_id" || return 1
+  item_json="$(tracker_item_read "$hu_id" 2>/dev/null)" || {
+    printf '%s: Azure delivery HU %s is unavailable or could not be read\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  }
+  actual_id="$(azure_item_id "$item_json")"
+  if [[ -n "$actual_id" && "$actual_id" != "$hu_id" ]]; then
+    printf '%s: Azure work item %s returned a mismatched identity (%s)\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" "$actual_id" >&2
+    return 1
+  fi
+  item_type="$(tracker_item_type "$item_json")"
+  if ! azure_list_contains "$item_type" "$AZURE_HU_TYPES"; then
+    printf '%s: Azure work item %s is not an eligible delivery HU (type: %s)\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" "${item_type:-unknown}" >&2
+    return 1
+  fi
+  if azure_item_is_epic "$item_json"; then
+    printf '%s: Azure work item %s is an epic and cannot be a delivery HU\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  fi
+  item_state="$(tracker_item_state "$item_json")"
+  if ! azure_list_contains "$item_state" "$AZURE_OPEN_STATES"; then
+    printf '%s: Azure delivery HU %s is not open (state: %s)\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" "${item_state:-unknown}" >&2
+    return 1
+  fi
+  if ! azure_item_has_ready_tag "$(jq -r '.fields["System.Tags"] // empty' <<<"$item_json")"; then
+    printf '%s: Azure delivery HU %s is missing the ready tag %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" "$AZURE_READY_TAG" >&2
+    return 1
+  fi
+  blocked="$(tracker_item_dependencies "$hu_id" 2>/dev/null || true)"
+  if [[ ! "$blocked" =~ ^[0-9]+$ ]]; then
+    printf '%s: unable to determine predecessors for Azure delivery HU %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" >&2
+    return 1
+  fi
+  if [[ "$blocked" -ne 0 ]]; then
+    printf '%s: Azure delivery HU %s is blocked by %s open predecessor(s)\n' \
+      "${RUNNER_NAME:-issue-killer}" "$hu_id" "$blocked" >&2
+    return 1
+  fi
+
+  AZURE_SCOPE_HU_JSON="$item_json"
+  return 0
+}
+
+tracker_list_eligible_hus() {
+  local wiql item_json item_id created lines blocked
+  local wiql_types wiql_states
+
+  wiql_types="$(azure_wiql_in_list "$AZURE_HU_TYPES")"
+  wiql_states="$(azure_wiql_in_list "$AZURE_OPEN_STATES")"
+  wiql="SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${AZURE_PROJECT//\'/\'\'}' AND [System.WorkItemType] IN (${wiql_types}) AND [System.State] IN (${wiql_states}) AND [System.Tags] CONTAINS '${AZURE_READY_TAG//\'/\'\'}' ORDER BY [System.Id]"
+
+  # Keep the query result in a variable so the adapter can sort by the
+  # repository's creation-time/ID ordering without relying on Azure's query
+  # ordering. The read loop below runs in the current shell.
+  local az_items
+  az_items="$(az boards query \
+    --wiql "$wiql" \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --project "$AZURE_PROJECT" \
+    --output json)" || return 1
+  lines=""
+  while IFS= read -r item_id; do
+    [[ "$item_id" =~ ^[0-9]+$ ]] || continue
+    item_json="$(tracker_item_read "$item_id")" || return 1
+    azure_item_is_delivery_hu "$item_json" || continue
+    blocked="$(tracker_item_dependencies "$item_id")" || return 1
+    [[ "$blocked" == "0" ]] || continue
+    created="$(azure_item_created_date "$item_json")"
+    [[ -n "$created" ]] || created="9999-12-31T23:59:59Z"
+    lines="${lines}${created}\t${item_id}\n"
+  done < <(jq -r '.[] | (.id // .fields["System.Id"] // empty)' <<<"$az_items")
+
+  if [[ -n "$lines" ]]; then
+    printf '%b' "$lines" | sort -t $'\t' -k1,1 -k2,2n | cut -f2
+  fi
+}
+
+azure_child_scope_candidates() {
+  local hu_json="$1"
+  local child_id child_json child_type child_state created blocked
+  local candidates=""
+
+  AZURE_SCOPE_PENDING_COUNT=0
+  AZURE_SCOPE_BLOCKED_COUNT=0
+  while IFS= read -r child_id; do
+    [[ "$child_id" =~ ^[0-9]+$ ]] || continue
+    child_json="$(tracker_item_read "$child_id")" || return 1
+    child_type="$(tracker_item_type "$child_json")"
+    azure_list_contains "$child_type" "$AZURE_TICKET_TYPES" || continue
+    child_state="$(tracker_item_state "$child_json")"
+    if azure_list_contains "$child_state" "$AZURE_CLOSED_STATES"; then
+      continue
+    fi
+    if ! azure_list_contains "$child_state" "$AZURE_OPEN_STATES"; then
+      printf '%s: Azure child ticket %s has an unmapped non-terminal state: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$child_id" "${child_state:-unknown}" >&2
+      return 1
+    fi
+    AZURE_SCOPE_PENDING_COUNT=$((AZURE_SCOPE_PENDING_COUNT + 1))
+    blocked="$(tracker_item_dependencies "$child_id")" || return 1
+    if [[ "$blocked" != "0" ]]; then
+      AZURE_SCOPE_BLOCKED_COUNT=$((AZURE_SCOPE_BLOCKED_COUNT + 1))
+      continue
+    fi
+    created="$(azure_item_created_date "$child_json")"
+    [[ -n "$created" ]] || created="9999-12-31T23:59:59Z"
+    candidates="${candidates}${created}\t${child_id}\n"
+  done < <(azure_hu_direct_child_ids "$hu_json")
+  AZURE_SCOPE_CANDIDATES="$candidates"
+}
+
+azure_sync_scope_state() {
+  TRACKER_SCOPE_STATUS="$AZURE_SCOPE_STATUS"
+  TRACKER_SCOPE_HU="$AZURE_SCOPE_HU"
+  TRACKER_SCOPE_ITEM="$AZURE_SCOPE_ITEM"
+}
+
+azure_prepare_recovery_scope() {
+  local hu_id="$1"
+  local ticket_id="$2"
+  local child_id child_json child_type child_state blocked found=false
+
+  tracker_validate_delivery_hu "$hu_id" || return 1
+  while IFS= read -r child_id; do
+    [[ "$child_id" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$child_id" == "$ticket_id" ]] || continue
+    found=true
+    child_json="$(tracker_item_read "$child_id")" || return 1
+    child_type="$(tracker_item_type "$child_json")"
+    azure_list_contains "$child_type" "$AZURE_TICKET_TYPES" || {
+      printf '%s: checkpoint ticket %s is not an eligible direct child of HU %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$ticket_id" "$hu_id" >&2
+      return 1
+    }
+    child_state="$(tracker_item_state "$child_json")"
+    azure_list_contains "$child_state" "$AZURE_CLOSED_STATES" && {
+      printf '%s: checkpoint ticket %s is already complete; refusing to change recovery scope\n' \
+        "${RUNNER_NAME:-issue-killer}" "$ticket_id" >&2
+      return 1
+    }
+    azure_list_contains "$child_state" "$AZURE_OPEN_STATES" || {
+      printf '%s: checkpoint ticket %s has an unmapped state: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$ticket_id" "${child_state:-unknown}" >&2
+      return 1
+    }
+    blocked="$(tracker_item_dependencies "$ticket_id")" || return 1
+    [[ "$blocked" == "0" ]] || {
+      printf '%s: checkpoint ticket %s is blocked by %s open predecessor(s)\n' \
+        "${RUNNER_NAME:-issue-killer}" "$ticket_id" "$blocked" >&2
+      return 1
+    }
+  done < <(azure_hu_direct_child_ids "$AZURE_SCOPE_HU_JSON")
+
+  [[ "$found" == "true" ]] || {
+    printf '%s: checkpoint ticket %s is not a direct child of pinned HU %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$ticket_id" "$hu_id" >&2
+    return 1
+  }
+
+  AZURE_SCOPE_HU="$hu_id"
+  AZURE_SCOPE_ITEM="$ticket_id"
+  AZURE_SCOPE_STATUS="ready"
+  azure_sync_scope_state
+}
+
+tracker_prepare_worker_scope() {
+  local requested_hu="${1:-}"
+  local hu_id hu_ids child_lines sorted_children first_line
+
+  AZURE_SCOPE_STATUS=""
+  AZURE_SCOPE_HU=""
+  AZURE_SCOPE_ITEM=""
+  AZURE_SCOPE_HU_JSON=""
+  AZURE_SCOPE_PENDING_COUNT=0
+  AZURE_SCOPE_BLOCKED_COUNT=0
+  AZURE_SCOPE_CANDIDATES=""
+  azure_sync_scope_state
+
+  if [[ "$AZURE_HU_SCOPE_ENABLED" != "true" ]]; then
+    AZURE_SCOPE_STATUS="worker_selects"
+    azure_sync_scope_state
+    return 0
+  fi
+
+  if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    [[ "${CHECKPOINT_HU:-}" =~ ^[1-9][0-9]*$ && \
+       "${CHECKPOINT_TICKET:-}" =~ ^[1-9][0-9]*$ ]] || {
+      printf '%s: Azure recovery checkpoint does not pin both HU and ticket identity\n' \
+        "${RUNNER_NAME:-issue-killer}" >&2
+      return 1
+    }
+    azure_prepare_recovery_scope "$CHECKPOINT_HU" "$CHECKPOINT_TICKET" || return 1
+    return 0
+  fi
+
+  if [[ -n "$requested_hu" ]]; then
+    tracker_validate_delivery_hu "$requested_hu" || return 1
+    hu_id="$requested_hu"
+  else
+    hu_ids="$(tracker_list_eligible_hus)" || return 1
+    hu_id="${hu_ids%%$'\n'*}"
+    if [[ -z "$hu_id" ]]; then
+      AZURE_SCOPE_STATUS="queue_empty"
+      azure_sync_scope_state
+      return 0
+    fi
+    tracker_validate_delivery_hu "$hu_id" || return 1
+  fi
+
+  azure_child_scope_candidates "$AZURE_SCOPE_HU_JSON" || return 1
+  child_lines="$AZURE_SCOPE_CANDIDATES"
+  if [[ -z "$child_lines" ]]; then
+    AZURE_SCOPE_HU="$hu_id"
+    if [[ "$AZURE_SCOPE_PENDING_COUNT" -gt 0 && "$AZURE_SCOPE_BLOCKED_COUNT" -eq "$AZURE_SCOPE_PENDING_COUNT" ]]; then
+      AZURE_SCOPE_STATUS="blocked"
+    else
+      AZURE_SCOPE_STATUS="empty"
+    fi
+    azure_sync_scope_state
+    return 0
+  fi
+
+  sorted_children="$(printf '%b' "$child_lines" | sort -t $'\t' -k1,1 -k2,2n)" || return 1
+  first_line="${sorted_children%%$'\n'*}"
+  AZURE_SCOPE_ITEM="${first_line#*$'\t'}"
+  AZURE_SCOPE_HU="$hu_id"
+  AZURE_SCOPE_STATUS="ready"
+  azure_sync_scope_state
+}
+
+tracker_worker_scope_prompt() {
+  if [[ -n "$AZURE_SCOPE_HU" && -n "$AZURE_SCOPE_ITEM" ]]; then
+    printf '%s\n' \
+      'Azure delivery scope:' \
+      "- The pinned delivery HU is ${AZURE_SCOPE_HU}; the active delivery ticket is ${AZURE_SCOPE_ITEM}." \
+      "- Inspect, claim, implement, test, review, and publish only ticket ${AZURE_SCOPE_ITEM} under HU ${AZURE_SCOPE_HU}; do not select or inspect another HU or queue item." \
+      '- Re-read the pinned HU, the active ticket, its direct parent relation, and its configured predecessors before mutation.'
+  fi
+}
+
+tracker_scope_hu_id() { printf '%s\n' "$AZURE_SCOPE_HU"; }
+tracker_scope_item_id() { printf '%s\n' "$AZURE_SCOPE_ITEM"; }
+
 azure_item_has_ready_tag() {
   local tags="$1"
   local tag
@@ -478,7 +855,7 @@ tracker_item_dependencies() {
   printf '%s\n' "$blocked"
 }
 
-tracker_list_eligible_items() {
+tracker_list_legacy_eligible_items() {
   local wiql item_json item_id item_type item_state assigned tags blocked az_items
   local wiql_types wiql_states
 
@@ -507,6 +884,14 @@ tracker_list_eligible_items() {
     [[ "$blocked" == "0" ]] || continue
     printf '%s\n' "$item_id"
   done < <(jq -r '.[] | (.id // .fields["System.Id"] // empty)' <<<"$az_items")
+}
+
+tracker_list_eligible_items() {
+  if [[ "$AZURE_HU_SCOPE_ENABLED" == "true" ]]; then
+    tracker_list_eligible_hus
+  else
+    tracker_list_legacy_eligible_items
+  fi
 }
 
 tracker_item_claim() {

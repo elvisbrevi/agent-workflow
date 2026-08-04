@@ -11,6 +11,26 @@ TRACKER_REPO_SLUG=""
 tracker_prepare_worker_environment() { :; }
 tracker_cleanup_worker_environment() { :; }
 
+tracker_validate_run_options() {
+  local hu_id="${1:-}"
+
+  if [[ -n "$hu_id" ]]; then
+    printf '%s: --hu is only supported for Azure DevOps repositories\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  fi
+}
+
+tracker_prepare_worker_scope() {
+  TRACKER_SCOPE_STATUS="worker_selects"
+  TRACKER_SCOPE_HU=""
+  TRACKER_SCOPE_ITEM=""
+}
+
+tracker_worker_scope_prompt() { :; }
+tracker_scope_hu_id() { :; }
+tracker_scope_item_id() { :; }
+
 tracker_slug_from_url() {
   local url="$1"
   local slug
