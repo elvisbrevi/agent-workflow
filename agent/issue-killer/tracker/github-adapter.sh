@@ -115,6 +115,22 @@ tracker_item_state() {
   jq -r '.state // empty' <<<"$item_json"
 }
 
+# Returns 0 when the issue is in a closed state, 1 otherwise (open, missing,
+# or unreadable). The migrated-checkpoint adoption path uses this to detect
+# a stale checkpoint whose work was already merged and closed; it must not
+# rely on tracker_reconcile_startup_state, which emits RECOVERY_REQUIRED on
+# the same condition. Failure to read the issue is treated as "not closed"
+# so the adoption path falls through to the full reconciliation, where the
+# ambiguous read will fail closed with an explicit diagnostic.
+tracker_item_is_closed() {
+  local issue_number="$1"
+  local issue_json state
+  [[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+  issue_json="$(tracker_item_read "$issue_number" 2>/dev/null)" || return 1
+  state="$(tracker_item_state "$issue_json")"
+  [[ "$state" == "CLOSED" ]]
+}
+
 tracker_item_dependencies() {
   local issue_number="$1"
   gh api "repos/${TRACKER_REPO_SLUG}/issues/${issue_number}" \

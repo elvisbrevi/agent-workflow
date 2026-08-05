@@ -315,9 +315,23 @@ adopt_startup_checkpoint() {
 }
 
 # Adopts the canonical checkpoint produced by one-way legacy migration.
+# The migrated-checkpoint adoption path used to apply none of the
+# safeguards the dirty-worktree path applies: no tracker reconciliation,
+# no operator confirmation, and no stale-checkpoint handling. The
+# incident behind issue #51 happened because a worker had merged its
+# branch and closed its issue, then died before recording a terminal
+# state; on restart, that path adopted the checkpoint silently and
+# launched recovery against work that was already finished. This
+# function now follows the same shape as prepare_dirty_startup_recovery:
+# when the checkpointed issue is already closed, the checkpoint is
+# recognised as stale, cleared, and the function returns 1 so normal
+# queue selection can continue. Otherwise the supervisor reconciles
+# the live tracker state, asks the operator to confirm the recovery
+# strategy, and only then adopts the checkpoint. Both helpers exit the
+# runner on failure, matching the dirty-worktree path exactly.
 adopt_migrated_checkpoint() {
   local checkpoint issue branch base_branch base_sha state session_id profile cli model command
-  local hu ticket
+  local hu ticket strategy
 
   [[ -r "$(checkpoint_file)" ]] || return 1
   issue="$(checkpoint_value issue "$(checkpoint_file)" || true)"
@@ -359,11 +373,53 @@ adopt_migrated_checkpoint() {
     [[ "$command" == "$ISSUE_KILLER_PROFILE_COMMAND" ]] || return 1
   fi
 
+  # Stale-checkpoint detection: when the checkpointed issue is already
+  # closed, the checkpoint is stale by definition. Clear it, log a
+  # distinct stale-discard message so the operator can tell this branch
+  # fired, and refuse to adopt — the runner then falls through to
+  # normal queue selection without launching a recovery worker.
+  if tracker_item_is_closed "$issue"; then
+    clear_checkpoint
+    printf '[%s] Stale checkpoint discarded: issue %s is already closed; no recovery worker will be launched.\n' \
+      "$RUNNER_NAME" "$issue"
+    return 1
+  fi
+
+  # Reconcile live tracker state through the normalized adapter before
+  # any recovery worker launches. Both adoption paths now share this
+  # step; tracker_reconcile_startup_state exits the runner on every
+  # failure mode (blocked, ambiguous PR state, merged PR, etc.) so a
+  # restart cannot silently relaunch work that is already finished.
+  tracker_reconcile_startup_state "$issue" "$branch"
+
+  # Resume vs fresh strategy mirrors the dirty-worktree path: only a
+  # session that the runtime adapter recognises as resumable is reused;
+  # every other checkpoint launches a fresh recovery worker
+  # constrained to the same issue.
+  if is_session_resumable "$session_id" "$branch" "$base_sha"; then
+    strategy="resume captured Claude session"
+    STARTUP_RECOVERY_SESSION="$session_id"
+  else
+    strategy="launch fresh recovery worker constrained to checkpointed issue"
+    STARTUP_RECOVERY_SESSION=""
+  fi
+
+  printf '[%s] Migrated checkpoint recovery target: issue %s, branch %s, base SHA %s, state %s, strategy: %s\n' \
+    "$RUNNER_NAME" "$issue" "$branch" "$base_sha" "$state" "$strategy"
+
+  # Operator confirmation is required on every adoption path. The
+  # destructive agent invariant forbids launching a worker without
+  # explicit consent; the migrated path used to skip this prompt and
+  # is why the incident that motivated issue #51 produced no recovery
+  # prompt in the log. The wording matches the dirty-worktree prompt
+  # so the operator sees the same shape on every adoption path.
+  operator_confirm_recovery \
+    "Recover issue ${issue} on branch ${branch} from migrated checkpoint state ${state} using strategy '${strategy}'."
+
   STARTUP_RECOVERY_MODE="checkpoint"
   STARTUP_RECOVERY_ISSUE="$issue"
-  STARTUP_RECOVERY_SESSION=""
   if [[ -n "$session_id" && "$session_id" != "unavailable" ]]; then
-    STARTUP_RECOVERY_SESSION="$session_id"
+    : # STARTUP_RECOVERY_SESSION already set above via is_session_resumable
   fi
   STARTUP_RECOVERY_PROMPT="Migrated restart recovery:
 - Continue exactly issue #${issue}; do not select another issue.
