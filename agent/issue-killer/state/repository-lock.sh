@@ -53,11 +53,29 @@ write_lock_status() {
         printf 'fallback_remaining=%s\n' "${ISSUE_KILLER_FALLBACK_REMAINING//$'\n'/,}"
       fi
       if [[ -n "${ISSUE_KILLER_FAILED_PROFILE:-}" ]]; then
-        printf 'failed_profile=%s\n' "$ISSUE_KILLER_FAILED_PROFILE"
+        printf 'failed_profile=%s\n' "${ISSUE_KILLER_FAILED_PROFILE}"
       fi
       if [[ -n "${ISSUE_KILLER_NEXT_PROFILE:-}" ]]; then
-        printf 'next_profile=%s\n' "$ISSUE_KILLER_NEXT_PROFILE"
+        printf 'next_profile=%s\n' "${ISSUE_KILLER_NEXT_PROFILE}"
       fi
+    fi
+    # Azure delivery HU phase metadata (issue #41). The lock status
+    # exposes the current HU phase and supporting identifiers so the
+    # in-flight progress is observable without reading the checkpoint
+    # or the per-iteration artifact. The values are sanitized at the
+    # call site; only the redacted tokens or short labels reach this
+    # snapshot.
+    if [[ -n "${TRACKER_HU_TICKET_BRANCH:-}" ]]; then
+      printf 'ticket_branch=%s\n' "$TRACKER_HU_TICKET_BRANCH"
+    fi
+    if [[ -n "${TRACKER_HU_EVIDENCE_URL:-}" ]]; then
+      printf 'evidence_url=%s\n' "$TRACKER_HU_EVIDENCE_URL"
+    fi
+    if [[ -n "${TRACKER_HU_REAL_EFFORT_HOURS:-}" ]]; then
+      printf 'real_effort_hours=%s\n' "$TRACKER_HU_REAL_EFFORT_HOURS"
+    fi
+    if [[ -n "${TRACKER_HU_PHASE:-}" ]]; then
+      printf 'hu_phase=%s\n' "$TRACKER_HU_PHASE"
     fi
   } > "$status_tmp"
   mv -f "$status_tmp" "${LOCK_DIR}/status"

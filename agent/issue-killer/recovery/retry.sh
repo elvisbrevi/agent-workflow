@@ -437,12 +437,32 @@ attempt_with_recovery() {
     if [[ -n "$resume_session" && "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
       printf '[%s] Restart recovery resuming Claude session %s\n' \
         "$RUNNER_NAME" "$resume_session"
+      # Issue #41: emit the recovery-resumed phase so the operator sees
+      # the in-flight resume through the same normalized lifecycle.
+      if declare -F hu_progress_event >/dev/null 2>&1; then
+        hu_progress_event "recovery-resumed" "$resume_session" \
+          "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+          "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+      fi
     elif [[ -n "$resume_session" ]]; then
       printf '[%s] Recovery attempt %s resuming Claude session %s\n' \
         "$RUNNER_NAME" "$attempt" "$resume_session"
+      # Issue #41: emit the recovery-resumed phase on the retry path.
+      if declare -F hu_progress_event >/dev/null 2>&1; then
+        hu_progress_event "recovery-resumed" "$resume_session" \
+          "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+          "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+      fi
     elif [[ "$attempt" -gt 1 ]]; then
       printf '[%s] Recovery attempt %s launching a fresh Claude worker\n' \
         "$RUNNER_NAME" "$attempt"
+      # Issue #41: emit the recovery-clause phase on the fresh-worker
+      # fallback so the operator sees the transport failure transition.
+      if declare -F hu_progress_event >/dev/null 2>&1; then
+        hu_progress_event "recovery-clause" "fresh-${attempt}" \
+          "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+          "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+      fi
     fi
 
     run_worker_with_progress "$prompt" "$attempt_output" "$resume_session"
