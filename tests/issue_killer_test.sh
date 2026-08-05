@@ -1584,6 +1584,251 @@ test_session_resume_skipped_when_no_captured_session_id() {
   pass 'session resume is skipped when no session id was captured'
 }
 
+test_unresumable_session_degrades_to_fresh_worker() {
+  local repo="${TEST_ROOT}/unresumable-repo"
+  local home="${TEST_ROOT}/unresumable-home"
+  local fake="${TEST_ROOT}/claude-minimax-unresumable"
+  local output="${TEST_ROOT}/unresumable-output.log"
+  local counter="${TEST_ROOT}/unresumable-counter"
+  local args_file="${TEST_ROOT}/unresumable-args"
+  local checkpoint_file
+  local status
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # First invocation: the orchestrator resumes the captured session, the
+  # fake CLI rejects it with the Claude-style "No conversation found"
+  # signature and exits non-zero. Second invocation: the orchestrator
+  # must launch fresh without --resume. Third and later invocations
+  # (post-completion drain) return QUEUE_EMPTY.
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local arg' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  counter_file="'"$counter"'"' \
+    '  attempt=0' \
+    '  [[ -f "$counter_file" ]] && attempt=$(<"$counter_file")' \
+    '  attempt=$((attempt + 1))' \
+    '  printf "%s\\n" "$attempt" >"$counter_file"' \
+    '  iteration=1' \
+    '  name_next=0' \
+    '  for arg in "$@"; do' \
+    '    if [[ "$name_next" == "1" ]]; then' \
+    '      if [[ "$arg" =~ -([0-9]+)$ ]]; then' \
+    '        iteration="${BASH_REMATCH[1]}"' \
+    '      fi' \
+    '      break' \
+    '    fi' \
+    '    if [[ "$arg" == "--name" ]]; then' \
+    '      name_next=1' \
+    '    fi' \
+    '  done' \
+    '  if [[ "$iteration" -gt 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    return 0' \
+    '  fi' \
+    '  if [[ "$attempt" -eq 1 ]]; then' \
+    '    printf "%s\\n" "No conversation found with session ID sess-unresumable-77\\n" >&2' \
+    '    return 1' \
+    '  fi' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  # Pre-seed the checkpoint with a session id and a matching branch so the
+  # runner considers the session safe to resume on attempt 1.
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=77
+branch=main
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse HEAD)
+session_id=sess-unresumable-77
+state=mutating
+updated_at=test
+EOF
+
+  write_default_config "${TEST_ROOT}/unresumable-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
+  set +e
+  HOME="$home" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-config.toml" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # The unresumable resume must not abort the run; the fresh worker must
+  # complete the issue cleanly.
+  [[ "$status" -eq 0 ]] || \
+    fail "Unresumable resume must exit 0, got ${status}"
+  [[ "$(<"$counter")" -ge 2 ]] || \
+    fail "Runner did not relaunch after unresumable session (got $(<"$counter") invocations)"
+
+  # First invocation must carry --resume and the captured session id; the
+  # second must NOT carry --resume (resume is suppressed for the fresh
+  # degradation relaunch). The fresh worker gets --no-session-persistence.
+  local first_block last_block resume_seen second_resume_seen fresh_marker
+  first_block="$(awk -v marker='--resume' '
+    { lines[NR]=$0 }
+    $0 == marker { print "RESUME_FOUND_AT_LINE_" NR; exit }
+  ' "$args_file")"
+  [[ -n "$first_block" ]] || \
+    fail 'First worker invocation did not receive --resume'
+  if awk '/^--resume$/{exit 1}' "$args_file"; then
+    fail 'First worker invocation never included --resume'
+  fi
+  grep -Fxq -- 'sess-unresumable-77' "$args_file" || \
+    fail 'First worker invocation did not receive the captured session id'
+
+  # Locate the position of the first --resume and confirm the second
+  # invocation (everything after it) contains no further --resume and
+  # does contain --no-session-persistence.
+  resume_seen=false
+  second_resume_seen=false
+  fresh_marker=false
+  while IFS= read -r line; do
+    if [[ "$line" == "--resume" ]]; then
+      if [[ "$resume_seen" == "true" ]]; then
+        second_resume_seen=true
+      fi
+      resume_seen=true
+      continue
+    fi
+    if [[ "$resume_seen" == "true" && "$line" == "--no-session-persistence" ]]; then
+      fresh_marker=true
+    fi
+  done <"$args_file"
+  if [[ "$second_resume_seen" == "true" ]]; then
+    fail 'Second worker invocation still carried --resume after degradation'
+  fi
+  if [[ "$fresh_marker" != "true" ]]; then
+    fail 'Fresh-worker relaunch did not include --no-session-persistence'
+  fi
+
+  # The runner must announce the strategy in its log so the operator
+  # can tell a degradation from a transient retry or a non-transient
+  # failure without reading the source.
+  grep -Fq 'could not be resumed' "$output" || \
+    fail 'Runner did not announce the unresumable session degradation'
+  grep -Fq 'continuing the same issue with a fresh worker' "$output" || \
+    fail 'Runner did not announce the fresh-worker continuation'
+  if grep -Fq 'Sleeping' "$output"; then
+    fail 'Runner applied backoff before the degradation relaunch'
+  fi
+  if grep -Fq 'recovery_delay=' "$output"; then
+    fail 'Runner published a transient-style recovery_delay on a degradation'
+  fi
+
+  pass 'unresumable session degrades to a fresh worker without backoff or budget consumption'
+}
+
+test_unresumable_degradation_is_bounded() {
+  local repo="${TEST_ROOT}/unresumable-bound-repo"
+  local home="${TEST_ROOT}/unresumable-bound-home"
+  local fake="${TEST_ROOT}/claude-minimax-unresumable-bound"
+  local output="${TEST_ROOT}/unresumable-bound-output.log"
+  local counter="${TEST_ROOT}/unresumable-bound-counter"
+  local args_file="${TEST_ROOT}/unresumable-bound-args"
+  local checkpoint_file
+  local status
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # A fresh worker that happens to print the same "No conversation
+  # found" string in its output must NOT be misclassified as another
+  # degradation. The orchestrator already cleared CHECKPOINT_SESSION_ID
+  # after the first degradation, so the second invocation launches
+  # without --resume; classify_failure must treat the same string as a
+  # regular non_transient_exit so the run aborts once instead of
+  # looping.
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local arg' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  counter_file="'"$counter"'"' \
+    '  attempt=0' \
+    '  [[ -f "$counter_file" ]] && attempt=$(<"$counter_file")' \
+    '  attempt=$((attempt + 1))' \
+    '  printf "%s\\n" "$attempt" >"$counter_file"' \
+    '  iteration=1' \
+    '  name_next=0' \
+    '  for arg in "$@"; do' \
+    '    if [[ "$name_next" == "1" ]]; then' \
+    '      if [[ "$arg" =~ -([0-9]+)$ ]]; then' \
+    '        iteration="${BASH_REMATCH[1]}"' \
+    '      fi' \
+    '      break' \
+    '    fi' \
+    '    if [[ "$arg" == "--name" ]]; then' \
+    '      name_next=1' \
+    '    fi' \
+    '  done' \
+    '  if [[ "$iteration" -gt 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '    return 0' \
+    '  fi' \
+    '  resume_seen=0' \
+    '  for arg in "$@"; do [[ "$arg" == "--resume" ]] && resume_seen=1; done' \
+    '  if [[ "$resume_seen" -eq 1 ]]; then' \
+    '    printf "%s\\n" "No conversation found with session ID fake-session\\n" >&2' \
+    '    return 1' \
+    '  fi' \
+    '  if [[ "$attempt" -eq 2 ]]; then' \
+    '    printf "%s\\n" "No conversation found with session ID stray-mention\\n" >&2' \
+    '    return 1' \
+    '  fi' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=42
+branch=main
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse HEAD)
+session_id=sess-unresumable-42
+state=mutating
+updated_at=test
+EOF
+
+  write_default_config "${TEST_ROOT}/unresumable-bound-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
+  set +e
+  HOME="$home" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_LIMIT=1 \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-bound-config.toml" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # Two invocations: the resume rejection on attempt 1, the fresh
+  # worker emitting the same signature on attempt 2. The orchestrator
+  # must not treat attempt 2 as a second degradation; classify_failure
+  # only emits unresumable_session when resume_session is non-empty,
+  # so attempt 2 is classified as non_transient_exit and the run
+  # aborts after one retry.
+  local attempts
+  attempts="$(<"$counter")"
+  [[ "$attempts" -le 2 ]] || \
+    fail "Bounded degradation must not loop, got ${attempts} invocations"
+  # Exactly one degradation announcement, regardless of how many times
+  # the signature appears in worker output.
+  local degradation_count
+  degradation_count="$(grep -c 'continuing the same issue with a fresh worker' "$output" || true)"
+  [[ "$degradation_count" -le 1 ]] || \
+    fail "Bounded degradation announced fresh-worker continuation ${degradation_count} times"
+
+  pass 'fresh worker emitting the signature is not misclassified as a second degradation'
+}
+
 test_recovery_required_after_exhausted_retries() {
   local repo="${TEST_ROOT}/recovery-required-repo"
   local fake="${TEST_ROOT}/claude-minimax-recovery-required"
@@ -2332,6 +2577,8 @@ test_blocked_outcome_does_not_retry
 test_recovery_reconciles_local_state_before_continuing
 test_session_resume_when_checkpoint_has_safe_session_id
 test_session_resume_skipped_when_no_captured_session_id
+test_unresumable_session_degrades_to_fresh_worker
+test_unresumable_degradation_is_bounded
 test_recovery_required_after_exhausted_retries
 test_recovery_required_does_not_advance_to_next_issue
 test_idempotent_retry_recognizes_already_merged_pr

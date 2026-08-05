@@ -148,6 +148,7 @@ PROGRESS_INTERVAL="${ISSUE_RUNNER_PROGRESS_INTERVAL:-30}"
 STREAM_OUTPUT="${ISSUE_RUNNER_STREAM_OUTPUT:-true}"
 RETRY_DELAY_VALUES=()
 TRANSIENT_PATTERN_VALUES=()
+UNRESUMABLE_PATTERN_VALUES=()
 RECOVERY_ATTEMPT=0
 RECOVERY_CATEGORY=""
 RECOVERY_DELAY=""
@@ -277,6 +278,7 @@ is_non_negative_integer "$PROGRESS_INTERVAL" || \
 parse_retry_delays "${ISSUE_RUNNER_RETRY_DELAYS:-15,30,60}" || \
   die "ISSUE_RUNNER_RETRY_DELAYS must be a comma-separated list of positive integers (seconds)"
 parse_transient_patterns "${ISSUE_RUNNER_TRANSIENT_PATTERNS:-}"
+parse_unresumable_patterns "${ISSUE_RUNNER_UNRESUMABLE_PATTERNS:-}"
 if [[ -n "${ISSUE_RUNNER_RETRY_LIMIT:-}" ]]; then
   is_non_negative_integer "${ISSUE_RUNNER_RETRY_LIMIT}" || \
     die "ISSUE_RUNNER_RETRY_LIMIT must be a non-negative integer"
