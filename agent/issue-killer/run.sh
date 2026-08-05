@@ -294,6 +294,13 @@ TRACKER_ADAPTER="$(tracker_select_adapter "$REPO_ROOT")" || \
 [[ -r "$TRACKER_ADAPTER" ]] || die "tracker adapter not found: ${TRACKER_ADAPTER}"
 # shellcheck source=agent/issue-killer/tracker/github-adapter.sh
 source "$TRACKER_ADAPTER"
+# The HU progress module is tracker-neutral and emits the canonical
+# Azure delivery HU lifecycle phases; the orchestrator and the Azure
+# tracker adapter both depend on it. The module is sourced before the
+# tracker adapter so the tracker can extend lock status with the
+# in-flight HU phase.
+# shellcheck source=agent/issue-killer/tracker/hu-progress.sh
+source "${SCRIPT_DIR}/tracker/hu-progress.sh"
 tracker_initialize "$REPO_ROOT" || die "tracker validation failed; run setup-elvis-brevi-skills and retry"
 tracker_validate_run_options "$HU_ID_OVERRIDE" || die "invalid tracker-specific run options"
 tracker_prepare_worker_environment || die "unable to prepare the selected tracker runtime environment"

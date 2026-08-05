@@ -212,6 +212,14 @@ tracker_item_set_real_effort_accumulated() {
   existing="$(tracker_item_read_real_effort "$item_id" 2>/dev/null || true)"
   total="$(tracker_calculate_real_effort_hours "$active_seconds" "$existing")" || return 1
   tracker_item_set_real_effort "$item_id" "$total"
+  # Issue #41: emit effort-recorded phase so the operator sees the
+  # recorded Real Effort in the lock status without reading the captured
+  # Azure response. The total is the only numeric value forwarded.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    hu_progress_event "effort-recorded" "$total" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+      "$total" >/dev/null || true
+  fi
   printf '%s\n' "$total"
 }
 
@@ -294,6 +302,16 @@ tracker_item_set_completion_evidence_if_absent() {
     return 0
   fi
   tracker_item_set_completion_evidence "$item_id" "$html"
+  # Issue #41: emit evidence-recorded phase on the persistent write
+  # path. The HTML payload never reaches the lock status or operator
+  # output; only the modality label is forwarded through the redactor.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    local modality_label
+    modality_label="$(azure_extract_evidence_modality "$html" 2>/dev/null || printf 'unknown')"
+    hu_progress_event "evidence-recorded" "$modality_label" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+      "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+  fi
 }
 
 # Returns the URL of an existing attachment whose title matches the
@@ -982,6 +1000,15 @@ tracker_item_upload_attachment() {
       "${RUNNER_NAME:-issue-killer}" "$response" >&2
     return 1
   }
+  # Issue #41: emit the canonical evidence-captured phase so the
+  # operator sees the in-flight progress. The url is emitted verbatim
+  # through the redactor so credentials embedded in capture URLs cannot
+  # leak through the operator-visible stream or the lock status.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    hu_progress_event "evidence-captured" "$title" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "$url" "${TRACKER_HU_REAL_EFFORT_HOURS:-}" \
+      >/dev/null || true
+  fi
   printf '%s\n' "$url"
 }
 
@@ -1565,6 +1592,23 @@ azure_sync_scope_state() {
   TRACKER_SCOPE_STATUS="$AZURE_SCOPE_STATUS"
   TRACKER_SCOPE_HU="$AZURE_SCOPE_HU"
   TRACKER_SCOPE_ITEM="$AZURE_SCOPE_ITEM"
+  # Issue #41: emit the hu-selected and ticket-selected phases so the
+  # operator sees the scope transition at the right moment. The phase
+  # emission is run only when the call site did not already produce
+  # empty scope values; tracker_prepare_worker_scope is the canonical
+  # place where selection happens.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    if [[ -n "$AZURE_SCOPE_HU" && "$AZURE_SCOPE_STATUS" == "ready" ]]; then
+      hu_progress_event "hu-selected" "$AZURE_SCOPE_HU" \
+        "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+        "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+    fi
+    if [[ -n "$AZURE_SCOPE_ITEM" && "$AZURE_SCOPE_STATUS" == "ready" ]]; then
+      hu_progress_event "ticket-selected" "$AZURE_SCOPE_ITEM" \
+        "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+        "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+    fi
+  fi
 }
 
 azure_prepare_recovery_scope() {
@@ -1726,6 +1770,16 @@ tracker_publish_hu_branch() {
   if [[ -n "${AZURE_HU_BRANCH_ORIGIN:-}" ]]; then
     TRACKER_HU_BRANCH_ORIGIN_SHA="$(azure_hu_branch_origin_sha "${AZURE_HU_BRANCH_ORIGIN}" 2>/dev/null || true)"
   fi
+  # Issue #41: emit the canonical hu-branch-prepared phase so the
+  # operator sees the HU integration branch identity and decides
+  # whether the prepared branch matches the configured delivery
+  # category. The redactor strips capture URLs and credential shapes
+  # that might be embedded in the branch metadata.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    hu_progress_event "hu-branch-prepared" "${TRACKER_HU_BRANCH:-}" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+      "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+  fi
 }
 
 azure_item_has_ready_tag() {
@@ -1817,6 +1871,15 @@ tracker_item_close() {
     --state "$AZURE_CLOSED_STATE" \
     --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
     --output json
+  # Issue #41: emit the canonical ticket-done phase so the operator
+  # sees the closure transition. The closed state is the only piece
+  # forwarded; the underlying work-item identity is already known to
+  # the lock status through CHECKPOINT_TICKET.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    hu_progress_event "ticket-done" "$AZURE_CLOSED_STATE" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+      "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+  fi
 }
 
 tracker_item_completion_verified() {
@@ -1829,6 +1892,20 @@ tracker_item_completion_verified() {
   item_state="$(tracker_item_state "$item_json")"
   azure_list_contains "$item_state" "$AZURE_CLOSED_STATES" || return 1
   tracker_item_completion_prerequisites "$issue_number" "$branch"
+  # Issue #41: the PR prerequisites verify the integration into the
+  # HU integration branch; emit the canonical ticket-integrated phase
+  # so the operator sees the integration transition. The base reference
+  # is forwarded as the detail so the lock status records the
+  # destination branch identity.
+  if declare -F hu_progress_event >/dev/null 2>&1; then
+    local base_ref="refs/heads/${BASE_BRANCH:-main}"
+    if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+      base_ref="refs/heads/${TRACKER_HU_BRANCH}"
+    fi
+    hu_progress_event "ticket-integrated" "$base_ref" \
+      "${TRACKER_HU_TICKET_BRANCH:-}" "${TRACKER_HU_EVIDENCE_URL:-}" \
+      "${TRACKER_HU_REAL_EFFORT_HOURS:-}" >/dev/null || true
+  fi
 }
 
 tracker_prs_for_branch() {

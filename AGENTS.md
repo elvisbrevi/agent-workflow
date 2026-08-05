@@ -32,6 +32,7 @@ directory and must not place runtime code inside a skill directory.
 | Change worker lifecycle, streaming, or heartbeats | `agent/issue-killer/runtime/supervisor.sh` |
 | Change provider invocation/event decoding | The matching `runtime/<provider>-adapter.sh` |
 | Change GitHub/Azure behavior | The matching `tracker/*-adapter.sh`; keep `selector.sh` generic |
+| Extend the Azure delivery HU progress lifecycle | `tracker/hu-progress.sh`; preserve the canonical phase set |
 | Change the worker's task contract | `agent/issue-killer/PROMPT.md` |
 | Change agent metadata or authorization requirements | `agent/issue-killer/AGENT.md` |
 | Change operational configuration and recovery reference | `agent/issue-killer/REFERENCE.md` |
