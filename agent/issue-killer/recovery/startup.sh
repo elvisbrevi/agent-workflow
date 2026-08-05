@@ -284,6 +284,23 @@ prepare_dirty_startup_recovery() {
 - Reconcile live issue and PR state before any mutation, then complete the existing work."
 }
 
+# Single entry point for startup checkpoint adoption. The supervisor
+# used to call the migrated-checkpoint path and the dirty-worktree path
+# directly, so any change to the recovery decision had to be edited in
+# two places. Both paths now go through this function: the migrated
+# adoption runs first when no recovery mode is set, and the dirty
+# reconciliation runs unconditionally afterwards. Each path keeps its
+# existing observable behaviour today — including the migrated path's
+# current lack of confirmation and reconciliation — so future tickets
+# that add the same safeguards to the migrated path can land here
+# once instead of twice.
+adopt_startup_checkpoint() {
+  if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
+    adopt_migrated_checkpoint || :
+  fi
+  prepare_dirty_startup_recovery
+}
+
 # Adopts the canonical checkpoint produced by one-way legacy migration.
 adopt_migrated_checkpoint() {
   local checkpoint issue branch base_branch base_sha state session_id profile cli model command
