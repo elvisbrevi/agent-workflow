@@ -84,7 +84,7 @@ case "$1 $2 $3" in
         if [[ -n "${AZURE_SCOPE_TEST_MODE:-}" ]]; then
           printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","System.CreatedDate":"2026-08-01T09:00:00Z"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/10"}]}'
         else
-          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\"><h2>Summary</h2><h3>Summary</h3><div class=\"evidence-section\"><p>x</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>x</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>x</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>x</p></div></div>","Custom.RealEffort":0.25},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
+          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\" data-modality=\"non-interactive\"><h2>Summary</h2><h3>Summary</h3><div class=\"evidence-section\"><p>x</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>x</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>x</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>x</p></div></div>","Custom.RealEffort":0.25},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
         fi
         ;;
 
@@ -102,7 +102,7 @@ case "$1 $2 $3" in
           [[ -n "${AZURE_SCOPE_STATE_FILE:-}" && -r "${AZURE_SCOPE_STATE_FILE}" ]] && item_state="$(<"${AZURE_SCOPE_STATE_FILE}")"
           printf '%s\n' "{\"id\":10,\"fields\":{\"System.WorkItemType\":\"Task\",\"System.State\":\"${item_state}\",\"System.CreatedDate\":\"2026-08-01T10:00:00Z\"},\"relations\":[]}"
         else
-          printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\"><h2>Summary</h2><div class=\"evidence-section\"><p>Done</p></div><h3>Summary</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>Done</p></div></div>","Custom.RealEffort":1.5},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
+          printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\" data-modality=\"non-interactive\"><h2>Summary</h2><div class=\"evidence-section\"><p>Done</p></div><h3>Summary</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>Done</p></div></div>","Custom.RealEffort":1.5},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
         fi
         ;;
       11) printf '%s\n' '{"id":11,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent;epic","System.Title":"Tagged epic"},"relations":[]}' ;;
@@ -255,6 +255,110 @@ if tracker_calculate_real_effort_hours 60 'abc' >/dev/null 2>&1; then
 fi
 pass 'Azure effort calculator rounds upward to quarter-hour increments and accumulates'
 
+# Modality classification: backend/frontend/mixed/non-interactive (issue #38)
+[[ "$(tracker_classify_ticket_modality 'Add /api/orders endpoint' 'Expose a new HTTP route.' 'Implemented server handler and CLI command for the orders API endpoint')" == 'backend' ]] || \
+  fail 'Azure modality classifier did not recognize a backend ticket'
+[[ "$(tracker_classify_ticket_modality 'Render profile screen' 'Add a new page with a button to edit profile.' 'Updated component layout and paint theme')" == 'frontend' ]] || \
+  fail 'Azure modality classifier did not recognize a frontend ticket'
+[[ "$(tracker_classify_ticket_modality 'Profile settings end to end' 'Update the page and the API.' 'Refactored component and added a server route')" == 'mixed' ]] || \
+  fail 'Azure modality classifier did not recognize a mixed ticket'
+[[ "$(tracker_classify_ticket_modality 'Refactor doc fixture' 'Documentation cleanup only.' 'Renamed comments and reformatted test fixtures')" == 'non-interactive' ]] || \
+  fail 'Azure modality classifier did not recognize a non-interactive ticket'
+[[ "$(tracker_classify_ticket_modality 'Profile screen end to end' 'backend-only' 'Refactored page rendering and added a server route')" == 'backend' ]] || \
+  fail 'Azure modality classifier did not honour the explicit backend override'
+if tracker_classify_ticket_modality '' '' '' >/dev/null 2>&1; then
+  fail 'Azure modality classifier accepted an empty title, description, and changes tuple'
+fi
+if tracker_classify_ticket_modality 'Some ticket' 'Some description' 'No recognized signals here' >/dev/null 2>&1; then
+  fail 'Azure modality classifier accepted a ticket with no recognized modality signal'
+fi
+pass 'Azure modality classifier covers backend, frontend, mixed, and non-interactive tickets'
+
+# Modality evidence rendering: backend, frontend, mixed, non-interactive
+# (issue #38). Each modality must embed the right capture markers so the
+# closure guard can verify the delivery modality without re-classifying.
+backend_captures='[{"title":"GET /api/orders","description":"HTTP 200 with empty list","url":"https://attachments.example.com/get-orders.png"}]'
+backend_evidence="$(tracker_format_modality_evidence 200 backend 'Implemented GET /api/orders' 'Added orders route' 'curl http://localhost/api/orders -> 200' 'PR: https://example/pull/200' "$backend_captures")"
+grep -Fq 'data-modality="backend"' <<<"$backend_evidence" || \
+  fail 'Backend evidence did not carry the backend modality marker'
+grep -Fq 'data-modality-captures="backend"' <<<"$backend_evidence" || \
+  fail 'Backend evidence did not embed the backend capture section'
+grep -Fq 'HTTP captures' <<<"$backend_evidence" || \
+  fail 'Backend evidence did not label the HTTP capture section'
+grep -Fq 'https://attachments.example.com/get-orders.png' <<<"$backend_evidence" || \
+  fail 'Backend evidence did not embed the capture URL'
+grep -Fqc 'data-modality-captures="frontend"' <<<"$backend_evidence" >/dev/null 2>&1 && \
+  fail 'Backend evidence should not carry a frontend capture section'
+
+frontend_captures='[{"title":"Profile page","description":"Updated user profile","url":"https://attachments.example.com/profile.png"}]'
+frontend_evidence="$(tracker_format_modality_evidence 201 frontend 'Rendered profile page' 'Updated component' 'chrome MCP screenshot' 'PR: https://example/pull/201' "$frontend_captures")"
+grep -Fq 'data-modality="frontend"' <<<"$frontend_evidence" || \
+  fail 'Frontend evidence did not carry the frontend modality marker'
+grep -Fq 'data-modality-captures="frontend"' <<<"$frontend_evidence" || \
+  fail 'Frontend evidence did not embed the frontend capture section'
+grep -Fq 'Rendered screen captures' <<<"$frontend_evidence" || \
+  fail 'Frontend evidence did not label the screen capture section'
+
+mixed_captures='[{"title":"GET /api/profile","description":"HTTP 200","url":"https://attachments.example.com/get-profile.png","kind":"http"},{"title":"Profile page","description":"Edited profile","url":"https://attachments.example.com/profile.png","kind":"screen"}]'
+mixed_evidence="$(tracker_format_modality_evidence 202 mixed 'Profile E2E' 'Backend + frontend' 'chrome MCP + curl' 'PR: https://example/pull/202' "$mixed_captures")"
+grep -Fq 'data-modality="mixed"' <<<"$mixed_evidence" || \
+  fail 'Mixed evidence did not carry the mixed modality marker'
+grep -Fq 'data-modality-captures="backend"' <<<"$mixed_evidence" || \
+  fail 'Mixed evidence did not embed the backend capture section'
+grep -Fq 'data-modality-captures="frontend"' <<<"$mixed_evidence" || \
+  fail 'Mixed evidence did not embed the frontend capture section'
+
+noninteractive_evidence="$(tracker_format_modality_evidence 203 non-interactive 'Refactor fixture' 'Renamed comments' 'bash tests/foo.sh' 'PR: https://example/pull/203')"
+grep -Fq 'data-modality="non-interactive"' <<<"$noninteractive_evidence" || \
+  fail 'Non-interactive evidence did not carry the non-interactive modality marker'
+grep -Fqc 'data-modality-captures' <<<"$noninteractive_evidence" >/dev/null 2>&1 && \
+  fail 'Non-interactive evidence must not include a captures section'
+
+if tracker_format_modality_evidence 204 'unknown-modality' 'summary' 'changes' 'validation' 'refs' >/dev/null 2>&1; then
+  fail 'Azure modality evidence renderer accepted an unknown modality'
+fi
+if tracker_format_modality_evidence '' backend 'summary' 'changes' 'validation' 'refs' >/dev/null 2>&1; then
+  fail 'Azure modality evidence renderer accepted an empty work item identifier'
+fi
+pass 'Azure modality evidence renders backend, frontend, mixed, and non-interactive captures correctly'
+
+# Modality attachment upload: the fake az CLI in this fixture does not
+# implement `work-item attachment create`, so we install a tailored
+# az fixture just for this assertion, capture the call, and revert.
+attach_bin="${TEST_ROOT}/attach-bin"
+mkdir -p "$attach_bin"
+attach_calls="${TEST_ROOT}/attach-calls"
+cat > "${attach_bin}/az" <<ATTACHAZ
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$attach_calls"
+case "\$1 \$2 \$3 \$4" in
+  "boards work-item attachment create")
+    printf '%s\n' '{"id":"att-1","url":"https://attachments.example.com/orders.png"}'
+    ;;
+  *) exit 0 ;;
+esac
+ATTACHAZ
+chmod +x "${attach_bin}/az"
+# The fake-az fixture overrides work-item attachment create, so the
+# helper reuses the global ATTACH_CALLS handle.
+PATH="${attach_bin}:${PATH}" \
+  attachment_url="$(tracker_item_upload_attachment 200 /dev/null 'Orders HTTP capture' 'GET /api/orders response')"
+[[ "$attachment_url" == 'https://attachments.example.com/orders.png' ]] || \
+  fail "Azure attachment upload did not return the expected URL: ${attachment_url}"
+grep -Fq 'work-item attachment create' "$attach_calls" || \
+  fail 'Azure attachment upload did not invoke az boards work-item attachment create'
+if PATH="${attach_bin}:${PATH}" \
+  tracker_item_upload_attachment 200 /nonexistent/path 'missing' 'should fail' >/dev/null 2>&1; then
+  fail 'Azure attachment upload accepted an unreadable capture file'
+fi
+if PATH="${attach_bin}:${PATH}" tracker_item_upload_attachment 200 /dev/null '' '' >/dev/null 2>&1; then
+  fail 'Azure attachment upload accepted an empty capture title'
+fi
+if tracker_item_upload_attachment 0 /dev/null 'title' 'desc' >/dev/null 2>&1; then
+  fail 'Azure attachment upload accepted an invalid work item identifier'
+fi
+pass 'Azure attachment upload validates the capture file and returns the attachment URL'
+
 # Closure guard rejects Done when evidence, effort, or relations are missing
 # (issue #37). Item 11 is an Epic-marked Bug with no evidence, effort, or
 # relations; the guarded CLI must refuse to close it as Done.
@@ -265,6 +369,40 @@ if az boards work-item update --id 11 --state Done >/dev/null 2>&1; then
 fi
 tracker_cleanup_worker_environment
 pass 'Azure guarded CLI refuses Done when completion prerequisites are missing'
+
+# Closure guard refuses Done when evidence lacks a recognized modality
+# marker (issue #38). The unit-level test for
+# `tracker_item_completion_prerequisites` already verifies the
+# modality check against the live Azure evidence; this assertion
+# double-checks that the closure guard honours the same contract when
+# invoked through the guarded CLI. We patch the fake-az fixture
+# temporarily to return an evidence payload without a modality marker.
+no_modality_bin="${TEST_ROOT}/no-modality-bin"
+mkdir -p "$no_modality_bin"
+cat > "${no_modality_bin}/az" <<'NOMOD'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "work-item show")
+    printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\"><h2>Summary</h2><h3>Summary</h3><div class=\"evidence-section\"><p>x</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>x</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>x</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>x</p></div></div>","Custom.RealEffort":0.25},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
+    ;;
+  *) exit 0 ;;
+esac
+NOMOD
+chmod +x "${no_modality_bin}/az"
+tracker_cleanup_worker_environment >/dev/null 2>&1 || true
+PATH="${no_modality_bin}:${PATH}" tracker_prepare_worker_environment \
+  || fail 'Azure guarded CLI environment was not re-prepared for modality test'
+if az boards work-item update --id 1 --state Done >/dev/null 2>&1; then
+  tracker_cleanup_worker_environment
+  fail 'Azure guarded CLI accepted Done when evidence lacked a modality marker'
+fi
+tracker_cleanup_worker_environment
+# Restore the default fake-az path so subsequent assertions are not
+# affected by the override.
+PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+  || fail 'Azure guarded CLI environment was not restored after modality test'
+tracker_cleanup_worker_environment
+pass 'Azure guarded CLI refuses Done when evidence lacks a recognized modality marker'
 
 # PR target validation: HU integration branch is preferred over the configured
 # base branch when the adapter is pinned to a delivery HU (issue #37).

@@ -61,6 +61,119 @@ azure_guard_list_relations() {
       | @tsv'
 }
 
+# Lists the work-item attachments (AttachedFile relations) so the
+# closure guard can verify that every capture referenced in the
+# completion evidence HTML has a matching Azure attachment. Returns
+# one URL per line.
+azure_guard_list_attachments() {
+  local item_id="$1"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  "$real_az" boards work-item show \
+    --id "$item_id" \
+    --expand all \
+    --org "$AZURE_GUARD_ORGANIZATION_URL" \
+    --output json 2>/dev/null | \
+    jq -r '.relations[]?
+      | select((.rel // "") | ascii_downcase | test("attachedfile"))
+      | (.url // empty)'
+}
+
+# Verifies the modality marker embedded in the completion evidence
+# HTML matches the captured evidence and the work-item attachments.
+# The closure guard refuses Done when a backend, frontend, or mixed
+# delivery has no matching captures or when a non-interactive delivery
+# carries captures that should not be there.
+azure_guard_check_modality() {
+  local item_id="$1"
+  local evidence="$2"
+  local modality capture_sections backend_count frontend_count
+  local attachment_urls
+
+  modality="$(printf '%s\n' "$evidence" | \
+    grep -Eo 'data-modality="[^"]+"' | head -n 1 | \
+    sed -E 's/^data-modality="([^"]+)"$/\1/')"
+  case "$modality" in
+    backend|frontend|mixed|non-interactive) : ;;
+    *)
+      printf '%s: refusing Azure work-item closure %s until the completion evidence declares a recognized modality\n' \
+        "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+      return 1
+      ;;
+  esac
+  capture_sections="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures' || true)"
+  backend_count="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures="backend"' || true)"
+  frontend_count="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures="frontend"' || true)"
+  case "$modality" in
+    non-interactive)
+      [[ "$capture_sections" == "0" ]] || {
+        printf '%s: refusing Azure work-item closure %s because non-interactive evidence must not include captures\n' \
+          "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+        return 1
+      }
+      ;;
+    backend)
+      [[ "$backend_count" -ge 1 ]] || {
+        printf '%s: refusing Azure work-item closure %s until backend evidence lists at least one HTTP capture\n' \
+          "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+        return 1
+      }
+      ;;
+    frontend)
+      [[ "$frontend_count" -ge 1 ]] || {
+        printf '%s: refusing Azure work-item closure %s until frontend evidence lists at least one rendered-screen capture\n' \
+          "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+        return 1
+      }
+      ;;
+    mixed)
+      [[ "$backend_count" -ge 1 && "$frontend_count" -ge 1 ]] || {
+        printf '%s: refusing Azure work-item closure %s until mixed evidence lists both backend and frontend captures\n' \
+          "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+        return 1
+      }
+      ;;
+  esac
+
+  if [[ "$modality" != "non-interactive" ]]; then
+    attachment_urls="$(azure_guard_list_attachments "$item_id" 2>/dev/null || true)"
+    [[ -n "$attachment_urls" ]] || {
+      printf '%s: refusing Azure work-item closure %s until every capture reference is backed by an Azure work-item attachment\n' \
+        "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+      return 1
+    }
+    local expected_modality
+    if [[ "$backend_count" -ge 1 ]]; then expected_modality="backend"; else expected_modality="frontend"; fi
+    local evidence_urls missing=1
+    evidence_urls="$(printf '%s\n' "$evidence" | \
+      awk -v m="$expected_modality" '
+        BEGIN { in_section = 0 }
+        $0 ~ "data-modality-captures=\"" m "\"" { in_section = 1; next }
+        in_section && /<\/ul>/ { in_section = 0; next }
+        in_section && /href=/ {
+          match($0, /href="[^"]+"/)
+          if (RSTART > 0) {
+            url = substr($0, RSTART + 6, RLENGTH - 7)
+            print url
+          }
+        }
+      ' | sort -u)"
+    while IFS= read -r url; do
+      [[ -n "$url" ]] || continue
+      [[ "$url" == "#" || "$url" == "missing" ]] && continue
+      if grep -Fqx -- "$url" <<<"$attachment_urls"; then
+        missing=0
+      fi
+    done <<<"$evidence_urls"
+    [[ "$missing" -eq 0 ]] || {
+      printf '%s: refusing Azure work-item closure %s until every capture reference is backed by an Azure work-item attachment\n' \
+        "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+      return 1
+    }
+  fi
+  return 0
+}
+
 # Verifies every Azure ticket completion prerequisite before the closure
 # guard accepts `Done`. The function is intentionally minimal: it never
 # depends on the tracker adapter module so it stays usable from any
@@ -83,6 +196,8 @@ azure_guard_check_prerequisites() {
       "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
     return 1
   }
+
+  azure_guard_check_modality "$item_id" "$evidence" || return 1
 
   effort="$(azure_guard_read_field "$item_id" "${AZURE_GUARD_EFFORT_FIELD:-}")" || effort=""
   [[ "$effort" =~ ^[0-9]+(\.[0-9]+)?$ ]] || {
