@@ -279,7 +279,7 @@ issue_killer_config_record_field() {
       local profile="${section#profiles.}"
       profile="${profile%.options}"
       case "$key" in
-        permission_mode|reasoning_effort|sandbox|variant|auto_approve)
+        permission_mode|reasoning_effort|sandbox|variant|auto_approve|disable_session_persistence)
           printf 'profiles.%s.options.%s=%s\n' "$profile" "$key" "$value" >> "$state_file"
           ;;
         *)

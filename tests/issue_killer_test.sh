@@ -163,8 +163,9 @@ test_fresh_shell_per_issue() {
   [[ "$(wc -l < "$source_file" | tr -d ' ')" == "2" ]] || \
     fail 'Expected .bashrc to be loaded by a fresh shell for every issue check'
   grep -Fxq -- '--print' "$args_file" || fail 'Missing --print'
-  grep -Fxq -- '--no-session-persistence' "$args_file" || \
-    fail 'Missing --no-session-persistence'
+  if grep -Fxq -- '--no-session-persistence' "$args_file"; then
+    fail 'Fresh launch unexpectedly disabled session persistence'
+  fi
   grep -Fxq -- 'bypassPermissions' "$args_file" || \
     fail 'Missing autonomous bypassPermissions mode'
   grep -Fq 'No pending, available, non-epic issues remain.' "$output" || \
@@ -1607,12 +1608,16 @@ test_session_resume_skipped_when_no_captured_session_id() {
       fail 'No-session fixture did not finish'
 
   # Without a captured session id, the recovery worker must launch fresh
-  # with --no-session-persistence and must NOT receive --resume.
+  # without --resume. Session persistence is now the default for fresh
+  # launches (issue #56), so the absence of `--no-session-persistence`
+  # proves the fresh worker is leaving its transcript on disk for the
+  # next restart to resume.
   if grep -Fxq -- '--resume' "$args_file"; then
     fail 'Recovery worker received --resume despite no captured session id'
   fi
-  grep -Fxq -- '--no-session-persistence' "$args_file" || \
-    fail 'Fresh recovery worker did not receive --no-session-persistence'
+  if grep -Fxq -- '--no-session-persistence' "$args_file"; then
+    fail 'Fresh recovery worker unexpectedly disabled session persistence'
+  fi
 
   pass 'session resume is skipped when no session id was captured'
 }
@@ -1691,17 +1696,92 @@ PROLOG
     fail "Missing transcript must exit 0, got ${status}"
 
   # The runner must NOT pass --resume because the captured session has
-  # no transcript on disk.
+  # no transcript on disk. Session persistence is the default for a
+  # fresh launch (issue #56), so a fresh recovery worker must leave
+  # its transcript on disk by omitting `--no-session-persistence`.
   if grep -Fxq -- '--resume' "$args_file"; then
     fail 'Recovery worker received --resume despite a missing transcript'
   fi
   if grep -Fxq -- 'sess-missing-transcript' "$args_file"; then
     fail 'Recovery worker was invoked with the dead session id'
   fi
-  grep -Fxq -- '--no-session-persistence' "$args_file" || \
-    fail 'Fresh recovery worker did not receive --no-session-persistence'
+  if grep -Fxq -- '--no-session-persistence' "$args_file"; then
+    fail 'Fresh recovery worker unexpectedly disabled session persistence'
+  fi
 
   pass 'a checkpoint naming a session with no transcript launches a fresh recovery worker'
+}
+
+test_disable_session_persistence_profile_option_opts_out() {
+  local repo="${TEST_ROOT}/opt-out-repo"
+  local home="${TEST_ROOT}/opt-out-home"
+  local fake="${TEST_ROOT}/claude-minimax-opt-out"
+  local output="${TEST_ROOT}/opt-out-output.log"
+  local args_file="${TEST_ROOT}/opt-out-args"
+  local checkpoint_file
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  cat > "$fake" <<'PROLOG'
+#!/usr/bin/env bash
+for arg in "$@"; do printf '%s\n' "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  # Custom config that declares the disable_session_persistence opt-out
+  # on the only profile. The TOML parser must accept the new option key
+  # without rejecting it as unknown, and the runner must translate the
+  # opt-out into `--no-session-persistence` on every fresh launch.
+  cat > "${TEST_ROOT}/opt-out-config.toml" <<CONFIG
+ default_profile = "opt-out"
+
+[profiles.opt-out]
+label = "Opt out"
+cli = "claude"
+command = "$fake"
+model = "fixture-model"
+shell = "bash"
+init_file = "${home}/.bashrc"
+
+[profiles.opt-out.options]
+permission_mode = "bypassPermissions"
+disable_session_persistence = "true"
+CONFIG
+
+  HOME="$home" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/opt-out-config.toml" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Opt-out fixture did not finish'
+
+  grep -Fxq -- '--no-session-persistence' "$args_file" || \
+    fail 'disable_session_persistence=true did not translate into --no-session-persistence'
+  # When the operator opts out, the worker MUST NOT receive --resume
+  # either: there is no captured session id and none should ever be
+  # persisted.
+  if grep -Fxq -- '--resume' "$args_file"; then
+    fail 'Opt-out worker unexpectedly received --resume'
+  fi
+
+  # The checkpoint file format must stay unchanged; an opt-out fresh
+  # launch that captures no session id writes the existing
+  # `session_id=unavailable` sentinel rather than an identifier that
+  # can never be honoured.
+  [[ -e "$checkpoint_file" ]] && \
+    fail 'Opt-out fresh launch unexpectedly left a checkpoint behind (queue was empty)'
+
+  pass 'disable_session_persistence profile option opts out and leaves the sentinel-only checkpoint format'
 }
 
 test_unresumable_session_degrades_to_fresh_worker() {
@@ -1795,7 +1875,10 @@ EOF
 
   # First invocation must carry --resume and the captured session id; the
   # second must NOT carry --resume (resume is suppressed for the fresh
-  # degradation relaunch). The fresh worker gets --no-session-persistence.
+  # degradation relaunch). Session persistence is the default for the
+  # fresh worker (issue #56), so the second invocation must omit
+  # `--no-session-persistence` and prove the fresh worker is leaving
+  # its transcript on disk.
   local first_block last_block resume_seen second_resume_seen fresh_marker
   first_block="$(awk -v marker='--resume' '
     { lines[NR]=$0 }
@@ -1811,10 +1894,10 @@ EOF
 
   # Locate the position of the first --resume and confirm the second
   # invocation (everything after it) contains no further --resume and
-  # does contain --no-session-persistence.
+  # contains no `--no-session-persistence` (persistence is the default).
   resume_seen=false
   second_resume_seen=false
-  fresh_marker=false
+  fresh_marker=true
   while IFS= read -r line; do
     if [[ "$line" == "--resume" ]]; then
       if [[ "$resume_seen" == "true" ]]; then
@@ -1824,14 +1907,14 @@ EOF
       continue
     fi
     if [[ "$resume_seen" == "true" && "$line" == "--no-session-persistence" ]]; then
-      fresh_marker=true
+      fresh_marker=false
     fi
   done <"$args_file"
   if [[ "$second_resume_seen" == "true" ]]; then
     fail 'Second worker invocation still carried --resume after degradation'
   fi
   if [[ "$fresh_marker" != "true" ]]; then
-    fail 'Fresh-worker relaunch did not include --no-session-persistence'
+    fail 'Fresh-worker relaunch disabled session persistence'
   fi
 
   # The runner must announce the strategy in its log so the operator
@@ -2598,8 +2681,8 @@ PROLOG
     fail 'Confirmed legacy adoption did not return to the normal queue loop'
   [[ -r "$checkpoint_seen" ]] || \
     fail 'Confirmed legacy adoption did not create the synthetic checkpoint before worker launch'
-  grep -Fxq -- '--no-session-persistence' "$args" || \
-    fail 'Confirmed legacy adoption did not launch a fresh worker'
+  ! grep -Fxq -- '--no-session-persistence' "$args" || \
+    fail 'Confirmed legacy adoption unexpectedly disabled session persistence'
   ! grep -Fxq -- '--resume' "$args" || \
     fail 'Confirmed legacy adoption attempted to resume a session'
   grep -Fq 'Continue exactly issue #55' "$prompt" || \
@@ -2719,6 +2802,7 @@ test_recovery_reconciles_local_state_before_continuing
 test_session_resume_when_checkpoint_has_safe_session_id
 test_session_resume_skipped_when_no_captured_session_id
 test_session_resume_skipped_when_transcript_missing
+test_disable_session_persistence_profile_option_opts_out
 test_unresumable_session_degrades_to_fresh_worker
 test_unresumable_degradation_is_bounded
 test_recovery_required_after_exhausted_retries
