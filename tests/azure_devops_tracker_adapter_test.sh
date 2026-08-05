@@ -84,7 +84,7 @@ case "$1 $2 $3" in
         if [[ -n "${AZURE_SCOPE_TEST_MODE:-}" ]]; then
           printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","System.CreatedDate":"2026-08-01T09:00:00Z"},"relations":[{"rel":"System.LinkTypes.Hierarchy-Forward","url":"https://dev.azure.com/example-org/example-project/_apis/wit/workItems/10"}]}'
         else
-          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}'
+          printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\"><h2>Summary</h2><h3>Summary</h3><div class=\"evidence-section\"><p>x</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>x</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>x</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>x</p></div></div>","Custom.RealEffort":0.25},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
         fi
         ;;
 
@@ -102,7 +102,7 @@ case "$1 $2 $3" in
           [[ -n "${AZURE_SCOPE_STATE_FILE:-}" && -r "${AZURE_SCOPE_STATE_FILE}" ]] && item_state="$(<"${AZURE_SCOPE_STATE_FILE}")"
           printf '%s\n' "{\"id\":10,\"fields\":{\"System.WorkItemType\":\"Task\",\"System.State\":\"${item_state}\",\"System.CreatedDate\":\"2026-08-01T10:00:00Z\"},\"relations\":[]}"
         else
-          printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent"},"relations":[]}'
+          printf '%s\n' '{"id":10,"fields":{"System.WorkItemType":"User Story","System.State":"Done","System.Tags":"ready-for-agent","Custom.Evidence":"<div class=\"completion-evidence\"><h2>Summary</h2><div class=\"evidence-section\"><p>Done</p></div><h3>Summary</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Delivered changes</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Validation</h3><div class=\"evidence-section\"><p>Done</p></div><h3>Development references</h3><div class=\"evidence-section\"><p>Done</p></div></div>","Custom.RealEffort":1.5},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}]}'
         fi
         ;;
       11) printf '%s\n' '{"id":11,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent;epic","System.Title":"Tagged epic"},"relations":[]}' ;;
@@ -207,6 +207,99 @@ grep -Fq 'repos pr list' "$calls" || \
   fail 'Azure PR lookup was not delegated to az'
 
 pass 'Azure tracker filters work items, blockers, claims, closes, and verifies merged PRs'
+
+# Ticket branch naming for non-visual delivery (issue #37)
+[[ "$(tracker_compute_ticket_branch 103 'Bootstrap the HU integration branch')" == 'issue-103-bootstrap-the-hu-integration-branch' ]] || \
+  fail 'Azure ticket branch did not match the issue-<id>-<slug> convention'
+[[ "$(tracker_compute_ticket_branch 42 '')" == 'issue-42-ticket' ]] || \
+  fail 'Azure ticket branch did not fall back to a sensible default slug'
+[[ "$(tracker_compute_ticket_branch 42 '!!!')" == 'issue-42-ticket' ]] || \
+  fail 'Azure ticket branch did not fall back to a sensible default slug for non-alphanumeric titles'
+if tracker_compute_ticket_branch 'not-a-number' 'title' >/dev/null 2>&1; then
+  fail 'Azure ticket branch accepted a non-numeric ticket identifier'
+fi
+pass 'Azure ticket branch naming follows the issue-<id>-<slug> convention'
+
+# Completion evidence HTML formatting for non-visual delivery (issue #37)
+evidence="$(tracker_format_completion_evidence 103 'Implemented branch bootstrap' 'Added bootstrap module' 'bash tests/azure_hu_branch_test.sh' 'PR: https://dev.azure.com/example-org/example-project/_git/example-repo/pullRequest/42')"
+for section in 'class="completion-evidence"' '<h3>Summary</h3>' '<h3>Delivered changes</h3>' '<h3>Validation</h3>' '<h3>Development references</h3>' 'data-work-item="103"'; do
+  grep -Fq "$section" <<<"$evidence" || \
+    fail "Azure completion evidence missing required section: $section"
+done
+grep -Fq 'bash tests/azure_hu_branch_test.sh' <<<"$evidence" || \
+  fail 'Azure completion evidence did not embed the validation output'
+pass 'Azure completion evidence uses readable HTML sections for non-visual delivery'
+
+# Real Effort calculation for non-visual delivery (issue #37)
+# 1 hour of active work rounded upward to the nearest quarter hour.
+[[ "$(tracker_calculate_real_effort_hours 3600 0)" == '1' ]] || \
+  fail 'Azure effort calculator did not round 1h upward to 0.25h increments'
+# 0.5 hour of active work rounded upward to 0.5h.
+[[ "$(tracker_calculate_real_effort_hours 1800 0)" == '0.5' ]] || \
+  fail 'Azure effort calculator did not round 0.5h upward to 0.5h'
+# Existing effort of 1.5h + 0.5h new = 2.0h.
+[[ "$(tracker_calculate_real_effort_hours 1800 1.5)" == '2' ]] || \
+  fail 'Azure effort calculator did not add new effort to existing value'
+# 1 minute of active work rounded upward to 0.25h.
+[[ "$(tracker_calculate_real_effort_hours 60 0)" == '0.25' ]] || \
+  fail 'Azure effort calculator did not round a sub-quarter-hour increment to 0.25h'
+# 15 minutes of active work is exactly 0.25h.
+[[ "$(tracker_calculate_real_effort_hours 900 0)" == '0.25' ]] || \
+  fail 'Azure effort calculator did not preserve an exact 0.25h increment'
+# Negative or non-numeric inputs are rejected.
+if tracker_calculate_real_effort_hours -1 0 >/dev/null 2>&1; then
+  fail 'Azure effort calculator accepted negative active seconds'
+fi
+if tracker_calculate_real_effort_hours 60 'abc' >/dev/null 2>&1; then
+  fail 'Azure effort calculator accepted a non-numeric existing value'
+fi
+pass 'Azure effort calculator rounds upward to quarter-hour increments and accumulates'
+
+# Closure guard rejects Done when evidence, effort, or relations are missing
+# (issue #37). Item 11 is an Epic-marked Bug with no evidence, effort, or
+# relations; the guarded CLI must refuse to close it as Done.
+tracker_prepare_worker_environment || fail 'Azure guarded CLI environment was not prepared (prereq test)'
+if az boards work-item update --id 11 --state Done >/dev/null 2>&1; then
+  tracker_cleanup_worker_environment
+  fail 'Azure guarded CLI accepted Done without completion prerequisites'
+fi
+tracker_cleanup_worker_environment
+pass 'Azure guarded CLI refuses Done when completion prerequisites are missing'
+
+# PR target validation: HU integration branch is preferred over the configured
+# base branch when the adapter is pinned to a delivery HU (issue #37).
+TRACKER_HU_BRANCH="feature/100-payments-hu"
+if tracker_pr_target_matches_integration_branch "refs/heads/feature/100-payments-hu"; then
+  : # expected
+else
+  fail 'Azure adapter did not accept the HU integration branch as a PR target'
+fi
+if tracker_pr_target_matches_integration_branch "refs/heads/main"; then
+  fail 'Azure adapter accepted the configured base branch while an HU branch is pinned'
+fi
+TRACKER_HU_BRANCH=""
+if tracker_pr_target_matches_integration_branch "refs/heads/main"; then
+  : # expected
+else
+  fail 'Azure adapter did not fall back to the configured base branch without an HU branch'
+fi
+pass 'Azure adapter matches PR targets against the HU integration branch first, then the configured base branch'
+
+# The PR-is-merged check must prefer the HU integration branch when the
+# adapter is pinned to a delivery HU (issue #37). The fake PR targets the
+# configured base branch by default; the same PR JSON must be classified
+# differently when TRACKER_HU_BRANCH is set.
+pr_for_main='[{"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]'
+[[ "$(tracker_pr_is_merged "$pr_for_main")" == "true" ]] || \
+  fail 'Azure PR-is-merged check did not recognize a merged PR into the configured base branch'
+TRACKER_HU_BRANCH="feature/100-payments-hu"
+[[ "$(tracker_pr_is_merged "$pr_for_main")" == "false" ]] || \
+  fail 'Azure PR-is-merged check accepted a PR into the configured base branch while an HU branch is pinned'
+pr_for_hu='[{"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/feature/100-payments-hu"}]'
+[[ "$(tracker_pr_is_merged "$pr_for_hu")" == "true" ]] || \
+  fail 'Azure PR-is-merged check did not recognize a merged PR into the HU integration branch'
+TRACKER_HU_BRANCH=""
+pass 'Azure PR-is-merged check prefers the HU integration branch over the configured base branch'
 
 runner_repo="${TEST_ROOT}/runner-repo"
 runner_bin="${TEST_ROOT}/runner-bin"
