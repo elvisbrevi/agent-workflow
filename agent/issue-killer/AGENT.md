@@ -29,8 +29,49 @@ Verify all of the following:
 3. `ISSUE_RUNNER_BASE_BRANCH` names the intended base branch (default: `main`).
 4. The selected profile's command is available either as an executable or as a
    shell function in the configured `init_file`.
+5. For an Azure DevOps repository, the `az` CLI is installed, the
+   `azure-devops` extension is enabled, the operator identity is authenticated,
+   and the repository-owned tracker contract in `docs/agents/issue-tracker.md`
+   declares the full Azure DevOps configuration block. The orchestrator refuses
+   to start a worker when the contract is missing, malformed, or inconsistent
+   with the Git remote.
+6. For an Azure DevOps repository, the evidence modality expected by the active
+   Feature or bug is available to the worker. Backend tickets need Chrome MCP
+   HTTP capture, frontend tickets need rendered-screen capture, mixed tickets
+   need both, and tickets without an executable interface produce reproducible
+   command or test output. When Chrome, the target application, the environment,
+   or the operator authentication is unavailable, the worker reports `BLOCKED`
+   rather than substituting textual evidence.
 
 If any point is uncertain, stop and ask the user.
+
+## Checkpoint and Status
+
+The runner persists a durable checkpoint and a lock status snapshot under the
+Git common directory so linked worktrees share the same recovery state. The
+checkpoint identities always carry the active `issue`, `hu`, and `ticket`
+(Azure only) numbers, the branch, the base branch and base SHA, the captured
+session identifier (when available), the active profile, the CLI, the model,
+and the lifecycle state. The lock status mirrors the same non-sensitive
+identity information so operators can inspect progress without reading the
+checkpoint directly.
+
+The orchestrator reads the checkpoint before every retry, reconciles the
+local branch, the live PR list, and the live issue state, and decides
+between resuming the captured session and launching a fresh worker
+constrained to the same issue. A missing status marker or partial PR / issue
+result stops the loop with `RECOVERY_REQUIRED`; the runner never advances to
+another issue silently.
+
+## Recovery
+
+The runner recovers from transient worker failures inside the configured
+retry budget. A non-transient failure, a missing status marker, an
+ambiguous PR or issue state, a dirty worktree, an exhausted provider
+fallback chain, or a malformed configuration stops the loop with one of
+`ISSUE_KILLER_STATUS=BLOCKED`, `ISSUE_KILLER_STATUS=FAILED`, or
+`ISSUE_KILLER_STATUS=RECOVERY_REQUIRED`. The checkpoint is retained so
+the next restart can choose the safe outcome.
 
 ## Launch
 

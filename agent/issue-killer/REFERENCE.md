@@ -70,6 +70,15 @@ ends safely without launching a worker; a scope whose pending children are all
 blocked reports `BLOCKED`. The pinned `hu` and `ticket` identities are included
 in checkpoints and lock status, never prompts or credentials.
 
+The full operator-facing workflow — explicit and automatic HU selection,
+first-run origin choice, branch naming, ticket sequencing, evidence
+requirements, field mappings, Real Effort, recovery, and the prohibition on
+HU closure or mainline promotion — is documented in
+[`docs/agents/azure-hu-operator-guide.md`](../../docs/agents/azure-hu-operator-guide.md).
+That guide is the source of truth for operator decisions; the tracker
+adapter contracts and the per-module reference below describe the
+implementation that enforces those decisions.
+
 ## Supported runtime / tracker matrix
 
 |                | GitHub (`gh`) | Azure DevOps (`az boards` + `az repos`) |
@@ -145,6 +154,30 @@ Setting `ISSUE_RUNNER_STREAM_OUTPUT=false` restores the legacy behavior:
 workers are invoked without stream output, every line is forwarded verbatim
 through a `tee`, and the elapsed-time heartbeat is the only progress signal
 operators see. `jq` is not required in that mode.
+
+## Azure prerequisites
+
+An Azure DevOps run requires the following prerequisites on the operator
+workstation and on the worker:
+
+- The `az` CLI is installed and the `azure-devops` extension is enabled.
+- The operator identity matches the `claim_identity` declared in the
+  repository tracker contract. Mismatches fail closed before any worker
+  launches.
+- The repository remote matches the declared organization, project, and
+  repository. The orchestrator refuses to start a worker when the remote
+  resolves to a different project.
+- For the documented evidence modality, the Chrome MCP server is available
+  to the worker. Backend tickets produce Chrome HTTP capture, frontend
+  tickets produce rendered-screen capture, mixed tickets produce both,
+  and tickets without an executable interface produce reproducible
+  command or test output. When Chrome, the target application, the
+  environment, or operator authentication is unavailable, the worker
+  reports `BLOCKED` instead of substituting a textual note.
+- The destructive confirmation step is the only authorization boundary for
+  the first-run origin choice (`master` or `develop`) when the HU
+  integration branch does not yet exist. A non-interactive first run
+  stops safely rather than choosing an origin automatically.
 
 The runner also creates this lock in the repository's Git common directory:
 
