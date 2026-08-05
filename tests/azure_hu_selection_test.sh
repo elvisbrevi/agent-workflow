@@ -38,6 +38,10 @@ ready_tag = "ready-for-agent"
 claim_identity = "operator@example.com"
 predecessor_relation = "System.LinkTypes.Dependency-Reverse"
 closed_state = "Done"
+completion_evidence_field = "Completion Evidence"
+real_effort_field = "Real Effort"
+completion_evidence_field_name = "Custom.Evidence"
+real_effort_field_name = "Custom.RealEffort"
 DOC
 git -C "$repo" add .
 git -C "$repo" commit --quiet -m 'test: seed'
@@ -52,7 +56,9 @@ case "$1 $2 $3" in
   "devops project show") printf '%s\n' '{"id":"project-id","name":"example-project"}' ;;
   "devops user show") printf '%s\n' '{"user":{"mail":"operator@example.com"}}' ;;
   "devops invoke --area")
-    if [[ "$*" == *'type='* ]]; then
+    if [[ "$*" == *'resource fields'* ]]; then
+      printf '%s\n' '{"value":[{"name":"Completion Evidence","referenceName":"Custom.Evidence","type":"html","readOnly":false},{"name":"Real Effort","referenceName":"Custom.RealEffort","type":"double","readOnly":false}]}'
+    elif [[ "$*" == *'type='* ]]; then
       printf '%s\n' '{"states":[{"name":"New","category":"Proposed"},{"name":"Active","category":"InProgress"},{"name":"Closed","category":"Completed"},{"name":"Done","category":"Completed"}]}'
     else
       printf '%s\n' '{"value":[{"name":"User Story"},{"name":"Bug"},{"name":"Task"},{"name":"Epic"}]}'
