@@ -90,6 +90,59 @@ output_matches_transient_pattern() {
   return 1
 }
 
+# Returns the default CLI signatures that indicate a --resume invocation
+# was rejected because the named session does not exist. The first
+# pattern matches the Claude CLI's "No conversation found with session
+# ID <id>" response. The second pattern covers the equivalent phrasing
+# used by sibling CLIs (Codex, OpenCode). Patterns are intentionally
+# kept narrow so legitimate worker output that happens to contain the
+# substring "session" does not falsely trigger degradation. Patterns
+# are matched as extended POSIX regular expressions against the worker
+# output, case-insensitive.
+default_unresumable_patterns() {
+  printf '%s\n' \
+    'no[[:space:]]+conversation[[:space:]]+found' \
+    'session[[:space:]]+id[[:space:]]+.*not[[:space:]]+found'
+}
+
+# Parses a newline-separated list of unresumable-session regex patterns
+# into the global UNRESUMABLE_PATTERN_VALUES array. Empty input means
+# "use defaults".
+parse_unresumable_patterns() {
+  local raw="$1"
+  local line
+  UNRESUMABLE_PATTERN_VALUES=()
+
+  if [[ -z "$raw" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && UNRESUMABLE_PATTERN_VALUES+=("$line")
+    done < <(default_unresumable_patterns)
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && UNRESUMABLE_PATTERN_VALUES+=("$line")
+  done <<<"$raw"
+}
+
+# Returns 0 when any line of $1 matches any allowed unresumable-session
+# pattern. Used by classify_failure to surface a permanent resume failure
+# as its own outcome, distinct from transient transport and from a
+# non-transient exit. The match is performed with POSIX extended regular
+# expressions (case insensitive) against the worker output only.
+output_matches_unresumable_pattern() {
+  local output_file="$1"
+  local pattern
+  [[ -r "$output_file" ]] || return 1
+  for pattern in "${UNRESUMABLE_PATTERN_VALUES[@]:-}"; do
+    [[ -n "$pattern" ]] || continue
+    if grep -Eqi -- "$pattern" "$output_file" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Classifies the outcome of a finished worker attempt. Returns one of:
 #   completed               - worker emitted ISSUE_COMPLETED or QUEUE_EMPTY
 #   blocked                 - worker emitted BLOCKED
@@ -97,11 +150,16 @@ output_matches_transient_pattern() {
 #   invalid_marker          - worker exited 0 with no recognized status
 #   non_transient_exit      - worker exited non-zero without a transient signature
 #   transient_transport     - worker exited non-zero with a transient signature
+#   unresumable_session     - worker exited non-zero after a --resume rejection
 # The category is the single source of truth for the retry orchestrator.
+# The fourth argument names the session id the orchestrator attempted to
+# resume, when any; unresumable_session is only emitted when that id was
+# non-empty and the worker output carries a session-not-found signature.
 classify_failure() {
   local output_file="$1"
   local exit_code="$2"
   local status_marker="$3"
+  local resume_session_id="${4:-}"
   local provider_failure="none"
 
   case "$status_marker" in
@@ -132,6 +190,16 @@ classify_failure() {
       rate_limit) printf 'provider_rate_limit\n'; return 0 ;;
       model_unavailable) printf 'provider_model_unavailable\n'; return 0 ;;
     esac
+  fi
+
+  # A resume rejected because the conversation does not exist is its own
+  # outcome: a permanent, non-retryable failure for the captured session
+  # that no transport-level retry can resolve. It is only meaningful when
+  # the orchestrator actually attempted a resume; a fresh worker that
+  # happens to print a similar message is classified normally below.
+  if [[ -n "$resume_session_id" ]] && output_matches_unresumable_pattern "$output_file"; then
+    printf 'unresumable_session\n'
+    return 0
   fi
 
   if output_matches_transient_pattern "$output_file"; then
@@ -265,6 +333,11 @@ attempt_with_recovery() {
   local configured_limit=""
   local category reconciled last_safe should_transition
   local checkpoint_branch checkpoint_base_sha resume_session
+  # Tracks how many resume-rejection degradations have already fired
+  # for this invocation of attempt_with_recovery. The orchestrator
+  # bounds degradation to a single occurrence per attempt so a
+  # misbehaving CLI cannot drive an unbounded fresh-worker loop.
+  local unresumable_degradation_count=0
 
   # The configured retry limit caps the total number of attempts
   # including the initial attempt. An empty value means "use the
@@ -348,7 +421,7 @@ attempt_with_recovery() {
       sed -n "s/^${STATUS_PREFIX}//p" "$attempt_output" | tail -n 1
     )"
 
-    category="$(classify_failure "$attempt_output" "$WORKER_EXIT" "$WORKER_STATUS")"
+    category="$(classify_failure "$attempt_output" "$WORKER_EXIT" "$WORKER_STATUS" "$resume_session")"
     RECOVERY_CATEGORY="$category"
     rm -f "$attempt_output" "${attempt_output}.issue" \
       "${attempt_output}.session" "${attempt_output}.touch"
@@ -379,6 +452,46 @@ attempt_with_recovery() {
       non_transient_exit)
         finalize_attempt_state "failed"
         return 0
+        ;;
+      unresumable_session)
+        unresumable_degradation_count=$((unresumable_degradation_count + 1))
+        if [[ "$unresumable_degradation_count" -gt 1 ]]; then
+          # Defense-in-depth: the classification guard already keeps a
+          # second resume rejection out of this branch (CHECKPOINT_SESSION_ID
+          # is cleared on the first degradation, so the next iteration
+          # launches fresh and classify_failure sees an empty resume
+          # id). This explicit counter exists so a future change that
+          # weakens that invariant cannot silently drive an unbounded
+          # fresh-worker loop.
+          RECOVERY_CATEGORY="non_transient_exit"
+          finalize_attempt_state "failed"
+          return 0
+        fi
+        # Log the strategy clearly so the operator can see why a
+        # worker relaunch is happening without a transient-retry
+        # backoff or retry-budget consumption.
+        printf '[%s] Captured Claude session %s could not be resumed; continuing the same issue with a fresh worker (no backoff applied)\n' \
+          "$RUNNER_NAME" "${resume_session}"
+        # Forget the captured session so the next iteration launches
+        # fresh with --no-session-persistence rather than re-trying
+        # the same dead --resume invocation. Clear both the
+        # checkpoint-stored id and the function-local id supplied to
+        # the first attempt on restart recovery; otherwise the next
+        # iteration's attempt==1 guard would re-issue --resume with
+        # the same dead session id.
+        CHECKPOINT_SESSION_ID=""
+        initial_session_id=""
+        write_checkpoint "${CHECKPOINT_STATE:-starting}"
+        # Drop the side-channel session file so the renderer does
+        # not re-persist it after the relaunch.
+        rm -f "${attempt_output}.session"
+        # Reset the transient-retry counter so the fresh-worker
+        # attempt gets its own retry budget rather than inheriting
+        # the budget consumed by the dead-session resume.
+        attempt=0
+        RECOVERY_ATTEMPT=0
+        RECOVERY_DELAY=""
+        continue
         ;;
       transient_transport)
         printf '[%s] Recovering from transient transport failure (attempt %s of %s)\n' \
