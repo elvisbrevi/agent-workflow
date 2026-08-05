@@ -169,10 +169,17 @@ model = "provider/backup-model"
 ```
 
 `default_profile` is used for non-interactive launches. With a TTY, the agent
-shows the configured profiles and asks the operator to select one; OpenCode
-also offers an ordered fallback chain. Fallbacks are OpenCode-only and are
-used only for approved provider availability/rate-limit failures, not for
-implementation failures.
+shows the configured profiles and asks the operator to select one, then lets
+the operator build an ordered mixed-provider fallback chain. A fall back
+chain may mix Claude, Codex, and OpenCode profiles in any order; only that
+order is consumed. Fallbacks are consumed only for approved provider
+availability/quota/rate-limit/model failures, never for implementation
+failures, malformed output, `BLOCKED`, or `FAILED`. Cross-CLI transitions
+never forward a captured session id to the destination CLI; the previous
+session is discarded and the destination worker launches fresh, constrained
+to the same issue and existing worktree. The closure protocol
+(`ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`, `RECOVERY_REQUIRED`)
+is unchanged.
 
 If `command` is a shell function, add `shell = "bash"` and
 `init_file = "~/.bashrc"` (or the appropriate initialization file). Profile

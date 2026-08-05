@@ -57,10 +57,14 @@ Wait for the runner to exit and report its final status. Do not implement an
 issue yourself and do not start a second runner.
 
 The runner always honors the configured `default_profile` when launched
-without a TTY. Interactive runs choose the profile and, for OpenCode, an
-ordered fallback chain through the operator-facing selector. The destructive
-confirmation step is the only authorization boundary for autonomous writes,
-tests, pushes, merges, and issue closure.
+without a TTY. Interactive runs choose the profile and build an ordered
+mixed-provider fallback chain through the operator-facing selector. A
+chain may mix Claude, Codex, and OpenCode profiles in any order; only the
+declared order is consumed. Each entry is a complete execution profile
+(CLI, model, command, options); the runner never substitutes another
+CLI, model, or command. The destructive confirmation step is the only
+authorization boundary for autonomous writes, tests, pushes, merges,
+and issue closure.
 
 The runner streams worker output and prints periodic elapsed-time heartbeats.
 Its repository lock also exposes a `status` snapshot in the Git common

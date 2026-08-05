@@ -60,6 +60,18 @@ _Avoid_: Conversation, chat, resume id used interchangeably
 A **worker session** that the runtime adapter confirms still exists in its own store. The decision is made by the adapter through its transcript-resolution operation, not by the orchestration loop, so the runner never encodes any provider's on-disk layout. An adapter that cannot determine resumability reports "not resumable"; failing closed is safe because a fresh recovery worker constrained to the checkpointed issue is always a correct outcome, merely slower than resuming. Adapters whose own CLI can answer the resume question for itself (Codex, OpenCode) defer to that CLI rather than to the on-disk layout, so today's observable resume behaviour is preserved.
 _Avoid_: Resume safe, session present, resume eligible
 
+**Mixed-provider fallback chain**:
+An ordered list of **execution profiles** from different installed CLIs that the orchestrator may activate when the active profile fails with an eligible provider-classified error. The chain is consumed in declared order; the runner advances the position before launching the destination worker and restores it on restart. Each entry is a complete profile; the runner never substitutes another CLI, model, or command.
+_Avoid_: OpenCode-only chain, generic fallback list
+
+**Cross-CLI handoff**:
+A fallback transition between two profiles whose `cli` field differs. The destination worker is launched fresh, never resumes the previous CLI's session, and continues the same issue, branch, and worktree. The captured session id from the source CLI is not forwarded because each CLI's session format is opaque to the others and forwarding would be silently rejected by the destination CLI.
+_Avoid_: Cross-provider resume, mixed-CLI continuation
+
+**Provider failure category**:
+A normalized classification — `provider_quota`, `provider_rate_limit`, `provider_model_unavailable`, or `none` — produced by the active runtime adapter from its own diagnostic stream. Only the first three categories may consume a **mixed-provider fallback chain** entry. Generic transport failures, malformed output, `BLOCKED`, and `FAILED` are classified separately and never consume a fallback.
+_Avoid_: Provider crash, CLI error, retryable failure
+
 ## Example Dialogue
 
 Developer: "Which execution profile should issue-killer use?"
