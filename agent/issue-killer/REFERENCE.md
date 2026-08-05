@@ -271,13 +271,17 @@ missing TTY, stale base SHA, branch mismatch, missing issue number, ambiguous
 PR state, or unavailable tracker state exits with code `4`
 (`RECOVERY_REQUIRED`) and leaves the checkpoint and worktree untouched.
 
-If the checkpoint contains a usable Claude session id and the branch/base
-SHA still match, the first recovery worker is invoked with
+If the checkpoint contains a usable Claude session id, the runtime adapter
+confirms the conversation still exists in its own store, and the
+branch/base SHA still match, the first recovery worker is invoked with
 `--resume <session_id>`. Otherwise the runner starts a fresh worker with
 `--no-session-persistence` and a prompt constrained to the checkpointed
-issue. In both cases the worker is instructed to inspect and complete the
-existing partial work, never select a new issue, and never discard, reset,
-stash, or overwrite dirty files.
+issue. The existence probe is owned by the runtime adapter so the
+orchestrator encodes no provider's on-disk layout — Claude resolves its
+own JSONL transcript, and Codex or OpenCode defer to their CLI's own
+resume answer. In both cases the worker is instructed to inspect and
+complete the existing partial work, never select a new issue, and never
+discard, reset, stash, or overwrite dirty files.
 
 For older interrupted work created before checkpoint support existed, use
 legacy adoption:

@@ -52,6 +52,14 @@ _Avoid_: Wall-clock duration, estimate
 The verified Azure state reached after a ticket PR is integrated into its **HU integration branch**, native development links and **completion evidence** are present, **real effort** is published, and the ticket is moved to its completed state. Integration alone is recoverable partial progress, not completion.
 _Avoid_: PR merged, code complete
 
+**Worker session**:
+The named conversation a CLI keeps between invocations so a later worker can continue the same work. The session is identified by a string the runtime adapter captures from its own stream and persists through the checkpoint. Each runtime owns the on-disk layout of its sessions — Claude stores JSONL transcripts under its configuration directory, Codex and OpenCode track thread or session identifiers through their own stores — and the runner resolves the location through one adapter-owned operation so the existence check and any later cleanup cannot drift apart in how they name the same file.
+_Avoid_: Conversation, chat, resume id used interchangeably
+
+**Resumable session**:
+A **worker session** that the runtime adapter confirms still exists in its own store. The decision is made by the adapter through its transcript-resolution operation, not by the orchestration loop, so the runner never encodes any provider's on-disk layout. An adapter that cannot determine resumability reports "not resumable"; failing closed is safe because a fresh recovery worker constrained to the checkpointed issue is always a correct outcome, merely slower than resuming. Adapters whose own CLI can answer the resume question for itself (Codex, OpenCode) defer to that CLI rather than to the on-disk layout, so today's observable resume behaviour is preserved.
+_Avoid_: Resume safe, session present, resume eligible
+
 ## Example Dialogue
 
 Developer: "Which execution profile should issue-killer use?"
