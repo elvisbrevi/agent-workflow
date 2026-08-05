@@ -61,6 +61,8 @@ source "${SCRIPT_DIR}/recovery/startup.sh"
 source "${SCRIPT_DIR}/recovery/retry.sh"
 # shellcheck source=agent/issue-killer/runtime/supervisor.sh
 source "${SCRIPT_DIR}/runtime/supervisor.sh"
+# shellcheck source=agent/issue-killer/runtime/runtime-activation.sh
+source "${SCRIPT_DIR}/runtime/runtime-activation.sh"
 # shellcheck source=agent/issue-killer/operator/session.sh
 source "${SCRIPT_DIR}/operator/session.sh"
 
@@ -187,7 +189,9 @@ issue_killer_config_load "$ISSUE_KILLER_CONFIG_PATH" || \
 # Select a profile: the operator chooses interactively when a TTY is
 # available, otherwise the configured `default_profile` is used
 # deterministically. The runner never picks a CLI/model outside the
-# declared profile set.
+# declared profile set. Any primary CLI may declare an ordered fallback
+# chain; the picker preserves the operator's selections exactly as
+# entered.
 if [[ -t 0 && -t 1 ]] && operator_session_available; then
   SELECTED_PROFILE="$(
     operator_select_profile \
@@ -195,11 +199,9 @@ if [[ -t 0 && -t 1 ]] && operator_session_available; then
   )" || die "unable to select an execution profile"
   issue_killer_config_apply_profile "$SELECTED_PROFILE" || \
     die "profile ${SELECTED_PROFILE} is invalid"
-  if [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]]; then
-    ISSUE_KILLER_PROFILE_FALLBACKS="$(
-      operator_select_fallbacks "$SELECTED_PROFILE"
-    )" || die "unable to select an OpenCode fallback chain"
-  fi
+  ISSUE_KILLER_PROFILE_FALLBACKS="$(
+    operator_select_fallbacks "$SELECTED_PROFILE"
+  )" || die "unable to select a fallback chain"
 else
   SELECTED_PROFILE=""
   issue_killer_config_select_default_profile || \
@@ -239,33 +241,16 @@ if [[ -n "$ISSUE_KILLER_PROFILE_OPTIONS" ]]; then
   done <<<"$ISSUE_KILLER_PROFILE_OPTIONS"
 fi
 
-# Source the runtime adapter that matches the selected profile's CLI.
-# The orchestrator calls only the generic `runtime_*` interface, so the
-# adapter file selected here is the sole place that knows the CLI's
-# invocation flags, JSON event shape, and session identity. The
-# adapter is sourced after the profile so we can validate the
-# CLI-specific options (e.g. codex reasoning_effort and sandbox)
-# before the worker is launched.
-case "$ISSUE_KILLER_PROFILE_CLI" in
-  claude)
-    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/claude-adapter.sh"
-    ;;
-  codex)
-    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/codex-adapter.sh"
-    ;;
-  opencode)
-    RUNTIME_ADAPTER="${RUNTIME_ADAPTER_DIR}/opencode-adapter.sh"
-    ;;
-  *)
-    die "runtime adapter is not available for CLI: ${ISSUE_KILLER_PROFILE_CLI:-unset}"
-    ;;
-esac
-[[ -r "$RUNTIME_ADAPTER" ]] || die "runtime adapter not found: ${RUNTIME_ADAPTER}"
-# shellcheck source=agent/issue-killer/runtime/codex-adapter.sh
-source "$RUNTIME_ADAPTER"
-# Each runtime adapter owns validation of its profile options.
-runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || \
-  die "${ISSUE_KILLER_PROFILE_CLI} profile ${ISSUE_KILLER_PROFILE_NAME} has invalid options"
+# Source the runtime adapter that matches the selected profile's CLI
+# through the shared activation path. The orchestrator calls only the
+# generic `runtime_*` interface, so the adapter file selected here is
+# the sole place that knows the CLI's invocation flags, JSON event
+# shape, and session identity. The activation path is reused by every
+# recovery flow (fallback staging, restart checkpoint adoption) so the
+# CLI-specific options are validated through the same entry point
+# before any worker is launched.
+activate_runtime_for_profile || \
+  die "${ISSUE_KILLER_PROFILE_CLI} profile ${ISSUE_KILLER_PROFILE_NAME} could not be activated"
 
 [[ -f "$PROMPT_FILE" ]] || die "worker prompt not found: ${PROMPT_FILE}"
 [[ "$BASE_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid base branch: ${BASE_BRANCH}"
@@ -312,8 +297,8 @@ tracker_validate_run_options "$HU_ID_OVERRIDE" || die "invalid tracker-specific 
 tracker_prepare_worker_environment || die "unable to prepare the selected tracker runtime environment"
 
 prepare_legacy_state || die "issue-killer cannot start: legacy runner state could not be migrated safely"
-restore_opencode_fallback_checkpoint || \
-  emit_recovery_required "fallback checkpoint does not match the selected OpenCode profile chain or current config"
+restore_fallback_checkpoint || \
+  emit_recovery_required "fallback checkpoint does not match the selected profile chain or current config"
 
 acquire_repository_lock
 operator_confirm_destructive_run

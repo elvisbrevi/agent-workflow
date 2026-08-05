@@ -10,8 +10,11 @@ assert_clean_worktree() {
 
 # Restores a fallback checkpoint after the operator has selected the same
 # primary profile and chain. Persisted profile identity and order must agree
-# with the current configuration or startup fails closed.
-restore_opencode_fallback_checkpoint() {
+# with the current configuration or startup fails closed. Mixed-provider
+# chains are accepted: the active profile can be any configured Claude,
+# Codex, or OpenCode profile as long as it survives the same identity
+# checks the primary profile already passed.
+restore_fallback_checkpoint() {
   local checkpoint="$(checkpoint_file)"
   local selected active cli model command_name position chain remaining
   local failed next failure entry expected_active expected_remaining=""
@@ -62,10 +65,10 @@ restore_opencode_fallback_checkpoint() {
   command_name="$(checkpoint_value command "$checkpoint")"
   [[ "$active" == "$expected_active" ]] || return 1
   issue_killer_config_apply_profile "$active" || return 1
-  [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" && "$cli" == "opencode" ]] || return 1
+  [[ "$ISSUE_KILLER_PROFILE_CLI" == "$cli" ]] || return 1
   [[ "$ISSUE_KILLER_PROFILE_MODEL" == "$model" ]] || return 1
   [[ "$ISSUE_KILLER_PROFILE_COMMAND" == "$command_name" ]] || return 1
-  runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || return 1
+  activate_runtime_for_profile || return 1
 
   ISSUE_KILLER_FALLBACK_POSITION="$position"
   ISSUE_KILLER_FALLBACK_CHAIN="$chain"
@@ -74,12 +77,22 @@ restore_opencode_fallback_checkpoint() {
   ISSUE_KILLER_FAILED_PROFILE="$failed"
   ISSUE_KILLER_NEXT_PROFILE="$next"
   ISSUE_KILLER_FALLBACK_FAILURE="$failure"
-  CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
-  CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
-  CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
-  printf '[%s] Restored OpenCode fallback checkpoint at position %s with profile %s\n' \
-    "$RUNNER_NAME" "$position" "$active"
+  if [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]]; then
+    printf '[%s] Restored OpenCode fallback checkpoint at position %s with profile %s\n' \
+      "$RUNNER_NAME" "$position" "$active"
+  else
+    printf '[%s] Restored fallback checkpoint at position %s with profile %s (cli=%s)\n' \
+      "$RUNNER_NAME" "$position" "$active" "$ISSUE_KILLER_PROFILE_CLI"
+  fi
   return 0
+}
+
+# Back-compatibility alias for the historical OpenCode-only entry point
+# used by older call sites. The behavior is now provider-neutral and
+# reuses the shared runtime activation path; the legacy name is kept
+# for compatibility with embedded callers and existing test fixtures.
+restore_opencode_fallback_checkpoint() {
+  restore_fallback_checkpoint
 }
 
 emit_recovery_required() {
