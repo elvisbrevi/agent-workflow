@@ -396,12 +396,14 @@ while true; do
     CHECKPOINT_ISSUE="$STARTUP_RECOVERY_ISSUE"
     CHECKPOINT_STATE="$(checkpoint_value state "$(checkpoint_file)")"
     CHECKPOINT_SESSION_ID="$(checkpoint_value session_id "$(checkpoint_file)")"
+    CHECKPOINT_SESSION_CLI="$(checkpoint_value session_cli "$(checkpoint_file)")"
     CHECKPOINT_HU="$(checkpoint_value hu "$(checkpoint_file)")"
     CHECKPOINT_TICKET="$(checkpoint_value ticket "$(checkpoint_file)")"
   else
     CHECKPOINT_ISSUE="${TRACKER_SCOPE_ITEM:-}"
     CHECKPOINT_HU="${TRACKER_SCOPE_HU:-}"
     CHECKPOINT_TICKET="${TRACKER_SCOPE_ITEM:-}"
+    CHECKPOINT_SESSION_CLI=""
     CHECKPOINT_STATE="starting"
     CHECKPOINT_SESSION_ID=""
   fi

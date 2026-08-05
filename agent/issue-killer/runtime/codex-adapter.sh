@@ -73,6 +73,40 @@ codex_runtime_redact() {
     -e 's/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/<redacted:private-key>/g'
 }
 
+# Classifies only explicit Codex provider failures that are eligible for
+# a cross-CLI fallback. The orchestrator handles status markers first, so
+# a worker-reported BLOCKED or FAILED outcome can never be reclassified
+# here. Patterns cover the OpenAI API surface that maps onto the same
+# normalized categories the OpenCode and Claude adapters already produce
+# (quota, rate_limit, model_unavailable, none). Generic transport
+# signatures ("connection refused", "tls handshake") are deliberately
+# excluded — those route through the transient retry classifier, not
+# through a fallback transition.
+codex_runtime_classify_provider_failure() {
+  local output_file="$1"
+
+  [[ -r "$output_file" ]] || {
+    printf 'none\n'
+    return 0
+  }
+
+  if grep -Eqi -- \
+    'insufficient[_ -]?quota|(quota|credits?|usage allowance|allowance|billing).*(exhaust|exceed|deplet|used up|limit reached)|(subscription|billing plan|api[_ -]?key).*(exhaust|expired|inactive|quota|credits?|usage allowance)' \
+    "$output_file" 2>/dev/null; then
+    printf 'quota\n'
+  elif grep -Eqi -- \
+    '(^|[^0-9])429([^0-9]|$)|rate[ _-]?limit[ _-]?exceeded|too[ _]many[ _]requests|rate[ _-]?limit[ _-]?reached' \
+    "$output_file" 2>/dev/null; then
+    printf 'rate_limit\n'
+  elif grep -Eqi -- \
+    'model[ _-]?(not[ _-]?found|unavailable|not[ _-]?available|does[ _-]?not[ _-]?exist|unsupported|deprecated)|(unavailable|not[ _-]?available|unsupported)[ _-]?model' \
+    "$output_file" 2>/dev/null; then
+    printf 'model_unavailable\n'
+  else
+    printf 'none\n'
+  fi
+}
+
 # Strictly validates the Codex profile fields captured in
 # ISSUE_KILLER_PROFILE_OPTIONS. Returns 0 on success and prints an
 # actionable diagnostic on failure. The orchestrator calls this before
@@ -511,6 +545,7 @@ runtime_redact()          { codex_runtime_redact; }
 runtime_validate_profile() { codex_runtime_validate_profile "$@"; }
 runtime_invoke()          { codex_runtime_invoke "$@"; }
 runtime_render_stream()   { codex_runtime_render_stream "$@"; }
+runtime_classify_provider_failure() { codex_runtime_classify_provider_failure "$@"; }
 
 # Resolve the on-disk path of a Codex thread's transcript. The Codex
 # CLI does not currently expose a stable transcript layout that the
