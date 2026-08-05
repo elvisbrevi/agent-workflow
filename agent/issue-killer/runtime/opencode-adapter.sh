@@ -604,6 +604,21 @@ opencode_runtime_session_exists() {
 runtime_session_transcript_path() { opencode_runtime_session_transcript_path "$@"; }
 runtime_session_exists()          { opencode_runtime_session_exists "$@"; }
 
+# OpenCode does not expose a stable transcript layout the runner can
+# predict, so there is nothing to remove. Returning 0 preserves
+# today's behaviour: non-Claude profiles that have no transcript path
+# to clean up never report a removal failure, and the orchestrator's
+# verified-completion path stays a no-op for this adapter.
+opencode_runtime_remove_session_transcript() {
+  return 0
+}
+
+# Generic session-cleanup contract. Adapters that resolve to a
+# transcript path delete it; adapters whose transcript layout the
+# runner cannot predict (Codex, OpenCode today) report success without
+# touching any file.
+runtime_remove_session_transcript() { opencode_runtime_remove_session_transcript "$@"; }
+
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
 # effects at source time.
