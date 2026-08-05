@@ -227,6 +227,7 @@ CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
 CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
 CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
 PERMISSION_MODE="bypassPermissions"
+ISSUE_KILLER_DISABLE_SESSION_PERSISTENCE="false"
 if [[ -n "$ISSUE_KILLER_PROFILE_OPTIONS" ]]; then
   option_line=""
   option_key=""
@@ -237,6 +238,7 @@ if [[ -n "$ISSUE_KILLER_PROFILE_OPTIONS" ]]; then
     option_value="${option_line#*=}"
     case "$option_key" in
       permission_mode) PERMISSION_MODE="$option_value" ;;
+      disable_session_persistence) ISSUE_KILLER_DISABLE_SESSION_PERSISTENCE="$option_value" ;;
     esac
   done <<<"$ISSUE_KILLER_PROFILE_OPTIONS"
 fi

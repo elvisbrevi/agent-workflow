@@ -258,6 +258,17 @@ claude_runtime_dispatch_event() {
 # prompt verbatim to the worker, so this helper only enumerates the
 # flag-style arguments. The training loop comments in `claude_runtime_invoke`
 # explain how the prompt is appended as a single array element.
+#
+# Session persistence is now the default for fresh launches, mirroring the
+# Claude CLI's behaviour: omitting `--no-session-persistence` lets Claude
+# write the session transcript to disk. An operator who explicitly wants
+# an ephemeral, non-resumable session can opt out by setting the runtime
+# variable `ISSUE_KILLER_DISABLE_SESSION_PERSISTENCE=true` (typically from
+# the `disable_session_persistence` profile option). The runner treats an
+# opt-out worker identically to a degraded fresh worker: no session id is
+# captured, the checkpoint records the existing `session_id=unavailable`
+# sentinel, and recovery falls through to a fresh worker with the same
+# session-disabled flag on the next attempt.
 claude_runtime_invoke_args() {
   local session_id="${1:-}"
 
@@ -270,7 +281,7 @@ claude_runtime_invoke_args() {
   if [[ -n "$session_id" ]]; then
     printf '%s\n' "--resume"
     printf '%s\n' "$session_id"
-  else
+  elif [[ "${ISSUE_KILLER_DISABLE_SESSION_PERSISTENCE:-false}" == "true" ]]; then
     printf '%s\n' "--no-session-persistence"
   fi
 
