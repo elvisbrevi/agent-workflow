@@ -1405,11 +1405,16 @@ state=mutating
 updated_at=test
 EOF
 
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || \
-      fail 'Reconcile fixture did not finish'
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55), so the test must drive the TTY prompt
+  # via expect, the same way the confirmed recovery tests do.
+  run_with_recovery_confirmation "$output" \
+    env PATH="${TEST_BIN}:$PATH" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+    ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo"
 
   grep -Fq 'Reconciling recovery state' "$output" || \
     fail 'Runner did not announce the reconciliation step'
@@ -1531,14 +1536,20 @@ EOF
   seed_claude_transcript "$home" "$repo" "sess-shell-resume-xyz" >/dev/null
 
   write_default_config "${TEST_ROOT}/resume-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
-  HOME="$home" \
-  CLAUDE_CONFIG_DIR="${home}/.claude" \
-  RUNNER_TEST_ARGS_FILE="$args_file" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/resume-config.toml" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || \
-      fail 'Resume fixture did not finish'
+
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55), so the test must drive the TTY prompt
+  # via expect, the same way the confirmed recovery tests do.
+  run_with_recovery_confirmation "$output" \
+    env PATH="${TEST_BIN}:$PATH" \
+    HOME="$home" \
+    CLAUDE_CONFIG_DIR="${home}/.claude" \
+    RUNNER_TEST_ARGS_FILE="$args_file" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+    ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/resume-config.toml" \
+    "$RUNNER" "$repo"
 
   # The second worker invocation must receive --resume with the captured id.
   # This is the runtime observable of the resume path: if the worker was
@@ -1680,14 +1691,20 @@ PROLOG
 
   write_default_config "${TEST_ROOT}/missing-transcript-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
 
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55), so the test must drive the TTY prompt
+  # via expect, the same way the confirmed recovery tests do.
   set +e
-  HOME="$home" \
-  CLAUDE_CONFIG_DIR="${home}/.claude" \
-  RUNNER_TEST_ARGS_FILE="$args_file" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/missing-transcript-config.toml" \
-    "$RUNNER" "$repo" >"$output" 2>&1
+  run_with_recovery_confirmation "$output" \
+    env PATH="${TEST_BIN}:$PATH" \
+    HOME="$home" \
+    CLAUDE_CONFIG_DIR="${home}/.claude" \
+    RUNNER_TEST_ARGS_FILE="$args_file" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+    ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/missing-transcript-config.toml" \
+    "$RUNNER" "$repo"
   status=$?
   set -e
 
@@ -1856,13 +1873,16 @@ EOF
 
   write_default_config "${TEST_ROOT}/unresumable-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   set +e
-  HOME="$home" \
-  CLAUDE_CONFIG_DIR="${home}/.claude" \
-  RUNNER_TEST_ARGS_FILE="$args_file" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
-  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-config.toml" \
-    "$RUNNER" "$repo" >"$output" 2>&1
+  run_with_recovery_confirmation "$output" \
+    env PATH="${TEST_BIN}:$PATH" \
+    HOME="$home" \
+    CLAUDE_CONFIG_DIR="${home}/.claude" \
+    RUNNER_TEST_ARGS_FILE="$args_file" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+    ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+    ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-config.toml" \
+    "$RUNNER" "$repo"
   status=$?
   set -e
 
@@ -2013,16 +2033,24 @@ EOF
   seed_claude_transcript "$home" "$repo" "sess-unresumable-42" >/dev/null
 
   write_default_config "${TEST_ROOT}/unresumable-bound-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
-  set +e
-  HOME="$home" \
-  CLAUDE_CONFIG_DIR="${home}/.claude" \
-  RUNNER_TEST_ARGS_FILE="$args_file" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_RETRY_LIMIT=1 \
-  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-bound-config.toml" \
-    "$RUNNER" "$repo" >"$output" 2>&1
-  status=$?
-  set -e
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55), so the test must drive the TTY prompt
+  # via expect. Unlike the typical recovery fixtures, this one is
+  # expected to fail with status 1 after the bounded degradation
+  # completes; run_with_recovery_confirmation_tolerate_failure
+  # drives the same prompt but records the runner exit status in
+  # RUNNER_TEST_CONFIRM_STATUS instead of failing the test.
+  run_with_recovery_confirmation_tolerate_failure "$output" \
+    env PATH="${TEST_BIN}:$PATH" \
+    HOME="$home" \
+    CLAUDE_CONFIG_DIR="${home}/.claude" \
+    RUNNER_TEST_ARGS_FILE="$args_file" \
+    ISSUE_RUNNER_ASSUME_YES=true \
+    ISSUE_RUNNER_RETRY_LIMIT=1 \
+    ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+    ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/unresumable-bound-config.toml" \
+    "$RUNNER" "$repo"
+  status="$RUNNER_TEST_CONFIRM_STATUS"
 
   # Two invocations: the resume rejection on attempt 1, the fresh
   # worker emitting the same signature on attempt 2. The orchestrator
@@ -2535,6 +2563,53 @@ PROLOG
   fi
 }
 
+# Variant of run_with_recovery_confirmation for fixtures that are
+# expected to exit non-zero after a successful confirmation. Drives
+# the same TTY prompts but records the runner exit status in the
+# RUNNER_TEST_CONFIRM_STATUS global instead of failing the test,
+# so callers can assert on bounded-degradation scenarios where
+# the worker is expected to fail.
+RUNNER_TEST_CONFIRM_STATUS=0
+run_with_recovery_confirmation_tolerate_failure() {
+  local output="$1"
+  shift
+  local expect_script="${TEST_ROOT}/confirm-recovery-${TESTS_RUN}-tolerate.expect"
+
+  command -v expect >/dev/null 2>&1 || \
+    fail 'expect is required for confirmed TTY recovery fixtures'
+
+  cat > "$expect_script" <<'PROLOG'
+set timeout 20
+log_user 1
+eval spawn $env(RUNNER_TEST_COMMAND)
+expect {
+  -re {Profile \[1\]} {
+    send "\r"
+    exp_continue
+  }
+  -re {Continue\? \[y/N\]} {
+    send "y\r"
+    exp_continue
+  }
+  timeout {
+    send_user "Timed out waiting for the issue-killer recovery prompt\n"
+    catch {close}
+    catch {wait}
+    exit 124
+  }
+  eof
+}
+set wait_result [wait]
+exit [lindex $wait_result 3]
+PROLOG
+
+  set +e
+  RUNNER_TEST_COMMAND="$*" expect "$expect_script" >"$output" 2>&1
+  RUNNER_TEST_CONFIRM_STATUS=$?
+  set -e
+  return 0
+}
+
 test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint() {
   local repo="${TEST_ROOT}/restart-resume-repo"
   local fake="${TEST_ROOT}/claude-minimax-restart-resume"
@@ -2761,10 +2836,17 @@ PROLOG
     fail "Closed issue restart recovery must exit 4, got ${status}"
   [[ ! -e "$marker" ]] || \
     fail 'Restart recovery launched a worker for an already closed issue'
-  grep -Fq 'already closed' "$output" || \
-    fail 'Missing already-closed issue diagnostic'
-  [[ -r "$checkpoint_file" ]] || \
-    fail 'Closed-issue recovery removed the checkpoint'
+  # The migrated-checkpoint adoption path now detects a closed issue
+  # before the dirty-worktree reconciliation step (issue #55) and
+  # clears the checkpoint so queue selection can resume without
+  # relaunching work that was already finished. The dry-worktree
+  # recovery then fails closed because no checkpoint survived and
+  # no explicit ISSUE_RUNNER_ADOPT_ISSUE was supplied; either way
+  # no recovery worker is launched.
+  if ! grep -Fq 'Stale checkpoint discarded' "$output" &&
+     ! grep -Fq 'legacy adoption requires ISSUE_RUNNER_ADOPT_ISSUE' "$output"; then
+    fail 'Missing stale-checkpoint or legacy-adoption diagnostic'
+  fi
 
   pass 'restart recovery does not duplicate effects for an already closed issue'
 }

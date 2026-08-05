@@ -276,11 +276,32 @@ EOF
     canonical_checkpoint="${repo}/.git/issue-killer.checkpoint"
   fi
 
-  PATH="${bin_dir}:$PATH" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
-  ISSUE_KILLER_CONFIG_PATH="$config" \
-    "$RUNNER" "$repo" >"$output" 2>&1 || {
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55). Drive the prompts through expect so
+  # the test still completes the migration and adoption. The
+  # runner first prompts for a profile when a TTY is available,
+  # then for the recovery confirmation.
+  expect_script="${TEST_ROOT}/migrate-expect-${TESTS_RUN}.expect"
+  command -v expect >/dev/null 2>&1 || \
+    fail 'expect is required for confirmed TTY recovery fixtures'
+  cat > "$expect_script" <<PROLOG
+set timeout 20
+log_user 1
+spawn env PATH=${bin_dir}:$PATH ISSUE_RUNNER_ASSUME_YES=true ISSUE_RUNNER_PROGRESS_INTERVAL=0 ISSUE_KILLER_CONFIG_PATH=$config $RUNNER $repo
+expect {
+  -re {Profile \\[1\\]} {
+    send "\r"
+    exp_continue
+  }
+  -re {Continue\\? \\[y/N\\]} {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script" >"$output" 2>&1 || {
       cat "$output" >&2
       fail 'Canonical runner failed while migrating legacy checkpoint'
     }
@@ -320,11 +341,30 @@ EOF
   grep -Fq 'Migrated legacy checkpoint' "$output" || \
     fail 'Missing migration diagnostic'
 
-  PATH="${bin_dir}:$PATH" \
-  ISSUE_RUNNER_ASSUME_YES=true \
-  ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
-  ISSUE_KILLER_CONFIG_PATH="$config" \
-    "$RUNNER" "$repo" >"${output}.repeat" 2>&1 || {
+  # The migrated-checkpoint adoption path now requires operator
+  # confirmation (issue #55). Drive the prompts through expect so
+  # the repeat-startup half of the test still completes. The
+  # runner first prompts for a profile when a TTY is available,
+  # then for the recovery confirmation.
+  expect_script_repeat="${TEST_ROOT}/migrate-repeat-${TESTS_RUN}.expect"
+  cat > "$expect_script_repeat" <<PROLOG
+set timeout 20
+log_user 1
+spawn env PATH=${bin_dir}:$PATH ISSUE_RUNNER_ASSUME_YES=true ISSUE_RUNNER_PROGRESS_INTERVAL=0 ISSUE_KILLER_CONFIG_PATH=$config $RUNNER $repo
+expect {
+  -re {Profile \\[1\\]} {
+    send "\r"
+    exp_continue
+  }
+  -re {Continue\\? \\[y/N\\]} {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  expect "$expect_script_repeat" >"${output}.repeat" 2>&1 || {
       cat "${output}.repeat" >&2
       fail 'Canonical runner failed on repeat startup after migration'
     }
@@ -494,12 +534,199 @@ test_migration_does_not_run_when_legacy_state_absent() {
   pass 'canonical runner leaves a clean repository untouched'
 }
 
+# Issue #55 — migrated-checkpoint adoption path clears a stale
+# checkpoint whose issue is already closed and advances the queue
+# without launching a recovery worker. The fixture returns a
+# CLOSED state for the migrated issue so the closed-issue detection
+# path can fire; the worker must never be invoked.
+test_migrated_checkpoint_with_closed_issue_discards_and_advances_queue() {
+  local repo="${TEST_ROOT}/stale-migrated-repo"
+  local fake_worker="${TEST_ROOT}/stale-migrated-worker"
+  local marker="${TEST_ROOT}/stale-migrated-marker"
+  local config="${TEST_ROOT}/stale-migrated-config.toml"
+  local bin_dir="${TEST_ROOT}/stale-migrated-bin"
+  local output="${TEST_ROOT}/stale-migrated-output.log"
+  local common legacy_checkpoint canonical_checkpoint
+  local status base_sha
+
+  mkdir -p "$repo" "$bin_dir"
+  new_repo "$repo"
+  # GitHub fixture must report the migrated issue as CLOSED so the
+  # tracker_item_is_closed probe returns 0 and the stale-discard
+  # branch fires; the queue must also appear empty so the discard
+  # path advances to normal queue selection without launching any
+  # worker.
+  cat > "${bin_dir}/gh" <<'PROLOG'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "auth status") printf '%s\n' 'Logged in to github.com' ;;
+  "api repos/"*) printf '%s\n' '0' ;;
+  "issue list") printf '%s\n' '[]' ;;
+  "issue view") printf '%s\n' '{"state":"CLOSED","labels":[{"name":"ready-for-agent"}],"assignees":[]}' ;;
+  "pr list") printf '%s\n' '[{"state":"MERGED","number":12,"mergedAt":"2026-08-01T12:00:00Z"}]' ;;
+  *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 1 ;;
+esac
+PROLOG
+  chmod +x "${bin_dir}/gh"
+
+  # The worker script is replaced by a marker-toucher so the test can
+  # assert the runner never launched it.
+  printf '%s\n' '#!/usr/bin/env bash' "touch \"$marker\"" > "$fake_worker"
+  chmod +x "$fake_worker"
+
+  common="$(cd "$repo" && common=$(git rev-parse --git-common-dir) && cd "$common" && pwd -P)"
+  legacy_checkpoint="${common}/claude-minimax-issue-runner.checkpoint"
+  canonical_checkpoint="${common}/issue-killer.checkpoint"
+  base_sha="$(git -C "$repo" rev-parse main)"
+  cat > "$legacy_checkpoint" <<EOF
+pid=$$
+iteration=1
+issue=171
+branch=main
+base_branch=main
+base_sha=${base_sha}
+session_id=unavailable
+state=pr_merged
+profile=claude-minimax
+cli=claude
+model=claude-test-model
+command=${fake_worker}
+updated_at=2026-08-03 21:00:00 -0400
+EOF
+  common_config "$config" "$fake_worker"
+
+  set +e
+  PATH="${bin_dir}:$PATH" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+  ISSUE_KILLER_CONFIG_PATH="$config" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # The migrated-checkpoint adoption path must announce the stale
+  # discard and never launch a migrated restart-recovery worker for
+  # the closed issue. A fresh worker may still launch as part of
+  # normal queue selection (the runner writes a fresh checkpoint
+  # when it begins that iteration), but no recovery prompt or
+  # "Migrated restart recovery" text should ever appear.
+  grep -Fq 'Stale checkpoint discarded' "$output" || \
+    fail 'Missing stale-checkpoint-discard diagnostic'
+  grep -Fq 'issue 171 is already closed' "$output" || \
+    fail 'Stale-discard diagnostic did not name the closed issue'
+  if grep -Fq 'Migrated restart recovery' "$output"; then
+    fail 'Stale-discard path launched a migrated restart-recovery worker'
+  fi
+  if grep -Fq 'Continue exactly issue #171' "$output"; then
+    fail 'Stale-discard path continued recovery for issue 171'
+  fi
+  # The migrated legacy checkpoint is consumed before queue selection
+  # begins; the only checkpoint file present at that moment must be
+  # the fresh-worker checkpoint (which the runner writes for normal
+  # queue selection, not the migrated one).
+  grep -Eq '^issue=171$' "$canonical_checkpoint" 2>/dev/null && \
+    fail 'Stale-discard left a migrated checkpoint carrying issue 171'
+
+  pass 'migrated checkpoint with closed issue discards the checkpoint and advances the queue'
+}
+
+# Issue #55 — migrated-checkpoint adoption path reconciles tracker
+# state through the normalized adapter before any recovery worker
+# launches. A fixture returning an inconsistent state (merged PR but
+# open issue) is precisely the ambiguity the dirty-worktree path
+# already rejects; the migrated path must fail closed too.
+test_migrated_checkpoint_reconciles_tracker_state_before_launch() {
+  local repo="${TEST_ROOT}/reconcile-migrated-repo"
+  local fake_worker="${TEST_ROOT}/reconcile-migrated-worker"
+  local marker="${TEST_ROOT}/reconcile-migrated-marker"
+  local config="${TEST_ROOT}/reconcile-migrated-config.toml"
+  local bin_dir="${TEST_ROOT}/reconcile-migrated-bin"
+  local output="${TEST_ROOT}/reconcile-migrated-output.log"
+  local common legacy_checkpoint canonical_checkpoint
+  local status base_sha
+
+  mkdir -p "$repo" "$bin_dir"
+  new_repo "$repo"
+  # GitHub fixture reports the issue as OPEN but with an already-merged
+  # PR — the dirty-worktree reconciliation rejects that state with
+  # emit_recovery_required; the migrated path must do the same now
+  # that it routes through the same predicate.
+  cat > "${bin_dir}/gh" <<'PROLOG'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "auth status") printf '%s\n' 'Logged in to github.com' ;;
+  "api repos/"*) printf '%s\n' '0' ;;
+  "issue view") printf '%s\n' '{"state":"OPEN","labels":[{"name":"ready-for-agent"}],"assignees":[]}' ;;
+  "pr list") printf '%s\n' '[{"state":"MERGED","number":12,"mergedAt":"2026-08-01T12:00:00Z"}]' ;;
+  *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 1 ;;
+esac
+PROLOG
+  chmod +x "${bin_dir}/gh"
+
+  printf '%s\n' '#!/usr/bin/env bash' "touch \"$marker\"" > "$fake_worker"
+  chmod +x "$fake_worker"
+
+  common="$(cd "$repo" && common=$(git rev-parse --git-common-dir) && cd "$common" && pwd -P)"
+  legacy_checkpoint="${common}/claude-minimax-issue-runner.checkpoint"
+  canonical_checkpoint="${common}/issue-killer.checkpoint"
+  base_sha="$(git -C "$repo" rev-parse main)"
+  cat > "$legacy_checkpoint" <<EOF
+pid=$$
+iteration=1
+issue=172
+branch=main
+base_branch=main
+base_sha=${base_sha}
+session_id=unavailable
+state=pr_merged
+profile=claude-minimax
+cli=claude
+model=claude-test-model
+command=${fake_worker}
+updated_at=2026-08-03 21:00:00 -0400
+EOF
+  common_config "$config" "$fake_worker"
+
+  set +e
+  PATH="${bin_dir}:$PATH" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_PROGRESS_INTERVAL=0 \
+  ISSUE_KILLER_CONFIG_PATH="$config" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # The reconciliation must fail closed because the fixture reports
+  # an already-merged PR for an open issue — the same ambiguity the
+  # dirty-worktree path already rejects. The runner must exit 4
+  # without launching a worker and must surface a diagnostic from the
+  # normalized tracker adapter. The adapter emits RECOVERY_REQUIRED
+  # before the operator confirmation is requested, so the operator
+  # confirmation is verified separately by the dirty-worktree tests.
+  [[ "$status" -eq 4 ]] || \
+    fail "Migrated checkpoint reconciliation must exit 4 without TTY, got ${status}"
+  [[ ! -e "$marker" ]] || \
+    fail 'Migrated checkpoint launched a worker despite failing reconciliation'
+  [[ -r "$canonical_checkpoint" ]] || \
+    fail 'Migrated checkpoint was cleared when reconciliation should have retained it for diagnosis'
+  grep -Fq 'PR for branch main is already merged' "$output" || \
+    fail 'Migrated checkpoint did not run the normalized tracker reconciliation'
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Migrated checkpoint reconciliation did not emit RECOVERY_REQUIRED'
+  grep -Fq 'checkpoint retained' "$output" || \
+    fail 'Migrated checkpoint reconciliation did not retain the checkpoint for diagnosis'
+
+  pass 'migrated checkpoint reconciles tracker state before launching'
+}
+
 test_stale_legacy_lock_is_recovered_before_new_lock
 test_legacy_lock_quarantines_unreadable_owner
 test_legacy_lock_rejects_live_owner
 test_legacy_checkpoint_migrates_atomically_once
 test_legacy_checkpoint_with_ambiguous_profile_mapping_fails_closed
 test_legacy_checkpoint_with_partial_fields_fails_closed
+test_migrated_checkpoint_with_closed_issue_discards_and_advances_queue
+test_migrated_checkpoint_reconciles_tracker_state_before_launch
 test_migration_does_not_run_when_legacy_state_absent
 
 printf 'Ran %s migration tests.\n' "$TESTS_RUN"

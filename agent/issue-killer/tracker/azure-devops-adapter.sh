@@ -1353,6 +1353,23 @@ tracker_item_state() {
   jq -r '.fields["System.State"] // empty' <<<"$1"
 }
 
+# Returns 0 when the work item is in any configured closed state, 1
+# otherwise (open, missing, or unreadable). The migrated-checkpoint
+# adoption path uses this to detect a stale checkpoint whose ticket was
+# already completed and moved to a closed state; it must not rely on
+# tracker_reconcile_startup_state, which emits RECOVERY_REQUIRED on the
+# same condition. Failure to read the item is treated as "not closed"
+# so the adoption path falls through to the full reconciliation, where
+# the ambiguous read will fail closed with an explicit diagnostic.
+tracker_item_is_closed() {
+  local issue_number="$1"
+  local item_json item_state
+  [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || return 1
+  item_json="$(tracker_item_read "$issue_number" 2>/dev/null)" || return 1
+  item_state="$(tracker_item_state "$item_json")"
+  [[ -n "$item_state" ]] && azure_list_contains "$item_state" "$AZURE_CLOSED_STATES"
+}
+
 tracker_item_type() {
   jq -r '.fields["System.WorkItemType"] // empty' <<<"$1"
 }
