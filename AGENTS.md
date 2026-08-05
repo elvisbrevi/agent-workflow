@@ -85,6 +85,10 @@ bash tests/issue_killer_migration_test.sh
 bash tests/azure_devops_tracker_adapter_test.sh
 bash tests/azure_hu_selection_test.sh
 bash tests/azure_hu_runner_test.sh
+bash tests/azure_hu_branch_test.sh
+bash tests/azure_hu_drainage_test.sh
+bash tests/hu_progress_test.sh
+bash tests/azure_dev_sandbox_test.sh
 bash tests/github_tracker_adapter_test.sh
 bash tests/install_test.sh
 git diff --check
