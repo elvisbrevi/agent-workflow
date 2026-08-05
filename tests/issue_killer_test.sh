@@ -4291,6 +4291,137 @@ test_black_box_mixed_provider_fallback_chain_validates() {
   pass 'mixed-provider fallback chain is accepted'
 }
 
+# Issue #47 — Claude-to-Codex handoff. When a Claude worker fails
+# with an eligible provider-capacity error, the runner must transition
+# to a Codex profile, launch the destination fresh, and never pass the
+# Claude session identifier to Codex. Partial work must be preserved.
+test_black_box_claude_to_codex_handoff_preserves_partial_work() {
+  local repo="${TEST_ROOT}/claude-to-codex-handoff-repo"
+  local partial_file="${repo}/issue-23-partial-work.txt"
+  local claude="${TEST_ROOT}/claude-to-codex-handoff-claude"
+  local codex="${TEST_ROOT}/claude-to-codex-handoff-codex"
+  local claude_count="${TEST_ROOT}/claude-to-codex-handoff-claude-count"
+  local codex_count="${TEST_ROOT}/claude-to-codex-handoff-codex-count"
+  local codex_args_file="${TEST_ROOT}/claude-to-codex-handoff-codex-args"
+  local checkpoint_snapshot="${TEST_ROOT}/claude-to-codex-handoff-checkpoint-snapshot"
+  local config_path="${TEST_ROOT}/claude-to-codex-handoff-config.toml"
+  local output="${TEST_ROOT}/claude-to-codex-handoff-output.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+# Emit a system init event so the Claude adapter captures a session
+# id; this is the value the runner must NEVER forward to Codex.
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-sess-47-secret-id"}'
+# Identify the issue, drop a partial file, then fail with a Claude
+# provider-quota error so the fallback chain advances.
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 23"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"issue-23-partial-work.txt","content":"partial work from claude\n"}}]}}'
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+: > "$RUNNER_TEST_CODEX_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_CODEX_ARGS_FILE"; done
+# The Codex worker continues from the partial file the Claude
+# worker left behind (without resetting, overwriting, or
+# discarding it), commits the result so the next iteration
+# observes a clean worktree, then completes the issue. Crucially,
+# the fake CLI inspects argv: a Claude session id appearing in
+# the recorded args is the failure the test asserts against.
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' 'continued partial work from codex' >> "$RUNNER_TEST_DIRTY_FILE"
+  # Snapshot the checkpoint while the fallback transition state is
+  # still persisted (fallback_ready before ISSUE_COMPLETED clears it).
+  cp "$RUNNER_TEST_CHECKPOINT" "$RUNNER_TEST_CHECKPOINT_SNAPSHOT" 2>/dev/null || true
+  git -C "$(dirname "$RUNNER_TEST_DIRTY_FILE")" add "$(basename "$RUNNER_TEST_DIRTY_FILE")" 2>/dev/null || true
+  git -C "$(dirname "$RUNNER_TEST_DIRTY_FILE")" commit --quiet -m "codex: continue partial work" 2>/dev/null || true
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$claude" "$codex"
+
+  # Hand-write the TOML so the profile block declares an explicit
+  # cross-CLI fallback chain. The Claude profile is selected as
+  # default; the chain advances to the Codex profile on quota.
+  printf 'default_profile = "claude-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-other"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-other]
+label = "Codex Other"
+cli = "codex"
+command = "${codex}"
+model = "codex-model"
+
+[profiles.codex-other.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_count" \
+  RUNNER_TEST_CODEX_ARGS_FILE="$codex_args_file" \
+  RUNNER_TEST_DIRTY_FILE="$partial_file" \
+  RUNNER_TEST_CHECKPOINT="${repo}/.git/issue-killer.checkpoint" \
+  RUNNER_TEST_CHECKPOINT_SNAPSHOT="$checkpoint_snapshot" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || \
+    fail "Claude-to-Codex handoff did not finish successfully, got exit ${status}"
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Claude primary ran more than once before the fallback transition'
+  [[ "$(<"$codex_count")" -eq 2 ]] || \
+    fail 'Codex fallback did not continue the same issue and drain the queue'
+  [[ -s "$partial_file" ]] || \
+    fail 'Codex fallback did not preserve and complete the partial Claude work'
+  grep -Fxq -- 'claude-sess-47-secret-id' "$codex_args_file" && \
+    fail 'Codex fallback received the Claude session id (cross-CLI leak)'
+  grep -Fxq -- '--resume' "$codex_args_file" && \
+    fail 'Codex fallback was invoked with --resume despite the CLI mismatch'
+  grep -Fq 'Advancing fallback: claude-primary -> codex-other' "$output" || \
+    fail 'Runner did not report the cross-CLI fallback transition'
+  [[ -r "$checkpoint_snapshot" ]] || \
+    fail 'Checkpoint snapshot was not captured during the fallback transition'
+  grep -Eq '^failed_profile=claude-primary$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the failed Claude profile'
+  grep -Eq '^next_profile=codex-other$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the destination Codex profile'
+  grep -Eq '^cli=codex$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the destination CLI'
+  grep -Eq '^fallback_failure=provider_quota$' "$checkpoint_snapshot" || \
+    fail 'Transition checkpoint did not record the provider quota classification'
+
+  pass 'Claude quota failure advances to Codex, preserves partial work, and never passes the Claude session id'
+}
+
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session() {
   local repo="${TEST_ROOT}/opencode-quota-fallback-repo"
   local primary="${TEST_ROOT}/opencode-quota-primary"
@@ -5294,6 +5425,7 @@ test_black_box_opencode_fallback_validation_rejects_missing_profile
 test_black_box_opencode_fallback_validation_rejects_invalid_chains
 test_tty_opencode_fallback_picker_builds_ordered_unique_chain
 test_black_box_mixed_provider_fallback_chain_validates
+test_black_box_claude_to_codex_handoff_preserves_partial_work
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session
 test_black_box_opencode_rate_limit_retries_before_fallback
 test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback
