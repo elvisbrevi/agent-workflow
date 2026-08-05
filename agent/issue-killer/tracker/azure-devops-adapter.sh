@@ -66,6 +66,9 @@ tracker_prepare_worker_environment() {
   export AZURE_GUARD_PROJECT="$AZURE_PROJECT"
   export AZURE_GUARD_REPOSITORY="$AZURE_REPOSITORY"
   export AZURE_GUARD_BASE_BRANCH="${BASE_BRANCH:-main}"
+  export AZURE_GUARD_HU_BRANCH="${TRACKER_HU_BRANCH:-}"
+  export AZURE_GUARD_EVIDENCE_FIELD="$AZURE_COMPLETION_EVIDENCE_FIELD"
+  export AZURE_GUARD_EFFORT_FIELD="$AZURE_REAL_EFFORT_FIELD"
   export PATH="${AZURE_GUARD_DIR}:$PATH"
 }
 
@@ -180,6 +183,289 @@ azure_list_contains() {
     [[ "$item" == "$wanted" ]] && return 0
   done <<<"$list"
   return 1
+}
+
+# Formats a structured HTML completion-evidence block with named sections
+# so reviewers can navigate summary, delivered changes, validation, and
+# development references independently. The function never embeds raw
+# user-controlled HTML in caller-supplied strings: the caller is expected
+# to pre-render Markdown or plain text and supply it as plain text. Each
+# section argument is rendered as-is between the section headers.
+azure_format_evidence_section() {
+  local heading="$1"
+  local body="$2"
+  printf '<h3>%s</h3>\n' "$heading"
+  printf '<div class="evidence-section">\n'
+  if [[ -n "$body" ]]; then
+    printf '%s\n' "$body"
+  else
+    printf '<p><em>Not provided.</em></p>\n'
+  fi
+  printf '</div>\n'
+}
+
+# Produces the canonical Azure completion evidence HTML for a non-visual
+# delivery ticket. The function is pure: callers pass the work-item
+# identifier for traceability, the delivered change summary, the
+# validation output, and the development references (typically the pull
+# request URL, integrated commit SHA, and a branch reference). The
+# returned HTML is intended to be written into the work item's
+# completion evidence field through `tracker_item_set_completion_evidence`.
+tracker_format_completion_evidence() {
+  local item_id="$1"
+  local summary="$2"
+  local changes="$3"
+  local validation="$4"
+  local references="$5"
+  local generated_at="${6:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+  [[ -n "$item_id" ]] || {
+    printf '%s: tracker_format_completion_evidence: missing work item identifier\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+
+  printf '<div class="completion-evidence" data-work-item="%s" data-generated="%s">\n' \
+    "$item_id" "$generated_at"
+  printf '<h2>Completion evidence for work item %s</h2>\n' "$item_id"
+  azure_format_evidence_section "Summary" "$summary"
+  azure_format_evidence_section "Delivered changes" "$changes"
+  azure_format_evidence_section "Validation" "$validation"
+  azure_format_evidence_section "Development references" "$references"
+  printf '</div>\n'
+}
+
+# Computes the cumulative Real Effort hours rounded upward to the
+# nearest quarter hour. Inputs:
+#   $1: active seconds (positive integer; non-active waits excluded)
+#   $2: existing effort in hours (decimal; may be empty)
+# The function returns the new total in hours. An empty existing value
+# is treated as zero. Negative or non-numeric values are rejected so
+# the worker cannot accidentally clobber prior effort.
+tracker_calculate_real_effort_hours() {
+  local active_seconds="$1"
+  local existing="$2"
+  local total_hours quotient remainder
+
+  [[ "$active_seconds" =~ ^[0-9]+$ ]] || {
+    printf '%s: tracker_calculate_real_effort_hours: active seconds must be a non-negative integer: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${active_seconds:-empty}" >&2
+    return 1
+  }
+  if [[ -z "$existing" ]]; then
+    existing="0"
+  elif [[ ! "$existing" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf '%s: tracker_calculate_real_effort_hours: existing effort is not numeric: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$existing" >&2
+    return 1
+  fi
+
+  total_hours="$(awk -v secs="$active_seconds" -v prev="$existing" \
+    'BEGIN { printf "%.4f", (secs / 3600.0) + prev }')" || return 1
+  quotient="$(awk -v t="$total_hours" 'BEGIN { printf "%d", t / 0.25 }')"
+  remainder="$(awk -v t="$total_hours" 'BEGIN { printf "%.4f", t - (int(t / 0.25) * 0.25) }')"
+  awk -v q="$quotient" -v r="$remainder" \
+    'BEGIN {
+      if (r > 0.0001) q = q + 1;
+      printf "%g", q * 0.25
+    }'
+}
+
+# Computes the deterministic ticket branch name (issue-N-slug) for the
+# active delivery ticket. The branch originates from the HU integration
+# branch and targets it through the worker's pull request. The slug is
+# derived from the ticket title using the same lowercase, dash-collapsing
+# normalization used by the HU branch module so both branches share a
+# consistent naming convention. Existing `tracker_compute_hu_branch` is
+# the source of truth for HU-level naming; the ticket slug only depends
+# on the ticket title.
+tracker_compute_ticket_branch() {
+  local ticket_id="$1"
+  local ticket_title="$2"
+
+  [[ "$ticket_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_compute_ticket_branch: invalid ticket identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${ticket_id:-empty}" >&2
+    return 1
+  }
+  local slug
+  slug="$(printf '%s' "${ticket_title:-ticket}" | tr '[:upper:]' '[:lower:]')"
+  slug="$(printf '%s' "$slug" | tr -cs '[:alnum:]' '-')"
+  slug="$(printf '%s' "$slug" | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+  if [[ "${#slug}" -gt 48 ]]; then
+    slug="${slug:0:48}"
+    slug="$(printf '%s' "$slug" | sed -E 's/-+$//')"
+  fi
+  [[ -n "$slug" ]] || slug="ticket"
+  printf 'issue-%s-%s\n' "$ticket_id" "$slug"
+}
+
+# Returns 0 when the supplied pull-request target ref matches the HU
+# integration branch or, when no HU branch is pinned, the configured
+# repository base branch. The function keeps the GitHub-compatible
+# `refs/heads/main` comparison intact so tracker-neutral tests that
+# exercise the configured base branch keep working.
+tracker_pr_target_matches_integration_branch() {
+  local target_ref="$1"
+
+  [[ -n "$target_ref" ]] || return 1
+  if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+    [[ "$target_ref" == "refs/heads/${TRACKER_HU_BRANCH}" ]] && return 0
+    return 1
+  fi
+  [[ "$target_ref" == "refs/heads/${BASE_BRANCH:-main}" ]] && return 0
+  return 1
+}
+
+# Sets the completion evidence field on a work item. The HTML payload is
+# passed verbatim through the `--fields` argument. The function relies on
+# the previously discovered Azure reference name so localized display
+# names never enter the update call.
+tracker_item_set_completion_evidence() {
+  local item_id="$1"
+  local html="$2"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_set_completion_evidence: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$AZURE_COMPLETION_EVIDENCE_FIELD" ]] || {
+    printf '%s: tracker_item_set_completion_evidence: completion evidence reference name is unset\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  [[ -n "$html" ]] || {
+    printf '%s: tracker_item_set_completion_evidence: empty HTML payload for work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+    return 1
+  }
+  az boards work-item update \
+    --id "$item_id" \
+    --fields "${AZURE_COMPLETION_EVIDENCE_FIELD}=${html}" \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --output json >/dev/null
+}
+
+# Reads the completion evidence HTML stored on a work item. The
+# function returns the raw HTML on stdout so callers can render or
+# verify it without re-formatting. Returns 1 when the field is empty or
+# the work item cannot be read; callers must distinguish "absent" from
+# "present but empty" before allowing the work item to reach Done.
+tracker_item_read_completion_evidence() {
+  local item_id="$1"
+  local item_json value
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -n "$AZURE_COMPLETION_EVIDENCE_FIELD" ]] || return 1
+  item_json="$(tracker_item_read "$item_id")" || return 1
+  value="$(jq -r --arg f "$AZURE_COMPLETION_EVIDENCE_FIELD" \
+    '.fields[$f] // empty' <<<"$item_json")"
+  [[ -n "$value" ]] || return 1
+  printf '%s\n' "$value"
+}
+
+# Sets the Real Effort field on a work item using the previously
+# discovered reference name. The function rejects negative values,
+# empty values, and non-decimal inputs so a buggy worker cannot corrupt
+# the cumulative effort recorded for the ticket.
+tracker_item_set_real_effort() {
+  local item_id="$1"
+  local hours="$2"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_set_real_effort: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$AZURE_REAL_EFFORT_FIELD" ]] || {
+    printf '%s: tracker_item_set_real_effort: real effort reference name is unset\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  [[ "$hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || {
+    printf '%s: tracker_item_set_real_effort: effort must be a non-negative number: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${hours:-empty}" >&2
+    return 1
+  }
+  az boards work-item update \
+    --id "$item_id" \
+    --fields "${AZURE_REAL_EFFORT_FIELD}=${hours}" \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}" \
+    --output json >/dev/null
+}
+
+# Reads the Real Effort value from a work item. Returns the value on
+# stdout and 0 when the field is set (including zero), 1 when the field
+# is absent or unparseable. Callers should treat absent as "never
+# recorded" and treat zero as a deliberate reset by the operator.
+tracker_item_read_real_effort() {
+  local item_id="$1"
+  local item_json value
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -n "$AZURE_REAL_EFFORT_FIELD" ]] || return 1
+  item_json="$(tracker_item_read "$item_id")" || return 1
+  value="$(jq -r --arg f "$AZURE_REAL_EFFORT_FIELD" \
+    '.fields[$f] // empty' <<<"$item_json")"
+  [[ -n "$value" ]] || return 1
+  printf '%s\n' "$value"
+}
+
+# Adds a native development relation (ArtifactLink) to a work item.
+# Azure exposes Pull Request and Integrated Commit as named artifact
+# types; using them keeps the relation navigable from the work item and
+# the pull request views. The relation comment is intentionally short
+# so sensitive notes never leak into the work item history.
+tracker_item_add_development_relation() {
+  local item_id="$1"
+  local artifact_type="$2"
+  local artifact_url="$3"
+  local comment="${4:-}"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_add_development_relation: invalid work item identifier\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  [[ "$artifact_type" =~ ^[A-Za-z][A-Za-z0-9\ .\-]*$ ]] || {
+    printf '%s: tracker_item_add_development_relation: invalid artifact type: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${artifact_type:-empty}" >&2
+    return 1
+  }
+  [[ -n "$artifact_url" ]] || {
+    printf '%s: tracker_item_add_development_relation: empty artifact URL\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+
+  local args=(work-item relation add --id "$item_id" \
+    --relation-type "ArtifactLink" \
+    --target "$artifact_url" \
+    --target-type "$artifact_type" \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}")
+  if [[ -n "$comment" ]]; then
+    args+=(--comment "$comment")
+  fi
+  az boards "${args[@]}" --output json >/dev/null
+}
+
+# Lists the development relations (ArtifactLinks) attached to a work item
+# so the closure guard can verify that a Pull Request and Integrated
+# Commit link both exist before allowing the work item to reach the
+# configured closed state. Returns one relation per line in the form
+# `<type>\t<url>`.
+tracker_item_list_development_relations() {
+  local item_id="$1"
+  local item_json
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  item_json="$(tracker_item_read "$item_id")" || return 1
+  jq -r '.relations[]?
+    | select((.rel // "") | ascii_downcase | test("artifactlink"))
+    | [(.attributes.name // .attributes."Artifact Link Type" // "Unknown"),
+       (.url // empty)]
+    | @tsv' <<<"$item_json"
 }
 
 azure_remote_parts() {
@@ -863,8 +1149,12 @@ tracker_worker_scope_prompt() {
     if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
       printf '%s\n' \
         "- The HU integration branch is ${TRACKER_HU_BRANCH}; every ticket branch must start from it and every ticket pull request must target it." \
-        "- Never create or merge a pull request from ${TRACKER_HU_BRANCH} to ${BASE_BRANCH:-main} or another repository mainline."
+        "- Never create or merge a pull request from ${TRACKER_HU_BRANCH} to ${BASE_BRANCH:-main} or another repository mainline." \
+        "- Name the ticket branch with the issue-N-slug convention (issue-${AZURE_SCOPE_ITEM}-<slug>) so the worker session, the runner, and the recovery reconciler all reference the same branch."
     fi
+    printf '%s\n' \
+      '- Before moving the ticket to Done: capture reproducible command or test output as the validation evidence; record it in the completion evidence field using the summary, delivered changes, validation, and development references sections; record cumulative active agent effort rounded upward to 0.25 hours in the Real Effort field; and add native Azure development relations to the pull request and the integrated commit.' \
+      '- The completion evidence, Real Effort, and development relations are mandatory prerequisites: the Azure closure guard refuses Done when any are missing.'
   fi
 }
 
@@ -963,17 +1253,11 @@ tracker_item_close() {
       "${RUNNER_NAME:-issue-killer}" "$issue_number" >&2
     return 1
   }
-  pr_json="$(tracker_prs_for_branch "$branch")" || {
-    printf '%s: unable to verify Azure pull request before closing work item %s\n' \
+  if ! tracker_item_completion_prerequisites "$issue_number" "$branch"; then
+    printf '%s: refusing Azure work-item closure %s until completion prerequisites are verified\n' \
       "${RUNNER_NAME:-issue-killer}" "$issue_number" >&2
     return 1
-  }
-  pr_state="$(tracker_pr_is_merged "$pr_json")"
-  [[ "$pr_state" == "true" ]] || {
-    printf '%s: Azure pull request for branch %s is not uniquely merged into %s\n' \
-      "${RUNNER_NAME:-issue-killer}" "$branch" "${BASE_BRANCH:-main}" >&2
-    return 1
-  }
+  fi
 
   az boards work-item update \
     --id "$issue_number" \
@@ -985,14 +1269,13 @@ tracker_item_close() {
 tracker_item_completion_verified() {
   local issue_number="$1"
   local branch="$2"
-  local item_json item_state pr_json
+  local item_json item_state
 
   [[ -n "$branch" && "$branch" != "unknown" ]] || return 1
   item_json="$(tracker_item_read "$issue_number")" || return 1
   item_state="$(tracker_item_state "$item_json")"
   azure_list_contains "$item_state" "$AZURE_CLOSED_STATES" || return 1
-  pr_json="$(tracker_prs_for_branch "$branch")" || return 1
-  [[ "$(tracker_pr_is_merged "$pr_json")" == "true" ]]
+  tracker_item_completion_prerequisites "$issue_number" "$branch"
 }
 
 tracker_prs_for_branch() {
@@ -1008,6 +1291,9 @@ tracker_prs_for_branch() {
 tracker_pr_is_merged() {
   local pr_json="$1"
   local base_ref="refs/heads/${BASE_BRANCH:-main}"
+  if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+    base_ref="refs/heads/${TRACKER_HU_BRANCH}"
+  fi
   jq -r --arg base "$base_ref" '
     if length != 1 then "ambiguous"
     elif (.[0].status // "") == "completed"
@@ -1016,6 +1302,50 @@ tracker_pr_is_merged() {
     else "false"
     end
   ' <<<"$pr_json"
+}
+
+# Verifies the live work item meets every prerequisite before the
+# configured closed state may be reached. The guard requires:
+#   - exactly one PR for the source branch, completed and succeeded
+#     into the HU integration branch (or the configured base branch when
+#     no HU branch is pinned);
+#   - a non-empty completion evidence field with section markers;
+#   - a numeric Real Effort value greater than or equal to the active
+#     seconds captured for the worker invocation;
+#   - native development relations for the pull request and integrated
+#     commit so Azure keeps durable traceability.
+# The function returns 0 only when every prerequisite is satisfied. The
+# closure guard invokes this function before accepting `Done`.
+tracker_item_completion_prerequisites() {
+  local item_id="$1"
+  local branch="$2"
+  local pr_json merged evidence effort relations pr_relation commit_relation
+
+  [[ -n "$branch" && "$branch" != "unknown" ]] || return 1
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+
+  pr_json="$(tracker_prs_for_branch "$branch")" || return 1
+  merged="$(tracker_pr_is_merged "$pr_json")"
+  [[ "$merged" == "true" ]] || return 1
+
+  evidence="$(tracker_item_read_completion_evidence "$item_id" 2>/dev/null || true)"
+  [[ -n "$evidence" ]] || return 1
+  grep -Fq 'class="completion-evidence"' <<<"$evidence" || return 1
+  grep -Fq 'Summary' <<<"$evidence" || return 1
+  grep -Fq 'Delivered changes' <<<"$evidence" || return 1
+  grep -Fq 'Validation' <<<"$evidence" || return 1
+  grep -Fq 'Development references' <<<"$evidence" || return 1
+
+  effort="$(tracker_item_read_real_effort "$item_id" 2>/dev/null || true)"
+  [[ "$effort" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  awk -v e="$effort" 'BEGIN { exit !(e + 0 >= 0) }' || return 1
+
+  relations="$(tracker_item_list_development_relations "$item_id")"
+  [[ -n "$relations" ]] || return 1
+  pr_relation="$(grep -Fi 'pull request' <<<"$relations" || true)"
+  commit_relation="$(grep -Fi 'commit' <<<"$relations" || true)"
+  [[ -n "$pr_relation" && -n "$commit_relation" ]] || return 1
+  return 0
 }
 
 tracker_reconcile_recovery_state() {
@@ -1074,6 +1404,7 @@ tracker_reconcile_startup_state() {
   local issue_number="$1"
   local branch="$2"
   local item_json issue_state pr_json pr_count blocked_by merged
+  local target_branch="refs/heads/${BASE_BRANCH:-main}"
 
   item_json="$(tracker_item_read "$issue_number" 2>/dev/null)" || {
     emit_recovery_required "unable to reconcile Azure work item ${issue_number} before recovery"
@@ -1088,6 +1419,9 @@ tracker_reconcile_startup_state() {
   [[ "$blocked_by" -eq 0 ]] || \
     emit_recovery_required "Azure work item ${issue_number} is blocked by ${blocked_by} open predecessor(s)"
 
+  if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
+    target_branch="refs/heads/${TRACKER_HU_BRANCH}"
+  fi
   pr_json="$(tracker_prs_for_branch "$branch" 2>/dev/null)" || \
     emit_recovery_required "unable to reconcile Azure PR state for branch ${branch} before recovery"
   pr_count="$(jq -r 'length' <<<"$pr_json" 2>/dev/null || true)"
@@ -1098,6 +1432,11 @@ tracker_reconcile_startup_state() {
   azure_list_contains "$issue_state" "$AZURE_CLOSED_STATES" && \
     emit_recovery_required "Azure work item ${issue_number} is already closed; refusing recovery over dirty files"
   if [[ "$pr_count" -eq 1 ]]; then
+    local target_ref
+    target_ref="$(jq -r '.[0].targetRefName // empty' <<<"$pr_json" 2>/dev/null || true)"
+    if [[ -n "$target_ref" && "$target_ref" != "$target_branch" ]]; then
+      emit_recovery_required "Azure PR for branch ${branch} targets ${target_ref:-unknown}; expected ${target_branch}"
+    fi
     merged="$(tracker_pr_is_merged "$pr_json" 2>/dev/null || true)"
     [[ "$merged" == "true" || "$merged" == "false" ]] || \
       emit_recovery_required "ambiguous merged state for Azure PR on branch ${branch}"
@@ -1105,8 +1444,8 @@ tracker_reconcile_startup_state() {
       emit_recovery_required "Azure PR for branch ${branch} is already merged; refusing duplicate recovery effects"
   fi
 
-  printf '[%s] Reconciled recovery target: Azure work item %s is %s; open predecessors: %s; PRs for %s: %s\n' \
-    "${RUNNER_NAME:-issue-killer}" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count"
+  printf '[%s] Reconciled recovery target: Azure work item %s is %s; open predecessors: %s; PRs for %s: %s; target: %s\n' \
+    "${RUNNER_NAME:-issue-killer}" "$issue_number" "$issue_state" "$blocked_by" "$branch" "$pr_count" "$target_branch"
 }
 
 # Returns the tracker-specific portion of the worker contract. The
@@ -1122,8 +1461,9 @@ tracker_worker_supplement() {
     'Azure DevOps tracker supplement:' \
     '- Treat the pinned Azure delivery HU as the integration container; never close the HU and never target the repository mainline from the HU integration branch.' \
     '- The worker unit is one direct hierarchical child Task or Bug of the pinned HU. Related links, indirect descendants, and other work-item types are excluded.' \
-    '- Open exactly one ticket branch from the HU integration branch and exactly one pull request targeting that HU integration branch (not the configured base branch).' \
+    '- Open exactly one ticket branch (issue-<ticket-id>-<slug>) from the HU integration branch and exactly one pull request targeting that HU integration branch (not the configured base branch).' \
     '- Confirm exactly one pull request exists for the ticket source branch, that it is completed and succeeded into the HU integration branch, and only then move the ticket to the configured closed state.' \
+    '- Record completion evidence, cumulative active effort, and native development relations for the pull request and integrated commit on the work item before the ticket reaches Done; the Azure closure guard refuses Done when any prerequisite is missing.' \
     '- Respect the configured predecessor relation; never start a ticket while an open predecessor remains, and never duplicate a pull request, attachment, development link, effort increment, or state transition.'
 }
 
