@@ -989,6 +989,297 @@ test_checkpoint_cleared_on_queue_empty() {
   pass 'checkpoint is cleared after a verified empty queue'
 }
 
+test_transcript_removed_on_issue_completed() {
+  local repo="${TEST_ROOT}/remove-completed-repo"
+  local home="${TEST_ROOT}/remove-completed-home"
+  local fake="${TEST_ROOT}/claude-minimax-remove-completed"
+  local output="${TEST_ROOT}/remove-completed-output.log"
+  local session_id="sess-completed-77"
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture emits a system init event so the renderer captures the
+  # session id, then signals verified ISSUE_COMPLETED. On any later
+  # iteration it emits verified QUEUE_EMPTY so the runner exits
+  # naturally instead of looping forever on the same successful
+  # outcome. The transcript seeded at the adapter-computed path lets
+  # us verify removal alongside the cleared checkpoint.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == 1 ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+  exit 0
+fi
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"$session_id"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 11"}}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Completed fixture did not finish'
+
+  [[ ! -e "$transcript" ]] || \
+    fail 'Session transcript was not removed after ISSUE_COMPLETED'
+
+  pass 'verified ISSUE_COMPLETED removes the worker session transcript'
+}
+
+test_transcript_removed_on_queue_empty() {
+  local repo="${TEST_ROOT}/remove-empty-repo"
+  local home="${TEST_ROOT}/remove-empty-home"
+  local fake="${TEST_ROOT}/claude-minimax-remove-empty"
+  local output="${TEST_ROOT}/remove-empty-output.log"
+  local session_id="sess-empty-77"
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture emits a system init event so the renderer captures the
+  # session id, then signals verified QUEUE_EMPTY. The transcript
+  # seeded at the adapter-computed path proves the verified-empty
+  # outcome is the second terminal state that triggers removal.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"$session_id"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Empty queue fixture did not finish'
+
+  [[ ! -e "$transcript" ]] || \
+    fail 'Session transcript was not removed after QUEUE_EMPTY'
+
+  pass 'verified QUEUE_EMPTY removes the worker session transcript'
+}
+
+test_transcript_retained_on_blocked_outcome() {
+  local repo="${TEST_ROOT}/retain-blocked-transcript-repo"
+  local home="${TEST_ROOT}/retain-blocked-transcript-home"
+  local fake="${TEST_ROOT}/claude-minimax-retain-blocked-transcript"
+  local output="${TEST_ROOT}/retain-blocked-transcript-output.log"
+  local session_id="sess-blocked-77"
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture emits a system init event then BLOCKED. Evidence
+  # retention on a non-terminal outcome is the whole point of the
+  # bug fix; the transcript must survive alongside the retained
+  # checkpoint so the operator can diagnose what blocked the worker.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"$session_id"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 21"}}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"need human input\nISSUE_KILLER_STATUS=BLOCKED\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+
+  set +e
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  local status=$?
+  set -e
+
+  [[ "$status" -eq 2 ]] || fail "BLOCKED must exit 2, got ${status}"
+  [[ -e "$transcript" ]] || \
+    fail 'Session transcript was unexpectedly removed after BLOCKED'
+
+  pass 'BLOCKED outcome retains the worker session transcript'
+}
+
+test_transcript_retained_on_failed_outcome() {
+  local repo="${TEST_ROOT}/retain-failed-transcript-repo"
+  local home="${TEST_ROOT}/retain-failed-transcript-home"
+  local fake="${TEST_ROOT}/claude-minimax-retain-failed-transcript"
+  local output="${TEST_ROOT}/retain-failed-transcript-output.log"
+  local session_id="sess-failed-77"
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture emits a system init event then FAILED. The transcript
+  # must survive so the operator can read what the worker did before
+  # reporting failure.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"$session_id"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=FAILED\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+
+  set +e
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  local status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "FAILED must exit 1, got ${status}"
+  [[ -e "$transcript" ]] || \
+    fail 'Session transcript was unexpectedly removed after FAILED'
+
+  pass 'FAILED outcome retains the worker session transcript'
+}
+
+test_transcript_retained_on_recovery_required_outcome() {
+  local repo="${TEST_ROOT}/retain-recovery-transcript-repo"
+  local home="${TEST_ROOT}/retain-recovery-transcript-home"
+  local fake="${TEST_ROOT}/claude-minimax-retain-recovery-transcript"
+  local output="${TEST_ROOT}/retain-recovery-transcript-output.log"
+  local session_id="sess-recovery-77"
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # A worker that exits non-zero on every invocation drives the
+  # runner into RECOVERY_REQUIRED (exit 4). The transcript must
+  # survive so a future recovery attempt can diagnose what went
+  # wrong.
+  cat > "$fake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-recovery-77"}'
+exit 7
+EOF
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+
+  set +e
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_LIMIT=1 \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  local status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "Worker exit must surface as FAILED exit 1, got ${status}"
+  [[ -e "$transcript" ]] || \
+    fail 'Session transcript was unexpectedly removed after a non-terminal outcome'
+
+  pass 'non-terminal outcome retains the worker session transcript'
+}
+
+test_transcript_removal_failure_does_not_fail_run() {
+  local repo="${TEST_ROOT}/removal-failure-repo"
+  local home="${TEST_ROOT}/removal-failure-home"
+  local fake="${TEST_ROOT}/claude-minimax-removal-failure"
+  local output="${TEST_ROOT}/removal-failure-output.log"
+  local session_id="sess-removal-failure"
+  local transcript_dir
+  local transcript
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture emits a system init event then ISSUE_COMPLETED. The
+  # transcript seeded here points at a real file so the adapter's
+  # transcript-path resolution succeeds; the file is then made
+  # un-removable by pointing its parent directory at a read-only
+  # path (the directory is removed and recreated without write
+  # permission for the runner user). On later iterations the
+  # fixture emits verified QUEUE_EMPTY so the runner exits
+  # naturally after the first completion instead of looping.
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+iteration=1
+name_next=0
+for arg in "\$@"; do
+  if [[ "\$name_next" == 1 ]]; then
+    if [[ "\$arg" =~ -([0-9]+)\$ ]]; then
+      iteration="\${BASH_REMATCH[1]}"
+    fi
+    break
+  fi
+  if [[ "\$arg" == "--name" ]]; then
+    name_next=1
+  fi
+done
+if [[ "\$iteration" -gt 1 ]]; then
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}'
+  exit 0
+fi
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"$session_id"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh issue view 11"}}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  transcript="$(seed_claude_transcript "$home" "$repo" "$session_id")"
+  transcript_dir="$(dirname "$transcript")"
+
+  # Remove write permission from the directory after seeding so the
+  # runner cannot delete the transcript file inside it. The runner
+  # must still clear the checkpoint and exit 0; a removal failure
+  # cannot abort the run.
+  chmod -w "$transcript_dir"
+
+  set +e
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  local status=$?
+  set -e
+
+  chmod u+w "$transcript_dir"
+
+  [[ "$status" -eq 0 ]] || \
+    fail "Removal failure must not abort the run, got status ${status}"
+
+  pass 'transcript removal failure does not fail the run'
+}
+
 test_checkpoint_retained_on_non_zero_exit() {
   local repo="${TEST_ROOT}/retain-exit-repo"
   local fake="${TEST_ROOT}/claude-minimax-retain-exit"
@@ -5178,5 +5469,11 @@ test_runtime_config_section_follows_supplement
 test_tracker_supplement_excluded_from_checkpoint_and_status
 test_github_tracker_supplement_is_loaded_from_adapter
 test_azure_tracker_supplement_is_loaded_from_adapter
+test_transcript_removed_on_issue_completed
+test_transcript_removed_on_queue_empty
+test_transcript_retained_on_blocked_outcome
+test_transcript_retained_on_failed_outcome
+test_transcript_retained_on_recovery_required_outcome
+test_transcript_removal_failure_does_not_fail_run
 
 printf '%s issue-killer tests passed.\n' "$TESTS_RUN"
