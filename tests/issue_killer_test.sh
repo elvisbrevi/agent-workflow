@@ -84,6 +84,27 @@ use_config_for_command() {
   printf '%s\n' "$config_path"
 }
 
+# Seeds a transcript file under the fake Claude config directory at
+# the location the runtime adapter computes for the supplied session
+# id. The harness sets `CLAUDE_CONFIG_DIR` for the worker; the test
+# mirrors that here so the existence check sees a real transcript.
+# Bash canonicalises `${PWD}` after `cd` (resolving `/var/folders` to
+# `/private/var/folders` on macOS), and Claude stores transcripts
+# under that resolved location, so the helper uses `pwd -P` against
+# the same path the orchestrator will see.
+seed_claude_transcript() {
+  local home="$1"
+  local repo="$2"
+  local session_id="$3"
+  local transcript
+  local canonical_repo
+  canonical_repo="$(cd "$repo" && pwd -P)"
+  transcript="${home}/.claude/projects/$(printf '%s' "$canonical_repo" | sed 's|/|-|g')/${session_id}.jsonl"
+  mkdir -p "$(dirname "$transcript")"
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"seed"}}' > "$transcript"
+  printf '%s\n' "$transcript"
+}
+
 new_repo() {
   local path="$1"
   mkdir -p "$path"
@@ -1410,6 +1431,9 @@ test_session_resume_when_checkpoint_has_safe_session_id() {
 
   # The first attempt emits a transient failure. The second attempt must
   # receive --resume <session_id> from the captured Claude session id.
+  # The existence check now gates resume; seed a real transcript under
+  # the fake Claude config dir so the resume path is genuinely verified
+  # rather than passing against a session that does not exist.
   cat > "$fake" <<PROLOG
 #!/usr/bin/env bash
 counter_file="$counter"
@@ -1497,8 +1521,17 @@ state=mutating
 updated_at=test
 EOF
 
+  # Seed a real transcript file under the fake Claude config directory
+  # so the runtime adapter's existence check verifies resume rather
+  # than passing against a missing file. The captured session id is
+  # `sess-shell-resume-xyz` because attempt 1 emits a system init event
+  # with that id; the orchestrator persists it as CHECKPOINT_SESSION_ID
+  # and uses it for the resume on attempt 2.
+  seed_claude_transcript "$home" "$repo" "sess-shell-resume-xyz" >/dev/null
+
   write_default_config "${TEST_ROOT}/resume-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
@@ -1584,6 +1617,93 @@ test_session_resume_skipped_when_no_captured_session_id() {
   pass 'session resume is skipped when no session id was captured'
 }
 
+test_session_resume_skipped_when_transcript_missing() {
+  local repo="${TEST_ROOT}/missing-transcript-repo"
+  local home="${TEST_ROOT}/missing-transcript-home"
+  local fake="${TEST_ROOT}/claude-minimax-missing-transcript"
+  local output="${TEST_ROOT}/missing-transcript-output.log"
+  local counter="${TEST_ROOT}/missing-transcript-counter"
+  local args_file="${TEST_ROOT}/missing-transcript-args"
+  local checkpoint_file
+  local status
+
+  mkdir -p "$home"
+  new_repo "$repo"
+  checkpoint_file="$(checkpoint_path "$repo")/${RUNNER_NAME}.checkpoint"
+
+  # The checkpoint carries a captured session id but no transcript file
+  # exists in the configured Claude directory. The runner must treat
+  # the session as not resumable and launch a fresh recovery worker
+  # rather than aborting the run.
+  cat > "$checkpoint_file" <<EOF
+pid=$$
+iteration=1
+issue=5
+branch=main
+base_branch=main
+base_sha=$(git -C "$repo" rev-parse HEAD)
+session_id=sess-missing-transcript
+state=mutating
+updated_at=test
+EOF
+
+  cat > "$fake" <<PROLOG
+#!/usr/bin/env bash
+counter_file="$counter"
+attempt=0
+[[ -f "\$counter_file" ]] && attempt=\$(<"\$counter_file")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" > "\$counter_file"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-fresh"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n"}'
+exit 0
+PROLOG
+  chmod +x "$fake"
+
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local arg' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  counter_file="'"$counter"'"' \
+    '  attempt=0' \
+    '  [[ -f "$counter_file" ]] && attempt=$(<"$counter_file")' \
+    '  attempt=$((attempt + 1))' \
+    '  printf "%s\n" "$attempt" >"$counter_file"' \
+    '  printf "%s\n" "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-shell-fresh\"}"' \
+    '  printf "%s\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '}' > "${home}/.bashrc"
+
+  write_default_config "${TEST_ROOT}/missing-transcript-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
+
+  set +e
+  HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="${TEST_ROOT}/missing-transcript-config.toml" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # A missing transcript must not abort the run.
+  [[ "$status" -eq 0 ]] || \
+    fail "Missing transcript must exit 0, got ${status}"
+
+  # The runner must NOT pass --resume because the captured session has
+  # no transcript on disk.
+  if grep -Fxq -- '--resume' "$args_file"; then
+    fail 'Recovery worker received --resume despite a missing transcript'
+  fi
+  if grep -Fxq -- 'sess-missing-transcript' "$args_file"; then
+    fail 'Recovery worker was invoked with the dead session id'
+  fi
+  grep -Fxq -- '--no-session-persistence' "$args_file" || \
+    fail 'Fresh recovery worker did not receive --no-session-persistence'
+
+  pass 'a checkpoint naming a session with no transcript launches a fresh recovery worker'
+}
+
 test_unresumable_session_degrades_to_fresh_worker() {
   local repo="${TEST_ROOT}/unresumable-repo"
   local home="${TEST_ROOT}/unresumable-home"
@@ -1637,7 +1757,9 @@ test_unresumable_session_degrades_to_fresh_worker() {
     '}' > "${home}/.bashrc"
 
   # Pre-seed the checkpoint with a session id and a matching branch so the
-  # runner considers the session safe to resume on attempt 1.
+  # runner considers the session safe to resume on attempt 1. The
+  # existence check now requires a real transcript for resume, so seed
+  # one under the fake Claude config dir.
   cat > "$checkpoint_file" <<EOF
 pid=$$
 iteration=1
@@ -1650,9 +1772,12 @@ state=mutating
 updated_at=test
 EOF
 
+  seed_claude_transcript "$home" "$repo" "sess-unresumable-77" >/dev/null
+
   write_default_config "${TEST_ROOT}/unresumable-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   set +e
   HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
@@ -1798,9 +1923,16 @@ state=mutating
 updated_at=test
 EOF
 
+  # The existence check requires a real transcript for resume to be
+  # attempted; seed one so the CLI rejects it with the documented
+  # "No conversation found" signature and the unresumable_session
+  # classification can fire.
+  seed_claude_transcript "$home" "$repo" "sess-unresumable-42" >/dev/null
+
   write_default_config "${TEST_ROOT}/unresumable-bound-config.toml" "claude-minimax" "bash" "${home}/.bashrc"
   set +e
   HOME="$home" \
+  CLAUDE_CONFIG_DIR="${home}/.claude" \
   RUNNER_TEST_ARGS_FILE="$args_file" \
   ISSUE_RUNNER_ASSUME_YES=true \
   ISSUE_RUNNER_RETRY_LIMIT=1 \
@@ -2331,7 +2463,9 @@ test_confirmed_restart_recovery_resumes_session_and_clears_checkpoint() {
   local count_file="${TEST_ROOT}/restart-resume-count"
   local calls="${TEST_ROOT}/restart-resume-gh-calls"
   local checkpoint_file
+  local home="${TEST_ROOT}/restart-resume-home"
 
+  mkdir -p "$home"
   new_repo "$repo"
   git -C "$repo" switch -c issue-77 --quiet
   printf '%s\n' 'partial restart work' >> "${repo}/README.md"
@@ -2347,6 +2481,11 @@ session_id=sess-restart-77
 state=mutating
 updated_at=test
 EOF
+
+  # Seed a transcript under the fake Claude config dir so the
+  # existence check verifies resume rather than passing against a
+  # missing session.
+  seed_claude_transcript "$home" "$repo" "sess-restart-77" >/dev/null
 
   mkdir -p "$bin_dir"
   write_github_state_fixture "$fake_gh" "$calls"
@@ -2372,6 +2511,8 @@ PROLOG
 
   run_with_recovery_confirmation "$output" \
     env PATH="${bin_dir}:$PATH" \
+    HOME="$home" \
+    CLAUDE_CONFIG_DIR="${home}/.claude" \
     ISSUE_RUNNER_ASSUME_YES=true \
     ISSUE_KILLER_CONFIG_PATH="$(use_config_for_command "$fake")" \
     RUNNER_TEST_COUNT_FILE="$count_file" \
@@ -2577,6 +2718,7 @@ test_blocked_outcome_does_not_retry
 test_recovery_reconciles_local_state_before_continuing
 test_session_resume_when_checkpoint_has_safe_session_id
 test_session_resume_skipped_when_no_captured_session_id
+test_session_resume_skipped_when_transcript_missing
 test_unresumable_session_degrades_to_fresh_worker
 test_unresumable_degradation_is_bounded
 test_recovery_required_after_exhausted_retries
