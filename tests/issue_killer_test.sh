@@ -5234,6 +5234,427 @@ PROLOG
   pass 'restart recovery restores the active OpenCode profile, position, remaining chain, and session'
 }
 
+# Issue #49 — cross-CLI restart recovery. A Claude worker that fails
+# with a quota error advances to a Codex profile; the Codex worker is
+# interrupted mid-flight with a FAILED marker and dirty partial work.
+# On restart, the runner must restore Codex as the active profile
+# (NOT Claude), launch the destination fresh, and never pass the
+# captured Claude session id to Codex. The recovered Codex worker
+# must complete the partial work and the issue in this session.
+test_black_box_cross_cli_restart_restores_codex_active_profile() {
+  local repo="${TEST_ROOT}/cross-cli-restart-repo"
+  local partial_file="${repo}/issue-49-partial-work.txt"
+  local claude="${TEST_ROOT}/cross-cli-restart-claude"
+  local codex="${TEST_ROOT}/cross-cli-restart-codex"
+  local claude_count="${TEST_ROOT}/cross-cli-restart-claude-count"
+  local codex_count="${TEST_ROOT}/cross-cli-restart-codex-count"
+  local codex_args_file="${TEST_ROOT}/cross-cli-restart-codex-args"
+  local config_path="${TEST_ROOT}/cross-cli-restart-config.toml"
+  local first_output="${TEST_ROOT}/cross-cli-restart-first.log"
+  local expect_script="${TEST_ROOT}/cross-cli-restart.expect"
+  local restart_output="${TEST_ROOT}/cross-cli-restart-second.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+# Emit a Claude system init event so the Claude adapter captures a
+# session id; this is the value the runner must NEVER forward to the
+# Codex adapter on restart recovery.
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-sess-49-secret-id"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 49"}}]}}'
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+: > "$RUNNER_TEST_CODEX_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_CODEX_ARGS_FILE"; done
+case "$count" in
+  1)
+    # Codex mid-flight: leave partial work and exit with a FAILED
+    # marker so the orchestrator preserves the checkpoint, the
+    # branch, and the dirty file. The captured session id (owned by
+    # Claude) must NOT appear in the Codex argv.
+    printf '%s\n' 'partial work' > "$RUNNER_TEST_DIRTY_FILE"
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=FAILED\n"}}'
+    ;;
+  2)
+    # Restart recovery: Codex (the persisted active profile) must
+    # run again, finish the partial work, and complete the issue.
+    # The dirty file is removed so the worktree is clean for the
+    # next queue-empty verification, mirroring the OpenCode
+    # restart test pattern.
+    rm -f "$RUNNER_TEST_DIRTY_FILE"
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+    ;;
+  *)
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+    ;;
+esac
+PROLOG
+  chmod +x "$claude" "$codex"
+
+  printf 'default_profile = "claude-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-other"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-other]
+label = "Codex Other"
+cli = "codex"
+command = "${codex}"
+model = "codex-model"
+
+[profiles.codex-other.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+PROLOG
+
+  # First invocation: Claude fails with quota → Codex fallback runs
+  # once, leaves partial work, and exits with FAILED. The dirty
+  # file and the checkpoint must persist so the restart can resume.
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_count" \
+  RUNNER_TEST_CODEX_ARGS_FILE="$codex_args_file" \
+  RUNNER_TEST_DIRTY_FILE="$partial_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$first_output" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || \
+    fail "Cross-CLI first invocation must exit 1 on FAILED, got ${status}"
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Claude primary ran more than once before the fallback transition'
+  [[ "$(<"$codex_count")" -eq 1 ]] || \
+    fail 'Codex fallback did not run exactly once before the crash'
+  [[ -e "$partial_file" ]] || \
+    fail 'Cross-CLI mid-flight did not leave recoverable partial work'
+  # The first Codex invocation must NOT see any --resume flag or the
+  # Claude session id (the cross-CLI guard already enforces this
+  # on the live transition).
+  grep -Fxq -- '--resume' "$codex_args_file" && \
+    fail 'First Codex invocation received --resume on the cross-CLI transition'
+  grep -Fxq -- 'claude-sess-49-secret-id' "$codex_args_file" && \
+    fail 'First Codex invocation received the Claude session id (cross-CLI leak)'
+
+  # Second invocation: restart recovery must restore Codex as the
+  # active profile (NOT Claude) and launch a fresh Codex worker.
+  # The dirty work must be preserved, the captured Claude session id
+  # must NOT be passed to Codex, and the issue must complete.
+  cat > "$expect_script" <<PROLOG
+set timeout 20
+log_user 1
+spawn env PATH=$PATH RUNNER_TEST_CLAUDE_COUNT=$claude_count RUNNER_TEST_CODEX_COUNT=$codex_count RUNNER_TEST_CODEX_ARGS_FILE=$codex_args_file RUNNER_TEST_DIRTY_FILE=$partial_file ISSUE_RUNNER_ASSUME_YES=true ISSUE_KILLER_CONFIG_PATH=$config_path $RUNNER "$repo"
+expect {
+  -re {Profile \[1\]:} {
+    send "\r"
+    exp_continue
+  }
+  -re {Fallback \[0\]:} {
+    send "1\r"
+    exp_continue
+  }
+  -re {Recover issue 49.*Continue\? \[y/N\]} {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}
+PROLOG
+
+  # Reset the Codex args file so the restart invocation's arguments
+  # are recorded on a clean slate.
+  : > "$codex_args_file"
+
+  expect "$expect_script" >"$restart_output" 2>&1 || \
+    fail 'Restart recovery did not complete the cross-CLI checkpointed issue'
+
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Restart recovery silently returned to Claude instead of restoring Codex'
+  # The Codex cli is invoked three times across the crash boundary:
+  # count=1 (FAILED with partial work), count=2 (recovered and
+  # completed the issue), count=3 (queue-empty verification). The
+  # assertion verifies that the runner re-engaged Codex after the
+  # restart without silently returning to Claude.
+  [[ "$(<"$codex_count")" -eq 3 ]] || \
+    fail 'Restart recovery did not continue with the Codex active profile'
+  grep -Fq 'Restored fallback checkpoint at position 1 with profile codex-other' "$restart_output" || \
+    fail 'Restart did not report the restored Codex active fallback profile'
+  grep -Fq 'cli=codex' "$restart_output" || \
+    fail 'Restart did not report the restored Codex CLI identity'
+  grep -Fxq -- 'claude-sess-49-secret-id' "$codex_args_file" && \
+    fail 'Restarted Codex invocation received the Claude session id (cross-CLI leak on restart)'
+  grep -Fxq -- '--resume' "$codex_args_file" && \
+    fail 'Restarted Codex invocation received --resume despite the CLI mismatch'
+  [[ ! -e "$partial_file" ]] || \
+    fail 'Restart recovery did not complete the dirty cross-CLI work'
+
+  pass 'cross-CLI restart recovery restores Codex as active profile, never passes the Claude session id, and completes the issue'
+}
+
+# Issue #49 — chain-drift restart guard. A checkpoint that names a
+# fallback chain which no longer matches the configured chain must
+# fail closed with RECOVERY_REQUIRED. Restart recovery must not
+# silently restore a profile that the operator has since dropped or
+# rearranged; the checkpoint is retained as the recovery target.
+test_black_box_restart_chain_drift_retains_recovery_required() {
+  local repo="${TEST_ROOT}/chain-drift-repo"
+  local claude="${TEST_ROOT}/chain-drift-claude"
+  local codex_initial="${TEST_ROOT}/chain-drift-codex-initial"
+  local codex_replacement="${TEST_ROOT}/chain-drift-codex-replacement"
+  local claude_count="${TEST_ROOT}/chain-drift-claude-count"
+  local codex_initial_count="${TEST_ROOT}/chain-drift-codex-initial-count"
+  local partial_file="${repo}/issue-49-drift-partial.txt"
+  local initial_config="${TEST_ROOT}/chain-drift-initial-config.toml"
+  local drifted_config="${TEST_ROOT}/chain-drift-drifted-config.toml"
+  local first_output="${TEST_ROOT}/chain-drift-first.log"
+  local restart_output="${TEST_ROOT}/chain-drift-second.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-sess-49-drift"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 49"}}]}}'
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex_initial" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+printf '%s\n' 'partial work' > "$RUNNER_TEST_DIRTY_FILE"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ISSUE_KILLER_STATUS=FAILED\n"}}'
+PROLOG
+  cat > "$codex_replacement" <<'PROLOG'
+#!/usr/bin/env bash
+printf '%s\n' 'replacement codex should never run' >&2
+exit 1
+PROLOG
+  chmod +x "$claude" "$codex_initial" "$codex_replacement"
+
+  # First config: Claude primary with chain [codex-initial].
+  printf 'default_profile = "claude-primary"\n' > "$initial_config"
+  cat >> "$initial_config" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-initial"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-initial]
+label = "Codex Initial"
+cli = "codex"
+command = "${codex_initial}"
+model = "codex-model"
+
+[profiles.codex-initial.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_initial_count" \
+  RUNNER_TEST_DIRTY_FILE="$partial_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$initial_config" \
+    "$RUNNER" "$repo" >"$first_output" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || \
+    fail "Initial invocation must exit 1 on FAILED, got ${status}"
+  [[ -e "$partial_file" ]] || \
+    fail 'Initial Codex invocation did not leave recoverable partial work'
+
+  # Drifted config: the operator swapped the fallback profile name
+  # to a different executable. The checkpoint's chain [codex-initial]
+  # no longer matches the configured chain [codex-replacement], so
+  # restart recovery must fail closed with RECOVERY_REQUIRED.
+  printf 'default_profile = "claude-primary"\n' > "$drifted_config"
+  cat >> "$drifted_config" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-replacement"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-replacement]
+label = "Codex Replacement"
+cli = "codex"
+command = "${codex_replacement}"
+model = "codex-model"
+
+[profiles.codex-replacement.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_initial_count" \
+  RUNNER_TEST_DIRTY_FILE="$partial_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$drifted_config" \
+    "$RUNNER" "$repo" >"$restart_output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Chain-drift restart must RECOVERY_REQUIRED (exit 4), got ${status}"
+  [[ "$(<"$codex_initial_count")" -eq 1 ]] || \
+    fail 'Chain-drift restart advanced beyond the original fallback profile'
+  grep -Fq 'fallback checkpoint does not match the selected profile chain' "$restart_output" || \
+    fail 'Restart did not explain the chain drift as RECOVERY_REQUIRED'
+  [[ -e "$partial_file" ]] || \
+    fail 'Chain-drift restart did not preserve the recoverable partial work'
+
+  pass 'chain drift retains RECOVERY_REQUIRED and never silently restores the previous fallback'
+}
+
+# Issue #49 — fallback exhaustion must preserve a recoverable
+# checkpoint across a crash. After the chain has fully exhausted,
+# the queue must not advance and the checkpoint must remain on
+# disk for operator recovery.
+test_black_box_cross_cli_fallback_exhaustion_preserves_checkpoint() {
+  local repo="${TEST_ROOT}/cross-cli-exhaustion-repo"
+  local claude="${TEST_ROOT}/cross-cli-exhaustion-claude"
+  local codex="${TEST_ROOT}/cross-cli-exhaustion-codex"
+  local claude_count="${TEST_ROOT}/cross-cli-exhaustion-claude-count"
+  local codex_count="${TEST_ROOT}/cross-cli-exhaustion-codex-count"
+  local config_path="${TEST_ROOT}/cross-cli-exhaustion-config.toml"
+  local output="${TEST_ROOT}/cross-cli-exhaustion-output.log"
+  local checkpoint
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-sess-49-exhaust"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 49"}}]}}'
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+printf '%s\n' 'Authorization: Bearer ghp_exhaustion_secret insufficient_quota for Codex provider' >&2
+exit 1
+PROLOG
+  chmod +x "$claude" "$codex"
+
+  # Hand-write the TOML so the fake Codex command path is preserved.
+  printf 'default_profile = "claude-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-other"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-other]
+label = "Codex Other"
+cli = "codex"
+command = "${codex}"
+model = "codex-model"
+
+[profiles.codex-other.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_count" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Cross-CLI exhaustion must exit 4, got ${status}"
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Claude primary ran more than once before the fallback transition'
+  [[ "$(<"$codex_count")" -eq 1 ]] || \
+    fail 'Codex fallback ran more than once across exhaustion'
+  checkpoint="${repo}/.git/issue-killer.checkpoint"
+  [[ -r "$checkpoint" ]] || \
+    fail 'Cross-CLI exhaustion did not retain the recoverable checkpoint'
+  grep -Eq '^profile=codex-other$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not record the active Codex profile'
+  grep -Eq '^cli=codex$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not record the destination CLI'
+  grep -Eq '^selected_profile=claude-primary$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not retain the original selected profile'
+  grep -Eq '^fallback_position=1$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not retain the fallback position'
+  grep -Eq '^failed_profile=codex-other$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not retain the final failed profile'
+  grep -Eq '^fallback_failure=provider_quota$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not retain the provider failure classification'
+  grep -Eq '^state=fallback_exhausted$' "$checkpoint" || \
+    fail 'Cross-CLI exhaustion checkpoint did not retain its recoverable lifecycle state'
+  if grep -Eqi 'authorization|ghp_exhaustion_secret' "$checkpoint"; then
+    fail 'Cross-CLI exhaustion checkpoint persisted credentials from provider diagnostics'
+  fi
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Cross-CLI exhaustion did not emit RECOVERY_REQUIRED diagnostics'
+
+  pass 'cross-CLI fallback exhaustion preserves a recoverable, non-secret checkpoint and never advances the queue'
+}
+
 test_black_box_opencode_prior_provider_error_does_not_reclassify_fallback_failure() {
   local repo="${TEST_ROOT}/opencode-fallback-reclassification-repo"
   local primary="${TEST_ROOT}/opencode-fallback-reclassification-primary"
@@ -5811,6 +6232,9 @@ test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback
 test_black_box_opencode_excluded_failures_never_consume_fallbacks
 test_black_box_opencode_fallback_exhaustion_retains_recovery_checkpoint
 test_black_box_opencode_restart_restores_active_fallback_position
+test_black_box_cross_cli_restart_restores_codex_active_profile
+test_black_box_restart_chain_drift_retains_recovery_required
+test_black_box_cross_cli_fallback_exhaustion_preserves_checkpoint
 test_black_box_opencode_prior_provider_error_does_not_reclassify_fallback_failure
 test_black_box_opencode_profile_invokes_opencode_run_with_expected_args
 test_black_box_opencode_stream_preserves_provider_native_json
