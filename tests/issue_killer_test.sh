@@ -4483,6 +4483,322 @@ PROLOG
   pass 'Claude quota failure advances to Codex, preserves partial work, and never passes the Claude session id'
 }
 
+test_black_box_multi_profile_fallback_chain_persists_state() {
+  # Issue #48 — multi-profile fallback chain. A Claude worker that
+  # exhausts its quota advances to a Codex profile; the Codex worker
+  # that hits a model-unavailable error advances to an OpenCode
+  # profile; the OpenCode profile completes the issue and drains
+  # the queue. The configured order, the active profile, the
+  # remaining chain, and the normalized failure category must be
+  # persisted at every transition so a restart could resume the
+  # chain at the right position with the right identity. No
+  # captured session id from an earlier CLI may be forwarded to
+  # the destination CLI.
+  local repo="${TEST_ROOT}/multi-profile-fallback-repo"
+  local claude="${TEST_ROOT}/multi-profile-fallback-claude"
+  local codex="${TEST_ROOT}/multi-profile-fallback-codex"
+  local opencode="${TEST_ROOT}/multi-profile-fallback-opencode"
+  local claude_count="${TEST_ROOT}/multi-profile-fallback-claude-count"
+  local codex_count="${TEST_ROOT}/multi-profile-fallback-codex-count"
+  local opencode_count="${TEST_ROOT}/multi-profile-fallback-opencode-count"
+  local codex_args="${TEST_ROOT}/multi-profile-fallback-codex-args"
+  local opencode_args="${TEST_ROOT}/multi-profile-fallback-opencode-args"
+  local codex_checkpoint_snapshot="${TEST_ROOT}/multi-profile-fallback-codex-checkpoint"
+  local opencode_checkpoint_snapshot="${TEST_ROOT}/multi-profile-fallback-opencode-checkpoint"
+  local config_path="${TEST_ROOT}/multi-profile-fallback-config.toml"
+  local output="${TEST_ROOT}/multi-profile-fallback-output.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+# Emit a system init event so the Claude adapter captures a session
+# id; this is the value the runner must NEVER forward to Codex.
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-multi-48-secret"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 48"}}]}}'
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+: > "$RUNNER_TEST_CODEX_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_CODEX_ARGS_FILE"; done
+# Capture the Codex thread id so the test can verify the runner
+# does NOT pass it to OpenCode.
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-multi-48-secret"}'
+# Snapshot the checkpoint at the moment the Codex worker begins
+# running: the checkpoint was just rewritten to fallback_ready by
+# the Claude→Codex transition, so it carries the failed profile,
+# the next profile, and the normalized quota classification.
+if [[ "$count" -eq 1 ]]; then
+  cp "$RUNNER_TEST_CHECKPOINT" "$RUNNER_TEST_CODEX_CHECKPOINT" 2>/dev/null || true
+fi
+# Fail with a model-unavailable signature so the chain advances
+# to the OpenCode profile (the third entry in the chain).
+printf '%s\n' 'requested model codex-multi is unavailable' >&2
+exit 1
+PROLOG
+  cat > "$opencode" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_OPENCODE_COUNT" ]] && count="$(<"$RUNNER_TEST_OPENCODE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_OPENCODE_COUNT"
+: > "$RUNNER_TEST_OPENCODE_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_OPENCODE_ARGS_FILE"; done
+# Snapshot the checkpoint at the moment the OpenCode worker
+# begins running: the checkpoint was just rewritten to
+# fallback_ready by the Codex→OpenCode transition, so it carries
+# the Codex profile as the failed entry, OpenCode as the active
+# profile, and the normalized model_unavailable classification.
+if [[ "$count" -eq 1 ]]; then
+  cp "$RUNNER_TEST_CHECKPOINT" "$RUNNER_TEST_OPENCODE_CHECKPOINT" 2>/dev/null || true
+  printf '%s\n' '{"type":"session","sessionID":""}'
+  printf '%s\n' '{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"session","sessionID":""}'
+  printf '%s\n' '{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$claude" "$codex" "$opencode"
+
+  # Hand-write the TOML so the profile block declares an explicit
+  # three-profile mixed-CLI fallback chain. The Claude profile is
+  # selected as default; the chain advances to Codex on quota, then
+  # to OpenCode on model-unavailable.
+  printf 'default_profile = "claude-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-other", "opencode-tertiary"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-other]
+label = "Codex Other"
+cli = "codex"
+command = "${codex}"
+model = "codex-model"
+fallbacks = ["opencode-tertiary"]
+
+[profiles.codex-other.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+
+[profiles.opencode-tertiary]
+label = "OpenCode Tertiary"
+cli = "opencode"
+command = "${opencode}"
+model = "opencode/tertiary"
+
+[profiles.opencode-tertiary.options]
+variant = "medium"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_count" \
+  RUNNER_TEST_OPENCODE_COUNT="$opencode_count" \
+  RUNNER_TEST_CODEX_ARGS_FILE="$codex_args" \
+  RUNNER_TEST_OPENCODE_ARGS_FILE="$opencode_args" \
+  RUNNER_TEST_CODEX_CHECKPOINT="$codex_checkpoint_snapshot" \
+  RUNNER_TEST_OPENCODE_CHECKPOINT="$opencode_checkpoint_snapshot" \
+  RUNNER_TEST_CHECKPOINT="${repo}/.git/issue-killer.checkpoint" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || \
+    fail "multi-profile fallback chain did not finish successfully, got exit ${status}"
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Claude primary ran more than once before the first fallback transition'
+  [[ "$(<"$codex_count")" -eq 1 ]] || \
+    fail 'Codex fallback ran more than once before the second fallback transition'
+  [[ "$(<"$opencode_count")" -eq 2 ]] || \
+    fail 'OpenCode terminal fallback did not complete the issue and drain the queue'
+
+  # The chain must advance through the documented CLI transitions in
+  # the declared order. The Claude→Codex hop logs `Advancing fallback`
+  # (mixed CLI); the Codex→OpenCode hop logs `Advancing OpenCode
+  # fallback` because both ends are OpenCode-flavored for the message
+  # routing. Both hops must appear in operator output with the
+  # normalized failure category in parentheses.
+  grep -Fq 'Advancing fallback: claude-primary -> codex-other (cli=codex, provider_quota)' "$output" || \
+    fail 'Runner did not report the Claude→Codex transition with provider_quota classification'
+  grep -Fq 'Advancing OpenCode fallback: codex-other -> opencode-tertiary (provider_model_unavailable)' "$output" || \
+    fail 'Runner did not report the Codex→OpenCode transition with provider_model_unavailable classification'
+
+  # The Claude→Codex checkpoint snapshot must carry the failed
+  # Claude profile, the Codex destination, and the provider_quota
+  # classification that drove the transition.
+  [[ -r "$codex_checkpoint_snapshot" ]] || \
+    fail 'Codex worker did not snapshot the checkpoint during the fallback transition'
+  grep -Eq '^selected_profile=claude-primary$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not retain the selected_profile=claude-primary anchor'
+  grep -Eq '^profile=codex-other$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not record the active Codex profile'
+  grep -Eq '^cli=codex$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not record the destination CLI'
+  grep -Eq '^fallback_position=1$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not advance the fallback position to 1'
+  grep -Eq '^fallback_remaining=opencode-tertiary$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not retain the remaining chain head'
+  grep -Eq '^failed_profile=claude-primary$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not record the failed Claude profile'
+  grep -Eq '^next_profile=codex-other$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not record the destination Codex profile'
+  grep -Eq '^fallback_failure=provider_quota$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not record the provider_quota classification'
+  grep -Eq '^state=fallback_ready$' "$codex_checkpoint_snapshot" || \
+    fail 'Claude→Codex snapshot did not carry the fallback_ready lifecycle state'
+
+  # The Codex→OpenCode checkpoint snapshot must advance the chain
+  # position, swap the failed profile to Codex, swap the active
+  # profile to OpenCode, and carry the provider_model_unavailable
+  # classification.
+  [[ -r "$opencode_checkpoint_snapshot" ]] || \
+    fail 'OpenCode worker did not snapshot the checkpoint during the second fallback transition'
+  grep -Eq '^profile=opencode-tertiary$' "$opencode_checkpoint_snapshot" || \
+    fail 'Codex→OpenCode snapshot did not record the active OpenCode profile'
+  grep -Eq '^cli=opencode$' "$opencode_checkpoint_snapshot" || \
+    fail 'Codex→OpenCode snapshot did not record the destination CLI'
+  grep -Eq '^fallback_position=2$' "$opencode_checkpoint_snapshot" || \
+    fail 'Codex→OpenCode snapshot did not advance the fallback position to 2'
+  grep -Eq '^failed_profile=codex-other$' "$opencode_checkpoint_snapshot" || \
+    fail 'Codex→OpenCode snapshot did not record the failed Codex profile'
+  grep -Eq '^fallback_failure=provider_model_unavailable$' "$opencode_checkpoint_snapshot" || \
+    fail 'Codex→OpenCode snapshot did not record the provider_model_unavailable classification'
+
+  # Cross-CLI leaks: no captured Claude or Codex session id may reach
+  # the destination CLI; no --resume may be passed across CLIs.
+  grep -Fxq -- 'claude-multi-48-secret' "$codex_args" && \
+    fail 'Codex fallback received the Claude session id (cross-CLI leak)'
+  grep -Fxq -- 'codex-multi-48-secret' "$opencode_args" && \
+    fail 'OpenCode fallback received the Codex thread id (cross-CLI leak)'
+  grep -Fxq -- '--resume' "$codex_args" && \
+    fail 'Codex fallback was invoked with --resume despite the CLI mismatch'
+  grep -Fxq -- '--session' "$opencode_args" && \
+    fail 'OpenCode fallback was invoked with --session despite the CLI mismatch'
+
+  # Order of events: the Claude→Codex transition must precede the
+  # Codex→OpenCode transition, and both must precede the final
+  # completion. Without ordering, the chain could be consumed in the
+  # wrong order.
+  local claude_hop codex_hop completion_line
+  claude_hop="$(grep -n 'Advancing fallback: claude-primary -> codex-other' "$output" | head -n 1 | cut -d: -f1)"
+  codex_hop="$(grep -n 'Advancing OpenCode fallback: codex-other -> opencode-tertiary' "$output" | head -n 1 | cut -d: -f1)"
+  completion_line="$(grep -n 'Worker .* completed one issue' "$output" | head -n 1 | cut -d: -f1)"
+  [[ -n "$claude_hop" && -n "$codex_hop" && -n "$completion_line" ]] || \
+    fail 'Could not locate chain transition lines in operator output'
+  [[ "$claude_hop" -lt "$codex_hop" ]] || \
+    fail 'Codex→OpenCode transition appeared before Claude→Codex transition'
+  [[ "$codex_hop" -lt "$completion_line" ]] || \
+    fail 'Terminal completion was reported before the chain finished advancing'
+
+  pass 'mixed-provider fallback chain persists order, active profile, remaining chain, and normalized failure category across multiple transitions'
+}
+
+test_black_box_status_marker_takes_precedence_over_provider_diagnostics() {
+  # Issue #48 — status-marker precedence. A worker that emits
+  # `ISSUE_KILLER_STATUS=BLOCKED` (or any other terminal marker)
+  # alongside a recognizable provider-quota signature must be
+  # classified as `blocked`, not `provider_quota`. The orchestrator
+  # must stop on the marker and never advance the fallback chain.
+  local repo="${TEST_ROOT}/marker-precedence-repo"
+  local primary="${TEST_ROOT}/marker-precedence-primary"
+  local backup="${TEST_ROOT}/marker-precedence-backup"
+  local primary_count="${TEST_ROOT}/marker-precedence-primary-count"
+  local backup_marker="${TEST_ROOT}/marker-precedence-backup-marker"
+  local config_path="${TEST_ROOT}/marker-precedence-config.toml"
+  local output="${TEST_ROOT}/marker-precedence-output.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$primary" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_PRIMARY_COUNT" ]] && count="$(<"$RUNNER_TEST_PRIMARY_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_PRIMARY_COUNT"
+# Emit a tool invocation so the runner identifies the issue, then
+# surface a BLOCKED marker that must take precedence over the
+# provider-quota signature that follows.
+printf '%s\n' '{"type":"session","sessionID":""}'
+printf '%s\n' '{"type":"step_start","part":{"type":"tool","tool":"bash","input":{"command":"gh issue view 48"}}}'
+printf '%s\n' '{"type":"text","part":{"text":"ISSUE_KILLER_STATUS=BLOCKED\n"}}'
+# A provider-quota signature in the SAME worker output must NOT
+# trigger a fallback advance — the marker wins.
+printf '%s\n' 'subscription quota exhausted for primary' >&2
+exit 0
+PROLOG
+  printf '%s\n' '#!/usr/bin/env bash' "touch '${backup_marker}'" > "$backup"
+  chmod +x "$primary" "$backup"
+
+  printf 'default_profile = "opencode-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.opencode-primary]
+label = "OpenCode Primary"
+cli = "opencode"
+command = "${primary}"
+model = "provider/primary"
+fallbacks = ["opencode-backup"]
+
+[profiles.opencode-primary.options]
+variant = "high"
+auto_approve = "true"
+
+[profiles.opencode-backup]
+label = "OpenCode Backup"
+cli = "opencode"
+command = "${backup}"
+model = "provider/backup"
+
+[profiles.opencode-backup.options]
+variant = "medium"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_PRIMARY_COUNT="$primary_count" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # BLOCKED must surface as the runner's exit code (2) and the
+  # backup profile must not have run, proving the marker
+  # prevented a fallback advance.
+  [[ "$status" -eq 2 ]] || \
+    fail "BLOCKED marker should yield exit 2, got ${status}"
+  [[ "$(<"$primary_count")" -eq 1 ]] || \
+    fail 'Primary profile ran more than once despite BLOCKED outcome'
+  [[ ! -e "$backup_marker" ]] || \
+    fail 'Provider-quota signature overrode BLOCKED marker and consumed a fallback'
+  grep -Fq 'pending work requires human input' "$output" || \
+    fail 'BLOCKED diagnostic did not surface in operator output'
+
+  pass 'explicit worker status marker takes precedence over provider failure diagnostics'
+}
+
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session() {
   local repo="${TEST_ROOT}/opencode-quota-fallback-repo"
   local primary="${TEST_ROOT}/opencode-quota-primary"
@@ -5487,6 +5803,8 @@ test_black_box_opencode_fallback_validation_rejects_invalid_chains
 test_tty_opencode_fallback_picker_builds_ordered_unique_chain
 test_black_box_mixed_provider_fallback_chain_validates
 test_black_box_claude_to_codex_handoff_preserves_partial_work
+test_black_box_multi_profile_fallback_chain_persists_state
+test_black_box_status_marker_takes_precedence_over_provider_diagnostics
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session
 test_black_box_opencode_rate_limit_retries_before_fallback
 test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback
