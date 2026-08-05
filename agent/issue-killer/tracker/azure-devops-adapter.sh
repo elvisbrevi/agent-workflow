@@ -175,6 +175,269 @@ azure_validate_or_discover_field_mappings() {
   azure_persist_field_mapping "$docs" real_effort_field_name "$AZURE_REAL_EFFORT_FIELD" || return 1
 }
 
+# Idempotent ticket-completion helpers (issue #39). Every persistent
+# effect on a work item must be safe to apply multiple times without
+# duplicating artifacts, overwriting captured proof, or losing the
+# accumulated Real Effort baseline. Each helper reads the live Azure
+# state through the normalized adapter interface and only writes when
+# the live state is missing or genuinely requires the new value. The
+# helpers refuse to construct tracker commands from the orchestration
+# loop and never expose prompts, credentials, or capture payloads.
+
+# Accumulates the supplied active seconds into the Real Effort field
+# of the work item. The function reads the existing value through
+# `tracker_item_read_real_effort`, adds the new active seconds via the
+# shared quarter-hour rounding helper, and writes the total exactly
+# once through `tracker_item_set_real_effort`. Retrying the call with
+# the same active seconds is a no-op for the read but always reflects
+# the accumulated total; the function deliberately does not compare the
+# prior write against the new write because a worker may legitimately
+# add the same active seconds across recovery attempts. Returns the
+# total Real Effort in hours on stdout.
+tracker_item_set_real_effort_accumulated() {
+  local item_id="$1"
+  local active_seconds="$2"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_set_real_effort_accumulated: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ "$active_seconds" =~ ^[0-9]+$ ]] || {
+    printf '%s: tracker_item_set_real_effort_accumulated: active seconds must be a non-negative integer: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${active_seconds:-empty}" >&2
+    return 1
+  }
+  local existing total
+  existing="$(tracker_item_read_real_effort "$item_id" 2>/dev/null || true)"
+  total="$(tracker_calculate_real_effort_hours "$active_seconds" "$existing")" || return 1
+  tracker_item_set_real_effort "$item_id" "$total"
+  printf '%s\n' "$total"
+}
+
+# Returns 0 when the work item already carries an ArtifactLink whose URL
+# contains the supplied substring, and 1 otherwise. The substring check
+# keeps the helper resilient to small formatting differences in vstfs://
+# URLs while still requiring a deliberate match. Used by the idempotent
+# relation helper to refuse duplicate links before they reach `az`.
+tracker_item_has_development_relation() {
+  local item_id="$1"
+  local url_substring="$2"
+  local relations
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_has_development_relation: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$url_substring" ]] || {
+    printf '%s: tracker_item_has_development_relation: empty relation URL substring\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  relations="$(tracker_item_list_development_relations "$item_id" 2>/dev/null || true)"
+  [[ -n "$relations" ]] || return 1
+  if printf '%s\n' "$relations" | awk -F'\t' -v wanted="$url_substring" \
+       'index($0, wanted) > 0 { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  return 1
+}
+
+# Adds a development relation only when no existing ArtifactLink
+# references the supplied URL substring. The wrapper keeps the
+# orchestrator and the worker free of any tracker-specific decision:
+# the helper centralizes the read-then-write pattern so recovery can
+# retry the same call without producing duplicate ArtifactLinks on
+# the work item. The original `tracker_item_add_development_relation`
+# remains available for callers that explicitly want a fresh link.
+tracker_item_add_development_relation_if_absent() {
+  local item_id="$1"
+  local artifact_type="$2"
+  local artifact_url="$3"
+  local comment="${4:-}"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_add_development_relation_if_absent: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  if tracker_item_has_development_relation "$item_id" "$artifact_url"; then
+    return 0
+  fi
+  tracker_item_add_development_relation "$item_id" "$artifact_type" "$artifact_url" "$comment"
+}
+
+# Writes the completion evidence HTML only when the live evidence is
+# absent or lacks a recognized modality marker. The helper guarantees
+# that a successful prior capture cannot be overwritten by a retry
+# while still allowing the worker to recover from a partial write.
+# Returns 0 on every accepted outcome; callers must rely on the helper
+# to short-circuit silently when the live payload is already complete.
+tracker_item_set_completion_evidence_if_absent() {
+  local item_id="$1"
+  local html="$2"
+  local existing modality
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_set_completion_evidence_if_absent: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$html" ]] || {
+    printf '%s: tracker_item_set_completion_evidence_if_absent: empty HTML payload for work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+    return 1
+  }
+  existing="$(tracker_item_read_completion_evidence "$item_id" 2>/dev/null || true)"
+  if [[ -n "$existing" ]] && azure_extract_evidence_modality "$existing" >/dev/null 2>&1; then
+    return 0
+  fi
+  tracker_item_set_completion_evidence "$item_id" "$html"
+}
+
+# Returns the URL of an existing attachment whose title matches the
+# supplied value (case-insensitive). The helper avoids re-uploading a
+# capture when the worker is retrying an interrupted delivery: a fresh
+# upload would either duplicate the attachment or replace the existing
+# URL inside the completion evidence. The function exits non-zero when
+# no matching attachment exists so callers can branch on the result.
+tracker_find_attachment_by_title() {
+  local item_id="$1"
+  local title="$2"
+  local attachments url
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_find_attachment_by_title: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$title" ]] || {
+    printf '%s: tracker_find_attachment_by_title: empty title\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  attachments="$(tracker_item_list_attachments "$item_id" 2>/dev/null || true)"
+  [[ -n "$attachments" ]] || return 1
+  url="$(printf '%s\n' "$attachments" | \
+    awk -F'\t' -v wanted="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')" \
+      'tolower($1) == wanted { print $2; exit }')"
+  [[ -n "$url" ]] || return 1
+  printf '%s\n' "$url"
+}
+
+# Reconciles the live Azure state of an in-progress ticket against
+# the checkpoint lifecycle and emits the next safe state the runner
+# may assume. The function intentionally does not mutate any Azure
+# resource: it only inspects work-item state, the source-branch pull
+# request, completion prerequisites, and existing relations to decide
+# whether the ticket is already Done, already merged, still needs a
+# pull request, or only requires the worker to claim and inspect it.
+# The returned value is one of the existing checkpoint lifecycle
+# states so the runner can advance or restore the checkpoint without
+# introducing a parallel vocabulary. Ambiguous live state produces an
+# empty value and a non-zero exit so the caller can emit
+# RECOVERY_REQUIRED through the existing recovery path.
+tracker_recover_ticket_progress() {
+  local item_id="$1"
+  local branch="$2"
+  local item_json state pr_json merged evidence relations
+  local backend_count frontend_count capture_section modality
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_recover_ticket_progress: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -n "$branch" && "$branch" != "unknown" ]] || {
+    printf '%s: tracker_recover_ticket_progress: source branch is unknown for work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+    return 1
+  }
+  item_json="$(tracker_item_read "$item_id" 2>/dev/null)" || return 1
+  state="$(tracker_item_state "$item_json")"
+  if azure_list_contains "$state" "$AZURE_CLOSED_STATES"; then
+    printf 'issue_closed\n'
+    return 0
+  fi
+  pr_json="$(tracker_prs_for_branch "$branch" 2>/dev/null)" || return 1
+  merged="$(tracker_pr_is_merged "$pr_json" 2>/dev/null || printf 'ambiguous')"
+  case "$merged" in
+    true)
+      evidence="$(tracker_item_read_completion_evidence "$item_id" 2>/dev/null || true)"
+      if [[ -z "$evidence" ]]; then
+        printf 'pr_merged\n'
+        return 0
+      fi
+      modality="$(azure_extract_evidence_modality "$evidence" 2>/dev/null || true)"
+      [[ -n "$modality" ]] || {
+        printf '%s: tracker_recover_ticket_progress: ticket %s has a merged PR but its evidence lacks a recognized modality\n' \
+          "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+        return 1
+      }
+      capture_section="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures' || true)"
+      backend_count="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures="backend"' || true)"
+      frontend_count="$(printf '%s\n' "$evidence" | grep -Foc 'data-modality-captures="frontend"' || true)"
+      case "$modality" in
+        "$TRACKER_MODALITY_NON_INTERACTIVE")
+          [[ "$capture_section" == "0" ]] || {
+            printf '%s: tracker_recover_ticket_progress: ticket %s has non-interactive evidence with captures\n' \
+              "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+            return 1
+          }
+          ;;
+        "$TRACKER_MODALITY_BACKEND")
+          [[ "$backend_count" -ge 1 ]] || {
+            printf '%s: tracker_recover_ticket_progress: ticket %s has backend evidence with no HTTP capture\n' \
+              "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+            return 1
+          }
+          ;;
+        "$TRACKER_MODALITY_FRONTEND")
+          [[ "$frontend_count" -ge 1 ]] || {
+            printf '%s: tracker_recover_ticket_progress: ticket %s has frontend evidence with no screen capture\n' \
+              "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+            return 1
+          }
+          ;;
+        "$TRACKER_MODALITY_MIXED")
+          [[ "$backend_count" -ge 1 && "$frontend_count" -ge 1 ]] || {
+            printf '%s: tracker_recover_ticket_progress: ticket %s has mixed evidence with missing captures\n' \
+              "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+            return 1
+          }
+          ;;
+        *) return 1 ;;
+      esac
+      relations="$(tracker_item_list_development_relations "$item_id" 2>/dev/null || true)"
+      if [[ -z "$relations" ]] || \
+         [[ -z "$(printf '%s\n' "$relations" | grep -Fi 'pull request' || true)" ]] || \
+         [[ -z "$(printf '%s\n' "$relations" | grep -Fi 'commit' || true)" ]]; then
+        printf 'pr_merged\n'
+        return 0
+      fi
+      # PR merged, evidence complete, relations present. The ticket is
+      # non-terminal only because Done has not been reached yet, so the
+      # next safe checkpoint is `issue_closed` even though the live
+      # state is still in an open state. The runner will call
+      # tracker_item_close which the closure guard will accept.
+      printf 'issue_closed\n'
+      return 0
+      ;;
+    false)
+      printf 'pr_open\n'
+      return 0
+      ;;
+    ambiguous|"")
+      printf '%s: tracker_recover_ticket_progress: ticket %s has ambiguous PR state on branch %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "$item_id" "$branch" >&2
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+
 azure_list_contains() {
   local wanted="$1"
   local list="$2"
@@ -1426,7 +1689,8 @@ tracker_worker_scope_prompt() {
     fi
     printf '%s\n' \
       '- Before moving the ticket to Done: capture reproducible command or test output as the validation evidence; record it in the completion evidence field using the summary, delivered changes, validation, and development references sections; record cumulative active agent effort rounded upward to 0.25 hours in the Real Effort field; and add native Azure development relations to the pull request and the integrated commit.' \
-      '- The completion evidence, Real Effort, and development relations are mandatory prerequisites: the Azure closure guard refuses Done when any are missing.'
+      '- The completion evidence, Real Effort, and development relations are mandatory prerequisites: the Azure closure guard refuses Done when any are missing.' \
+      '- Ticket completion is restart-safe (issue #39): on retry or recovery, reconcile live Azure state through the adapter before any mutation, call tracker_item_set_real_effort_accumulated to preserve prior effort, call tracker_item_add_development_relation_if_absent so ArtifactLinks are never duplicated, call tracker_item_set_completion_evidence_if_absent so a captured proof is never overwritten, and call tracker_find_attachment_by_title before uploading any new capture.'
   fi
 }
 
@@ -1830,6 +2094,11 @@ tracker_worker_supplement() {
     '- Never commit binary captures to the source repository; the captures live only as Azure attachments referenced from the evidence field.' \
     '- If Chrome, the target application, the environment, or authentication is unavailable, report BLOCKED before merging or moving the ticket to Done; textual evidence is never an acceptable substitute for a missing modality capture.' \
     '- Record completion evidence, cumulative active effort, and native development relations for the pull request and integrated commit on the work item before the ticket reaches Done; the Azure closure guard refuses Done when any prerequisite is missing, including the modality-specific captures.' \
+    '- Every persistent Azure effect is restart-safe (issue #39): inspect the live Azure state through the normalized adapter before any mutation and reuse existing artifacts when they are already present.' \
+    '- Real Effort must use tracker_item_set_real_effort_accumulated so an interrupted worker preserves the baseline and never overwrites prior effort.' \
+    '- Native development relations must use tracker_item_add_development_relation_if_absent so retries never duplicate ArtifactLinks to the pull request or integrated commit.' \
+    '- Completion evidence must use tracker_item_set_completion_evidence_if_absent so a captured proof is never overwritten by a retry.' \
+    '- Capture attachments must be reused through tracker_find_attachment_by_title before any new upload so an interrupted upload does not produce a duplicate attachment.' \
     '- Respect the configured predecessor relation; never start a ticket while an open predecessor remains, and never duplicate a pull request, attachment, development link, effort increment, or state transition.'
 }
 

@@ -439,6 +439,289 @@ pr_for_hu='[{"status":"completed","mergeStatus":"succeeded","targetRefName":"ref
 TRACKER_HU_BRANCH=""
 pass 'Azure PR-is-merged check prefers the HU integration branch over the configured base branch'
 
+# Idempotent helpers for restart-safe Azure ticket completion (issue #39).
+# The helpers must read live Azure state before mutating so that retries
+# preserve accumulated effort, never duplicate relations, never overwrite
+# existing evidence, and reuse previously uploaded attachments.
+
+# Snapshot the az call log so we can prove the helpers skip the mutation
+# when the live state already reflects it.
+calls_before_idempotency="$(wc -l < "$calls")"
+
+# tracker_item_set_real_effort_accumulated: existing 0.25h + new 1800s
+# (0.5h) lands on an exact quarter-hour boundary (0.75h = 3 quarters) so
+# the round-up rule must not overshoot; the helper produces a single write.
+accumulated="$(tracker_item_set_real_effort_accumulated 1 1800)"
+[[ "$accumulated" == "0.75" ]] || \
+  fail "Azure effort accumulator did not produce 0.75h for 0.25h + 0.5h: ${accumulated}"
+# First write is the only update; the helper reads the live value and
+# writes the accumulated total once, so two az calls are expected (one
+# read for the existing effort, one write for the new total).
+calls_after_first_write="$(wc -l < "$calls")"
+delta=$((calls_after_first_write - calls_before_idempotency))
+[[ "$delta" == "2" ]] || \
+  fail "Azure effort accumulator produced ${delta} az calls; expected exactly 2 (read + write)"
+# A retry must keep the helper contract: it always reads the live value
+# (one call) and writes the accumulated total (one call) without skipping
+# the read even when the live value is unchanged.
+calls_before_retry="$(wc -l < "$calls")"
+second="$(tracker_item_set_real_effort_accumulated 1 1800)"
+[[ "$second" =~ ^[0-9]+(\.[0-9]+)?$ ]] || \
+  fail "Azure effort accumulator returned a non-numeric value on retry: ${second}"
+calls_after_retry="$(wc -l < "$calls")"
+delta_retry=$((calls_after_retry - calls_before_retry))
+[[ "$delta_retry" == "2" ]] || \
+  fail "Azure effort accumulator produced ${delta_retry} az calls on retry; expected exactly 2 (read + write)"
+if tracker_item_set_real_effort_accumulated 0 60 >/dev/null 2>&1; then
+  fail 'Azure effort accumulator accepted an invalid work item identifier'
+fi
+if tracker_item_set_real_effort_accumulated 1 'abc' >/dev/null 2>&1; then
+  fail 'Azure effort accumulator accepted non-integer active seconds'
+fi
+pass 'Azure effort accumulator preserves prior Real Effort and writes exactly once per call'
+
+# tracker_item_has_development_relation and add_development_relation_if_absent:
+# work item 1 already lists the pull request vstfs:///GitManagement/Ref/pr/42
+# and the integrated commit vstfs:///GitManagement/Commit/abcd1234, so adding
+# the same relations again must be a no-op while a genuinely new relation
+# must be persisted.
+tracker_item_has_development_relation 1 'vstfs:///GitManagement/Ref/pr/42' || \
+  fail 'Azure relation probe missed the seeded pull request relation'
+tracker_item_has_development_relation 1 'vstfs:///GitManagement/Commit/abcd1234' || \
+  fail 'Azure relation probe missed the seeded integrated commit relation'
+if tracker_item_has_development_relation 1 'vstfs:///GitManagement/Ref/pr/99' 2>/dev/null; then
+  fail 'Azure relation probe falsely matched a missing relation'
+fi
+# The default fake-az fixture is stateless for relation additions, so a
+# retry against the same URL still appears "absent" to the probe and the
+# helper attempts the write again. To prove the helper is truly
+# idempotent we install a stateful az fixture that records relation
+# additions and replays them on every subsequent read.
+stateful_rel_bin="${TEST_ROOT}/stateful-rel-bin"
+stateful_rel_calls="${TEST_ROOT}/stateful-rel-calls"
+stateful_rel_state="${TEST_ROOT}/stateful-rel-state"
+: > "$stateful_rel_calls"
+: > "$stateful_rel_state"
+mkdir -p "$stateful_rel_bin"
+cat > "${stateful_rel_bin}/az" <<STATEFULAZ
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$stateful_rel_calls"
+case "\$1 \$2 \$3" in
+  "boards work-item relation")
+    target=""
+    previous=""
+    for arg in "\$@"; do
+      if [[ "\$previous" == "--target" ]]; then target="\$arg"; fi
+      previous="\$arg"
+    done
+    printf '%s\n' "\$target" >> "$stateful_rel_state"
+    printf '%s\n' '{}'
+    ;;
+  "boards work-item show")
+    relations='[{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Ref/pr/42","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///GitManagement/Commit/abcd1234","attributes":{"name":"Integrated Commit"}}'
+    while IFS= read -r added; do
+      [[ -n "\$added" ]] || continue
+      relations="\${relations},{\"rel\":\"ArtifactLink\",\"url\":\"\${added}\",\"attributes\":{\"name\":\"Pull Request\"}}"
+    done < "$stateful_rel_state"
+    relations="\${relations}]"
+    printf '%s\n' "{\"id\":1,\"fields\":{\"System.WorkItemType\":\"User Story\",\"System.State\":\"Active\",\"System.Tags\":\"ready-for-agent\"},\"relations\":\${relations}}"
+    ;;
+  *) exit 0 ;;
+esac
+STATEFULAZ
+chmod +x "${stateful_rel_bin}/az"
+PATH="${stateful_rel_bin}:${PATH}"
+tracker_prepare_worker_environment >/dev/null \
+  || fail 'Azure guarded CLI environment was not re-prepared for stateful relation test'
+
+calls_before_rel="$(wc -l < "$stateful_rel_calls")"
+tracker_item_add_development_relation_if_absent 1 'Pull Request' 'vstfs:///GitManagement/Ref/pr/42' 'already linked' >/dev/null || \
+  fail 'Azure idempotent relation helper refused an already-present relation'
+calls_after_existing="$(wc -l < "$stateful_rel_calls")"
+delta_existing=$((calls_after_existing - calls_before_rel))
+# The probe reads once; the helper must NOT issue a write when the
+# relation is already present.
+[[ "$delta_existing" == "1" ]] || \
+  fail "Azure idempotent relation helper issued ${delta_existing} az calls for an existing relation; expected 1 (read only)"
+calls_before_new="$(wc -l < "$stateful_rel_calls")"
+tracker_item_add_development_relation_if_absent 1 'Pull Request' 'vstfs:///GitManagement/Ref/pr/77' 'fresh link' >/dev/null || \
+  fail 'Azure idempotent relation helper failed to add a genuinely new relation'
+calls_after_new="$(wc -l < "$stateful_rel_calls")"
+delta_new=$((calls_after_new - calls_before_new))
+# Probe reads once and the helper writes once.
+[[ "$delta_new" == "2" ]] || \
+  fail "Azure idempotent relation helper issued ${delta_new} az calls for a new relation; expected 2 (read + write)"
+# A second add of the same new relation must remain a probe-only no-op
+# now that the stateful fixture records it as already present.
+calls_before_dup="$(wc -l < "$stateful_rel_calls")"
+tracker_item_add_development_relation_if_absent 1 'Pull Request' 'vstfs:///GitManagement/Ref/pr/77' 'fresh link' >/dev/null || \
+  fail 'Azure idempotent relation helper refused a retried new relation'
+calls_after_dup="$(wc -l < "$stateful_rel_calls")"
+delta_dup=$((calls_after_dup - calls_before_dup))
+[[ "$delta_dup" == "1" ]] || \
+  fail "Azure idempotent relation helper issued ${delta_dup} az calls on retry; expected 1 (read only)"
+# The stateful fixture must contain exactly one entry for the new URL;
+# the helper must not have written it twice.
+dup_count="$(grep -Fxc 'vstfs:///GitManagement/Ref/pr/77' "$stateful_rel_state" || true)"
+[[ "$dup_count" == "1" ]] || \
+  fail "Azure idempotent relation helper wrote the same URL ${dup_count} times; expected exactly 1"
+tracker_cleanup_worker_environment >/dev/null
+# Restore the default fake-az path so subsequent assertions use the
+# original fixture.
+PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+  >/dev/null || fail 'Azure guarded CLI environment was not restored after relation test'
+tracker_cleanup_worker_environment >/dev/null
+if tracker_item_add_development_relation_if_absent 0 'Pull Request' 'url' '' >/dev/null 2>&1; then
+  fail 'Azure idempotent relation helper accepted an invalid work item identifier'
+fi
+pass 'Azure development relation helper reuses existing ArtifactLinks and only writes missing ones'
+
+# tracker_item_set_completion_evidence_if_absent: work item 1 already carries
+# a complete modality-tagged evidence payload; rewriting it must be a no-op
+# so a retry cannot destroy the captured proof. The helper must still write
+# when the live field is missing or does not declare a recognized modality.
+tracker_item_set_completion_evidence_if_absent 1 '<div class="completion-evidence" data-modality="non-interactive"><h3>Summary</h3><div class="evidence-section"><p>retry</p></div></div>' >/dev/null || \
+  fail 'Azure evidence-if-absent refused an existing evidence payload'
+calls_before_ev="$(wc -l < "$calls")"
+tracker_item_set_completion_evidence_if_absent 1 '<div class="completion-evidence" data-modality="non-interactive"><h3>Summary</h3><div class="evidence-section"><p>retry</p></div></div>' >/dev/null || \
+  fail 'Azure evidence-if-absent refused the existing payload on retry'
+calls_after_ev="$(wc -l < "$calls")"
+delta_ev=$((calls_after_ev - calls_before_ev))
+# The helper always reads the live value first; when the live value is
+# already complete the helper must not issue a write.
+[[ "$delta_ev" == "1" ]] || \
+  fail "Azure evidence-if-absent issued ${delta_ev} az calls against complete evidence; expected 1 (read only)"
+if tracker_item_set_completion_evidence_if_absent 0 '<div>x</div>' >/dev/null 2>&1; then
+  fail 'Azure evidence-if-absent accepted an invalid work item identifier'
+fi
+if tracker_item_set_completion_evidence_if_absent 1 '' >/dev/null 2>&1; then
+  fail 'Azure evidence-if-absent accepted an empty HTML payload'
+fi
+pass 'Azure completion-evidence-if-absent reuses existing evidence and never overwrites'
+
+# tracker_find_attachment_by_title: with no attachments seeded for item 1,
+# the helper must report absent for any title and refuse an invalid item
+# identifier. The fixture is then extended with an attachment to prove the
+# helper locates the existing URL without re-uploading.
+attached_bin="${TEST_ROOT}/attached-bin"
+mkdir -p "$attached_bin"
+cat > "${attached_bin}/az" <<'ATTACHEDAZ'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$attached_calls"
+case "$1 $2 $3" in
+  "boards work-item show")
+    printf '%s\n' '{"id":1,"fields":{"System.WorkItemType":"User Story","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[{"rel":"AttachedFile","url":"https://attachments.example.com/orders.png","attributes":{"name":"Orders HTTP capture","comment":"GET /api/orders"}}]}'
+    ;;
+  *) exit 0 ;;
+esac
+ATTACHEDAZ
+chmod +x "${attached_bin}/az"
+attached_calls="${TEST_ROOT}/attached-calls"
+PATH="${attached_bin}:${PATH}" \
+  tracker_find_attachment_by_title 1 'Orders HTTP capture' >"${TEST_ROOT}/attached-out" 2>"${TEST_ROOT}/attached-err" || \
+  fail "Azure attachment-by-title did not find the seeded attachment: $(<"${TEST_ROOT}/attached-err")"
+[[ "$(<"${TEST_ROOT}/attached-out")" == 'https://attachments.example.com/orders.png' ]] || \
+  fail "Azure attachment-by-title returned an unexpected URL: $(<"${TEST_ROOT}/attached-out")"
+if PATH="${attached_bin}:${PATH}" \
+   tracker_find_attachment_by_title 1 'Missing capture' >/dev/null 2>&1; then
+  fail 'Azure attachment-by-title falsely matched a missing capture'
+fi
+if PATH="${attached_bin}:${PATH}" \
+   tracker_find_attachment_by_title 0 'any' >/dev/null 2>&1; then
+  fail 'Azure attachment-by-title accepted an invalid work item identifier'
+fi
+# Restore the default fake-az path so the next assertions use the
+# original fixture.
+PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+  >/dev/null || fail 'Azure guarded CLI environment was not restored after attachment-by-title test'
+tracker_cleanup_worker_environment >/dev/null
+pass 'Azure attachment-by-title returns the existing attachment URL without re-uploading'
+
+# tracker_recover_ticket_progress must reconcile live Azure state and emit
+# the next safe checkpoint lifecycle state. Work item 1 already has a merged
+# PR, complete evidence, recorded effort, and development relations, so the
+# function must report `issue_closed` readiness without requiring any new
+# work. Work item 5 is an unassigned, untagged Bug with no relations, so the
+# function must report one of the early lifecycle states because no merged
+# PR exists.
+calls_before_recover="$(wc -l < "$calls")"
+progress="$(tracker_recover_ticket_progress 1 feature/issue-16)"
+[[ "$progress" == "issue_closed" ]] || \
+  fail "Azure progress recovery did not report issue_closed for a fully completed ticket: ${progress}"
+calls_after_recover="$(wc -l < "$calls")"
+delta_recover=$((calls_after_recover - calls_before_recover))
+[[ "$delta_recover" -ge 1 ]] || \
+  fail "Azure progress recovery did not consult live state at least once (${delta_recover} calls)"
+progress_open="$(tracker_recover_ticket_progress 5 feature/issue-16)"
+case "$progress_open" in
+  pr_open|pr_merged|branch_pushed|issue_selected|starting) : ;;
+  *) fail "Azure progress recovery emitted an unexpected state for an open ticket: ${progress_open}" ;;
+esac
+if tracker_recover_ticket_progress 0 'branch' >/dev/null 2>&1; then
+  fail 'Azure progress recovery accepted an invalid work item identifier'
+fi
+# Failure injection: a stateful fixture simulates a merged PR for ticket
+# 2 (Bug with no relations or evidence) and proves the recovery helper
+# surfaces `pr_merged` so the runner knows the next missing effect is
+# evidence. Work item 2 is a fully unassigned Bug with an `Other`
+# assignee; the recovery helper must refuse the call rather than
+# silently emitting a misleading lifecycle state.
+merged_bin="${TEST_ROOT}/merged-bin"
+mkdir -p "$merged_bin"
+cat > "${merged_bin}/az" <<'MERGEDAZ'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AZURE_TEST_CALLS"
+case "$1 $2 $3" in
+  "boards work-item show")
+    printf '%s\n' '{"id":2,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}'
+    ;;
+  "repos pr list")
+    printf '%s\n' '[{"pullRequestId":99,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]'
+    ;;
+  *) exit 0 ;;
+esac
+MERGEDAZ
+chmod +x "${merged_bin}/az"
+calls_before_merged="$(wc -l < "$calls")"
+PATH="${merged_bin}:${PATH}" \
+  progress_merged="$(tracker_recover_ticket_progress 2 feature/issue-2 2>/dev/null)"
+[[ "$progress_merged" == "pr_merged" ]] || \
+  fail "Azure progress recovery did not report pr_merged for a merged-but-incomplete ticket: ${progress_merged:-empty}"
+PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+  >/dev/null || fail 'Azure guarded CLI environment was not restored after merged recovery test'
+tracker_cleanup_worker_environment >/dev/null
+# Ambiguous PR state must trigger RECOVERY_REQUIRED through a non-zero
+# exit so the runner can surface the failure instead of advancing the
+# queue.
+ambig_bin="${TEST_ROOT}/ambig-bin"
+mkdir -p "$ambig_bin"
+cat > "${ambig_bin}/az" <<'AMBIGAZ'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AZURE_TEST_CALLS"
+case "$1 $2 $3" in
+  "boards work-item show")
+    printf '%s\n' '{"id":2,"fields":{"System.WorkItemType":"Bug","System.State":"Active","System.Tags":"ready-for-agent"},"relations":[]}'
+    ;;
+  "repos pr list")
+    printf '%s\n' '[{"pullRequestId":42,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"},{"pullRequestId":43,"status":"completed","mergeStatus":"succeeded","targetRefName":"refs/heads/main"}]'
+    ;;
+  *) exit 0 ;;
+esac
+AMBIGAZ
+chmod +x "${ambig_bin}/az"
+calls_before_ambig="$(wc -l < "$calls")"
+if PATH="${ambig_bin}:${PATH}" \
+   tracker_recover_ticket_progress 2 feature/issue-2 >/dev/null 2>&1; then
+  PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+    >/dev/null || fail 'Azure guarded CLI environment was not restored after ambiguous recovery test'
+  tracker_cleanup_worker_environment >/dev/null
+  fail 'Azure progress recovery accepted an ambiguous PR state'
+fi
+PATH="${TEST_ROOT}/bin:${PATH}" tracker_prepare_worker_environment \
+  >/dev/null || fail 'Azure guarded CLI environment was not restored after ambiguous recovery test'
+tracker_cleanup_worker_environment >/dev/null
+pass 'Azure progress recovery surfaces merged-but-incomplete and ambiguous states so the runner can fail closed'
+
 runner_repo="${TEST_ROOT}/runner-repo"
 runner_bin="${TEST_ROOT}/runner-bin"
 runner_config="${TEST_ROOT}/runner-config.toml"
