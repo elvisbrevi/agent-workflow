@@ -122,38 +122,51 @@ operator_select_profile() {
   printf '%s\n' "${names[$choice]}"
 }
 
-# Builds an ordered OpenCode fallback chain and prints one profile per line.
+# Builds an ordered mixed-provider fallback chain and prints one profile per
+# line. The picker catalogues every configured profile except the selected one,
+# keeps the order picked by the operator, and rejects duplicate entries by
+# removing them from the per-step menu. The selected order is preserved in
+# the rendered output and the destructive confirmation summary. Returns 0
+# whether or not any fallback was selected; an empty chain is a valid
+# outcome (the operator picked "None" or no other profiles exist).
 operator_select_fallbacks() {
   local selected_profile="$1"
   local chosen=""
-  local entry answer choice index
+  local entry answer choice index cli
   local -a names=()
   local -a labels=()
+  local -a clis=()
   local -a models=()
 
   while true; do
     names=()
     labels=()
+    clis=()
     models=()
     while IFS= read -r entry; do
       [[ -n "$entry" && "$entry" != "$selected_profile" ]] || continue
-      [[ "$(issue_killer_config_lookup "profiles.${entry}.cli")" == "opencode" ]] || continue
+      cli="$(issue_killer_config_lookup "profiles.${entry}.cli")"
+      case "$cli" in
+        claude|codex|opencode) ;;
+        *) continue ;;
+      esac
       if [[ -n "$chosen" ]] && grep -Fqx -- "$entry" <<<"$chosen"; then
         continue
       fi
       names+=("$entry")
       labels+=("$(issue_killer_config_lookup "profiles.${entry}.label")")
+      clis+=("$cli")
       models+=("$(issue_killer_config_lookup "profiles.${entry}.model")")
     done < <(issue_killer_config_profile_names)
 
     [[ "${#names[@]}" -gt 0 ]] || break
 
-    operator_prompt 'Select the next OpenCode fallback profile:\n'
+    operator_prompt 'Select the next fallback profile:\n'
     operator_prompt '  0) None\n'
     index=0
     while [[ $index -lt ${#names[@]} ]]; do
-      operator_prompt '  %d) %s  cli=opencode model=%s\n' \
-        $((index + 1)) "${labels[$index]}" "${models[$index]}"
+      operator_prompt '  %d) %s  cli=%s model=%s\n' \
+        $((index + 1)) "${labels[$index]}" "${clis[$index]}" "${models[$index]}"
       index=$((index + 1))
     done
     operator_prompt 'Fallback [0]: '
@@ -183,7 +196,10 @@ operator_select_fallbacks() {
     fi
   done
 
-  [[ -n "$chosen" ]] && printf '%s\n' "$chosen"
+  if [[ -n "$chosen" ]]; then
+    printf '%s\n' "$chosen"
+  fi
+  return 0
 }
 
 # Confirms the initial autonomous, destructive run.
@@ -207,8 +223,19 @@ operator_confirm_destructive_run() {
   operator_prompt '  tracker:      %s\n' "${TRACKER_KIND:-unknown}"
   operator_prompt '  base branch:  %s\n' "$BASE_BRANCH"
   if [[ -n "$ISSUE_KILLER_PROFILE_FALLBACKS" ]]; then
-    operator_prompt '  fallbacks:    %s\n' \
-      "$(printf '%s, ' $ISSUE_KILLER_PROFILE_FALLBACKS | sed 's/, $//')"
+    local fallback_summary=""
+    local fallback_entry
+    while IFS= read -r fallback_entry; do
+      [[ -n "$fallback_entry" ]] || continue
+      local fallback_cli
+      fallback_cli="$(issue_killer_config_lookup "profiles.${fallback_entry}.cli")"
+      if [[ -z "$fallback_summary" ]]; then
+        fallback_summary="${fallback_entry}=${fallback_cli:-unknown}"
+      else
+        fallback_summary+=", ${fallback_entry}=${fallback_cli:-unknown}"
+      fi
+    done <<<"$ISSUE_KILLER_PROFILE_FALLBACKS"
+    operator_prompt '  fallbacks:    %s\n' "$fallback_summary"
   fi
   operator_prompt 'This will repeatedly merge PRs into %s and close issues. Continue? [y/N] ' \
     "$BASE_BRANCH"

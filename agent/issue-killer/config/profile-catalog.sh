@@ -68,9 +68,12 @@ issue_killer_config_validate_fallback_path() {
   done < <(issue_killer_config_profile_fallbacks "$profile")
 }
 
-# Validates all declared fallback chains before profile selection. Sources and
-# targets must be OpenCode profiles, references must exist, entries must be
-# unique within each ordered chain, and the complete graph must be acyclic.
+# Validates all declared fallback chains before profile selection. References
+# must exist, every profile in the chain must use a supported CLI, entries
+# must be unique within each ordered chain, and the complete graph must be
+# acyclic. Mixed-provider chains (Claude, Codex, and OpenCode profiles in
+# the same ordered fallback list) are accepted once every entry passes
+# these checks.
 issue_killer_config_validate_fallbacks() {
   local profile cli fallback fallback_cli seen
 
@@ -80,22 +83,20 @@ issue_killer_config_validate_fallbacks() {
     cli="$(issue_killer_config_lookup "profiles.${profile}.cli")"
     while IFS= read -r fallback; do
       [[ -n "$fallback" ]] || continue
-      if [[ "$cli" != "opencode" ]]; then
-        printf '%s: profile %s declares fallbacks but its cli is %s, not opencode\n' \
-          "$RUNNER_NAME" "$profile" "${cli:-unset}" >&2
-        return 1
-      fi
       if ! issue_killer_config_profile_exists "$fallback"; then
         printf '%s: fallback profile %s is not configured\n' \
           "$RUNNER_NAME" "$fallback" >&2
         return 1
       fi
       fallback_cli="$(issue_killer_config_lookup "profiles.${fallback}.cli")"
-      if [[ "$fallback_cli" != "opencode" ]]; then
-        printf '%s: fallback profile %s uses cli %s; fallbacks must use opencode\n' \
-          "$RUNNER_NAME" "$fallback" "${fallback_cli:-unset}" >&2
-        return 1
-      fi
+      case "$fallback_cli" in
+        claude|codex|opencode) ;;
+        *)
+          printf '%s: fallback profile %s uses unsupported cli: %s\n' \
+            "$RUNNER_NAME" "$fallback" "${fallback_cli:-unset}" >&2
+          return 1
+          ;;
+      esac
       if [[ -n "$seen" ]] && grep -Fqx -- "$fallback" <<<"$seen"; then
         printf '%s: profile %s contains duplicate fallback %s\n' \
           "$RUNNER_NAME" "$profile" "$fallback" >&2

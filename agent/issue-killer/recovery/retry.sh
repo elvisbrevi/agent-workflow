@@ -287,24 +287,37 @@ stage_next_opencode_fallback() {
 }
 
 # Activates the staged fallback after tracker/PR reconciliation. Every target
-# was validated as OpenCode during config load; adapter validation is repeated
-# here because model and option safety belong to the active profile.
-activate_staged_opencode_fallback() {
+# was validated as a supported CLI (claude, codex, or opencode) during
+# config load; adapter validation is repeated here because model and option
+# safety belong to the active profile, and the shared runtime activation
+# path is used so the destination adapter is sourced through the same
+# entry point the orchestrator uses for the primary profile.
+activate_staged_fallback() {
   local next="$ISSUE_KILLER_NEXT_PROFILE"
   local failed="$ISSUE_KILLER_FAILED_PROFILE"
 
   issue_killer_config_apply_profile "$next" || return 1
-  [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]] || return 1
-  runtime_validate_profile "$ISSUE_KILLER_PROFILE_OPTIONS" || return 1
+  activate_runtime_for_profile || return 1
 
   ISSUE_KILLER_FALLBACK_POSITION=$((ISSUE_KILLER_FALLBACK_POSITION + 1))
-  CLAUDE_COMMAND="$ISSUE_KILLER_PROFILE_COMMAND"
-  CLAUDE_SHELL="${ISSUE_KILLER_PROFILE_SHELL:-bash}"
-  CLAUDE_RC_FILE="${ISSUE_KILLER_PROFILE_INIT_FILE:-${HOME}/.bashrc}"
   write_checkpoint "fallback_ready"
   write_lock_status "fallback_ready" 0
-  printf '[%s] Advancing OpenCode fallback: %s -> %s (%s)\n' \
-    "$RUNNER_NAME" "$failed" "$next" "$ISSUE_KILLER_FALLBACK_FAILURE"
+  if [[ "$ISSUE_KILLER_PROFILE_CLI" == "opencode" ]]; then
+    printf '[%s] Advancing OpenCode fallback: %s -> %s (%s)\n' \
+      "$RUNNER_NAME" "$failed" "$next" "$ISSUE_KILLER_FALLBACK_FAILURE"
+  else
+    printf '[%s] Advancing fallback: %s -> %s (cli=%s, %s)\n' \
+      "$RUNNER_NAME" "$failed" "$next" "$ISSUE_KILLER_PROFILE_CLI" \
+      "$ISSUE_KILLER_FALLBACK_FAILURE"
+  fi
+}
+
+# Back-compatibility alias for the OpenCode-only entry point. The
+# behavior is now shared across CLIs through the shared activation
+# path; the legacy name is kept to avoid breaking embedded callers
+# and test fixtures that still invoke it.
+activate_staged_opencode_fallback() {
+  activate_staged_fallback
 }
 
 # Produces a fresh-worker prompt that pins fallback recovery to the already
@@ -595,7 +608,7 @@ attempt_with_recovery() {
     fi
 
     if [[ "$should_transition" == "true" ]]; then
-      if ! activate_staged_opencode_fallback; then
+      if ! activate_staged_fallback; then
         RECOVERY_CATEGORY="recovery_required"
         write_checkpoint "recovery_required"
         write_lock_status "recovery_required" 0

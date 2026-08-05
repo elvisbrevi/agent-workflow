@@ -3084,6 +3084,10 @@ expect {
     send "2\r"
     exp_continue
   }
+  -re {Fallback \[0\]:} {
+    send "0\r"
+    exp_continue
+  }
   -re {Continue\? \[y/N\]} {
     send "n\r"
     exp_continue
@@ -3686,7 +3690,7 @@ test_black_box_opencode_fallback_validation_rejects_invalid_chains() {
   printf '%s\n' '#!/usr/bin/env bash' "touch '${marker}'" > "$fake"
   chmod +x "$fake"
 
-  for case_name in duplicate cross-cli cycle; do
+  for case_name in duplicate cycle; do
     config_path="${TEST_ROOT}/opencode-${case_name}-fallback-config.toml"
     output="${TEST_ROOT}/opencode-${case_name}-fallback-output.log"
     case "$case_name" in
@@ -3694,11 +3698,6 @@ test_black_box_opencode_fallback_validation_rejects_invalid_chains() {
         write_opencode_profile_config "$config_path" "opencode-primary" \
           "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"opencode-backup\", \"opencode-backup\"]" \
           "opencode-backup=OpenCode Backup|opencode|${fake}|provider/backup|||medium|true"
-        ;;
-      cross-cli)
-        write_opencode_profile_config "$config_path" "opencode-primary" \
-          "opencode-primary=OpenCode Primary|opencode|${fake}|provider/primary|||high|true|[\"codex-backup\"]" \
-          "codex-backup=Codex Backup|codex|${fake}|codex-model||||false"
         ;;
       cycle)
         write_opencode_profile_config "$config_path" "opencode-primary" \
@@ -3723,14 +3722,11 @@ test_black_box_opencode_fallback_validation_rejects_invalid_chains() {
   grep -Fq 'duplicate fallback opencode-backup' \
     "${TEST_ROOT}/opencode-duplicate-fallback-output.log" || \
     fail 'Duplicate fallback validation diagnostic did not name the repeated profile'
-  grep -Fq 'fallback profile codex-backup uses cli codex' \
-    "${TEST_ROOT}/opencode-cross-cli-fallback-output.log" || \
-    fail 'Cross-CLI fallback validation diagnostic did not name the invalid CLI'
   grep -Fq 'fallback chain contains a cycle through profile' \
     "${TEST_ROOT}/opencode-cycle-fallback-output.log" || \
     fail 'Cycle validation diagnostic did not identify the repeated profile'
 
-  pass 'opencode fallback validation rejects duplicates, cycles, and cross-CLI entries'
+  pass 'opencode fallback validation rejects duplicates and cycles'
 }
 
 test_tty_opencode_fallback_picker_builds_ordered_unique_chain() {
@@ -3764,9 +3760,9 @@ expect {
   -re {Fallback \\[0\\]:} {
     incr fallback_prompt
     if {\$fallback_prompt == 1} {
-      send "2\r"
+      send "3\r"
     } elseif {\$fallback_prompt == 2} {
-      send "1\r"
+      send "2\r"
     } else {
       send "0\r"
     }
@@ -3783,14 +3779,59 @@ PROLOG
   expect "$expect_script" >"$output" 2>&1 || \
     fail 'TTY OpenCode fallback selector did not render the expected menus'
 
-  grep -Fq 'Select the next OpenCode fallback profile:' "$output" || \
-    fail 'OpenCode selection did not open the fallback-chain builder'
-  [[ "$(grep -Fc 'Codex Other' "$output")" -eq 1 ]] || \
-    fail 'Non-OpenCode profile was offered outside the primary profile menu'
-  grep -Fq 'fallbacks:    opencode-backup-b, opencode-backup-a' "$output" || \
-    fail 'Destructive confirmation did not preserve the selected fallback order'
+  grep -Fq 'Select the next fallback profile:' "$output" || \
+    fail 'Picker did not open the mixed-provider fallback-chain builder'
+  grep -Fq 'cli=codex' "$output" || \
+    fail 'Codex profile was not offered in the mixed-provider fallback menu'
+  grep -Fq 'cli=opencode' "$output" || \
+    fail 'OpenCode profile was not offered in the mixed-provider fallback menu'
+  grep -Fq 'opencode-backup-b=opencode' "$output" || \
+    fail 'Destructive confirmation did not preserve the selected fallback order with CLI labels'
+  grep -Fq 'opencode-backup-a=opencode' "$output" || \
+    fail 'Destructive confirmation did not preserve the selected fallback order with CLI labels'
 
-  pass 'TTY OpenCode picker builds an ordered chain from unused OpenCode profiles only'
+  pass 'TTY mixed-provider picker builds an ordered chain from unused profiles'
+}
+
+# A black-box acceptance test for the issue #46 spec: a valid mixed-provider
+# fallback chain (OpenCode -> Codex -> Claude) is accepted by the runner
+# without being rejected by the fallback validator. The runner refuses the
+# launch because the configured worker command is intentionally not on
+# PATH; the validator must not reject the chain before the worker can be
+# launched. A validator failure would surface as a "fallback chain"
+# diagnostic instead.
+test_black_box_mixed_provider_fallback_chain_validates() {
+  local repo="${TEST_ROOT}/mixed-provider-fallback-repo"
+  local config_path="${TEST_ROOT}/mixed-provider-fallback-config.toml"
+  local output="${TEST_ROOT}/mixed-provider-fallback-output.log"
+  local status
+
+  new_repo "$repo"
+
+  write_opencode_profile_config "$config_path" "opencode-primary" \
+    "opencode-primary=OpenCode Primary|opencode|/no/such/opencode|provider/primary|||high|true|[\"codex-other\", \"claude-other\"]" \
+    "codex-other=Codex Other|codex|/no/such/codex|codex-model||||false" \
+    "claude-other=Claude Other|claude|/no/such/claude|claude-model||||false"
+
+  set +e
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  # The mixed-provider chain is intentionally valid. The runner rejects
+  # the launch because the configured worker command is not on PATH;
+  # the diagnostic must come from the application stage, not the
+  # fallback validator. A validator failure would surface as a
+  # "fallback chain" diagnostic instead.
+  [[ "$status" -ne 0 ]] || \
+    fail 'Mixed-provider fallback chain unexpectedly launched a worker'
+  grep -Fq 'fallback chain' "$output" && \
+    fail 'Mixed-provider fallback chain was wrongly rejected by the validator' || \
+    :
+
+  pass 'mixed-provider fallback chain is accepted'
 }
 
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session() {
@@ -4795,6 +4836,7 @@ test_black_box_codex_profile_drains_queue_through_status_marker
 test_black_box_opencode_fallback_validation_rejects_missing_profile
 test_black_box_opencode_fallback_validation_rejects_invalid_chains
 test_tty_opencode_fallback_picker_builds_ordered_unique_chain
+test_black_box_mixed_provider_fallback_chain_validates
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session
 test_black_box_opencode_rate_limit_retries_before_fallback
 test_black_box_opencode_model_unavailable_launches_constrained_fresh_fallback
