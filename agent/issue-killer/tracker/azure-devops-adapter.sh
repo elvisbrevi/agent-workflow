@@ -468,6 +468,278 @@ tracker_item_list_development_relations() {
     | @tsv' <<<"$item_json"
 }
 
+# Recognized evidence modalities. The constants are emitted by the
+# classifier and embedded into the completion evidence HTML so the
+# closure guard can recover the modality through a single grep. New
+# modalities must be added here, in the classifier, and in the
+# prerequisite check together.
+TRACKER_MODALITY_BACKEND="backend"
+TRACKER_MODALITY_FRONTEND="frontend"
+TRACKER_MODALITY_MIXED="mixed"
+TRACKER_MODALITY_NON_INTERACTIVE="non-interactive"
+
+# Classifies the delivered behavior of a ticket as backend, frontend,
+# mixed, or non-interactive from the ticket title, description, and the
+# worker's change summary. The classifier is keyword-driven so the
+# function stays deterministic and pure; it never reads Azure state and
+# therefore is safe to call before any evidence is captured. The change
+# summary is treated as the authoritative source because the worker
+# observed the actual diff. When the signals disagree the function
+# chooses the higher-fidelity modality (mixed over frontend or backend,
+# frontend/backend over non-interactive) so a missing capture can still
+# be detected by the closure guard rather than silently downgraded.
+tracker_classify_ticket_modality() {
+  local title="$1"
+  local description="$2"
+  local changes="$3"
+  local haystack lower title_signal desc_signal change_signal
+  local backend_score=0 frontend_score=0 interactive_score=0
+
+  [[ -n "$title" || -n "$description" || -n "$changes" ]] || {
+    printf '%s: tracker_classify_ticket_modality: title, description, and changes are all empty\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+
+  haystack="${title}
+${description}
+${changes}"
+  lower="$(printf '%s' "$haystack" | tr '[:upper:]' '[:lower:]')"
+
+  # Backend signals: HTTP, API, server, CLI, command, endpoint, route,
+  # query, migration, integration, schema, pipeline, runner, adapter,
+  # tracker, and their plural forms.
+  title_signal="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')"
+  desc_signal="$(printf '%s' "$description" | tr '[:upper:]' '[:lower:]')"
+  change_signal="$(printf '%s' "$changes" | tr '[:upper:]' '[:lower:]')"
+  if grep -Eq '\b(api|apis|http|https|endpoint|endpoints|route|routes|server|servers|cli|clis|command|commands|query|queries|migration|migrations|schema|schemas|pipeline|pipelines|runner|runners|adapter|adapters|tracker|trackers|service|services)\b' <<<"$lower"; then
+    backend_score=$((backend_score + 1))
+  fi
+  if grep -Eq '\b(api|apis|http|https|endpoint|endpoints|route|routes|server|servers|cli|clis|command|commands|query|queries|migration|migrations|schema|schemas|pipeline|pipelines|runner|runners|adapter|adapters|tracker|trackers|service|services)\b' <<<"$change_signal"; then
+    backend_score=$((backend_score + 2))
+  fi
+
+  # Frontend signals: screen, view, page, render, UI, UX, component,
+  # click, button, layout, browser, screenshot, paint.
+  if grep -Eq '\b(screen|screens|view|views|page|pages|render|rendered|rendering|ui|ux|component|components|button|buttons|click|clicks|layout|layouts|browser|browsers|screenshot|screenshots|paint|theme|themes)\b' <<<"$lower"; then
+    frontend_score=$((frontend_score + 1))
+  fi
+  if grep -Eq '\b(screen|screens|view|views|page|pages|render|rendered|rendering|ui|ux|component|components|button|buttons|click|clicks|layout|layouts|browser|browsers|screenshot|screenshots|paint|theme|themes)\b' <<<"$change_signal"; then
+    frontend_score=$((frontend_score + 2))
+  fi
+
+  # Non-interactive signals: documentation, doc, refactor, test, tests,
+  # fixture, formatting, lint, linting, typo, comment, rename.
+  if grep -Eq '\b(documentation|doc|docs|refactor|refactors|refactoring|test|tests|fixture|fixtures|formatting|lint|linting|typo|typos|comment|comments|rename|renames|cleanup|chore|chores)\b' <<<"$lower"; then
+    interactive_score=$((interactive_score + 1))
+  fi
+  if grep -Eq '\b(documentation|doc|docs|refactor|refactors|refactoring|test|tests|fixture|fixtures|formatting|lint|linting|typo|typos|comment|comments|rename|renames|cleanup|chore|chores)\b' <<<"$change_signal"; then
+    interactive_score=$((interactive_score + 2))
+  fi
+
+  # Override: an explicit title or description that states the modality
+  # always wins over the keyword weights so the worker can disambiguate
+  # mixed tickets. The override is intentionally narrow; the default
+  # classifier remains the source of truth for ambiguous tickets.
+  case "$title_signal$desc_signal" in
+    *backend-only*|*backend\ only*|*backendonly*) printf '%s\n' "$TRACKER_MODALITY_BACKEND"; return 0 ;;
+    *frontend-only*|*frontend\ only*|*frontendonly*) printf '%s\n' "$TRACKER_MODALITY_FRONTEND"; return 0 ;;
+    *non-interactive*|*noninteractive*) printf '%s\n' "$TRACKER_MODALITY_NON_INTERACTIVE"; return 0 ;;
+  esac
+
+  # Mixed wins when both backend and frontend score above zero so the
+  # closure guard requires both modalities' evidence. Interactive
+  # signals are ignored when a stronger signal is present so a test in
+  # a backend ticket does not silently downgrade the modality.
+  if (( backend_score > 0 && frontend_score > 0 )); then
+    printf '%s\n' "$TRACKER_MODALITY_MIXED"
+    return 0
+  fi
+  if (( frontend_score > 0 )); then
+    printf '%s\n' "$TRACKER_MODALITY_FRONTEND"
+    return 0
+  fi
+  if (( backend_score > 0 )); then
+    printf '%s\n' "$TRACKER_MODALITY_BACKEND"
+    return 0
+  fi
+  if (( interactive_score > 0 )); then
+    printf '%s\n' "$TRACKER_MODALITY_NON_INTERACTIVE"
+    return 0
+  fi
+
+  # No recognized signal: stay safe by refusing to classify. The
+  # closure guard rejects `unknown` modalities so a missing classifier
+  # never becomes a silent pass-through.
+  printf '%s: tracker_classify_ticket_modality: no recognized modality signal in title, description, or changes\n' \
+    "${RUNNER_NAME:-issue-killer}" >&2
+  return 1
+}
+
+# Renders the modality-appropriate completion evidence HTML for an
+# Azure delivery ticket. The function accepts:
+#   $1 item_id       - work-item identifier (required)
+#   $2 modality      - one of the recognized modality constants
+#   $3 summary       - human-readable summary
+#   $4 changes       - description of the delivered changes
+#   $5 validation    - validation output (reproducible commands, test logs, etc.)
+#   $6 references    - development references (PR URL, commit SHA, branch)
+#   $7 captures_json - JSON array of capture objects with `title`,
+#                      `description`, and `url` fields. Optional;
+#                      omitted/empty when the modality has no captures.
+# The returned HTML always carries the modality marker so the closure
+# guard can verify the modality without re-classifying the ticket.
+tracker_format_modality_evidence() {
+  local item_id="$1"
+  local modality="$2"
+  local summary="$3"
+  local changes="$4"
+  local validation="$5"
+  local references="$6"
+  local captures_json="${7-}"
+  local generated_at="${8:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+  [[ -n "$item_id" ]] || {
+    printf '%s: tracker_format_modality_evidence: missing work item identifier\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+  case "$modality" in
+    "$TRACKER_MODALITY_BACKEND"|"$TRACKER_MODALITY_FRONTEND"|"$TRACKER_MODALITY_MIXED"|"$TRACKER_MODALITY_NON_INTERACTIVE") : ;;
+    *)
+      printf '%s: tracker_format_modality_evidence: unsupported modality: %s\n' \
+        "${RUNNER_NAME:-issue-killer}" "${modality:-empty}" >&2
+      return 1
+      ;;
+  esac
+
+  printf '<div class="completion-evidence" data-work-item="%s" data-modality="%s" data-generated="%s">\n' \
+    "$item_id" "$modality" "$generated_at"
+  printf '<h2>Completion evidence for work item %s</h2>\n' "$item_id"
+  azure_format_evidence_section "Summary" "$summary"
+  azure_format_evidence_section "Delivered changes" "$changes"
+  azure_format_evidence_section "Validation" "$validation"
+  azure_format_evidence_section "Development references" "$references"
+
+  case "$modality" in
+    "$TRACKER_MODALITY_NON_INTERACTIVE")
+      # No captures section for non-interactive deliveries. The closure
+      # guard enforces this by checking that the evidence contains no
+      # data-modality-captures container.
+      :
+      ;;
+    "$TRACKER_MODALITY_BACKEND")
+      printf '<h3>HTTP captures</h3>\n'
+      printf '<ul class="evidence-captures" data-modality-captures="backend">\n'
+      if [[ -n "$captures_json" ]] && [[ "$captures_json" != "[]" ]] && [[ "$captures_json" != "null" ]]; then
+        printf '%s' "$captures_json" | jq -r '.[]? | "<li data-capture=\"\(.title // "capture")\"><a href=\"" + (.url // "#") + "\">" + (.title // "capture") + "</a><p>" + (.description // "") + "</p></li>"'
+      else
+        printf '<li data-capture="missing"><em>No HTTP capture attached.</em></li>\n'
+      fi
+      printf '</ul>\n'
+      ;;
+    "$TRACKER_MODALITY_FRONTEND")
+      printf '<h3>Rendered screen captures</h3>\n'
+      printf '<ul class="evidence-captures" data-modality-captures="frontend">\n'
+      if [[ -n "$captures_json" ]] && [[ "$captures_json" != "[]" ]] && [[ "$captures_json" != "null" ]]; then
+        printf '%s' "$captures_json" | jq -r '.[]? | "<li data-capture=\"\(.title // "capture")\"><a href=\"" + (.url // "#") + "\">" + (.title // "capture") + "</a><p>" + (.description // "") + "</p></li>"'
+      else
+        printf '<li data-capture="missing"><em>No rendered screen capture attached.</em></li>\n'
+      fi
+      printf '</ul>\n'
+      ;;
+    "$TRACKER_MODALITY_MIXED")
+      printf '<h3>HTTP captures</h3>\n'
+      printf '<ul class="evidence-captures" data-modality-captures="backend">\n'
+      if [[ -n "$captures_json" ]] && [[ "$captures_json" != "[]" ]] && [[ "$captures_json" != "null" ]]; then
+        printf '%s' "$captures_json" | jq -r '.[]? | select(.kind == "http" or .kind == null) | "<li data-capture=\"\(.title // "capture")\"><a href=\"" + (.url // "#") + "\">" + (.title // "capture") + "</a><p>" + (.description // "") + "</p></li>"'
+      else
+        printf '<li data-capture="missing"><em>No HTTP capture attached.</em></li>\n'
+      fi
+      printf '</ul>\n'
+      printf '<h3>Rendered screen captures</h3>\n'
+      printf '<ul class="evidence-captures" data-modality-captures="frontend">\n'
+      if [[ -n "$captures_json" ]] && [[ "$captures_json" != "[]" ]] && [[ "$captures_json" != "null" ]]; then
+        printf '%s' "$captures_json" | jq -r '.[]? | select(.kind == "screen" or .kind == null) | "<li data-capture=\"\(.title // "capture")\"><a href=\"" + (.url // "#") + "\">" + (.title // "capture") + "</a><p>" + (.description // "") + "</p></li>"'
+      else
+        printf '<li data-capture="missing"><em>No rendered screen capture attached.</em></li>\n'
+      fi
+      printf '</ul>\n'
+      ;;
+  esac
+
+  printf '</div>\n'
+}
+
+# Uploads a binary capture as an Azure work-item attachment and returns
+# the attachment URL on stdout. The function keeps the file path on the
+# caller's machine: the worker is responsible for capturing only what is
+# necessary and never committing binary captures to the source
+# repository. The `az boards work-item attachment create` command
+# uploads the file to Azure DevOps storage and links it to the work
+# item; the returned URL is what the worker embeds into the completion
+# evidence HTML.
+tracker_item_upload_attachment() {
+  local item_id="$1"
+  local file_path="$2"
+  local title="$3"
+  local description="$4"
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s: tracker_item_upload_attachment: invalid work item identifier: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${item_id:-empty}" >&2
+    return 1
+  }
+  [[ -r "$file_path" ]] || {
+    printf '%s: tracker_item_upload_attachment: capture file is missing or unreadable: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "${file_path:-empty}" >&2
+    return 1
+  }
+  [[ -n "$title" ]] || {
+    printf '%s: tracker_item_upload_attachment: capture title is required\n' \
+      "${RUNNER_NAME:-issue-killer}" >&2
+    return 1
+  }
+
+  local args=(work-item attachment create \
+    --file "$file_path" \
+    --org "https://dev.azure.com/${AZURE_ORGANIZATION}")
+  if [[ -n "$description" ]]; then
+    args+=(--comment "$description")
+  fi
+  local response url
+  response="$(az boards "${args[@]}" --output json)" || {
+    printf '%s: tracker_item_upload_attachment: az boards work-item attachment create failed for work item %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$item_id" >&2
+    return 1
+  }
+  url="$(jq -r '.url // empty' <<<"$response")"
+  [[ -n "$url" ]] || {
+    printf '%s: tracker_item_upload_attachment: az response did not include an attachment URL: %s\n' \
+      "${RUNNER_NAME:-issue-killer}" "$response" >&2
+    return 1
+  }
+  printf '%s\n' "$url"
+}
+
+# Lists the attachments attached to a work item, one per line, in the
+# form `<title>\t<url>`. The closure guard uses this helper to verify
+# that every capture referenced in the completion evidence HTML has a
+# matching Azure work-item attachment so the reviewer can navigate the
+# full delivery trail.
+tracker_item_list_attachments() {
+  local item_id="$1"
+  local item_json
+
+  [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  item_json="$(tracker_item_read "$item_id")" || return 1
+  jq -r '.relations[]?
+    | select((.rel // "") | ascii_downcase | test("attachedfile"))
+    | [(.attributes.name // "attachment"),
+       (.url // empty)]
+    | @tsv' <<<"$item_json"
+}
+
 azure_remote_parts() {
   local url="$1"
   local path host org project repository
@@ -1309,7 +1581,13 @@ tracker_pr_is_merged() {
 #   - exactly one PR for the source branch, completed and succeeded
 #     into the HU integration branch (or the configured base branch when
 #     no HU branch is pinned);
-#   - a non-empty completion evidence field with section markers;
+#   - a non-empty completion evidence field with section markers and a
+#     recognized modality that matches the delivered behavior;
+#   - for backend, frontend, or mixed modalities, at least one capture
+#     entry embedded in the evidence HTML with a matching Azure
+#     work-item attachment so reviewers can navigate the trail;
+#   - for non-interactive modalities, no captures section so a missing
+#     Chrome capture cannot be hidden behind prose;
 #   - a numeric Real Effort value greater than or equal to the active
 #     seconds captured for the worker invocation;
 #   - native development relations for the pull request and integrated
@@ -1320,6 +1598,7 @@ tracker_item_completion_prerequisites() {
   local item_id="$1"
   local branch="$2"
   local pr_json merged evidence effort relations pr_relation commit_relation
+  local modality backend_count frontend_count capture_section
 
   [[ -n "$branch" && "$branch" != "unknown" ]] || return 1
   [[ "$item_id" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -1336,6 +1615,30 @@ tracker_item_completion_prerequisites() {
   grep -Fq 'Validation' <<<"$evidence" || return 1
   grep -Fq 'Development references' <<<"$evidence" || return 1
 
+  modality="$(azure_extract_evidence_modality "$evidence")" || return 1
+  capture_section="$(grep -Foc 'data-modality-captures' <<<"$evidence" || true)"
+  backend_count="$(grep -Foc 'data-modality-captures="backend"' <<<"$evidence" || true)"
+  frontend_count="$(grep -Foc 'data-modality-captures="frontend"' <<<"$evidence" || true)"
+  case "$modality" in
+    "$TRACKER_MODALITY_NON_INTERACTIVE")
+      [[ "$capture_section" == "0" ]] || return 1
+      ;;
+    "$TRACKER_MODALITY_BACKEND")
+      [[ "$backend_count" -ge 1 ]] || return 1
+      tracker_item_capture_attachments_present "$item_id" "$evidence" "backend" || return 1
+      ;;
+    "$TRACKER_MODALITY_FRONTEND")
+      [[ "$frontend_count" -ge 1 ]] || return 1
+      tracker_item_capture_attachments_present "$item_id" "$evidence" "frontend" || return 1
+      ;;
+    "$TRACKER_MODALITY_MIXED")
+      [[ "$backend_count" -ge 1 && "$frontend_count" -ge 1 ]] || return 1
+      tracker_item_capture_attachments_present "$item_id" "$evidence" "backend" || return 1
+      tracker_item_capture_attachments_present "$item_id" "$evidence" "frontend" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+
   effort="$(tracker_item_read_real_effort "$item_id" 2>/dev/null || true)"
   [[ "$effort" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
   awk -v e="$effort" 'BEGIN { exit !(e + 0 >= 0) }' || return 1
@@ -1345,6 +1648,65 @@ tracker_item_completion_prerequisites() {
   pr_relation="$(grep -Fi 'pull request' <<<"$relations" || true)"
   commit_relation="$(grep -Fi 'commit' <<<"$relations" || true)"
   [[ -n "$pr_relation" && -n "$commit_relation" ]] || return 1
+  return 0
+}
+
+# Pulls the modality marker from the completion evidence HTML. The
+# classifier writes the marker into a `data-modality` attribute on the
+# root element so this helper can stay free of jq and of the
+# classifier's keyword logic.
+azure_extract_evidence_modality() {
+  local evidence="$1"
+  local modality
+
+  modality="$(grep -Eo 'data-modality="[^"]+"' <<<"$evidence" | head -n 1 | sed -E 's/^data-modality="([^"]+)"$/\1/')"
+  case "$modality" in
+    "$TRACKER_MODALITY_BACKEND"|"$TRACKER_MODALITY_FRONTEND"|"$TRACKER_MODALITY_MIXED"|"$TRACKER_MODALITY_NON_INTERACTIVE")
+      printf '%s\n' "$modality"
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Verifies that every capture listed under the requested modality
+# section in the completion evidence HTML has a matching Azure
+# work-item attachment. The function extracts the capture URLs from
+# the evidence, intersects them with the work-item attachments, and
+# fails closed when any URL is missing so a textual claim without an
+# underlying capture cannot pass the closure gate.
+tracker_item_capture_attachments_present() {
+  local item_id="$1"
+  local evidence="$2"
+  local modality="$3"
+  local attachments attachment_urls
+
+  attachments="$(tracker_item_list_attachments "$item_id" 2>/dev/null || true)"
+  attachment_urls="$(printf '%s\n' "$attachments" | awk -F'\t' '{print $2}' | sort -u)"
+  local evidence_urls
+  evidence_urls="$(printf '%s\n' "$evidence" | \
+    awk -v m="$modality" '
+      BEGIN { in_section = 0 }
+      $0 ~ "data-modality-captures=\"" m "\"" { in_section = 1; next }
+      in_section && /<\/ul>/ { in_section = 0; next }
+      in_section && /href=/ {
+        match($0, /href="[^"]+"/)
+        if (RSTART > 0) {
+          url = substr($0, RSTART + 6, RLENGTH - 7)
+          print url
+        }
+      }
+    ' | sort -u)"
+  [[ -n "$evidence_urls" ]] || return 1
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    if [[ "$url" == "#" ]] || [[ "$url" == "missing" ]]; then
+      return 1
+    fi
+    if ! grep -Fqx -- "$url" <<<"$attachment_urls"; then
+      return 1
+    fi
+  done <<<"$evidence_urls"
   return 0
 }
 
@@ -1463,7 +1825,11 @@ tracker_worker_supplement() {
     '- The worker unit is one direct hierarchical child Task or Bug of the pinned HU. Related links, indirect descendants, and other work-item types are excluded.' \
     '- Open exactly one ticket branch (issue-<ticket-id>-<slug>) from the HU integration branch and exactly one pull request targeting that HU integration branch (not the configured base branch).' \
     '- Confirm exactly one pull request exists for the ticket source branch, that it is completed and succeeded into the HU integration branch, and only then move the ticket to the configured closed state.' \
-    '- Record completion evidence, cumulative active effort, and native development relations for the pull request and integrated commit on the work item before the ticket reaches Done; the Azure closure guard refuses Done when any prerequisite is missing.' \
+    '- Classify the delivered behavior as backend, frontend, mixed, or non-interactive using tracker_classify_ticket_modality against the ticket and the actual changes; never infer the modality from the title alone.' \
+    '- Capture behavior-appropriate evidence through Chrome MCP: HTTP request and response captures for backend delivery, rendered-screen captures for frontend delivery, both for mixed delivery, and reproducible command or test output for non-interactive delivery; binary captures are uploaded as Azure work-item attachments through tracker_item_upload_attachment and embedded with descriptive titles in the completion evidence HTML via tracker_format_modality_evidence.' \
+    '- Never commit binary captures to the source repository; the captures live only as Azure attachments referenced from the evidence field.' \
+    '- If Chrome, the target application, the environment, or authentication is unavailable, report BLOCKED before merging or moving the ticket to Done; textual evidence is never an acceptable substitute for a missing modality capture.' \
+    '- Record completion evidence, cumulative active effort, and native development relations for the pull request and integrated commit on the work item before the ticket reaches Done; the Azure closure guard refuses Done when any prerequisite is missing, including the modality-specific captures.' \
     '- Respect the configured predecessor relation; never start a ticket while an open predecessor remains, and never duplicate a pull request, attachment, development link, effort increment, or state transition.'
 }
 
