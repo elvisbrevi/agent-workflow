@@ -72,6 +72,40 @@ claude_runtime_redact() {
     -e 's/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/<redacted:private-key>/g'
 }
 
+# Classifies only explicit Claude provider failures that are eligible for
+# a cross-CLI fallback. The orchestrator handles status markers first, so
+# a worker-reported BLOCKED or FAILED outcome can never be reclassified
+# here. Patterns cover the Anthropic API surface that maps onto the same
+# normalized categories the OpenCode adapter already produces
+# (quota, rate_limit, model_unavailable, none). Generic transport
+# signatures ("connection refused", "tls handshake") are deliberately
+# excluded — those route through the transient retry classifier, not
+# through a fallback transition.
+claude_runtime_classify_provider_failure() {
+  local output_file="$1"
+
+  [[ -r "$output_file" ]] || {
+    printf 'none\n'
+    return 0
+  }
+
+  if grep -Eqi -- \
+    'insufficient[_ -]?quota|(quota|credits?|usage allowance|allowance).*(exhaust|exceed|deplet|used up|limit reached)|(subscription|billing plan|api[_ -]?key).*(exhaust|expired|inactive|quota|credits?|usage allowance)' \
+    "$output_file" 2>/dev/null; then
+    printf 'quota\n'
+  elif grep -Eqi -- \
+    '(^|[^0-9])429([^0-9]|$)|rate[ _-]?limit[ _-]?exceeded|too[ _]many[ _]requests|rate[ _-]?limit[ _-]?reached' \
+    "$output_file" 2>/dev/null; then
+    printf 'rate_limit\n'
+  elif grep -Eqi -- \
+    'model[ _-]?(not[ _-]?found|unavailable|not[ _-]?available|does[ _-]?not[ _-]?exist|unsupported|deprecated)|(unavailable|not[ _-]?available|unsupported)[ _-]?model' \
+    "$output_file" 2>/dev/null; then
+    printf 'model_unavailable\n'
+  else
+    printf 'none\n'
+  fi
+}
+
 # Decodes a Claude assistant event into a normalized event tag and
 # detail. The orchestrator dispatches the tag to checkpoint/progress
 # helpers. The expected tag set is documented at the top of this file.
@@ -431,6 +465,7 @@ runtime_redact()          { claude_runtime_redact; }
 runtime_validate_profile() { return 0; }
 runtime_invoke()          { claude_runtime_invoke "$@"; }
 runtime_render_stream()   { claude_runtime_render_stream "$@"; }
+runtime_classify_provider_failure() { claude_runtime_classify_provider_failure "$@"; }
 
 # Resolve the on-disk path of a Claude session's transcript file. Claude
 # stores each session as a JSONL transcript under its configuration

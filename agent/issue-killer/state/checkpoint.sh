@@ -95,6 +95,17 @@ write_checkpoint() {
     fi
     if [[ -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
       printf 'session_id=%s\n' "${CHECKPOINT_SESSION_ID}"
+      # Persist the CLI that captured the session alongside the id.
+      # The orchestrator uses this to reject a cross-CLI resume:
+      # a Claude session id is opaque to Codex/OpenCode, so passing
+      # it through `--resume` would be silently rejected by the
+      # destination CLI and waste an attempt on a guaranteed
+      # unresumable_session outcome. Persisted only when a session
+      # is present so legacy checkpoints written before this field
+      # existed stay readable.
+      if [[ -n "${CHECKPOINT_SESSION_CLI:-}" ]]; then
+        printf 'session_cli=%s\n' "${CHECKPOINT_SESSION_CLI}"
+      fi
     else
       printf 'session_id=unavailable\n'
     fi

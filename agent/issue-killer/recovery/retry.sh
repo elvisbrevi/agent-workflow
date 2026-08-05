@@ -182,8 +182,15 @@ classify_failure() {
     return 0
   fi
 
-  if [[ "${ISSUE_KILLER_PROFILE_CLI:-}" == "opencode" ]] &&
-     declare -F runtime_classify_provider_failure >/dev/null 2>&1; then
+  # Provider-failure classification is now adapter-owned for every
+  # supported CLI. The OpenCode-only guard was removed because
+  # cross-CLI fallback chains (Claude → Codex, Codex → OpenCode, ...)
+  # depend on the same normalized categories to consume a fallback
+  # entry. Adapters that do not implement the contract return "none"
+  # from their runtime_classify_provider_failure alias, so missing
+  # capability still fails closed by treating the outcome as a
+  # non-provider, non-transient exit.
+  if declare -F runtime_classify_provider_failure >/dev/null 2>&1; then
     provider_failure="$(runtime_classify_provider_failure "$output_file")"
     case "$provider_failure" in
       quota) printf 'provider_quota\n'; return 0 ;;
@@ -211,20 +218,30 @@ classify_failure() {
 
 # Returns 0 when the captured Claude session is safe to resume: the
 # checkpoint carries a session id, the branch matches the worktree, the
-# base SHA still resolves, and the runtime adapter confirms that the
+# base SHA still resolves, the CLI that captured the session matches the
+# currently active CLI, and the runtime adapter confirms that the
 # conversation actually exists in its own store. Returns 1 otherwise
 # (a fresh recovery worker must be launched instead). The existence
 # probe goes through the active runtime adapter so the orchestration
 # loop encodes no provider's on-disk layout; an adapter that cannot
 # answer returns "not resumable" and the caller falls back to a fresh
-# worker.
+# worker. The cross-CLI guard rejects a captured session whose CLI
+# differs from the active profile: a Claude session id is opaque to
+# Codex/OpenCode and vice versa, so passing it through `--resume` would
+# be silently rejected by the destination CLI and waste an attempt on
+# a guaranteed unresumable_session outcome.
 is_session_resumable() {
   local session_id="$1"
   local checkpoint_branch="$2"
   local checkpoint_base_sha="$3"
+  local checkpoint_session_cli="${4:-}"
 
   [[ -n "$session_id" && "$session_id" != "unavailable" ]] || return 1
   [[ -n "$checkpoint_branch" && "$checkpoint_branch" != "unknown" ]] || return 1
+  if [[ -n "$checkpoint_session_cli" && \
+        "$checkpoint_session_cli" != "${ISSUE_KILLER_PROFILE_CLI:-}" ]]; then
+    return 1
+  fi
   local current
   current="$(current_branch)"
   [[ "$current" == "$checkpoint_branch" ]] || return 1
@@ -398,7 +415,8 @@ attempt_with_recovery() {
     if [[ -n "$resume_target" ]]; then
       checkpoint_branch="$(sed -n 's/^branch=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       checkpoint_base_sha="$(sed -n 's/^base_sha=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
-      if is_session_resumable "$resume_target" "$checkpoint_branch" "$checkpoint_base_sha"; then
+      checkpoint_session_cli="$(sed -n 's/^session_cli=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
+      if is_session_resumable "$resume_target" "$checkpoint_branch" "$checkpoint_base_sha" "$checkpoint_session_cli"; then
         resume_session="$resume_target"
       fi
     fi
@@ -439,10 +457,14 @@ attempt_with_recovery() {
     fi
 
     # Adopt the captured session id from the worker side-channel so the
-    # next attempt (if any) can resume it.
+    # next attempt (if any) can resume it. The CLI that captured the
+    # session is recorded alongside the id so a later cross-CLI fallback
+    # can refuse to pass an opaque session identifier to a destination
+    # that does not own it.
     session_id="$(read_captured_session_id "${attempt_output}.session")"
     if [[ -n "$session_id" ]]; then
       CHECKPOINT_SESSION_ID="$session_id"
+      CHECKPOINT_SESSION_CLI="$ISSUE_KILLER_PROFILE_CLI"
       write_checkpoint "${CHECKPOINT_STATE:-starting}"
     fi
 

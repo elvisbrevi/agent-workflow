@@ -232,11 +232,12 @@ prepare_dirty_startup_recovery() {
     base_sha="$(checkpoint_value base_sha "$checkpoint")"
     state="$(checkpoint_value state "$checkpoint")"
     session_id="$(checkpoint_value session_id "$checkpoint")"
+    session_cli="$(checkpoint_value session_cli "$checkpoint")"
     hu="$(checkpoint_value hu "$checkpoint")"
     ticket="$(checkpoint_value ticket "$checkpoint")"
     CHECKPOINT_HU="$hu"
     CHECKPOINT_TICKET="$ticket"
-    if is_session_resumable "$session_id" "$branch" "$base_sha"; then
+    if is_session_resumable "$session_id" "$branch" "$base_sha" "$session_cli"; then
       strategy="resume captured Claude session"
       STARTUP_RECOVERY_SESSION="$session_id"
     else
@@ -348,6 +349,7 @@ adopt_migrated_checkpoint() {
   base_sha="$(checkpoint_value base_sha "$(checkpoint_file)" || true)"
   state="$(checkpoint_value state "$(checkpoint_file)" || true)"
   session_id="$(checkpoint_value session_id "$(checkpoint_file)" || true)"
+  session_cli="$(checkpoint_value session_cli "$(checkpoint_file)" || true)"
   profile="$(checkpoint_value profile "$(checkpoint_file)" || true)"
   cli="$(checkpoint_value cli "$(checkpoint_file)" || true)"
   model="$(checkpoint_value model "$(checkpoint_file)" || true)"
@@ -395,8 +397,11 @@ adopt_migrated_checkpoint() {
   # Resume vs fresh strategy mirrors the dirty-worktree path: only a
   # session that the runtime adapter recognises as resumable is reused;
   # every other checkpoint launches a fresh recovery worker
-  # constrained to the same issue.
-  if is_session_resumable "$session_id" "$branch" "$base_sha"; then
+  # constrained to the same issue. The cross-CLI guard in
+  # `is_session_resumable` rejects a session whose CLI does not match
+  # the active profile, so a Claude-to-Codex migration launches the
+  # destination fresh rather than passing the opaque id to Codex.
+  if is_session_resumable "$session_id" "$branch" "$base_sha" "$session_cli"; then
     strategy="resume captured Claude session"
     STARTUP_RECOVERY_SESSION="$session_id"
   else
