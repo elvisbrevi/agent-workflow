@@ -255,10 +255,14 @@ is_session_resumable() {
   return 0
 }
 
-# Stages the next OpenCode fallback in the checkpoint before tracker
-# reconciliation. Returns 1 when the issue identity is unknown or the chain is
-# exhausted; both states require operator recovery rather than queue advance.
-stage_next_opencode_fallback() {
+# Stages the next profile in the fallback chain in the checkpoint before
+# tracker reconciliation. Returns 1 when the issue identity is unknown or
+# the chain is exhausted; both states require operator recovery rather
+# than queue advance. The function is provider-neutral: it consumes the
+# ordered `ISSUE_KILLER_FALLBACK_REMAINING` list and writes the active
+# CLI/model identity into the checkpoint so a cross-CLI transition is
+# recoverable from a restart on any supported runtime.
+stage_next_fallback() {
   local failure="$1"
   local next=""
   local remaining=""
@@ -286,14 +290,14 @@ stage_next_opencode_fallback() {
   if [[ ! "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
     write_checkpoint "recovery_required"
     write_lock_status "recovery_required" 0
-    printf '[%s] OpenCode fallback stopped because the failed worker did not identify an issue\n' \
+    printf '[%s] fallback stopped because the failed worker did not identify an issue\n' \
       "$RUNNER_NAME" >&2
     return 1
   fi
   if [[ -z "$next" ]]; then
     write_checkpoint "fallback_exhausted"
     write_lock_status "fallback_exhausted" 0
-    printf '[%s] OpenCode fallback chain exhausted after %s (%s)\n' \
+    printf '[%s] fallback chain exhausted after %s (%s)\n' \
       "$RUNNER_NAME" "$ISSUE_KILLER_FAILED_PROFILE" "$failure" >&2
     return 1
   fi
@@ -301,6 +305,15 @@ stage_next_opencode_fallback() {
   write_checkpoint "fallback_pending"
   write_lock_status "fallback_pending" 0
   return 0
+}
+
+# Back-compatibility alias for the legacy OpenCode-only entry point. The
+# fallback chain is now provider-neutral; the legacy name is preserved so
+# embedded callers and test fixtures that still invoke
+# `stage_next_opencode_fallback` keep working through the same
+# implementation.
+stage_next_opencode_fallback() {
+  stage_next_fallback "$@"
 }
 
 # Activates the staged fallback after tracker/PR reconciliation. Every target
@@ -549,16 +562,16 @@ attempt_with_recovery() {
           "$RUNNER_NAME" "$attempt" "$max_attempts"
         ;;
       provider_rate_limit)
-        printf '[%s] OpenCode provider rate limit persists (attempt %s of %s)\n' \
+        printf '[%s] provider rate limit persists (attempt %s of %s)\n' \
           "$RUNNER_NAME" "$attempt" "$max_attempts"
         if [[ "$attempt" -ge "$max_attempts" ]]; then
           should_transition=true
-          stage_next_opencode_fallback "$category" || return 1
+          stage_next_fallback "$category" || return 1
         fi
         ;;
       provider_quota|provider_model_unavailable)
         should_transition=true
-        stage_next_opencode_fallback "$category" || return 1
+        stage_next_fallback "$category" || return 1
         ;;
     esac
 
@@ -617,7 +630,7 @@ attempt_with_recovery() {
       RECOVERY_CATEGORY="recovery_required"
       write_checkpoint "recovery_required"
       write_lock_status "recovery_required" 0
-      printf '[%s] OpenCode fallback reconciliation was ambiguous; checkpoint retained\n' \
+      printf '[%s] fallback reconciliation was ambiguous; checkpoint retained\n' \
         "$RUNNER_NAME" >&2
       return 1
     fi

@@ -99,7 +99,7 @@ codex_runtime_classify_provider_failure() {
     "$output_file" 2>/dev/null; then
     printf 'rate_limit\n'
   elif grep -Eqi -- \
-    'model[ _-]?(not[ _-]?found|unavailable|not[ _-]?available|does[ _-]?not[ _-]?exist|unsupported|deprecated)|(unavailable|not[ _-]?available|unsupported)[ _-]?model' \
+    'model.*(not[ _-]?found|unavailable|not[ _-]?available|does[ _-]?not[ _-]?exist|unsupported|deprecated)|(unavailable|not[ _-]?available|unsupported).*model' \
     "$output_file" 2>/dev/null; then
     printf 'model_unavailable\n'
   else
