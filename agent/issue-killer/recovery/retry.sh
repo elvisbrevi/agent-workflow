@@ -210,9 +210,14 @@ classify_failure() {
 }
 
 # Returns 0 when the captured Claude session is safe to resume: the
-# checkpoint carries a session id, the branch matches the worktree, and the
-# base SHA still resolves. Returns 1 otherwise (a fresh recovery worker
-# must be launched instead).
+# checkpoint carries a session id, the branch matches the worktree, the
+# base SHA still resolves, and the runtime adapter confirms that the
+# conversation actually exists in its own store. Returns 1 otherwise
+# (a fresh recovery worker must be launched instead). The existence
+# probe goes through the active runtime adapter so the orchestration
+# loop encodes no provider's on-disk layout; an adapter that cannot
+# answer returns "not resumable" and the caller falls back to a fresh
+# worker.
 is_session_resumable() {
   local session_id="$1"
   local checkpoint_branch="$2"
@@ -226,6 +231,9 @@ is_session_resumable() {
   if [[ -n "$checkpoint_base_sha" && "$checkpoint_base_sha" != "unknown" ]]; then
     git rev-parse --verify --quiet "${checkpoint_base_sha}^{commit}" >/dev/null 2>&1 || \
       return 1
+  fi
+  if declare -F runtime_session_exists >/dev/null 2>&1; then
+    runtime_session_exists "$session_id" || return 1
   fi
   return 0
 }
@@ -332,7 +340,7 @@ attempt_with_recovery() {
   local max_attempts=$(( ${#RETRY_DELAY_VALUES[@]} + 1 ))
   local configured_limit=""
   local category reconciled last_safe should_transition
-  local checkpoint_branch checkpoint_base_sha resume_session
+  local checkpoint_branch checkpoint_base_sha resume_session resume_target
   # Tracks how many resume-rejection degradations have already fired
   # for this invocation of attempt_with_recovery. The orchestrator
   # bounds degradation to a single occurrence per attempt so a
@@ -361,16 +369,24 @@ attempt_with_recovery() {
     should_transition=false
 
     # Resume a captured session on retries, fallback transitions, or restart
-    # recovery when branch and base identity still match. A normal first
-    # attempt has no checkpoint session and therefore launches fresh.
+    # recovery when branch, base identity, and the runtime adapter's
+    # existence check all agree the conversation is on disk. The same
+    # resumability predicate serves both the migrated-checkpoint path
+    # (which supplies the initial session id) and the dirty-worktree
+    # path (which re-uses the captured id), so the decision cannot
+    # drift between the two recovery flows.
     resume_session=""
+    resume_target=""
     if [[ "$attempt" -eq 1 && -n "$initial_session_id" ]]; then
-      resume_session="$initial_session_id"
+      resume_target="$initial_session_id"
     elif [[ -n "${CHECKPOINT_SESSION_ID:-}" ]]; then
+      resume_target="${CHECKPOINT_SESSION_ID}"
+    fi
+    if [[ -n "$resume_target" ]]; then
       checkpoint_branch="$(sed -n 's/^branch=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
       checkpoint_base_sha="$(sed -n 's/^base_sha=//p' "$(checkpoint_file)" 2>/dev/null | head -n 1)"
-      if is_session_resumable "${CHECKPOINT_SESSION_ID}" "$checkpoint_branch" "$checkpoint_base_sha"; then
-        resume_session="${CHECKPOINT_SESSION_ID}"
+      if is_session_resumable "$resume_target" "$checkpoint_branch" "$checkpoint_base_sha"; then
+        resume_session="$resume_target"
       fi
     fi
 
