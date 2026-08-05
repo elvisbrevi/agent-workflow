@@ -6,11 +6,21 @@ The runner starts one worker process per iteration, driven by the selected
 execution profile. For a Claude profile the worker is invoked with:
 
 ```text
---print --no-session-persistence --permission-mode bypassPermissions
+--print --permission-mode bypassPermissions
 ```
 
 The worker exits after one issue. Only an explicit `ISSUE_COMPLETED` status
 starts another process. This replaces the old host-specific `/clear` loop.
+
+Session persistence is the default for a Claude fresh-worker launch
+(ADR #12): omitting `--no-session-persistence` lets Claude write the
+session transcript to its configured directory, so a later restart has
+a real conversation to resume rather than an identifier that points at
+nothing. An operator who needs an ephemeral, non-resumable session can
+opt out by setting `disable_session_persistence = true` on the Claude
+profile; the runner translates that opt-out into `--no-session-persistence`
+on every fresh launch. The resume path always omits the flag, so the two
+launch modes stay consistent about persistence.
 
 The profile's `command` field is either an executable or a Bash function. For a
 function, the runner starts a clean, non-interactive Bash process and sources
@@ -229,10 +239,13 @@ Before every retry the supervisor:
    already-merged PR with a closed issue) is treated as completed; the
    supervisor injects a synthetic `ISSUE_COMPLETED` status and advances the
    loop without launching another worker.
-3. Resumes the captured Claude session when the checkpoint carries one and
-   the worktree still matches the recorded branch and base SHA. Otherwise
-   the supervisor launches a fresh recovery worker constrained to the same
-   issue, with `--no-session-persistence`.
+3. Resumes the captured Claude session when the checkpoint carries one, the
+   worktree still matches the recorded branch and base SHA, and the runtime
+   adapter confirms the conversation exists in its own store (issue #51).
+   Otherwise the supervisor launches a fresh recovery worker constrained to
+   the same issue. The fresh worker persists its session by default
+   (`disable_session_persistence = false`); only an explicit operator opt-out
+   triggers `--no-session-persistence`.
 4. Writes `state=recovering`, `recovery_attempt`, `recovery_delay`, and
    `recovery_category` into the lock status snapshot so operators can
    observe the in-flight retry without reading the checkpoint file.
@@ -272,11 +285,15 @@ PR state, or unavailable tracker state exits with code `4`
 (`RECOVERY_REQUIRED`) and leaves the checkpoint and worktree untouched.
 
 If the checkpoint contains a usable Claude session id, the runtime adapter
-confirms the conversation still exists in its own store, and the
-branch/base SHA still match, the first recovery worker is invoked with
-`--resume <session_id>`. Otherwise the runner starts a fresh worker with
-`--no-session-persistence` and a prompt constrained to the checkpointed
-issue. The existence probe is owned by the runtime adapter so the
+confirms the conversation still exists in its own store, the
+branch/base SHA still match, the captured CLI matches the active profile,
+and the runner reconciles tracker liveness first, the first recovery
+worker is invoked with `--resume <session_id>`. Otherwise the runner
+starts a fresh worker (persistence enabled by default) with a prompt
+constrained to the checkpointed issue. A checkpoint whose issue is
+already closed is recognised as stale, cleared, and advanced past
+without launching a recovery worker. The existence probe is owned by
+the runtime adapter so the
 orchestrator encodes no provider's on-disk layout — Claude resolves its
 own JSONL transcript, and Codex or OpenCode defer to their CLI's own
 resume answer. In both cases the worker is instructed to inspect and
