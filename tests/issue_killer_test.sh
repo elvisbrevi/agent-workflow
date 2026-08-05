@@ -4715,6 +4715,276 @@ PROLOG
   pass 'mixed-provider fallback chain persists order, active profile, remaining chain, and normalized failure category across multiple transitions'
 }
 
+# Issue #50 — Claude-to-Codex-to-OpenCode multi-hop handoff. The
+# runner must preserve the original issue scope, the in-progress
+# branch and worktree state, the declared chain order, and the
+# external lifecycle reconciliation across three consecutive
+# fallback transitions. The terminal worker must complete the same
+# issue identified at the first hop, on the same branch the first
+# hop created, with all chain identity preserved in the checkpoint.
+test_black_box_claude_codex_opencode_multi_hop_preserves_scope() {
+  local repo="${TEST_ROOT}/multi-hop-scope-repo"
+  local partial_file="${repo}/issue-50-partial-work.txt"
+  local claude="${TEST_ROOT}/multi-hop-scope-claude"
+  local codex="${TEST_ROOT}/multi-hop-scope-codex"
+  local opencode="${TEST_ROOT}/multi-hop-scope-opencode"
+  local claude_count="${TEST_ROOT}/multi-hop-scope-claude-count"
+  local codex_count="${TEST_ROOT}/multi-hop-scope-codex-count"
+  local opencode_count="${TEST_ROOT}/multi-hop-scope-opencode-count"
+  local codex_args="${TEST_ROOT}/multi-hop-scope-codex-args"
+  local opencode_args="${TEST_ROOT}/multi-hop-scope-opencode-args"
+  local checkpoint_snapshot="${TEST_ROOT}/multi-hop-scope-checkpoint-snapshot"
+  local lock_status_snapshot="${TEST_ROOT}/multi-hop-scope-lock-status-snapshot"
+  local config_path="${TEST_ROOT}/multi-hop-scope-config.toml"
+  local output="${TEST_ROOT}/multi-hop-scope-output.log"
+  local status
+
+  new_repo "$repo"
+  cat > "$claude" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CLAUDE_COUNT" ]] && count="$(<"$RUNNER_TEST_CLAUDE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CLAUDE_COUNT"
+# Capture a Claude session id; this value must never reach Codex or
+# OpenCode across the multi-hop chain.
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-sess-50-hop"}'
+# Identify the issue and create a feature branch with a partial file
+# so the destination workers must continue from a real worktree.
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue view 50"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"issue-50-partial-work.txt","content":"claude: started\n"}}]}}'
+git -C "$(dirname "$RUNNER_TEST_DIRTY_FILE")" checkout -b "issue-50-multi-hop" >/dev/null 2>&1 || true
+printf '%s\n' 'claude: started' > "$RUNNER_TEST_DIRTY_FILE"
+printf '%s\n' 'subscription quota exhausted for Claude provider' >&2
+exit 1
+PROLOG
+  cat > "$codex" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_CODEX_COUNT" ]] && count="$(<"$RUNNER_TEST_CODEX_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_CODEX_COUNT"
+: > "$RUNNER_TEST_CODEX_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_CODEX_ARGS_FILE"; done
+# Capture a Codex thread id; this value must never reach OpenCode.
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-sess-50-hop"}'
+# Continue the partial work and append a Codex-tagged line so the
+# final state proves all three hops touched the same file/branch.
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' 'codex: continued' >> "$RUNNER_TEST_DIRTY_FILE"
+  printf '%s\n' 'requested model codex-multi-hop is unavailable' >&2
+  exit 1
+fi
+PROLOG
+  cat > "$opencode" <<'PROLOG'
+#!/usr/bin/env bash
+count=0
+[[ -r "$RUNNER_TEST_OPENCODE_COUNT" ]] && count="$(<"$RUNNER_TEST_OPENCODE_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" > "$RUNNER_TEST_OPENCODE_COUNT"
+: > "$RUNNER_TEST_OPENCODE_ARGS_FILE"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$RUNNER_TEST_OPENCODE_ARGS_FILE"; done
+# Snapshot the checkpoint and lock status exactly when the
+# terminal worker is in flight. The orchestrator wrote fallback_ready
+# just before launching this profile, so the snapshot will carry the
+# fallback_position, the failed_profile mix, and the OpenCode CLI
+# identity. The snapshot is the canonical proof of multi-hop state.
+if [[ "$count" -eq 1 ]]; then
+  cp "$RUNNER_TEST_CHECKPOINT" "$RUNNER_TEST_CHECKPOINT_SNAPSHOT" 2>/dev/null || true
+  cp "$RUNNER_TEST_LOCK_STATUS" "$RUNNER_TEST_LOCK_STATUS_SNAPSHOT" 2>/dev/null || true
+  printf '%s\n' 'opencode: finalized' >> "$RUNNER_TEST_DIRTY_FILE"
+  git -C "$(dirname "$RUNNER_TEST_DIRTY_FILE")" add "$(basename "$RUNNER_TEST_DIRTY_FILE")" 2>/dev/null || true
+  git -C "$(dirname "$RUNNER_TEST_DIRTY_FILE")" commit --quiet -m "opencode: finalize chain" 2>/dev/null || true
+  printf '%s\n' '{"type":"session","sessionID":"opencode-sess-50-hop"}'
+  printf '%s\n' '{"type":"text","sessionID":"opencode-sess-50-hop","part":{"type":"text","text":"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\n"}}'
+else
+  printf '%s\n' '{"type":"session","sessionID":"opencode-sess-50-hop"}'
+  printf '%s\n' '{"type":"text","sessionID":"opencode-sess-50-hop","part":{"type":"text","text":"ISSUE_KILLER_STATUS=QUEUE_EMPTY\n"}}'
+fi
+PROLOG
+  chmod +x "$claude" "$codex" "$opencode"
+
+  # Multi-hop chain: Claude → Codex → OpenCode. Each profile is a
+  # complete CLI/model/options unit; the chain is consumed in declared
+  # order, never reordered by the orchestrator.
+  printf 'default_profile = "claude-primary"\n' > "$config_path"
+  cat >> "$config_path" <<PROLOG
+
+[profiles.claude-primary]
+label = "Claude Primary"
+cli = "claude"
+command = "${claude}"
+model = "claude-model"
+fallbacks = ["codex-tertiary", "opencode-quaternary"]
+
+[profiles.claude-primary.options]
+permission_mode = "bypassPermissions"
+
+[profiles.codex-tertiary]
+label = "Codex Tertiary"
+cli = "codex"
+command = "${codex}"
+model = "codex-model"
+fallbacks = ["opencode-quaternary"]
+
+[profiles.codex-tertiary.options]
+reasoning_effort = "medium"
+sandbox = "workspace-write"
+auto_approve = "true"
+
+[profiles.opencode-quaternary]
+label = "OpenCode Quaternary"
+cli = "opencode"
+command = "${opencode}"
+model = "opencode/quaternary"
+
+[profiles.opencode-quaternary.options]
+variant = "high"
+auto_approve = "true"
+PROLOG
+
+  set +e
+  RUNNER_TEST_CLAUDE_COUNT="$claude_count" \
+  RUNNER_TEST_CODEX_COUNT="$codex_count" \
+  RUNNER_TEST_OPENCODE_COUNT="$opencode_count" \
+  RUNNER_TEST_CODEX_ARGS_FILE="$codex_args" \
+  RUNNER_TEST_OPENCODE_ARGS_FILE="$opencode_args" \
+  RUNNER_TEST_DIRTY_FILE="$partial_file" \
+  RUNNER_TEST_CHECKPOINT="${repo}/.git/issue-killer.checkpoint" \
+  RUNNER_TEST_CHECKPOINT_SNAPSHOT="$checkpoint_snapshot" \
+  RUNNER_TEST_LOCK_STATUS="${repo}/.git/issue-killer.lock/status" \
+  RUNNER_TEST_LOCK_STATUS_SNAPSHOT="$lock_status_snapshot" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || \
+    fail "Multi-hop chain did not finish successfully, got exit ${status}"
+
+  # Every hop should run exactly once for the same issue and the
+  # terminal worker should also drain the queue.
+  [[ "$(<"$claude_count")" -eq 1 ]] || \
+    fail 'Claude primary ran more than once during the multi-hop chain'
+  [[ "$(<"$codex_count")" -eq 1 ]] || \
+    fail 'Codex tertiary ran more than once during the multi-hop chain'
+  [[ "$(<"$opencode_count")" -eq 2 ]] || \
+    fail 'OpenCode terminal worker did not complete the issue and drain the queue'
+
+  # Issue scope: the partial file must contain the contributions of
+  # all three hops. The same branch carries the entire work.
+  [[ -s "$partial_file" ]] || \
+    fail 'Multi-hop chain did not preserve the partial work file'
+  grep -Fxq 'claude: started' "$partial_file" || \
+    fail 'Claude contribution was lost during the multi-hop chain'
+  grep -Fxq 'codex: continued' "$partial_file" || \
+    fail 'Codex contribution was lost during the multi-hop chain'
+  grep -Fxq 'opencode: finalized' "$partial_file" || \
+    fail 'OpenCode contribution was lost during the multi-hop chain'
+  local current_branch
+  current_branch="$(git -C "$repo" symbolic-ref --short --quiet HEAD 2>/dev/null || printf 'unknown')"
+  [[ "$current_branch" == "issue-50-multi-hop" ]] || \
+    fail "Multi-hop chain did not preserve the in-progress branch, got ${current_branch}"
+
+  # Chain order: the orchestrator must announce the transitions in
+  # the declared order, with the normalized failure category for each.
+  local claude_hop codex_hop completion_line
+  claude_hop="$(grep -n 'Advancing fallback: claude-primary -> codex-tertiary' "$output" | head -n 1 | cut -d: -f1)"
+  codex_hop="$(grep -n 'Advancing OpenCode fallback: codex-tertiary -> opencode-quaternary' "$output" | head -n 1 | cut -d: -f1)"
+  completion_line="$(grep -n 'Worker .* completed one issue' "$output" | head -n 1 | cut -d: -f1)"
+  [[ -n "$claude_hop" && -n "$codex_hop" && -n "$completion_line" ]] || \
+    fail 'Could not locate chain transition lines in operator output'
+  [[ "$claude_hop" -lt "$codex_hop" ]] || \
+    fail 'Codex→OpenCode transition appeared before Claude→Codex transition'
+  [[ "$codex_hop" -lt "$completion_line" ]] || \
+    fail 'Terminal completion was reported before the chain finished advancing'
+
+  # Checkpoint snapshot: the in-flight checkpoint during the third
+  # hop must carry the original issue number, the selected profile
+  # anchor, the chain position advanced to 2, the original chain
+  # enumerated, only the terminal entry remaining, the active
+  # OpenCode profile, the CLI identity, and the model_unavailable
+  # classification that drove the Codex→OpenCode transition.
+  [[ -r "$checkpoint_snapshot" ]] || \
+    fail 'Multi-hop runner did not snapshot the checkpoint during the terminal hop'
+  grep -Eq '^issue=50$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not preserve the original issue scope (issue=50)'
+  grep -Eq '^selected_profile=claude-primary$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not retain the original selected profile'
+  grep -Eq '^profile=opencode-quaternary$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not record the active OpenCode profile'
+  grep -Eq '^cli=opencode$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not record the destination CLI'
+  grep -Eq '^fallback_position=2$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not advance the fallback position to 2'
+  grep -Eq '^fallback_chain=codex-tertiary$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not retain the original chain anchor'
+  grep -Eq '^fallback_chain=opencode-quaternary$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not retain the full chain members'
+  if grep -Eq '^fallback_remaining=' "$checkpoint_snapshot"; then
+    fail 'Multi-hop snapshot retained a remaining chain entry at the terminal hop'
+  fi
+  grep -Eq '^failed_profile=codex-tertiary$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not record the previously failed Codex profile'
+  grep -Eq '^fallback_failure=provider_model_unavailable$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not record the model_unavailable classification'
+  grep -Eq '^state=fallback_ready$' "$checkpoint_snapshot" || \
+    fail 'Multi-hop snapshot did not carry the fallback_ready lifecycle state'
+
+  # External lifecycle reconciliation: every emitted provider
+  # diagnostic and the captured session ids must remain off the
+  # checkpoint. The cross-CLI guards must reject the foreign session
+  # ids and the secrets embedded in the provider failures.
+  if grep -Eqi 'Authorization|Bearer|ghp_secret|insufficient_quota' "$checkpoint_snapshot"; then
+    fail 'Multi-hop checkpoint persisted provider credentials or diagnostics'
+  fi
+  if grep -Fxq 'claude-sess-50-hop' "$checkpoint_snapshot"; then
+    fail 'Multi-hop checkpoint persisted the Claude session id'
+  fi
+  if grep -Fxq 'codex-sess-50-hop' "$checkpoint_snapshot"; then
+    fail 'Multi-hop checkpoint persisted the Codex thread id'
+  fi
+  if grep -Fxq 'opencode-sess-50-hop' "$checkpoint_snapshot"; then
+    fail 'Multi-hop checkpoint persisted the terminal OpenCode session id'
+  fi
+  grep -Fxq 'claude-sess-50-hop' "$codex_args" && \
+    fail 'Codex fallback received the Claude session id (cross-CLI leak)'
+  grep -Fxq 'codex-sess-50-hop' "$opencode_args" && \
+    fail 'OpenCode fallback received the Codex thread id (cross-CLI leak)'
+  grep -Fxq 'claude-sess-50-hop' "$opencode_args" && \
+    fail 'OpenCode terminal worker received the Claude session id (cross-CLI leak)'
+  grep -Fxq '--resume' "$codex_args" && \
+    fail 'Codex fallback was invoked with --resume on a cross-CLI transition'
+  grep -Fxq '--session' "$opencode_args" && \
+    fail 'OpenCode fallback was invoked with --session on a cross-CLI transition'
+
+  # Lock status mirror: the in-flight lock status during the third
+  # hop must echo the same chain identity and must NOT carry the
+  # captured session id or any provider sign-in material.
+  [[ -r "$lock_status_snapshot" ]] || \
+    fail 'Multi-hop runner did not snapshot the lock status during the terminal hop'
+  if grep -Eqi 'Authorization|Bearer|ghp_secret|insufficient_quota' "$lock_status_snapshot"; then
+    fail 'Multi-hop lock status persisted provider credentials or diagnostics'
+  fi
+  if grep -Fxq 'claude-sess-50-hop' "$lock_status_snapshot"; then
+    fail 'Multi-hop lock status persisted the Claude session id'
+  fi
+  if grep -Fxq 'codex-sess-50-hop' "$lock_status_snapshot"; then
+    fail 'Multi-hop lock status persisted the Codex thread id'
+  fi
+
+  # Status protocol: the runner must surface the canonical
+  # ISSUE_COMPLETED and QUEUE_EMPTY worker-completion messages at
+  # the trailing iterations. No new status names may be introduced.
+  grep -Fq 'Worker 1 completed one issue' "$output" || \
+    fail 'Multi-hop chain did not surface the ISSUE_COMPLETED worker-completion message'
+  grep -Fq 'No pending, available, non-epic issues remain' "$output" || \
+    fail 'Multi-hop queue drain did not surface the QUEUE_EMPTY worker-completion message'
+
+  pass 'claude-codex-opencode multi-hop preserves issue scope, branch, worktree, chain order, and external lifecycle reconciliation'
+}
+
 test_black_box_status_marker_takes_precedence_over_provider_diagnostics() {
   # Issue #48 — status-marker precedence. A worker that emits
   # `ISSUE_KILLER_STATUS=BLOCKED` (or any other terminal marker)
@@ -6225,6 +6495,7 @@ test_tty_opencode_fallback_picker_builds_ordered_unique_chain
 test_black_box_mixed_provider_fallback_chain_validates
 test_black_box_claude_to_codex_handoff_preserves_partial_work
 test_black_box_multi_profile_fallback_chain_persists_state
+test_black_box_claude_codex_opencode_multi_hop_preserves_scope
 test_black_box_status_marker_takes_precedence_over_provider_diagnostics
 test_black_box_opencode_quota_failure_advances_fallback_with_same_session
 test_black_box_opencode_rate_limit_retries_before_fallback

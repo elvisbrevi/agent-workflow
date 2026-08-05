@@ -295,6 +295,44 @@ overflow. Each fallback transitions through `fallback_pending` →
 fallback chain that lacks a remaining profile produces
 `fallback_exhausted` and exits with `RECOVERY_REQUIRED`.
 
+## Mixed-provider fallback chains
+
+The fallback chain is now profile-neutral, not OpenCode-only. An operator
+may declare an ordered chain that mixes Claude, Codex, and OpenCode
+profiles in any order selected at startup. Each entry is a complete
+execution profile (CLI, model, command, options); the runner never
+substitutes another CLI, model, or command. Configuration validation
+rejects duplicate entries, missing profiles, direct or indirect cycles,
+and chains that target an unknown CLI.
+
+The normalized provider failure categories that drive a fallback are
+`provider_quota`, `provider_rate_limit`, and `provider_model_unavailable`.
+All three are produced by the active runtime adapter's provider-failure
+classification; the orchestrator consumes only the normalized category.
+Implementation failures, generic non-zero exits, `BLOCKED`, `FAILED`,
+malformed output, and context-window exhaustion are never classified as
+provider failures and therefore never consume a fallback.
+
+Cross-CLI transitions preserve the issue scope, branch, worktree state,
+and chain order. The destination CLI is activated through the same
+runtime activation path used by the primary profile, so the destination
+adapter's executable, model, and option validation run before the
+worker launches. Session ownership is recorded alongside the captured
+session id; the cross-CLI guard rejects a session whose owning CLI
+differs from the active profile, so the destination CLI never receives
+an opaque foreign session id. A cross-CLI transition always launches a
+fresh destination session constrained to the checkpointed issue and the
+existing worktree; the previous native session id is discarded.
+
+Restart recovery restores the active profile and remaining chain at the
+persisted chain position. Chain drift, profile drift, branch mismatch,
+stale base SHA, missing issue identity, or ambiguous tracker/PR state
+retain `RECOVERY_REQUIRED` without launching a new worker. The public
+status protocol (`ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`,
+`RECOVERY_REQUIRED`) is unchanged. Checkpoints, lock status, and any
+retained artifact exclude credentials, complete prompts, and complete
+provider commands.
+
 ## Restart recovery and legacy adoption
 
 On startup, a dirty worktree is no longer treated as a generic failure when
