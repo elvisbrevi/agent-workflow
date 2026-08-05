@@ -526,6 +526,12 @@ non-epic issue in this session."
       fi
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       clear_checkpoint
+      # Remove the worker session transcript alongside the checkpoint
+      # (issue #57). Verified ISSUE_COMPLETED is one of the two
+      # terminal outcomes that bound transcript accumulation; removal
+      # failure must not abort a run that has already cleared its
+      # checkpoint and verified the live tracker state.
+      runtime_remove_session_transcript "${CHECKPOINT_SESSION_ID:-}" || true
       printf '[%s] Worker %s completed one issue.\n' "$RUNNER_NAME" "$ITERATION"
       if [[ -n "${STARTUP_RECOVERY_MODE:-}" ]]; then
         printf '[%s] Restart recovery completed; returning to normal queue loop.\n' "$RUNNER_NAME"
@@ -574,6 +580,11 @@ non-epic issue in this session."
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
         clear_checkpoint
+        # Remove the worker session transcript alongside the checkpoint
+        # (issue #57). Verified QUEUE_EMPTY is the other terminal
+        # outcome that bounds transcript accumulation; removal failure
+        # must not abort a run that has already cleared its checkpoint.
+        runtime_remove_session_transcript "${CHECKPOINT_SESSION_ID:-}" || true
       fi
       printf '[%s] No pending, available, non-epic issues remain.\n' "$RUNNER_NAME"
       exit 0

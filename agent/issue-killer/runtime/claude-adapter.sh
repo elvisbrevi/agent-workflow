@@ -484,6 +484,27 @@ claude_runtime_session_exists() {
   [[ -n "$path" && -r "$path" ]]
 }
 
+# Removes the on-disk transcript file for a captured Claude session.
+# Called by the orchestrator only on verified terminal outcomes
+# (ISSUE_COMPLETED or QUEUE_EMPTY), the same states that already clear
+# the recovery checkpoint. Reuses the same `claude_runtime_session_transcript_path`
+# helper that the existence check uses so the location expression lives
+# in exactly one place; the orchestrator cannot encode the on-disk
+# layout itself. Always returns 0: a missing transcript is the desired
+# post-condition, an unreadable one already failed the existence check
+# so there is nothing left to remove, and a real removal failure must
+# not abort the run that already cleared its checkpoint.
+claude_runtime_remove_session_transcript() {
+  local session_id="$1"
+  local path
+  if ! path="$(claude_runtime_session_transcript_path "$session_id")"; then
+    return 0
+  fi
+  [[ -n "$path" ]] || return 0
+  rm -f "$path" || true
+  return 0
+}
+
 # Generic session-existence contract. Adapters that can answer the
 # question for their own store implement `runtime_session_exists`; the
 # orchestrator calls this name without knowing the CLI. Codex and
@@ -492,6 +513,13 @@ claude_runtime_session_exists() {
 # orchestrator falls back to a fresh worker rather than guessing.
 runtime_session_transcript_path() { claude_runtime_session_transcript_path "$@"; }
 runtime_session_exists()          { claude_runtime_session_exists "$@"; }
+
+# Generic session-cleanup contract. The orchestrator calls this name
+# without knowing the CLI. Adapters that resolve to a transcript path
+# delete it; adapters whose transcript layout the runner cannot
+# predict (Codex, OpenCode today) report success without touching any
+# file, preserving today's behaviour for non-Claude profiles.
+runtime_remove_session_transcript() { claude_runtime_remove_session_transcript "$@"; }
 
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
