@@ -315,10 +315,7 @@ restore_opencode_fallback_checkpoint || \
 
 acquire_repository_lock
 operator_confirm_destructive_run
-if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
-  adopt_migrated_checkpoint || :
-fi
-prepare_dirty_startup_recovery
+adopt_startup_checkpoint
 
 if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
   if [[ -e "$(checkpoint_file)" ]]; then
