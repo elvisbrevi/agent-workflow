@@ -421,6 +421,67 @@ runtime_validate_profile() { return 0; }
 runtime_invoke()          { claude_runtime_invoke "$@"; }
 runtime_render_stream()   { claude_runtime_render_stream "$@"; }
 
+# Resolve the on-disk path of a Claude session's transcript file. Claude
+# stores each session as a JSONL transcript under its configuration
+# directory at `<config>/projects/<encoded-cwd>/<session-id>.jsonl`. The
+# encoded working directory replaces `/` with `-` and keeps the leading
+# separator that produces a stable, collision-free prefix. The config
+# directory honours `CLAUDE_CONFIG_DIR` and falls back to the home
+# configuration directory. The orchestrator never encodes any of this
+# layout itself — this function is the only place in the system that
+# knows where Claude keeps its transcripts. Emits the empty string and
+# returns 1 when no session id was supplied, mirroring the "not
+# resumable" outcome the contract requires.
+claude_runtime_session_transcript_path() {
+  local session_id="$1"
+  [[ -n "$session_id" && "$session_id" != "unavailable" ]] || {
+    printf ''
+    return 1
+  }
+  local config_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+  [[ -n "$config_dir" ]] || {
+    printf ''
+    return 1
+  }
+  # Resolve to the canonical working directory before encoding. `cd`
+  # follows symlinks on macOS (for example, `/var/folders` resolves to
+  # `/private/var/folders`), and Claude stores transcripts under the
+  # canonical location. Without `pwd -P` the orchestrator would key
+  # transcripts by a symlinked path that no longer matches what the
+  # CLI wrote.
+  local encoded
+  encoded="$(printf '%s' "$(pwd -P)" | sed 's|/|-|g')"
+  printf '%s\n' "${config_dir}/projects/${encoded}/${session_id}.jsonl"
+}
+
+# Returns 0 when the captured Claude session is resumable in its own
+# store — the runtime adapter owns this answer and the orchestrator
+# calls it through the same generic alias as Codex and OpenCode. The
+# check is intentionally the only place that opens the transcript
+# path; both the existence probe and any later cleanup operation reuse
+# the same path expression so the two consumers cannot drift apart.
+# The `-r` test (rather than `-e`) requires the runner's user to be
+# able to read the transcript; a transcript written under a different
+# user is intentionally not treated as resumable because the runner
+# could not continue it.
+claude_runtime_session_exists() {
+  local session_id="$1"
+  local path
+  if ! path="$(claude_runtime_session_transcript_path "$session_id")"; then
+    return 1
+  fi
+  [[ -n "$path" && -r "$path" ]]
+}
+
+# Generic session-existence contract. Adapters that can answer the
+# question for their own store implement `runtime_session_exists`; the
+# orchestrator calls this name without knowing the CLI. Codex and
+# OpenCode forward to their own implementations; an adapter that
+# cannot determine resumability reports "not resumable" so the
+# orchestrator falls back to a fresh worker rather than guessing.
+runtime_session_transcript_path() { claude_runtime_session_transcript_path "$@"; }
+runtime_session_exists()          { claude_runtime_session_exists "$@"; }
+
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
 # effects at source time.

@@ -575,6 +575,35 @@ runtime_invoke()          { opencode_runtime_invoke "$@"; }
 runtime_render_stream()   { opencode_runtime_render_stream "$@"; }
 runtime_classify_provider_failure() { opencode_runtime_classify_provider_failure "$@"; }
 
+# Resolve the on-disk path of an OpenCode session's transcript.
+# OpenCode does not currently expose a stable transcript layout that
+# the runner can predict; this function returns the empty path so any
+# later cleanup operation has a single, no-op target. The companion
+# `opencode_runtime_session_exists` answers truthfully to keep today's
+# observable behaviour: OpenCode resumes a captured session when its
+# own store has the conversation, and the CLI's "session id ... not
+# found" message routes through the unresumable_session classification.
+opencode_runtime_session_transcript_path() {
+  printf ''
+  return 1
+}
+
+# OpenCode resumes a captured session through its own CLI; the runner
+# defers to that answer rather than guessing. Returning 0 here keeps
+# today's behaviour: when the captured session id is non-empty and
+# the branch/base guards pass, the orchestrator passes --resume to
+# the CLI. A CLI rejection still surfaces as unresumable_session and
+# triggers the same fresh-worker degradation as for Claude.
+opencode_runtime_session_exists() {
+  return 0
+}
+
+# Generic session-existence contract. Adapters that can answer the
+# question for their own store implement `runtime_session_exists`; the
+# orchestrator calls this name without knowing the CLI.
+runtime_session_transcript_path() { opencode_runtime_session_transcript_path "$@"; }
+runtime_session_exists()          { opencode_runtime_session_exists "$@"; }
+
 # Echo empty output when sourced directly so the orchestrator's `source`
 # always succeeds. The orchestrator depends on this file having no side
 # effects at source time.
