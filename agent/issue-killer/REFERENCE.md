@@ -109,6 +109,32 @@ request`, `Merging or closing pull request`, `Closing issue`,
 `Running shell command`, `Planning the next worker step`, and
 `Worker finished (see <artifact> for full output)`.
 
+### Azure delivery HU lifecycle (issue #41)
+
+The Azure delivery HU flow exposes its own lifecycle through the
+tracker-neutral `hu-progress.sh` module. The module owns the canonical
+phase set (`hu-selected`, `ticket-selected`, `hu-branch-prepared`,
+`ticket-branch-created`, `evidence-captured`, `evidence-recorded`,
+`effort-recorded`, `ticket-integrated`, `ticket-done`, `recovery-clause`,
+`recovery-resumed`) and emits a single operator-visible progress line
+through the same renderer pipeline as the runtime adapter. The Azure
+tracker adapter invokes the helper when the HU is selected, the ticket
+branch is opened, evidence is captured or recorded, real effort is set,
+the PR is integrated into the HU integration branch, and the ticket is
+moved to the configured closed state. The orchestrator invokes the helper
+when a transport recovery resumes an existing session or launches a
+fresh worker. Every emission sanitizes the detail string so
+credentials, raw browser JSON, base64 payloads, attachment paths, and
+complete commands never reach the operator terminal or the lock status.
+
+The same HU phase taxonomy is observable through the lock status side
+channel. While the lock is held, the lock status carries the latest
+known `hu_phase`, the `ticket_branch` (when the helper knew it), the
+evidence URL (sanitized), and the recorded real effort in hours. The
+checkpoint additionally persists a `hu_phase=` line and the same
+support fields so a later restart can resume the visible phase without
+re-deriving it from the worker artifact.
+
 ## Requirements
 
 `jq` is required when `ISSUE_RUNNER_STREAM_OUTPUT=true` (the default). The
