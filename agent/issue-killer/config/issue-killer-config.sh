@@ -20,11 +20,12 @@
 #     init_file = "..."    # optional, required when shell is set
 #     fallbacks = ["..."]  # optional, OpenCode profiles only
 #   [profiles.<name>.options]
-#     permission_mode = "..."     # Claude
-#     reasoning_effort = "..."    # Codex
-#     sandbox = "..."             # Codex
-#     variant = "..."             # OpenCode
-#     auto_approve = true|false   # OpenCode
+#     permission_mode = "..."           # Claude
+#     disable_session_persistence = true|false  # Claude opt-out (default false)
+#     reasoning_effort = "..."          # Codex
+#     sandbox = "..."                   # Codex
+#     variant = "..."                   # OpenCode
+#     auto_approve = true|false         # OpenCode
 #
 # Credentials, free-form commands, and `eval` are forbidden; every
 # option that reaches the worker is enumerated above. The loader does
