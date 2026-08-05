@@ -2092,6 +2092,66 @@ CONFIG
   pass 'disable_session_persistence profile option opts out and leaves the sentinel-only checkpoint format'
 }
 
+test_fresh_worker_persists_session_by_default() {
+  local repo="${TEST_ROOT}/persist-default-repo"
+  local home="${TEST_ROOT}/persist-default-home"
+  local output="${TEST_ROOT}/persist-default-output.log"
+  local count_file="${TEST_ROOT}/persist-default-count"
+  local args_file="${TEST_ROOT}/persist-default-args"
+  local config_path="${TEST_ROOT}/persist-default-config.toml"
+
+  mkdir -p "$home"
+  new_repo "$repo"
+
+  # The fixture mimics a single ready issue followed by an empty
+  # queue: the first invocation emits ISSUE_COMPLETED, the second
+  # emits QUEUE_EMPTY so the runner exits cleanly. The dedicated
+  # unresumable-session tests already seed a real transcript and
+  # verify the on-disk layout; this test only needs to prove the
+  # fresh-worker CLI invocation opts into session persistence
+  # rather than silently disabling it (issue #51, ADR #12).
+  printf '%s\n' \
+    'claude-minimax() {' \
+    '  local count=0' \
+    '  [[ -f "$RUNNER_TEST_COUNT_FILE" ]] && count=$(<"$RUNNER_TEST_COUNT_FILE")' \
+    '  count=$((count + 1))' \
+    '  printf "%s\\n" "$count" >"$RUNNER_TEST_COUNT_FILE"' \
+    '  for arg in "$@"; do printf "%s\\n" "$arg" >>"$RUNNER_TEST_ARGS_FILE"; done' \
+    '  if [[ "$count" -eq 1 ]]; then' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=ISSUE_COMPLETED\\n\"}"' \
+    '  else' \
+    '    printf "%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ISSUE_KILLER_STATUS=QUEUE_EMPTY\\n\"}"' \
+    '  fi' \
+    '}' > "${home}/.bashrc"
+
+  write_default_config "$config_path" "claude-minimax" "bash" "${home}/.bashrc"
+
+  HOME="$home" \
+  RUNNER_TEST_COUNT_FILE="$count_file" \
+  RUNNER_TEST_ARGS_FILE="$args_file" \
+  ISSUE_RUNNER_ASSUME_YES=true \
+  ISSUE_RUNNER_RETRY_DELAYS="1,1,1" \
+  ISSUE_KILLER_CONFIG_PATH="$config_path" \
+    "$RUNNER" "$repo" >"$output" 2>&1 || \
+      fail 'Persist-default fixture did not finish'
+
+  # The whole reason this test exists: a fresh Claude worker must be
+  # invoked without --no-session-persistence so the session transcript
+  # is written to disk and a later restart has something real to
+  # resume (issue #51, ADR #12).
+  if grep -Fxq -- '--no-session-persistence' "$args_file"; then
+    fail 'Fresh Claude worker was invoked with --no-session-persistence (persistence must be the default)'
+  fi
+  # The runner must NOT pass --resume either: no captured session id
+  # exists yet on a clean run, so resume is meaningless and must be
+  # absent from the fresh-worker argument vector.
+  if grep -Fxq -- '--resume' "$args_file"; then
+    fail 'Fresh Claude worker was invoked with --resume without a captured session id'
+  fi
+
+  pass 'fresh Claude worker persists its session by default and does not silently opt out'
+}
+
 test_unresumable_session_degrades_to_fresh_worker() {
   local repo="${TEST_ROOT}/unresumable-repo"
   local home="${TEST_ROOT}/unresumable-home"
@@ -3176,6 +3236,7 @@ test_session_resume_when_checkpoint_has_safe_session_id
 test_session_resume_skipped_when_no_captured_session_id
 test_session_resume_skipped_when_transcript_missing
 test_disable_session_persistence_profile_option_opts_out
+test_fresh_worker_persists_session_by_default
 test_unresumable_session_degrades_to_fresh_worker
 test_unresumable_degradation_is_bounded
 test_recovery_required_after_exhausted_retries

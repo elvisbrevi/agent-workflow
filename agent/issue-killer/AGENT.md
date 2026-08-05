@@ -13,8 +13,11 @@ model: inherit
 # Issue Killer
 
 This agent is a supervisor. It does not implement issues in its own context.
-The bundled `run.sh` process launches one fresh, non-persistent worker
-session per issue, configured through an execution profile.
+The bundled `run.sh` process launches one fresh worker session per issue,
+configured through an execution profile. For Claude, session persistence
+is the default so a later restart can resume the captured conversation;
+operators can opt out with `disable_session_persistence = true` on the
+profile (ADR #12).
 
 ## Before launch
 
