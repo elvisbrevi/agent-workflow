@@ -248,6 +248,7 @@ The worker instructions are in [`PROMPT.md`](agent/issue-killer/PROMPT.md).
 - [`CONTEXT.md`](CONTEXT.md): domain vocabulary.
 - [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md): tracker contract.
 - [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md): canonical roles.
+- [`docs/agents/azure-hu-operator-guide.md`](docs/agents/azure-hu-operator-guide.md): Azure delivery HU operator guide.
 - [`docs/design/issue-killer.md`](docs/design/issue-killer.md): design and adapter boundaries.
 
 ## Tests
@@ -260,6 +261,10 @@ bash tests/github_tracker_adapter_test.sh
 bash tests/azure_devops_tracker_adapter_test.sh
 bash tests/azure_hu_selection_test.sh
 bash tests/azure_hu_runner_test.sh
+bash tests/azure_hu_branch_test.sh
+bash tests/azure_hu_drainage_test.sh
+bash tests/hu_progress_test.sh
+bash tests/azure_dev_sandbox_test.sh
 ```
 
 The runner is expected to remain compatible with Bash 3.2 and a current Bash
