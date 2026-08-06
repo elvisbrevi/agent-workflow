@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "skills": {
+    "bun": {
+      "source": "bun.sh",
+      "sourceUrl": "https://bun.sh/docs",
+      "sourceType": "well-known",
+      "computedHash": "d5f8468108504d55e36bd58d333a258f9ce1fc409d98133533d287546ec89730",
+      "wellKnownDigest": "sha256:ad970b201c9ecc8177d56890332e6d765c3b1e653c14a5bc428b34bf15ffb561"
+    }
+  }
+}

@@ -1,9 +1,10 @@
 # Plan de migración de `issue-killer` a TypeScript, Bun y OpenCode SDK
 
-Estado: propuesta lista para ejecución por un agente de código  
+Estado: decisiones de dominio cerradas (grill 2026-08-06); lista para M0/M1  
 Repositorio: `elvisbrevi/agent-workflow`  
 Línea base inspeccionada: `main` en `69037045eb12e832e358af952a79c61c8378aac1`  
-Fecha de la línea base: 2026-08-06
+Fecha de la línea base: 2026-08-06  
+Fuente de verdad de lenguaje: `CONTEXT.md`, ADR 0001, ADR 0014, `docs/design/issue-killer.md`
 
 ## 1. Objetivo
 
@@ -19,23 +20,16 @@ La migración debe:
 - eliminar `jq` y la interpretación de JSON mediante pipelines Bash;
 - evitar dependencias externas salvo las estrictamente necesarias;
 - mantener el comando público `issue-killer` después del cutover;
-- no modificar las skills ni sus `SKILL.md` como parte de esta migración.
+- no modificar las skills ni sus `SKILL.md` como parte de esta migración;
+- incorporar en V2 (no en Bash V1) las correcciones del code review y el harness execution log.
 
 ## 2. Decisiones de alcance
 
-### 2.1 Decisión recomendada: V2 OpenCode-only
+### 2.1 Decisión: V2 OpenCode-only
 
-La V2 no debe portar los adaptadores de Claude y Codex. Debe aceptar únicamente perfiles OpenCode y usar diferentes modelos/proveedores de OpenCode para fallback.
+La V2 no porta adaptadores Claude/Codex. Solo perfiles OpenCode y fallback entre perfiles OpenCode. ADR 0012/0013 eliminados; ADR 0001 reescrito; ADR 0014 registra el runtime SDK.
 
-Motivos:
-
-- el objetivo solicitado es una nueva versión enfocada en OpenCode y su SDK;
-- evita conservar tres protocolos de sesión y streaming incompatibles;
-- reduce código, superficie de pruebas y ramas de recuperación;
-- permite que la identidad de sesión sea consultada realmente con `client.session.get()` en vez de inferirla desde archivos o mensajes de CLI;
-- mantiene la variedad de proveedores/modelos mediante perfiles y fallback de OpenCode.
-
-Durante la transición, el runner Bash actual permanece disponible solo como rollback. No debe mezclarse código Bash y TypeScript dentro de una misma ejecución.
+Durante la transición, Bash V1 queda solo como rollback. No mezclar Bash y TypeScript en la misma ejecución. No backportear al Bash los hallazgos de seguridad: se implementan en V2.
 
 ### 2.2 Se conserva
 
@@ -59,6 +53,27 @@ Durante la transición, el runner Bash actual permanece disponible solo como rol
 - Cambio del modelo de negocio de Azure HU.
 - Rediseño general del instalador fuera de lo necesario para instalar y enlazar la V2.
 - Publicación, issues o implementación automática de este plan.
+- Corrección de los hallazgos del code review sobre el runtime Bash V1.
+
+### 2.4 Decisiones cerradas en grill (obligatorias en V2)
+
+| Tema | Decisión |
+|---|---|
+| Lenguaje / ADRs | V2 prevalece; multi-CLI fuera de `CONTEXT.md`; 0012/0013 eliminados; 0001+0014 vigentes |
+| Completion GitHub | Issue cerrado + exactamente 1 PR atribuible + merged + `baseRefName == BASE_BRANCH`; si no → `RECOVERY_REQUIRED` |
+| Cierre post-merge | GitHub cierra issue tras merge; Azure mueve task a estado completed (p.ej. Done) tras merge |
+| Opaque session id | `^[A-Za-z0-9_-]+$`, máx 128; revalidar antes de persist/resume/delete |
+| TOML | Fail-closed: sin `\n`/`\r`/NUL en escalares de control; sin basura tras tokens; claves desconocidas = error |
+| Lock/status | Un solo writer en memoria; temps aleatorios; nunca `$$` |
+| Installer | Dry-run solo staging temporal; uninstall offline sin `sync_repo` |
+| Event pump | Drenar todos los eventos de la sesión en orden |
+| Redacción | Máquina de estados multilínea + por línea; antes de consola y archivo; raw SDK opt-in nunca en CI |
+| Outcome | Structured output primario; marcador texto solo coexistencia V1; se retira en M12 |
+| Permisos | Post-confirmación: allow total; sin prompt mid-run; permiso inesperado detiene |
+| Harness log | Supervisor escribe JSONL por run bajo `log_dir` obligatorio del TOML; no tokens de modelo |
+| Fallback | Siempre sesión OpenCode nueva al mismo issue/worktree |
+| Serve | Solo `127.0.0.1`, puerto efímero, retries acotados, una instancia por run del supervisor |
+| Docs runtime | `AGENT.md`/`REFERENCE.md` del runner se alinean en M10/M11; design/CONTEXT/ADRs ya V2 |
 
 ## 3. Línea base y restricciones
 
@@ -301,6 +316,7 @@ Compatibilidad inicial recomendada:
 
 ```toml
 default_profile = "opencode-main"
+log_dir = "~/.local/state/issue-killer/logs"
 
 [profiles.opencode-main]
 label = "OpenCode main"
@@ -325,10 +341,11 @@ Reglas V2:
 - `cli` debe ser `opencode`.
 - `command` debe ser `opencode`, porque el SDK inicia ese ejecutable desde PATH.
 - `model` se divide una sola vez en `providerID/modelID`.
+- `log_dir` es obligatorio, expandido y escribible; todo harness log cae ahí (un JSONL redactado por run de cola).
 - todos los perfiles y fallbacks deben ser OpenCode.
 - claves desconocidas son error.
 - ciclos, duplicados y referencias ausentes son error.
-- strings con saltos de línea en identificadores y campos de control son error.
+- strings con saltos de línea, `\r` o NUL en identificadores y campos de control son error; basura tras tokens es error.
 - credenciales siguen fuera del TOML.
 
 No simplificar el formato de configuración en el mismo cutover. Una limpieza posterior puede retirar `cli` y `command` mediante otro ADR.
@@ -347,13 +364,15 @@ La opción preferida es usar structured output del SDK con un schema mínimo:
 
 El agente implementador debe validar primero el nombre exacto del campo (`format` u `outputFormat`) en la versión fijada del SDK. La documentación y los tipos generados son el contrato, no ejemplos memorizados.
 
-Durante la fase de paridad:
+Durante la coexistencia con V1:
 
 - aceptar structured output como primario;
-- aceptar el marcador `ISSUE_KILLER_STATUS=...` como compatibilidad;
+- aceptar el marcador `ISSUE_KILLER_STATUS=...` solo como compatibilidad;
 - rechazar outcomes contradictorios;
 - tratar ausencia o schema inválido como `malformed`;
-- nunca considerar `ISSUE_COMPLETED` suficiente sin verificación live del tracker y PR.
+- nunca considerar `ISSUE_COMPLETED` suficiente sin **completion verification** live.
+
+En M12 se retira el aceptador del marcador textual junto con el runtime Bash.
 
 ## 10. Plan de trabajo por entregables
 
@@ -365,16 +384,17 @@ Depende de: nada.
 
 Trabajo:
 
-- crear ADR “OpenCode SDK como único runtime de issue-killer V2”;
-- registrar OpenCode-only, selección host-owned, dependencia permitida y compatibilidad del checkpoint;
+- confirmar ADR 0014 y ADR 0001 ya alineados al grill; no recrear 0012/0013;
+- registrar OpenCode-only, host-owned selection, completion verification, log_dir, harness log y compatibilidad del checkpoint;
 - listar códigos de salida, estados, variables y comportamientos que no pueden cambiar;
-- capturar fixtures de los escenarios Bash actuales antes de tocar el entrypoint.
+- capturar fixtures de los escenarios Bash actuales antes de tocar el entrypoint;
+- convertir cada hallazgo del code review en prueba V2 obligatoria (GitHub verify, session_id, TOML injection, lock temps, dry-run, multi-event, redacción, args faltantes).
 
 Aceptación:
 
-- ADR aprobado;
+- ADRs/CONTEXT/design alineados (ya en repo post-grill);
 - matriz de comportamiento versionada;
-- ninguna modificación runtime.
+- ninguna modificación runtime aún.
 
 ### M1 — Spike contractual de Bun y OpenCode SDK
 
@@ -522,8 +542,8 @@ Trabajo:
 - conservar retries acotados antes del fallback;
 - permitir fallback solo en quota, rate limit persistente o model unavailable;
 - persistir posición, perfil fallido, perfil siguiente y categoría;
-- reanudar únicamente si `session.get()` confirma sesión, directory, CLI lógico, rama y base SHA;
-- si el cambio de modelo en la misma sesión no está soportado por el contrato fijado, crear sesión de recuperación nueva y restringida al mismo issue.
+- reanudar únicamente si `session.get()` confirma sesión, directory, issue, rama y base SHA;
+- en todo fallback elegible, crear siempre una sesión OpenCode nueva restringida al mismo issue/worktree (nunca mid-session model switch).
 
 Aceptación:
 
@@ -735,15 +755,16 @@ La migración está completa solo cuando:
 ## 15. Instrucciones concretas para el siguiente agente
 
 1. Trabajar desde un checkout limpio de `elvisbrevi/agent-workflow` y revalidar `origin/main`.
-2. Leer `AGENTS.md`, `CONTEXT.md`, `docs/design/issue-killer.md`, ADRs 0001, 0012 y 0013, `AGENT.md`, `PROMPT.md` y `REFERENCE.md`.
+2. Leer `AGENTS.md`, `CONTEXT.md`, `docs/design/issue-killer.md`, ADRs 0001 y 0014, este plan, `AGENT.md`, `PROMPT.md` y `REFERENCE.md` (estos últimos aún pueden describir V1 hasta M10/M11).
 3. No empezar por portar archivos Bash línea por línea.
 4. Ejecutar M0 y M1 primero; el contrato real del SDK decide las firmas.
 5. Implementar un solo entregable M por PR, o dividir M8/M9 en PRs aún menores.
-6. Mantener V1 funcional hasta M11.
-7. Convertir cada bug conocido de la revisión previa en una prueba antes de reemplazar su módulo.
+6. Mantener V1 funcional hasta M11; no parchear hallazgos de seguridad en Bash.
+7. Convertir cada bug del code review en una prueba V2 antes de implementar el módulo correspondiente.
 8. Usar TDD para dominio, estado y recuperación.
-9. Ejecutar revisión de código enfocada en invariantes, no solo equivalencia sintáctica.
-10. No publicar ni cerrar tickets adicionales sin autorización explícita.
+9. Implementar harness execution log y `log_dir` junto al event pump (M5/M6), no como afterthought.
+10. Ejecutar revisión de código enfocada en invariantes, no solo equivalencia sintáctica.
+11. No publicar ni cerrar tickets adicionales sin autorización explícita.
 
 ## 16. Referencias técnicas
 
