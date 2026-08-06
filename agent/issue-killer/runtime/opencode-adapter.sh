@@ -28,7 +28,7 @@
 #
 # Adapter-specific options consumed here (validated strictly):
 #   variant                - "low" | "medium" | "high" (or unset)
-#   auto_approve           - "true" to pass --auto-approve
+#   auto_approve           - "true" to pass --auto
 #
 # Orchestrator-provided callbacks invoked while decoding events:
 #   record_identified_issue <issue_number> <output_file>
@@ -428,7 +428,7 @@ opencode_runtime_invoke_args() {
   fi
 
   if [[ "$auto_approve" == "true" ]]; then
-    printf '%s\n' "--auto-approve"
+    printf '%s\n' "--auto"
   fi
 
   if [[ -n "$session_id" ]]; then
