@@ -203,6 +203,16 @@ issue_killer_config_parse_value() {
       return 0
       ;;
     *)
+      # Bare TOML booleans. Trim trailing whitespace; any other junk is
+      # malformed. Store as the literal "true"/"false" strings the
+      # adapters already compare against.
+      local bare="${rest%"${rest##*[![:space:]]}"}"
+      case "$bare" in
+        true|false)
+          ISSUE_KILLER_CONFIG_PARSE_VALUE="$bare"
+          return 0
+          ;;
+      esac
       return 1
       ;;
   esac
