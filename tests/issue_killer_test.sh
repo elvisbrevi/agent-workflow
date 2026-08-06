@@ -6050,10 +6050,10 @@ PROLOG
     fail 'OpenCode adapter did not pass the variant flag'
   grep -Fxq -- 'high' "$args_file" || \
     fail 'OpenCode adapter did not pass the configured variant value'
-  grep -Fxq -- '--auto-approve' "$args_file" || \
-    fail 'OpenCode adapter did not enable auto-approve when configured'
+  grep -Fxq -- '--auto' "$args_file" || \
+    fail 'OpenCode adapter did not enable --auto when configured'
 
-  pass 'opencode profile invokes opencode run with --format json, --model provider/model, --variant, and --auto-approve'
+  pass 'opencode profile invokes opencode run with --format json, --model provider/model, --variant, and --auto'
 }
 
 test_black_box_opencode_stream_preserves_provider_native_json() {
