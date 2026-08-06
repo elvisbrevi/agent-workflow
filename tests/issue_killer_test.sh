@@ -3409,6 +3409,42 @@ test_config_rejects_unknown_profile_field() {
   pass 'config rejects unknown profile fields and fails closed'
 }
 
+test_config_accepts_bare_toml_booleans() {
+  local config_path="${TEST_ROOT}/profile-bare-bool.toml"
+  local state_file="${TEST_ROOT}/profile-bare-bool.state"
+  local output="${TEST_ROOT}/profile-bare-bool-output.log"
+
+  cat > "$config_path" <<'EOF'
+default_profile = "opencode-main"
+
+[profiles.opencode-main]
+label = "OpenCode main"
+cli = "opencode"
+command = "opencode"
+model = "provider/model"
+
+[profiles.opencode-main.options]
+variant = "high"
+auto_approve = true
+EOF
+
+  (
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/agent/issue-killer/config/toml-parser.sh"
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/agent/issue-killer/config/profile-catalog.sh"
+    RUNNER_NAME=issue-killer
+    issue_killer_config_load "$config_path"
+    cp "$ISSUE_KILLER_CONFIG_STATE_FILE" "$state_file"
+  ) >"$output" 2>&1 || fail "bare boolean config failed to load: $(cat "$output")"
+
+  grep -Eq '^profiles\.opencode-main\.options\.auto_approve=true$' "$state_file" || \
+    fail 'bare auto_approve = true was not stored as true'
+
+  pass 'config accepts bare TOML booleans true/false'
+}
+
 test_checkpoint_records_profile_identity() {
   local repo="${TEST_ROOT}/profile-checkpoint-repo"
   local fake="${TEST_ROOT}/profile-checkpoint-worker"
@@ -6475,6 +6511,7 @@ test_default_profile_used_without_tty
 test_missing_default_profile_rejects_non_tty
 test_config_rejects_unknown_top_level_key
 test_config_rejects_unknown_profile_field
+test_config_accepts_bare_toml_booleans
 test_checkpoint_records_profile_identity
 test_checkpoint_enforces_profile_identity_on_recovery
 test_destructive_confirmation_lists_profile_identity
