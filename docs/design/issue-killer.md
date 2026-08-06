@@ -2,140 +2,162 @@
 
 ## Goal
 
-Replace the Claude-MiniMax-specific runner with `issue-killer`, an autonomous supervisor that can execute one issue per isolated worker using Claude, Codex, or OpenCode and can operate against GitHub or Azure DevOps.
+`issue-killer` is an autonomous supervisor that completes exactly one tracker item per worker session against GitHub or Azure DevOps. V2 runs on TypeScript under Bun and uses `@opencode-ai/sdk` as the sole agent runtime (ADR 0001, ADR 0014).
 
-The existing safety guarantees remain: one runner per repository, one issue per worker, explicit authorization for destructive actions, bounded retries, durable recovery identity, verified PR merge, and issue closure before advancing the queue.
+Safety guarantees:
+
+- one runner per repository (lock on Git common dir, linked worktrees included)
+- one issue per worker (**host-owned issue selection**)
+- explicit operator authorization before destructive autonomy
+- bounded transport retries, then OpenCode-only **fallback chain**
+- durable checkpoint identity; recovery never infers the issue
+- **completion verification** before queue advance
+- harness-owned audit log that does not consume model tokens
+
+The Bash multi-CLI V1 remains only as rollback until cutover and retirement (M11–M12). Domain language and this design describe V2.
 
 ## Source Layout
 
-`run.sh` is the composition root and queue loop. It loads modules that have no source-time side effects:
+Composition root: `agent/issue-killer/bin/issue-killer.ts`.
 
-- `config/`: strict TOML parsing and the execution-profile catalog behind the stable `issue-killer-config.sh` facade.
-- `operator/`: all TTY/stdin interaction for profile selection and destructive or recovery confirmation.
-- `state/`: durable checkpoints and repository-wide lock ownership.
-- `recovery/`: legacy migration, startup reconciliation, retry policy, and OpenCode fallback transitions.
-- `runtime/supervisor.sh`: worker process supervision and progress heartbeats.
-- `runtime/*-adapter.sh` and `tracker/*-adapter.sh`: the CLI and tracker seams required by ADR 0001.
+```text
+agent/issue-killer/
+├── bin/issue-killer.ts
+├── src/
+│   ├── app/           # queue, attempt, recover
+│   ├── domain/        # pure types and decisions
+│   ├── config/        # TOML load + strict validate
+│   ├── opencode/      # SDK runtime, event pump, session
+│   ├── operator/      # args, TTY confirmations
+│   ├── state/         # lock, checkpoint, atomic files
+│   ├── system/        # command, git, clock, redaction, signals
+│   └── tracker/       # GitHub + Azure adapters
+└── test/
+```
 
-The modules communicate through the existing normalized `runtime_*` and `tracker_*` interfaces. Configuration state is temporary and is removed by the composed exit trap on both successful and failed startup.
+Dependency direction: CLI → app → domain ← ports; adapters implement ports. `domain/` imports no Bun, SDK, filesystem, or CLIs. `command.ts` is the only process spawner; argv arrays only.
 
 ## Configuration
 
-The default configuration path is `~/.config/issue-killer/config.toml`. `--config <path>` replaces it. Configuration must not contain credentials; each CLI remains responsible for its own authenticated provider configuration.
+Default path: `~/.config/issue-killer/config.toml`. `--config <path>` replaces it. Credential-free. Unknown keys, cycles, duplicate fallbacks, missing references, and control scalars containing `\n`/`\r`/NUL are hard errors. Trailing junk after TOML strings/arrays is a hard error.
 
 ```toml
-default_profile = "claude-minimax"
+default_profile = "opencode-main"
+log_dir = "~/.local/state/issue-killer/logs"
 
-[profiles.claude-minimax]
-label = "Claude | MiniMax M3"
-cli = "claude"
-command = "claude-minimax"
-model = "minimax-m3"
-shell = "bash"
-init_file = "~/.bashrc"
-
-[profiles.claude-minimax.options]
-permission_mode = "bypassPermissions"
-
-[profiles.codex-luna-high]
-label = "Codex | GPT-5.6 Luna | high"
-cli = "codex"
-command = "codex"
-model = "gpt-5.6-luna"
-
-[profiles.codex-luna-high.options]
-reasoning_effort = "high"
-sandbox = "danger-full-access"
-
-[profiles.opencode-minimax]
-label = "OpenCode | MiniMax M3"
+[profiles.opencode-main]
+label = "OpenCode main"
 cli = "opencode"
 command = "opencode"
-model = "provider/minimax-m3"
-fallbacks = ["opencode-gpt"]
+model = "provider/model"
+fallbacks = ["opencode-backup"]
 
-[profiles.opencode-minimax.options]
+[profiles.opencode-main.options]
 variant = "high"
 auto_approve = true
 
-[profiles.opencode-gpt]
-label = "OpenCode | GPT"
+[profiles.opencode-backup]
+label = "OpenCode backup"
 cli = "opencode"
 command = "opencode"
-model = "provider/gpt-model"
+model = "provider/backup-model"
 ```
 
-Model identifiers in examples are illustrative. They must match the models exposed by the operator's installed CLI and configured providers.
+Rules:
 
-Common profile fields are validated independently from `[profiles.<name>.options]`. Each CLI adapter owns and validates its allowed options; unknown options are errors rather than ignored values. `command` is either a directly executable command or a validated shell function name loaded through the optional `shell` and `init_file` fields. Arbitrary shell expressions and `eval` are not supported.
+- every profile `cli` and `command` must be `opencode`
+- `model` splits once into `providerID/modelID`
+- `log_dir` is required, expanded, and must be writable at startup
+- `auto_approve = true` is required for non-interactive destructive runs; `false` fails before session start
+- no Claude/Codex profile fields
 
 ## Profile Selection
 
-With a controlling TTY, the runner displays every profile as `label`, CLI, model, and relevant variant/effort, then requires a selection before destructive confirmation. The menu footer always states the active configuration path and that editing it adds or changes profiles.
+TTY: list OpenCode profiles; build ordered **fallback chain** from remaining profiles; then destructive confirmation showing profile, model, chain, tracker, repo, **autonomous permission mode**, base branch, and `log_dir`.
 
-After selecting an OpenCode profile, the runner repeatedly offers the remaining OpenCode profiles to build an ordered fallback chain. Each selected profile is removed from later choices, and `None` terminates the chain. Non-OpenCode profiles do not show this menu.
+Non-TTY: `default_profile` + declared `fallbacks`.
 
-Without a TTY, the runner uses `default_profile` and that profile's declared `fallbacks`. Configuration validation rejects a missing default, unknown references, duplicate entries, cycles, and fallbacks that are not OpenCode profiles.
+## OpenCode Runtime
 
-The destructive confirmation displays the selected profile, model, fallback chain, tracker, repository, permission/autonomy mode, and base branch.
+1. Validate args, config, repo, tracker auth, worktree; resolve Git common dir.
+2. Migrate/validate legacy checkpoint without acting on ambiguous state.
+3. Acquire repository lock (exclusive dir, ownership token, random temp status files, single in-memory status writer).
+4. **Host-owned issue selection**; persist identity before any session.
+5. Destructive confirmation unless already authorized.
+6. Start local OpenCode via `createOpencode()` on `127.0.0.1` with ephemeral port (port `0` or reserve-and-retry on `EADDRINUSE`).
+7. `createOpencodeClient({ baseUrl, directory, throwOnError: true })`; health/version gate.
+8. Subscribe to events **before** prompt; create or `session.get()` with directory/issue/branch/base/profile checks.
+9. Prompt with pinned issue only; full tool permissions for the run.
+10. **Event pump** drains all session-filtered events; updates checkpoint/status; appends **harness execution log**.
+11. Read **structured worker outcome** (text marker only while V1 coexists).
+12. **Completion verification** live; advance queue only if verified.
+13. Delete session only after verified completion or verified empty queue.
+14. On signal/error: abort session, close server, keep checkpoint if needed, release lock only if token matches.
 
-## CLI Adapters
+**Opaque session id**: `^[A-Za-z0-9_-]+$`, max 128; revalidated before persist/resume/delete.
 
-Each adapter owns five behaviors:
+Fallback always starts a **fresh worker session** on the same issue/worktree after persisting failed profile, next profile, chain position, and **provider failure category**.
 
-1. Validate its executable, model, and adapter-specific options.
-2. Build a non-interactive, autonomous invocation without unsafe string evaluation.
-3. Decode its JSON event stream into normalized progress events and a session identity.
-4. Resume a compatible session or launch a fresh worker constrained to the checkpointed issue.
-5. Classify explicit provider failures eligible for OpenCode fallback.
+## Harness Execution Log
 
-Claude uses print mode and Claude stream JSON; Codex uses `exec` and JSONL; OpenCode uses `run --format json`. Tool names and event schemas are normalized before checkpoint/progress logic sees them. The orchestration layer uses the generic final marker `ISSUE_KILLER_STATUS` with `ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`, or `RECOVERY_REQUIRED`.
+- written only by the supervisor from the event pump
+- never produced by the model and never fed back into the prompt
+- all files under required TOML `log_dir`
+- one redacted JSONL file per queue run
+- records observed commands and file create/edit/delete (and related progress)
+- no full file bodies, no secrets, no raw SDK stream by default
+- same redaction pipeline as console, including multiline private-key state machine
+- no automatic rotation in V2
 
-Session resumption is capability-based. A checkpoint may be resumed only by the same CLI adapter on the recorded branch and base SHA. OpenCode may change to the next profile in its chain while continuing the same session when supported; otherwise it launches a fresh recovery worker constrained to the same issue and existing worktree.
+## Worker Outcome And Completion
 
-## Fallback Behavior
+Primary: structured output `{ status, issue, summary }` with public statuses `ISSUE_COMPLETED | QUEUE_EMPTY | BLOCKED | FAILED | RECOVERY_REQUIRED`.
 
-Existing bounded transport retries run before profile fallback. OpenCode advances its chain only after the adapter identifies an explicit quota/subscription exhaustion, persistent provider rate limit, or unavailable model. Generic non-zero exits, malformed output, `BLOCKED`, `FAILED`, context-window exhaustion, and implementation failures never rotate profiles automatically.
+Compatibility text marker `ISSUE_KILLER_STATUS=...` only until V1 retirement (M12); contradictions → reject; invalid/missing → malformed; never advance without **completion verification**.
 
-Before fallback, the supervisor persists the failed profile, next profile, remaining chain, issue, branch, base SHA, and last safe state. It then reconciles tracker and PR state to avoid duplicate side effects. Exhausting the chain produces `RECOVERY_REQUIRED`; it never advances to another issue.
+GitHub verification requires all of:
+
+- issue closed (closed after PR merge as part of delivery)
+- exactly one attributable PR
+- PR merged
+- `baseRefName` equals the run base branch
+
+Azure verification is **ticket completion** (PR into **HU integration branch**, evidence, real effort, ticket in configured completed state such as Done). The HU is not auto-closed.
 
 ## Tracker Adapters
 
-The runner detects the tracker from the Git remote and validates it against `docs/agents/issue-tracker.md`.
+Tracker from Git remote + `docs/agents/issue-tracker.md`. GitHub via `gh`; Azure via `az`. No extra tracker SDKs. Ambiguity fails before launch.
 
-- GitHub uses `gh` for issue discovery, dependency checks, assignment, PR creation/reconciliation/merge, and issue closure.
-- Azure DevOps uses `az boards` for work items and relations and `az repos pr` for pull requests. Organization, project, repository, area/iteration defaults, work-item types, open/closed states, and role mappings come from the repository's tracker documentation.
-
-An ambiguous remote, conflicting documentation, missing CLI/authentication, or incomplete Azure mapping fails before worker launch with instructions to run `setup-elvis-brevi-skills`. Tracker selection is not stored in a machine-level execution profile.
-
-Both adapters expose equivalent normalized operations: list eligible non-epic work, check blockers, read/claim an item, find a PR by source branch, verify merge state, close the item, and reconcile recovery state.
+Normalized operations include select/pin, blockers, claim, PR lookup, merge verify, close/complete, recovery reconcile, and unconditional completion verification for every tracker.
 
 ## Checkpoints And Locks
 
-New state lives in the Git common directory as `issue-killer.lock/` and `issue-killer.checkpoint`. In addition to current lifecycle fields, checkpoints record the tracker, selected profile, CLI, model, fallback chain, active fallback position, and adapter session identity. Credentials, prompts, complete commands, and tool inputs remain excluded.
+Git common dir: `issue-killer.lock/`, `issue-killer.checkpoint`.
 
-On first startup after renaming, `issue-killer`:
+- checkpoint stays `key=value` through cutover (optional `format_version=2`)
+- allowlisted keys; reject duplicates where single-valued; reject control chars and oversized values
+- atomic write via random temp in same dir + flush + rename
+- never persist prompt, credentials, headers, full tools, or full commands
+- lock stale only if PID gone and owner unchanged across re-read; release only on matching token
 
-1. Refuses to start if the legacy `claude-minimax-issue-runner.lock` has a live owner.
-2. Recovers or removes a stale legacy lock using the existing ownership checks.
-3. Migrates a valid legacy checkpoint atomically to the new name and records the matching Claude profile.
-4. Stops with `RECOVERY_REQUIRED` if the legacy state cannot be mapped unambiguously.
+## Installer
 
-No permanent `claude-minimax-issue-runner` command alias remains.
-
-## Installation And Documentation
-
-The source directory, agent definition, command, tests, status marker, environment variables, logs, locks, checkpoints, and user-facing text adopt the `issue-killer` name. The installer removes old agent/runner symlinks while preserving repository recovery state for the new runner to inspect.
-
-The README includes the full sample TOML, configuration path, profile menu behavior, supported CLI/tracker matrix, non-interactive behavior, fallback rules, migration notes, and commands for validating available models in each CLI.
+- public command remains `issue-killer`
+- install V2 with `bun install --frozen-lockfile --production` in managed cache
+- `--dry-run` uses temporary staging only; no persistent cache/dest mutations
+- `--uninstall` is offline (no repo sync); removes managed symlinks by ownership prefix
+- missing required CLI args yield explicit errors, not unbound-variable failures
+- V1 entrypoint kept as rollback until M12 approval
 
 ## Acceptance Criteria
 
-- A TTY launch lists configured profiles and prints the configuration file path; selection controls the invoked CLI and model.
-- A non-TTY launch uses the configured default profile and fails clearly when it is absent or invalid.
-- Claude, Codex, and OpenCode fixtures verify argument translation, event normalization, status extraction, session handling, and safe permissions.
-- OpenCode fallback preserves issue identity and order, activates only for approved provider failures, and stops safely when exhausted.
-- GitHub and Azure DevOps fixtures verify queue selection, blocker detection, PR reconciliation/merge verification, and item closure.
-- Recovery persists and enforces profile, fallback, tracker, branch, and issue identity without storing secrets.
-- An active legacy runner blocks the renamed runner; a valid legacy checkpoint migrates once without a permanent command alias.
-- Installer and runner regression suites pass on Bash 3.2 and the project's supported modern Bash version.
+- OpenCode-only profiles and fallback chains; no Claude/Codex runtime paths in V2
+- host-owned selection for GitHub and Azure; model cannot switch issues
+- event pump processes every session event; single status writer; random temps
+- opaque session id validation prevents path traversal
+- TOML loader rejects newline injection and trailing junk
+- completion verification blocks false `ISSUE_COMPLETED` on GitHub and Azure
+- harness log under `log_dir`, redactable, zero model tokens
+- localhost ephemeral OpenCode server; clean abort on signals
+- dry-run non-mutating; uninstall offline
+- V1 checkpoint fixtures still load; cutover then Bash retirement by explicit approval
