@@ -1,5 +1,15 @@
-export { AUTONOMOUS_PERMISSION, createOpenCodeRuntime } from "./runtime"
-export type { OpenCodeRuntime, OpenCodeRuntimeOptions } from "./runtime"
+export {
+  AUTONOMOUS_PERMISSION,
+  SUPPORTED_OPENCODE_VERSIONS,
+  createOpenCodeRuntime,
+  runOpenCodeWorkerSession,
+} from "./runtime"
+export type {
+  OpenCodeRuntime,
+  OpenCodeRuntimeOptions,
+  OpenCodeWorkerSessionInput,
+  OpenCodeWorkerSessionResult,
+} from "./runtime"
 export { drainSessionEvents, sessionIdFromEvent } from "./event-pump"
 export type { EventPumpInput, EventPumpResult, ObservedEvent } from "./event-pump"
 export { createHarnessLog } from "./harness-log"

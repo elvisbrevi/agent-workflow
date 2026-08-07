@@ -13,6 +13,8 @@ const BEARER_PATTERN = /\b(bearer)([\s:;,=]+)([A-Za-z0-9._~+/-]{6,})/gi
 const CREDENTIAL_KEY_PATTERN =
   /\b(api[_-]?key|secret|password|access[_-]?token|auth[_-]?token)([\s:;,=]+)(['"]?[A-Za-z0-9._~+/-]+['"]?)/gi
 
+const URL_CREDENTIAL_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi
+
 const PROVIDER_TOKEN_PATTERN = /\b(ghp_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|ghu_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)\b/g
 
 const PRIVATE_KEY_BEGIN_PATTERN = /-----BEGIN [A-Z ]+PRIVATE KEY-----/
@@ -74,6 +76,15 @@ export const redactLine = (input: string): LineRedaction => {
   )
   working = credential.text
   reasons.push(...credential.reasons)
+
+  const urlCredential = replaceLineMatches(
+    working,
+    URL_CREDENTIAL_PATTERN,
+    (_match: string, scheme: string) => `${scheme}${REDACTED_CREDENTIAL}@`,
+    "credential_pair",
+  )
+  working = urlCredential.text
+  reasons.push(...urlCredential.reasons)
 
   const providerToken = replaceLineMatches(
     working,
