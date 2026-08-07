@@ -11,9 +11,11 @@ const AUTHORIZATION_PATTERN =
 const BEARER_PATTERN = /\b(bearer)([\s:;,=]+)([A-Za-z0-9._~+/-]{6,})/gi
 
 const CREDENTIAL_KEY_PATTERN =
-  /\b(api[_-]?key|secret|password|access[_-]?token|auth[_-]?token)([\s:;,=]+)(['"]?[A-Za-z0-9._~+/-]+['"]?)/gi
+  /\b(api[_-]?key|api[_-]?token|client[_-]?secret|secret|password|access[_-]?token|auth[_-]?token)([\s:;,=]+)(['"]?[A-Za-z0-9._~+/-]+['"]?)/gi
 
 const URL_CREDENTIAL_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi
+
+const TOKEN_PAIR_PATTERN = /\b(token)([\s:;,=]+)(['"]?[A-Za-z0-9._~+/-]+['"]?)/gi
 
 const PROVIDER_TOKEN_PATTERN = /\b(ghp_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|ghu_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)\b/g
 
@@ -94,6 +96,15 @@ export const redactLine = (input: string): LineRedaction => {
   )
   working = providerToken.text
   reasons.push(...providerToken.reasons)
+
+  const tokenPair = replaceLineMatches(
+    working,
+    TOKEN_PAIR_PATTERN,
+    (_match: string, key: string) => `${key}=<redacted>`,
+    "credential_pair",
+  )
+  working = tokenPair.text
+  reasons.push(...tokenPair.reasons)
 
   return { text: working, reasons }
 }

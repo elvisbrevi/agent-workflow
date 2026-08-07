@@ -10,6 +10,7 @@ import { IssueKillerError } from "../domain/errors"
 import type { EventPumpResult, ObservedEvent } from "./event-pump"
 import { drainSessionEvents } from "./event-pump"
 import { parseSessionId, type SessionId } from "../domain/session-id"
+import type { LifecycleState } from "../domain/lifecycle"
 
 export const AUTONOMOUS_PERMISSION = {
   read: "allow",
@@ -112,6 +113,30 @@ const hasMatchingScope = (metadata: unknown, scope: OpenCodeSessionScope): boole
   const values = stored as Record<string, unknown>
   const expected = scopeMetadata(scope)
   return Object.entries(expected).every(([key, value]) => values[key] === value)
+}
+
+const lifecycleForOutcome = (status: string): LifecycleState => {
+  switch (status) {
+    case "ISSUE_COMPLETED": return "issue_completed"
+    case "QUEUE_EMPTY": return "queue_empty"
+    case "BLOCKED": return "blocked"
+    case "RECOVERY_REQUIRED": return "recovery_required"
+    case "FAILED": return "failed"
+    default: return "failed"
+  }
+}
+
+const primeEventStream = async (stream: AsyncIterable<unknown>): Promise<AsyncIterable<unknown>> => {
+  const iterator = stream[Symbol.asyncIterator]()
+  const first = await iterator.next()
+  return (async function* () {
+    if (!first.done) yield first.value
+    while (true) {
+      const next = await iterator.next()
+      if (next.done) return
+      yield next.value
+    }
+  })()
 }
 
 export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Promise<OpenCodeRuntime> => {
@@ -258,22 +283,36 @@ export const runOpenCodeWorkerSession = async (
 ): Promise<OpenCodeWorkerSessionResult> => {
   if (input.signal?.aborted) throw new Error("OpenCode worker was cancelled before session creation")
 
+  const harnessStarted = input.harnessLog !== undefined && input.runId !== undefined
+  if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
+    await input.harnessLog.startRun({ runId: input.runId, repository: input.directory })
+  }
   const session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
   const controller = new AbortController()
   let abortPromise: Promise<void> | undefined
+  let closePromise: Promise<void> | undefined
   const abortSession = (): void => {
     controller.abort()
     abortPromise ??= input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory })
       .catch(() => undefined)
+    closePromise ??= input.runtime.close().catch(() => undefined)
   }
   const signalHandler = (): void => abortSession()
   input.signal?.addEventListener("abort", signalHandler, { once: true })
 
   try {
-    const eventStream = input.runtime.subscribeEvents({
+    const subscription = input.runtime.subscribeEvents({
       directory: input.directory,
       sessionId: session.sessionId,
     })
+    const cancellation = new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(new Error("OpenCode worker was cancelled"))
+        return
+      }
+      controller.signal.addEventListener("abort", () => reject(new Error("OpenCode worker was cancelled")), { once: true })
+    })
+    const eventStream = await Promise.race([primeEventStream(subscription), cancellation])
     const eventResultPromise = drainSessionEvents({
       events: eventStream,
       expectedSessionId: session.sessionId,
@@ -296,6 +335,7 @@ export const runOpenCodeWorkerSession = async (
     const firstResult = await Promise.race([
       promptPromise.then((value) => ({ kind: "prompt" as const, value })),
       eventResultPromise.then((value) => ({ kind: "events" as const, value })),
+      cancellation,
     ])
     if (firstResult.kind === "events" && firstResult.value.permissionStopped) {
       abortSession()
@@ -315,15 +355,19 @@ export const runOpenCodeWorkerSession = async (
     if (events.malformedOutcome || events.missingOutcome) {
       throw new IssueKillerError("malformed_outcome", "OpenCode emitted an invalid or contradictory worker outcome")
     }
+    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined && events.outcome !== null) {
+      await input.harnessLog.endRun({ runId: input.runId, status: lifecycleForOutcome(events.outcome.status) })
+    }
     return { sessionId: session.sessionId, runId: promptResult.runId, events }
   } catch (error) {
     abortSession()
     await abortPromise
+    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
+      await input.harnessLog.endRun({ runId: input.runId, status: "failed" })
+    }
     throw error
   } finally {
     input.signal?.removeEventListener("abort", signalHandler)
-    if (controller.signal.aborted) {
-      await input.runtime.close()
-    }
+    await closePromise
   }
 }
