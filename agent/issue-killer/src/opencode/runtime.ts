@@ -30,7 +30,7 @@ export const AUTONOMOUS_PERMISSION = {
   doom_loop: "allow",
 } satisfies PermissionConfig
 
-export const SUPPORTED_OPENCODE_VERSIONS = new Set(["1.18.14"])
+export const SUPPORTED_OPENCODE_VERSIONS = new Set(["1.18.14", "1.18.15"])
 
 const OUTCOME_SCHEMA = {
   type: "json_schema",
@@ -301,6 +301,7 @@ export const runOpenCodeWorkerSession = async (
   input.signal?.addEventListener("abort", signalHandler, { once: true })
 
   try {
+    await input.onSessionCaptured?.(session.sessionId)
     const subscription = input.runtime.subscribeEvents({
       directory: input.directory,
       sessionId: session.sessionId,
