@@ -42,6 +42,7 @@ const trackerPort: TrackerPort = {
 
 const clockPort: ClockPort = {
   now: () => "2026-08-06 12:00:00 +0000",
+  sleep: async () => undefined,
 }
 
 const commandPort: CommandRunnerPort = {
