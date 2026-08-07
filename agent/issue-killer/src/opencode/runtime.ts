@@ -358,14 +358,14 @@ export const runOpenCodeWorkerSession = async (
     if (events.malformedOutcome || events.missingOutcome) {
       throw new IssueKillerError("malformed_outcome", "OpenCode emitted an invalid or contradictory worker outcome")
     }
-    if (harnessEnabled && input.harnessLog !== undefined && input.runId !== undefined && events.outcome !== null) {
+    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined && events.outcome !== null) {
       await input.harnessLog.endRun({ runId: input.runId, status: lifecycleForOutcome(events.outcome.status) })
     }
     return { sessionId: session.sessionId, runId: promptResult.runId, events }
   } catch (error) {
     abortSession()
     await abortPromise
-    if (harnessEnabled && input.harnessLog !== undefined && input.runId !== undefined) {
+    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
       await input.harnessLog.endRun({ runId: input.runId, status: "failed" })
     }
     throw error

@@ -74,6 +74,8 @@ export type GitPort = {
   currentBranch(input: { readonly cwd: string }): Promise<string>
   currentBaseSha(input: { readonly cwd: string; readonly baseBranch: string }): Promise<string>
   worktreeIsClean(input: { readonly cwd: string }): Promise<boolean>
+  readonly createBranch?: (input: { readonly cwd: string; readonly branch: string }) => Promise<void>
+  readonly checkoutBranch?: (input: { readonly cwd: string; readonly branch: string }) => Promise<void>
 }
 
 export type CheckpointStorePort = {

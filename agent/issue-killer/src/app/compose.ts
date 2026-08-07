@@ -177,10 +177,15 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
         await input.checkpoint.clear({ gitCommonDir: commonDir, runnerName: input.runnerName })
         return statusResult(status, lastIssue, selection.reason)
       }
+      if (input.signal?.aborted) return statusResult("BLOCKED", lastIssue, "run was cancelled")
 
       const issue = identityNumber(selection.identity)
       lastIssue = issue
-      const branch = await input.git.currentBranch({ cwd: input.directory })
+      let branch = await input.git.currentBranch({ cwd: input.directory })
+      if (branch === input.baseBranch && input.git.createBranch !== undefined) {
+        branch = `issue-${issue}`
+        await input.git.createBranch({ cwd: input.directory, branch })
+      }
       const baseSha = await input.git.currentBaseSha({ cwd: input.directory, baseBranch: input.baseBranch })
       let checkpoint = emptyCheckpoint({
         pid: input.owner.pid,
@@ -234,6 +239,10 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           return statusResult("FAILED", issue, "worker did not emit a valid outcome for the pinned issue")
         }
         if (worker.outcome.status !== "ISSUE_COMPLETED") {
+          if (worker.outcome.status === "QUEUE_EMPTY") {
+            await saveCheckpoint({ supervisor: input, checkpoint, state: "failed" }).catch(() => undefined)
+            return statusResult("FAILED", issue, "worker emitted QUEUE_EMPTY for a pinned issue")
+          }
           await saveCheckpoint({
             supervisor: input,
             checkpoint,
@@ -242,10 +251,9 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           return statusResult(worker.outcome.status, issue, worker.outcome.summary)
         }
 
-        const sourceBranch = await input.git.currentBranch({ cwd: input.directory })
         const verification = await input.tracker.verifyCompletion({
           identity: selection.identity,
-          branch: sourceBranch,
+          branch,
           baseBranch: input.baseBranch,
         })
         if (!completionIsVerified(verification)) {
@@ -269,6 +277,16 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
             updatedAt: input.now(),
           })
           return statusResult("ISSUE_COMPLETED", issue, undefined, 3)
+        }
+        if (!(await input.git.worktreeIsClean({ cwd: input.directory }))) {
+          return statusResult("RECOVERY_REQUIRED", issue, "worktree is dirty after verified completion")
+        }
+        const currentBranch = await input.git.currentBranch({ cwd: input.directory })
+        if (currentBranch !== input.baseBranch) {
+          if (input.git.checkoutBranch === undefined) {
+            return statusResult("RECOVERY_REQUIRED", issue, "unable to return to the configured base branch")
+          }
+          await input.git.checkoutBranch({ cwd: input.directory, branch: input.baseBranch })
         }
       } catch (error) {
         const failure = failureFromError(error, issue)
