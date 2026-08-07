@@ -1,6 +1,7 @@
 import type { HarnessLogPort } from "../domain/ports"
 import { parseWorkerOutcome, type WorkerOutcome } from "../domain/outcome"
 import { parseSessionId, type SessionId } from "../domain/session-id"
+import { redactMultiline } from "../system/redaction"
 
 type EventRecord = Readonly<Record<string, unknown>>
 
@@ -129,7 +130,23 @@ const observedPayload = (event: ObservedEvent): Readonly<Record<string, unknown>
 }
 
 const sameOutcome = (left: WorkerOutcome, right: WorkerOutcome): boolean =>
-  left.status === right.status && left.issue === right.issue && left.summary === right.summary
+  left.status === right.status &&
+  left.issue === right.issue &&
+  (left.summary === right.summary || left.summary === "worker status marker" || right.summary === "worker status marker")
+
+const redactEvent = (event: ObservedEvent): ObservedEvent => {
+  const redact = (value: unknown, seen: WeakSet<object>): unknown => {
+    if (typeof value === "string") return redactMultiline(value).text
+    if (value === null || typeof value !== "object") return value
+    if (seen.has(value)) return "<redacted:circular>"
+    seen.add(value)
+    if (Array.isArray(value)) return value.map((entry) => redact(entry, seen))
+    const record: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value)) record[key] = redact(entry, seen)
+    return record
+  }
+  return redact(event, new WeakSet<object>()) as ObservedEvent
+}
 
 export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPumpResult> => {
   let eventsSeen = 0
@@ -170,7 +187,7 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
     if (input.harnessLog !== undefined && input.runId !== undefined) {
       await input.harnessLog.appendEvent({ runId: input.runId, payload: observedPayload(event) })
     }
-    await input.onEvent?.(event)
+    await input.onEvent?.(redactEvent(event))
 
     if (input.autonomous === true && /(^|\.)permission\.(?:v2\.)?asked$/.test(type)) {
       permissionStopped = true
@@ -188,8 +205,9 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
       } else if (!sameOutcome(outcome, parsed)) {
         malformedOutcome = true
         outcome = null
+      } else if (outcome.summary === "worker status marker") {
+        outcome = parsed
       }
-      if (input.stopOnOutcome === true && (outcome !== null || malformedOutcome)) break
       continue
     }
 
@@ -210,6 +228,8 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
         }
       }
     }
+
+    if (input.stopOnOutcome === true && outcome !== null && event.type === "session.idle") break
   }
 
   return {
