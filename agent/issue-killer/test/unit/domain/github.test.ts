@@ -317,6 +317,7 @@ describe("verifyGithubCompletion", () => {
       pullRequests: [
         {
           number: 12,
+          state: "MERGED",
           mergedAt: "2026-08-06T10:00:00Z",
           baseRefName: "develop",
         },

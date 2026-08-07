@@ -236,6 +236,9 @@ export const verifyGithubCompletion = (input: {
   if (prNumber === null) {
     return { kind: "malformed", reason: "pull request number is invalid" }
   }
+  if (pr.state !== "MERGED") {
+    return { kind: "pr_unmerged", issueNumber: number, prNumber }
+  }
   const mergedAt = parseNonEmptyString(pr.mergedAt)
   if (mergedAt === null) {
     return { kind: "pr_unmerged", issueNumber: number, prNumber }

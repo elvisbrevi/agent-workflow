@@ -58,12 +58,8 @@ case "$key" in
         repos/*/issues/*/dependencies/blocked_by) target="$arg" ;;
       esac
     done
-    payload=$(jq -r --arg k "$target" '.responses[$k] // "0"' "$STATE")
-    if printf '%s' "$payload" | jq -e 'type == "array"' >/dev/null 2>&1; then
-      printf '%s' "$payload" | jq '[.[] | select(.state == "open")] | length'
-    else
-      printf '%s' "$payload"
-    fi
+    payload=$(jq -r --arg k "$target" '.responses[$k] // "[]"' "$STATE")
+    printf '%s' "$payload"
     exit 0
     ;;
   issue)
@@ -385,9 +381,9 @@ describe("GitHub tracker adapter", () => {
       },
     ])
     await stub.setResponse("issue list", issueList)
-    await stub.setResponse("repos/example/fixture/issues/1/dependencies/blocked_by", "0")
-    await stub.setResponse("repos/example/fixture/issues/2/dependencies/blocked_by", "0")
-    await stub.setResponse("repos/example/fixture/issues/3/dependencies/blocked_by", "0")
+    await stub.setResponse("repos/example/fixture/issues/1/dependencies/blocked_by", "[]")
+    await stub.setResponse("repos/example/fixture/issues/2/dependencies/blocked_by", "[]")
+    await stub.setResponse("repos/example/fixture/issues/3/dependencies/blocked_by", "[]")
 
     const adapter = createGithubTracker({
       runner,
@@ -421,7 +417,7 @@ describe("GitHub tracker adapter", () => {
       },
     ])
     await stub.setResponse("issue list", issueList)
-    await stub.setResponse("repos/example/fixture/issues/1/dependencies/blocked_by", "0")
+    await stub.setResponse("repos/example/fixture/issues/1/dependencies/blocked_by", "[]")
 
     const adapter = createGithubTracker({
       runner,
