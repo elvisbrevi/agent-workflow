@@ -290,6 +290,11 @@ export const runOpenCodeWorkerSession = async (
     await input.harnessLog.startRun({ runId: input.runId, repository: input.directory })
   }
   const session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+  if (input.signal?.aborted) {
+    await input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory }).catch(() => undefined)
+    await input.runtime.close().catch(() => undefined)
+    throw new Error("OpenCode worker was cancelled")
+  }
   const controller = new AbortController()
   let abortPromise: Promise<void> | undefined
   let closePromise: Promise<void> | undefined
@@ -297,7 +302,10 @@ export const runOpenCodeWorkerSession = async (
     controller.abort()
     abortPromise ??= input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory })
       .catch(() => undefined)
-    closePromise ??= input.runtime.close().catch(() => undefined)
+    closePromise ??= (abortPromise ?? Promise.resolve()).then(
+      () => input.runtime.close(),
+      () => input.runtime.close(),
+    ).catch(() => undefined)
   }
   const signalHandler = (): void => abortSession()
   input.signal?.addEventListener("abort", signalHandler, { once: true })

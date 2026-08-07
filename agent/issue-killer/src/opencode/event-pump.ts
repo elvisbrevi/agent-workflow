@@ -97,7 +97,7 @@ const observedPayload = (event: ObservedEvent): Readonly<Record<string, unknown>
   if (session !== null) payload.session_id = session
   if (event.type === "file.watcher.updated" && typeof properties.event === "string") {
     payload.kind = "file_mutation"
-    payload.file = properties.file
+    payload.file = typeof properties.file === "string" ? properties.file : "<redacted>"
     payload.action = properties.event
   } else if (typeof properties.file === "string") {
     payload.kind = "file_edit"
@@ -118,7 +118,7 @@ const observedPayload = (event: ObservedEvent): Readonly<Record<string, unknown>
   } else if (event.type.includes("tool.")) {
     payload.kind = "tool"
     payload.action = event.type.split(".").pop()
-    payload.tool = properties.tool
+    payload.tool = typeof properties.tool === "string" ? properties.tool : "<redacted>"
   } else if (event.type === "session.error") {
     payload.kind = "error"
     const error = recordOf(properties.error)

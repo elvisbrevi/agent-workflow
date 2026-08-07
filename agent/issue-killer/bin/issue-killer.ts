@@ -19,6 +19,7 @@ import { systemGitPort } from "../src/system/git"
 import { bunCommandRunner } from "../src/system/command"
 import { WORKER_STATUS_EXIT_CODE } from "../src/domain/outcome"
 import type { ExecutionProfile } from "../src/domain/execution-profile"
+import { redactMultiline } from "../src/system/redaction"
 
 const env = process.env as Readonly<Record<string, string | undefined>>
 const commandRunner = bunCommandRunner()
@@ -71,7 +72,7 @@ const stop = (status: keyof typeof WORKER_STATUS_EXIT_CODE, reason: string): nev
 }
 
 const output = (status: keyof typeof WORKER_STATUS_EXIT_CODE, reason?: string, exitCode?: number): void => {
-  if (reason !== undefined) process.stderr.write(`issue-killer V2: ${reason}\n`)
+  if (reason !== undefined) process.stderr.write(`issue-killer V2: ${redactMultiline(reason).text.slice(0, 256)}\n`)
   process.stdout.write(`ISSUE_KILLER_STATUS=${status}\n`)
   process.exitCode = exitCode ?? WORKER_STATUS_EXIT_CODE[status]
 }
