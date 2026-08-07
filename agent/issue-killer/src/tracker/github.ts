@@ -352,16 +352,27 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
     const result = await runGh(options, [
       "api",
       `repos/${slug}/issues/${issueNumber}/dependencies/blocked_by`,
-      "--jq",
-      '[.[] | select(.state == "open")] | length',
     ])
     if (result.exitCode !== 0) {
       return null
     }
     const trimmed = result.stdout.trim()
     if (trimmed.length === 0) return null
-    const parsed = Number(trimmed)
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      return null
+    }
+    if (!Array.isArray(parsed)) return null
+    let openBlockers = 0
+    for (const blocker of parsed) {
+      if (typeof blocker !== "object" || blocker === null) return null
+      const state = (blocker as Record<string, unknown>)["state"]
+      if (state !== "open" && state !== "closed") return null
+      if (state === "open") openBlockers += 1
+    }
+    return openBlockers
   }
 
   return {
