@@ -89,6 +89,7 @@ describe("runVerticalSlice", () => {
     const result = await runVerticalSlice(input)
 
     expect(result.status).toBe("ISSUE_COMPLETED")
+    expect(result.exitCode).toBe(3)
     expect(input._test.deleted).toEqual(["session-17"])
     expect(input._test.cleared).toEqual(["clear"])
     expect(input._test.states).toContain("verified")
@@ -108,5 +109,26 @@ describe("runVerticalSlice", () => {
     expect(result.status).toBe("RECOVERY_REQUIRED")
     expect(input._test.deleted).toEqual([])
     expect(input._test.cleared).toEqual([])
+  })
+
+  test("emits idle heartbeats without adding concurrent status writes", async () => {
+    let heartbeats = 0
+    const input = makeInput({
+      progressIntervalSeconds: 0.001,
+      onHeartbeat: () => { heartbeats += 1 },
+      worker: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 8))
+        return {
+          sessionId: "session-17" as never,
+          outcome: { status: "BLOCKED", issue: 17, summary: "needs input" },
+        }
+      },
+    })
+
+    const result = await runVerticalSlice(input)
+
+    expect(result.status).toBe("BLOCKED")
+    expect(heartbeats).toBeGreaterThan(0)
+    expect(input._test.states.filter((state) => state.startsWith("lock:")).length).toBeGreaterThan(0)
   })
 })

@@ -45,6 +45,8 @@ export type SupervisorInput = {
   readonly deleteSession: (input: { readonly sessionId: SessionId; readonly directory: string }) => Promise<void>
   readonly promptText?: string
   readonly signal?: AbortSignal
+  readonly progressIntervalSeconds?: number
+  readonly onHeartbeat?: (input: { readonly issue?: number; readonly elapsedMs: number }) => void
 }
 
 export type SupervisorResult = {
@@ -76,9 +78,9 @@ const identityForCheckpoint = (identity: TrackerIdentity): CheckpointIdentity =>
 const identityNumber = (identity: TrackerIdentity): number =>
   identity.kind === "github" ? identity.number : identity.ticket
 
-const statusResult = (status: WorkerStatus, issue?: number, reason?: string): SupervisorResult => ({
+const statusResult = (status: WorkerStatus, issue?: number, reason?: string, exitCode?: number): SupervisorResult => ({
   status,
-  exitCode: WORKER_STATUS_EXIT_CODE[status],
+  exitCode: exitCode ?? WORKER_STATUS_EXIT_CODE[status],
   ...(issue === undefined ? {} : { issue }),
   ...(reason === undefined ? {} : { reason }),
 })
@@ -88,7 +90,10 @@ const errorMessage = (error: unknown): string => error instanceof Error ? error.
 const failureFromError = (error: unknown, issue: number): SupervisorResult => {
   const message = errorMessage(error)
   if (/cancel|abort|permission/i.test(message)) return statusResult("BLOCKED", issue, message)
-  if (/malformed|outcome|drift|checkpoint|lock/i.test(message)) {
+  if (/malformed|invalid or contradictory worker outcome/i.test(message)) {
+    return statusResult("FAILED", issue, message)
+  }
+  if (/drift|checkpoint|lock/i.test(message)) {
     return statusResult("RECOVERY_REQUIRED", issue, message)
   }
   return statusResult("FAILED", issue, message)
@@ -173,7 +178,6 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
         return statusResult(status, lastIssue, selection.reason)
       }
 
-      await input.tracker.claimIssue({ identity: selection.identity })
       const issue = identityNumber(selection.identity)
       lastIssue = issue
       const branch = await input.git.currentBranch({ cwd: input.directory })
@@ -193,9 +197,10 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
       })
       checkpoint = { ...checkpoint, identity: identityForCheckpoint(selection.identity) }
       checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "issue_selected" })
+      await input.tracker.claimIssue({ identity: selection.identity })
 
       try {
-        const worker = await input.worker({
+        const workerInput: WorkerRunInput = {
           issue,
           branch,
           baseBranch: input.baseBranch,
@@ -210,11 +215,23 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
               state: "mutating",
             })
           },
-        })
+        }
+        const startedAt = Date.now()
+        const intervalSeconds = input.progressIntervalSeconds ?? 0
+        const heartbeat = intervalSeconds > 0
+          ? setInterval(() => input.onHeartbeat?.({ issue, elapsedMs: Date.now() - startedAt }), intervalSeconds * 1000)
+          : undefined
+        heartbeat?.unref?.()
+        let worker: WorkerRunResult
+        try {
+          worker = await input.worker(workerInput)
+        } finally {
+          if (heartbeat !== undefined) clearInterval(heartbeat)
+        }
         checkpoint = { ...checkpoint, sessionId: worker.sessionId }
         if (worker.outcome === null || worker.outcome.issue !== issue) {
-          await saveCheckpoint({ supervisor: input, checkpoint, state: "recovery_required" }).catch(() => undefined)
-          return statusResult("RECOVERY_REQUIRED", issue, "worker did not emit a valid outcome for the pinned issue")
+          await saveCheckpoint({ supervisor: input, checkpoint, state: "failed" }).catch(() => undefined)
+          return statusResult("FAILED", issue, "worker did not emit a valid outcome for the pinned issue")
         }
         if (worker.outcome.status !== "ISSUE_COMPLETED") {
           await saveCheckpoint({
@@ -232,6 +249,7 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           baseBranch: input.baseBranch,
         })
         if (!completionIsVerified(verification)) {
+          await saveCheckpoint({ supervisor: input, checkpoint, state: "recovery_required" }).catch(() => undefined)
           return statusResult("RECOVERY_REQUIRED", issue, readCompletionReason(verification))
         }
         checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "verified" })
@@ -250,10 +268,16 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
             issueLabel: String(issue),
             updatedAt: input.now(),
           })
-          return statusResult("ISSUE_COMPLETED", issue)
+          return statusResult("ISSUE_COMPLETED", issue, undefined, 3)
         }
       } catch (error) {
-        return failureFromError(error, issue)
+        const failure = failureFromError(error, issue)
+        await saveCheckpoint({
+          supervisor: input,
+          checkpoint,
+          state: lifecycleForStatus(failure.status),
+        }).catch(() => undefined)
+        return failure
       }
     }
     return statusResult("ISSUE_COMPLETED", lastIssue)

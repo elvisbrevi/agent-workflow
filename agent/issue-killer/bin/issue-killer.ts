@@ -70,10 +70,20 @@ const stop = (status: keyof typeof WORKER_STATUS_EXIT_CODE, reason: string): nev
   throw new CliOutcome(status, reason)
 }
 
-const output = (status: keyof typeof WORKER_STATUS_EXIT_CODE, reason?: string): void => {
+const output = (status: keyof typeof WORKER_STATUS_EXIT_CODE, reason?: string, exitCode?: number): void => {
   if (reason !== undefined) process.stderr.write(`issue-killer V2: ${reason}\n`)
   process.stdout.write(`ISSUE_KILLER_STATUS=${status}\n`)
-  process.exitCode = WORKER_STATUS_EXIT_CODE[status]
+  process.exitCode = exitCode ?? WORKER_STATUS_EXIT_CODE[status]
+}
+
+const harnessLifecycleFor = (status: SupervisorResult["status"]): "issue_completed" | "queue_empty" | "blocked" | "failed" | "recovery_required" => {
+  switch (status) {
+    case "ISSUE_COMPLETED": return "issue_completed"
+    case "QUEUE_EMPTY": return "queue_empty"
+    case "BLOCKED": return "blocked"
+    case "FAILED": return "failed"
+    case "RECOVERY_REQUIRED": return "recovery_required"
+  }
 }
 
 const main = async (): Promise<SupervisorResult> => {
@@ -106,6 +116,8 @@ const main = async (): Promise<SupervisorResult> => {
   const promptAsset = await readFile(new URL("../PROMPT.md", import.meta.url), "utf8")
   const runtime = await createOpenCodeRuntime({ directory, autonomous: true })
   const runId = `issue-killer-${randomUUID()}`
+  await harness.startRun({ runId, repository: directory })
+  let harnessEnded = false
   const abortController = new AbortController()
   const onInterrupt = (): void => abortController.abort()
   process.once("SIGINT", onInterrupt)
@@ -130,6 +142,10 @@ const main = async (): Promise<SupervisorResult> => {
       lock,
       now: clock.now,
       signal: abortController.signal,
+      progressIntervalSeconds: positiveEnv("ISSUE_RUNNER_PROGRESS_INTERVAL", 30),
+      onHeartbeat: ({ issue, elapsedMs }) => {
+        process.stderr.write(`[issue-killer] heartbeat: ${issue === undefined ? "starting" : `issue ${issue}`} (${Math.floor(elapsedMs / 1000)}s)\n`)
+      },
       worker: async (input) => {
         const promptText = [
           promptAsset,
@@ -158,6 +174,7 @@ const main = async (): Promise<SupervisorResult> => {
           signal: input.signal,
           harnessLog: harness,
           runId,
+          harnessLifecycle: false,
           onSessionCaptured: input.onSessionCaptured,
         })
         return { sessionId: session.sessionId, outcome: session.events.outcome }
@@ -165,8 +182,11 @@ const main = async (): Promise<SupervisorResult> => {
       deleteSession: async (input) => runtime.deleteSession(input),
       promptText: promptAsset,
     })
+    await harness.endRun({ runId, status: harnessLifecycleFor(result.status) })
+    harnessEnded = true
     return result
   } finally {
+    if (!harnessEnded) await harness.endRun({ runId, status: "failed" }).catch(() => undefined)
     process.removeListener("SIGINT", onInterrupt)
     process.removeListener("SIGTERM", onInterrupt)
     await runtime.close().catch(() => undefined)
@@ -175,7 +195,7 @@ const main = async (): Promise<SupervisorResult> => {
 
 try {
   const result = await main()
-  output(result.status, result.reason)
+  output(result.status, result.reason, result.exitCode)
 } catch (error: unknown) {
   if (error instanceof CliOutcome) {
     output(error.status, error.reason)

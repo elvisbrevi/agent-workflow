@@ -67,6 +67,7 @@ export type OpenCodeWorkerSessionInput = {
   readonly signal?: AbortSignal
   readonly harnessLog?: HarnessLogPort
   readonly runId?: string
+  readonly harnessLifecycle?: boolean
   readonly onSessionCaptured?: (sessionId: SessionId) => Promise<void> | void
   readonly onEvent?: (event: ObservedEvent) => Promise<void> | void
 }
@@ -283,7 +284,8 @@ export const runOpenCodeWorkerSession = async (
 ): Promise<OpenCodeWorkerSessionResult> => {
   if (input.signal?.aborted) throw new Error("OpenCode worker was cancelled before session creation")
 
-  const harnessStarted = input.harnessLog !== undefined && input.runId !== undefined
+  const harnessEnabled = input.harnessLog !== undefined && input.runId !== undefined
+  const harnessStarted = harnessEnabled && input.harnessLifecycle !== false
   if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
     await input.harnessLog.startRun({ runId: input.runId, repository: input.directory })
   }
@@ -356,14 +358,14 @@ export const runOpenCodeWorkerSession = async (
     if (events.malformedOutcome || events.missingOutcome) {
       throw new IssueKillerError("malformed_outcome", "OpenCode emitted an invalid or contradictory worker outcome")
     }
-    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined && events.outcome !== null) {
+    if (harnessEnabled && input.harnessLog !== undefined && input.runId !== undefined && events.outcome !== null) {
       await input.harnessLog.endRun({ runId: input.runId, status: lifecycleForOutcome(events.outcome.status) })
     }
     return { sessionId: session.sessionId, runId: promptResult.runId, events }
   } catch (error) {
     abortSession()
     await abortPromise
-    if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
+    if (harnessEnabled && input.harnessLog !== undefined && input.runId !== undefined) {
       await input.harnessLog.endRun({ runId: input.runId, status: "failed" })
     }
     throw error
