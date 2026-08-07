@@ -509,6 +509,8 @@ non-epic issue in this session."
 
   case "$WORKER_STATUS" in
     ISSUE_COMPLETED)
+      lock_ownership_intact || \
+        lock_integrity_failure "repository lock was lost before completion cleanup"
       if [[ "$TRACKER_KIND" == "azure-devops" ]]; then
         if [[ ! "${CHECKPOINT_ISSUE:-}" =~ ^[0-9]+$ ]]; then
           finalize_attempt_state "recovery_required"
@@ -586,6 +588,8 @@ non-epic issue in this session."
       fi
       ;;
     QUEUE_EMPTY)
+      lock_ownership_intact || \
+        lock_integrity_failure "repository lock was lost before queue advancement"
       rm -f "$OUTPUT_FILE" "${OUTPUT_FILE}.issue" "${OUTPUT_FILE}.touch" 2>/dev/null || true
       if [[ -z "${STARTUP_RECOVERY_MODE:-}" ]]; then
         clear_checkpoint

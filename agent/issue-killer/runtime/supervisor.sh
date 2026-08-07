@@ -29,9 +29,10 @@ run_worker_with_progress() {
   LOCK_FAILURE_DEFER_CHECKPOINT=true
   {
     set +e
+    worker_pid=""
+    trap 'if [[ -n "$worker_pid" ]]; then kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; fi; exit 143' HUP INT TERM
     runtime_invoke "$prompt" "$session_id" &
     worker_pid=$!
-    trap 'kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; exit 143' HUP INT TERM
     wait "$worker_pid"
     worker_exit=$?
     trap - HUP INT TERM

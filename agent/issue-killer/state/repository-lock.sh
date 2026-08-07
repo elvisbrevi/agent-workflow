@@ -180,6 +180,10 @@ write_lock_status() {
     rm -f "$status_tmp"
     lock_integrity_failure "unable to write the lock status snapshot (state=${state})"
   }
+  lock_ownership_intact || {
+    rm -f "$status_tmp"
+    lock_integrity_failure "repository lock changed before publishing status (state=${state})"
+  }
   mv -f "$status_tmp" "${LOCK_DIR}/status" || \
     lock_integrity_failure "unable to publish the lock status snapshot (state=${state})"
 }
@@ -197,6 +201,11 @@ release_repository_lock() {
     # token means another run already owns this directory, and removing
     # it here would delete that run's lock.
     if [[ -n "$current_token" && "$current_token" == "${LOCK_TOKEN:-}" ]]; then
+      current_token="$(repository_lock_token || true)"
+      [[ "$current_token" == "${LOCK_TOKEN:-}" ]] || {
+        LOCK_HELD=false
+        return
+      }
       rm -f "${LOCK_DIR}/status"
       # Re-read after the first deletion. A replacement owner is never
       # removed even if the lock changes during EXIT cleanup.
