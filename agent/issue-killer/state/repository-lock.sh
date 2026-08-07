@@ -2,13 +2,113 @@
 # Repository-wide lock ownership and observable lock status.
 # Sourced by run.sh; intentionally has no source-time side effects.
 
+# Read the ownership token without exposing it to diagnostics.
+repository_lock_token() {
+  [[ -r "${LOCK_DIR:-}/owner" ]] || return 1
+  sed -n 's/^token=//p' "${LOCK_DIR}/owner" 2>/dev/null | head -n 1
+}
+
+# True only while this process can still prove it owns the lock.
+#
+# The directory must exist: losing it is the failure this guard exists
+# to catch. The ownership token is checked only once LOCK_TOKEN is set,
+# which acquire_repository_lock does immediately before LOCK_HELD, so a
+# real run always gets the full check; callers that stage lock state
+# directly are held only to the directory requirement.
+lock_ownership_intact() {
+  local current_token
+
+  [[ -n "${LOCK_DIR:-}" ]] || return 1
+  [[ -d "$LOCK_DIR" ]] || return 1
+  [[ -n "${LOCK_TOKEN:-}" ]] || return 0
+
+  [[ -r "${LOCK_DIR}/owner" ]] || return 1
+  current_token="$(repository_lock_token || true)"
+  [[ -n "$current_token" && "$current_token" == "$LOCK_TOKEN" ]]
+}
+
+# Forensic detail for a lock that changed underneath a live run. The
+# cause has been hard to pin down after the fact, so record everything
+# needed to name the culprit at the moment it happens.
+report_lock_integrity_diagnostics() {
+  local competing
+
+  printf '  lock_dir=%s\n' "${LOCK_DIR:-unset}"
+  printf '  our_pid=%s\n' "$$"
+  printf '  our_token_present=%s\n' "$([[ -n "${LOCK_TOKEN:-}" ]] && printf true || printf false)"
+  if [[ -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+    printf '  lock_dir_present=true\n'
+    if [[ -r "${LOCK_DIR}/owner" ]]; then
+      sed -e '/^token=/d' -e 's/^/  owner_/' "${LOCK_DIR}/owner" 2>/dev/null || true
+    else
+      printf '  owner_file=missing\n'
+    fi
+  else
+    printf '  lock_dir_present=false\n'
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    competing="$(pgrep -f "$RUNNER_NAME" 2>/dev/null | grep -v -x "$$" || true)"
+    if [[ -n "$competing" ]]; then
+      printf '  competing_pid=%s\n' $competing
+    fi
+  fi
+}
+
+# Stop the run when mutual exclusion can no longer be proven.
+#
+# Continuing without the lock would let a second destructive loop mutate
+# the same branches and tracker state, and re-acquiring here would race
+# whoever created the replacement. Neither is safe, so this is a clean
+# structured abort rather than a raw `set -e` death on a failed redirect.
+lock_integrity_failure() {
+  local reason="$1"
+
+  # Drop ownership first: every downstream status write then short-circuits
+  # on the LOCK_HELD guard instead of re-entering this handler, and the
+  # EXIT trap will not try to tear down a lock that is no longer ours.
+  LOCK_HELD=false
+
+  if [[ -n "${LOCK_FAILURE_FILE:-}" ]]; then
+    printf '%s\n' "$reason" > "${LOCK_FAILURE_FILE}" 2>/dev/null || true
+  fi
+  if [[ -n "${LOCK_FAILURE_PID:-}" ]]; then
+    kill "$LOCK_FAILURE_PID" 2>/dev/null || true
+  fi
+
+  printf '%s: RECOVERY_REQUIRED: %s\n' "$RUNNER_NAME" "$reason" >&2
+  report_lock_integrity_diagnostics >&2
+
+  # Mark the checkpoint unusable. An abnormal death here otherwise leaves
+  # issue=unknown with a stale branch and base sha, which the next run
+  # adopts and then fails to reconcile.
+  #
+  # This is an abort path, so it must never make things worse: only
+  # attempt the write when the checkpoint machinery is fully available.
+  # A partially staged environment would otherwise strand temp files.
+  if [[ -n "${ITERATION:-}" && -n "${BASE_BRANCH:-}" && -n "${GIT_COMMON_DIR:-}" ]] &&
+     [[ -d "${GIT_COMMON_DIR}" ]] &&
+     declare -F write_checkpoint >/dev/null 2>&1 &&
+     declare -F timestamp >/dev/null 2>&1; then
+    RECOVERY_CATEGORY="lock_lost"
+    write_checkpoint "lock_lost" || true
+  fi
+
+  exit 4
+}
+
 write_lock_status() {
   local state="$1"
   local elapsed="${2:-0}"
   local status_tmp
 
-  [[ "$LOCK_HELD" == "true" ]] || return
-  status_tmp="${LOCK_DIR}/status.$$"
+  [[ "${LOCK_HELD:-false}" == "true" ]] || return 0
+  lock_ownership_intact || \
+    lock_integrity_failure "repository lock is no longer held by this run (state=${state})"
+
+  # Random temporary name inside the lock directory. Never $$: concurrent
+  # heartbeat and status writes must not be able to collide on one path.
+  status_tmp="$(mktemp "${LOCK_DIR}/status.XXXXXXXX" 2>/dev/null)" || \
+    lock_integrity_failure "unable to stage a lock status update (state=${state})"
   {
     printf 'pid=%s\n' "$$"
     printf 'state=%s\n' "$state"
@@ -77,19 +177,28 @@ write_lock_status() {
     if [[ -n "${TRACKER_HU_PHASE:-}" ]]; then
       printf 'hu_phase=%s\n' "$TRACKER_HU_PHASE"
     fi
-  } > "$status_tmp"
-  mv -f "$status_tmp" "${LOCK_DIR}/status"
+  } > "$status_tmp" || {
+    rm -f "$status_tmp"
+    lock_integrity_failure "unable to write the lock status snapshot (state=${state})"
+  }
+  mv -f "$status_tmp" "${LOCK_DIR}/status" || \
+    lock_integrity_failure "unable to publish the lock status snapshot (state=${state})"
 }
 
 release_repository_lock() {
-  local current_token
+  local current_token=""
 
-  if [[ "$LOCK_HELD" == "true" ]]; then
-    current_token="$(
-      sed -n 's/^token=//p' "${LOCK_DIR}/owner" 2>/dev/null | head -n 1
-    )"
-    if [[ "$current_token" == "$LOCK_TOKEN" ]]; then
-      rm -f "${LOCK_DIR}/status" "${LOCK_DIR}/status.$$" "${LOCK_DIR}/owner"
+  if [[ "${LOCK_HELD:-false}" == "true" && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+    # The owner file may already be gone; reading it must not fail the
+    # EXIT trap, which is where this runs.
+    if [[ -r "${LOCK_DIR}/owner" ]]; then
+      current_token="$(repository_lock_token || true)"
+    fi
+    # Only tear down a lock still provably ours. A missing or mismatched
+    # token means another run already owns this directory, and removing
+    # it here would delete that run's lock.
+    if [[ -n "$current_token" && "$current_token" == "${LOCK_TOKEN:-}" ]]; then
+      rm -f "${LOCK_DIR}/status" "${LOCK_DIR}"/status.* "${LOCK_DIR}/owner"
       rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
   fi
@@ -108,7 +217,7 @@ report_active_lock() {
 }
 
 acquire_repository_lock() {
-  local owner_file owner_pid owner_snapshot current_snapshot
+  local owner_file owner_pid owner_snapshot current_snapshot owner_tmp
 
   LOCK_DIR="${GIT_COMMON_DIR}/${RUNNER_NAME}.lock"
   owner_file="${LOCK_DIR}/owner"
@@ -125,8 +234,14 @@ acquire_repository_lock() {
     owner_pid="$(
       sed -n 's/^pid=//p' "$owner_file" 2>/dev/null | head -n 1
     )"
-    if is_non_negative_integer "${owner_pid:-}" &&
-       kill -0 "$owner_pid" 2>/dev/null; then
+    # An owner file without a parseable pid cannot be proven stale.
+    # Falling through to the removal below would delete a live lock --
+    # which is exactly how a running drain loop loses the lock it holds
+    # and dies on its next status write.
+    if ! is_non_negative_integer "${owner_pid:-}"; then
+      die "repository lock owner metadata has no readable pid; refusing to treat it as stale: ${LOCK_DIR}"
+    fi
+    if kill -0 "$owner_pid" 2>/dev/null; then
       report_active_lock "$owner_pid"
     fi
 
@@ -143,12 +258,19 @@ acquire_repository_lock() {
       "$RUNNER_NAME" "${owner_pid:-unknown}"
   done
 
+  # Publish the owner metadata atomically. A plain redirect leaves a
+  # window where the file exists but is still empty, and a competing
+  # runner that reads it during that window sees no pid and would treat
+  # this live lock as stale.
+  owner_tmp="$(mktemp "${LOCK_DIR}/owner.XXXXXXXX")" || \
+    die "unable to stage repository lock owner metadata: ${LOCK_DIR}"
   {
     printf 'pid=%s\n' "$$"
     printf 'token=%s\n' "$LOCK_TOKEN"
     printf 'repository=%s\n' "$REPO_ROOT"
     printf 'started_at=%s\n' "$(timestamp)"
-  } > "$owner_file"
+  } > "$owner_tmp"
+  mv -f "$owner_tmp" "$owner_file"
   LOCK_HELD=true
   trap runner_cleanup EXIT
   trap 'exit 129' HUP
