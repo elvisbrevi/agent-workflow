@@ -6707,6 +6707,197 @@ test_github_tracker_supplement_is_loaded_from_adapter() {
   pass 'github adapter exposes a tracker worker supplement'
 }
 
+test_lock_status_write_aborts_cleanly_when_lock_directory_disappears() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-lost.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-lost-out.XXXXXX")"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=2
+    BASE_BRANCH=main
+    LOCK_HELD=false
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    is_non_negative_integer() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    runner_cleanup() { release_repository_lock; }
+    write_checkpoint() {
+      printf 'issue=unknown\nbranch=unknown\nbase_sha=unknown\nstate=%s\n' "$1" > "$(checkpoint_file)"
+    }
+    # shellcheck source=/dev/null
+    source "$module"
+
+    acquire_repository_lock >/dev/null
+    # Reproduce the production failure: the lock directory is removed by
+    # something outside this process while the run still holds it.
+    rm -rf "$LOCK_DIR"
+    write_lock_status "starting" 0
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Lost repository lock did not exit 4 (RECOVERY_REQUIRED), got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Lost repository lock did not emit a RECOVERY_REQUIRED diagnostic'
+  if grep -Fq 'No such file or directory' "$output"; then
+    fail 'Lost repository lock surfaced a raw shell redirect error'
+  fi
+  grep -Fq 'lock_dir_present=false' "$output" || \
+    fail 'Lost repository lock did not record ownership diagnostics'
+  grep -Fxq 'issue=unknown' "${work}/issue-killer.checkpoint" || \
+    fail 'Lost repository lock checkpoint retained a stale issue identity'
+  grep -Fxq 'branch=unknown' "${work}/issue-killer.checkpoint" || \
+    fail 'Lost repository lock checkpoint retained a stale branch'
+  grep -Fxq 'base_sha=unknown' "${work}/issue-killer.checkpoint" || \
+    fail 'Lost repository lock checkpoint retained a stale base SHA'
+  grep -Fxq 'state=lock_lost' "${work}/issue-killer.checkpoint" || \
+    fail 'Lost repository lock left the checkpoint resumable'
+
+  pass 'lost repository lock aborts with RECOVERY_REQUIRED instead of a raw shell failure'
+}
+
+test_heartbeat_lock_loss_stops_worker_and_returns_recovery() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local supervisor="${ROOT_DIR}/agent/issue-killer/runtime/supervisor.sh"
+  local startup recovery_output recovery_status
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/heartbeat-lock-lost.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/heartbeat-lock-lost-out.XXXXXX")"
+  mkdir -p "${work}/issue-killer.lock"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=2
+    BASE_BRANCH=main
+    STREAM_OUTPUT=false
+    PROGRESS_INTERVAL=1
+    LOCK_DIR="${work}/issue-killer.lock"
+    LOCK_TOKEN=heartbeat-token
+    LOCK_HELD=true
+    printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    write_checkpoint() { printf 'state=%s\n' "$1" > "$(checkpoint_file)"; }
+    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    runtime_invoke() {
+      trap 'exit 143' TERM INT HUP
+      : > "${work}/worker-started"
+      printf '%s\n' 'ISSUE_KILLER_STATUS=ISSUE_COMPLETED'
+      sleep 5
+      : > "${work}/worker-finished"
+    }
+    # shellcheck source=/dev/null
+    source "$module"
+    # shellcheck source=/dev/null
+    source "$supervisor"
+
+    (
+      while [[ ! -e "${work}/worker-started" ]]; do sleep 0.05; done
+      sleep 1.2
+      rm -rf "${LOCK_DIR}"
+    ) &
+    run_worker_with_progress prompt "${work}/worker-output"
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Heartbeat lock loss did not exit 4, got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Heartbeat lock loss did not emit RECOVERY_REQUIRED'
+  if grep -Fq 'No such file or directory' "$output"; then
+    fail 'Heartbeat lock loss surfaced a raw shell error'
+  fi
+  [[ ! -e "${work}/worker-finished" ]] || \
+    fail 'Worker continued after the heartbeat lost the repository lock'
+
+  startup="${ROOT_DIR}/agent/issue-killer/recovery/startup.sh"
+  recovery_output="$(mktemp "${TEST_ROOT}/heartbeat-lock-recovery-out.XXXXXX")"
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    BASE_BRANCH=main
+    GIT_COMMON_DIR="$work"
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    emit_recovery_required() { printf 'RECOVERY_REQUIRED: %s\n' "$1"; exit 4; }
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/agent/issue-killer/state/checkpoint.sh"
+    # shellcheck source=/dev/null
+    source "$startup"
+    adopt_migrated_checkpoint
+  ) >"$recovery_output" 2>&1
+  recovery_status=$?
+  set -e
+  [[ "$recovery_status" -eq 4 ]] || \
+    fail "Following startup did not reject the produced lock_lost checkpoint, got ${recovery_status}"
+  grep -Fq 'lost repository lock' "$recovery_output" || \
+    fail 'Following startup did not explain why the produced checkpoint was rejected'
+
+  pass 'heartbeat lock loss stops the worker and returns structured recovery'
+}
+
+test_stale_lock_recovery_refuses_owner_without_readable_pid() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-nopid.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-nopid-out.XXXXXX")"
+
+  # A lock whose owner metadata carries no pid. Treating it as stale
+  # would delete a live lock out from under a running drain loop.
+  mkdir -p "${work}/issue-killer.lock"
+  printf 'token=someone-else\n' > "${work}/issue-killer.lock/owner"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=1
+    BASE_BRANCH=main
+    LOCK_HELD=false
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    is_non_negative_integer() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    runner_cleanup() { :; }
+    write_checkpoint() { :; }
+    # shellcheck source=/dev/null
+    source "$module"
+
+    acquire_repository_lock
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || \
+    fail 'Unreadable lock owner pid was silently treated as a stale lock'
+  grep -Fq 'refusing to treat it as stale' "$output" || \
+    fail 'Unreadable lock owner pid did not produce an explicit refusal'
+  [[ -d "${work}/issue-killer.lock" ]] || \
+    fail 'Unreadable lock owner pid caused another runner lock to be deleted'
+
+  pass 'stale lock recovery refuses an owner file without a readable pid'
+}
+
 test_github_tracker_supplement_is_delivered_to_worker
 test_runtime_config_section_follows_supplement
 test_tracker_supplement_excluded_from_checkpoint_and_status
@@ -6718,5 +6909,8 @@ test_transcript_retained_on_blocked_outcome
 test_transcript_retained_on_failed_outcome
 test_transcript_retained_on_recovery_required_outcome
 test_transcript_removal_failure_does_not_fail_run
+test_lock_status_write_aborts_cleanly_when_lock_directory_disappears
+test_heartbeat_lock_loss_stops_worker_and_returns_recovery
+test_stale_lock_recovery_refuses_owner_without_readable_pid
 
 printf '%s issue-killer tests passed.\n' "$TESTS_RUN"

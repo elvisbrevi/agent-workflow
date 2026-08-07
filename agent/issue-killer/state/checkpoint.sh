@@ -67,20 +67,32 @@ write_checkpoint() {
   {
     printf 'pid=%s\n' "$$"
     printf 'iteration=%s\n' "$ITERATION"
-    if [[ -n "${CHECKPOINT_ISSUE:-}" ]]; then
+    if [[ "$state" == "lock_lost" ]]; then
+      # The lock-loss path cannot prove which branch or issue is still safe
+      # to resume. Keep the checkpoint as evidence, not as a recovery target.
+      printf 'issue=unknown\n'
+    elif [[ -n "${CHECKPOINT_ISSUE:-}" ]]; then
       printf 'issue=%s\n' "${CHECKPOINT_ISSUE}"
     else
       printf 'issue=unknown\n'
     fi
-    if [[ -n "${CHECKPOINT_HU:-}" ]]; then
+    if [[ "$state" != "lock_lost" && -n "${CHECKPOINT_HU:-}" ]]; then
       printf 'hu=%s\n' "$CHECKPOINT_HU"
     fi
-    if [[ -n "${CHECKPOINT_TICKET:-}" ]]; then
+    if [[ "$state" != "lock_lost" && -n "${CHECKPOINT_TICKET:-}" ]]; then
       printf 'ticket=%s\n' "$CHECKPOINT_TICKET"
     fi
-    printf 'branch=%s\n' "$(current_branch)"
+    if [[ "$state" == "lock_lost" ]]; then
+      printf 'branch=unknown\n'
+    else
+      printf 'branch=%s\n' "$(current_branch)"
+    fi
     printf 'base_branch=%s\n' "$BASE_BRANCH"
-    printf 'base_sha=%s\n' "$(current_base_sha)"
+    if [[ "$state" == "lock_lost" ]]; then
+      printf 'base_sha=unknown\n'
+    else
+      printf 'base_sha=%s\n' "$(current_base_sha)"
+    fi
     if [[ -n "${TRACKER_HU_BRANCH:-}" ]]; then
       printf 'hu_branch=%s\n' "$TRACKER_HU_BRANCH"
     fi

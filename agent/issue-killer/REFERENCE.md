@@ -259,6 +259,7 @@ before any edit, push, PR creation, or merge.
 | `failed` | The worker reported `FAILED` or exited with a non-zero status |
 | `malformed` | The worker exited cleanly but emitted no recognized status marker |
 | `recovery_required` | Transient retries exhausted; operator attention needed |
+| `lock_lost` | Repository lock ownership was lost; checkpoint is diagnostic only and cannot be resumed |
 
 ### Privacy boundary
 
@@ -429,7 +430,7 @@ runner never depends on the historical names again.
 | `1` | Worker or runner failure |
 | `2` | Pending work requires human input |
 | `3` | Configured iteration limit reached |
-| `4` | `RECOVERY_REQUIRED` — transient retries exhausted; checkpoint and output retained for a human operator or the next restart to inspect |
+| `4` | `RECOVERY_REQUIRED` — transient retries exhausted or repository lock ownership was lost; checkpoint and output retained for a human operator or the next restart to inspect |
 
 ## Safety
 
