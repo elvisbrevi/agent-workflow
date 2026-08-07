@@ -97,3 +97,16 @@ test("accepts a compatibility marker split across text events", async () => {
   expect(result.outcome?.status).toBe("ISSUE_COMPLETED")
   expect(result.missingOutcome).toBe(false)
 })
+
+test("retains typed provider errors from session error events for the runtime boundary", async () => {
+  const providerError = { name: "APIError", data: { statusCode: 402, message: "quota exhausted" } }
+  const result = await drainSessionEvents({
+    events: fromEvents([
+      { type: "session.error", properties: { sessionID: "ses_provider_error", error: providerError } },
+    ]),
+    expectedSessionId: parseSessionId("ses_provider_error") ?? undefined,
+    expectedIssue: 84,
+  })
+
+  expect(result.providerError).toBe(providerError)
+})

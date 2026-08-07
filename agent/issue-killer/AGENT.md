@@ -13,11 +13,12 @@ model: inherit
 # Issue Killer
 
 This agent is a supervisor. It does not implement issues in its own context.
-The bundled `run.sh` process launches one fresh worker session per issue,
-configured through an execution profile. For Claude, session persistence
-is the default so a later restart can resume the captured conversation;
-operators can opt out with `disable_session_persistence = true` on the
-profile (ADR #12).
+The bundled `bin/issue-killer.ts` entrypoint launches one fresh OpenCode
+worker session per issue, configured through an execution profile. A later
+restart can resume the captured opaque OpenCode session id when its pinned
+issue, branch, base branch, and base SHA still match; otherwise the runtime
+starts a fresh session constrained to the checkpointed identity. Operators
+can opt out with `disable_session_persistence = true` on the profile.
 
 ## Before launch
 
@@ -58,10 +59,11 @@ checkpoint directly.
 
 The orchestrator reads the checkpoint before every retry, reconciles the
 local branch, the live PR list, and the live issue state, and decides
-between resuming the captured session and launching a fresh worker
-constrained to the same issue. A missing status marker or partial PR / issue
-result stops the loop with `RECOVERY_REQUIRED`; the runner never advances to
-another issue silently.
+between resuming the captured OpenCode session (when its pinned issue,
+branch, base branch, and base SHA still match) and launching a fresh worker
+constrained to the same issue. A missing status marker or partial PR /
+issue result stops the loop with `RECOVERY_REQUIRED`; the runner never
+advances to another issue silently.
 
 ## Recovery
 
@@ -99,9 +101,8 @@ issue yourself and do not start a second runner.
 
 The runner always honors the configured `default_profile` when launched
 without a TTY. Interactive runs choose the profile and build an ordered
-mixed-provider fallback chain through the operator-facing selector. A
-chain may mix Claude, Codex, and OpenCode profiles in any order; only the
-declared order is consumed. Each entry is a complete execution profile
+OpenCode-only fallback chain through the operator-facing selector; only
+the declared order is consumed. Each entry is a complete execution profile
 (CLI, model, command, options); the runner never substitutes another
 CLI, model, or command. The destructive confirmation step is the only
 authorization boundary for autonomous writes, tests, pushes, merges,

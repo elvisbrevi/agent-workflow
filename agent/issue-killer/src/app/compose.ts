@@ -13,6 +13,12 @@ import type { LifecycleState } from "../domain/lifecycle"
 import type { SessionId } from "../domain/session-id"
 import type { CompletionVerification, TrackerIdentity, TrackerSelection } from "../domain/tracker"
 import { redactMultiline } from "../system/redaction"
+import {
+  classifyProviderFailure,
+  isFallbackEligible,
+  isTransportFailure,
+  type ProviderFailureCategory,
+} from "../domain/provider-failure"
 
 export type WorkerRunInput = {
   readonly issue: number
@@ -21,6 +27,7 @@ export type WorkerRunInput = {
   readonly baseSha: string
   readonly profile: ExecutionProfile
   readonly promptText: string
+  readonly resumeSessionId?: SessionId
   readonly signal?: AbortSignal
   readonly onSessionCaptured: (sessionId: SessionId) => Promise<void>
 }
@@ -34,7 +41,12 @@ export type SupervisorInput = {
   readonly directory: string
   readonly baseBranch: string
   readonly profile: ExecutionProfile
+  readonly profiles?: ReadonlyMap<string, ExecutionProfile>
+  readonly adoptIssue?: TrackerIdentity
   readonly iterationLimit: number
+  readonly retryDelaysMs?: ReadonlyArray<number>
+  readonly retryLimit?: number
+  readonly sleep?: (input: { readonly millis: number; readonly signal?: AbortSignal }) => Promise<void>
   readonly runnerName: string
   readonly owner: LockOwner
   readonly tracker: TrackerPort
@@ -73,6 +85,19 @@ const identityForCheckpoint = (identity: TrackerIdentity): CheckpointIdentity =>
       return identity
     case "azure_ticket":
       return { kind: "azure_hu", hu: identity.hu, ticket: identity.ticket }
+  }
+}
+
+const trackerIdentityFromCheckpoint = (checkpoint: Checkpoint): TrackerIdentity | null => {
+  switch (checkpoint.identity.kind) {
+    case "github":
+      return checkpoint.identity
+    case "azure_hu":
+      return checkpoint.identity.ticket === undefined
+        ? null
+        : { kind: "azure_ticket", hu: checkpoint.identity.hu, ticket: checkpoint.identity.ticket }
+    case "unknown":
+      return null
   }
 }
 
@@ -138,17 +163,213 @@ const readCompletionReason = (result: CompletionVerification): string => {
 
 const defaultPrompt = "Follow the worker contract in PROMPT.md."
 
+const profileForFallback = (
+  supervisor: SupervisorInput,
+  name: string,
+): ExecutionProfile | null => supervisor.profiles?.get(name) ?? (name === supervisor.profile.name ? supervisor.profile : null)
+
+const sameSequence = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index])
+
+const checkpointConfigurationDrift = (
+  supervisor: SupervisorInput,
+  checkpoint: Checkpoint,
+): string | null => {
+  if (checkpoint.formatVersion === 1) return null
+  const primary = profileForFallback(supervisor, checkpoint.profileName)
+  if (primary === null) return "checkpoint profile is unavailable"
+  if (checkpoint.cli !== primary.cli || checkpoint.command !== primary.command) {
+    return "checkpoint profile configuration drifted"
+  }
+  if (!sameSequence(checkpoint.fallbackChain, primary.fallbacks)) {
+    return "checkpoint fallback chain drifted"
+  }
+  if (checkpoint.fallbackPosition < 0 || checkpoint.fallbackPosition > checkpoint.fallbackChain.length) {
+    return "checkpoint fallback position is invalid"
+  }
+  const expectedRemaining = checkpoint.fallbackChain.slice(checkpoint.fallbackPosition)
+  if (!sameSequence(checkpoint.fallbackRemaining, expectedRemaining)) {
+    return "checkpoint fallback position drifted"
+  }
+  const expectedProfile = checkpoint.fallbackPosition === 0
+    ? primary.name
+    : checkpoint.fallbackChain[checkpoint.fallbackPosition - 1]
+  if (expectedProfile === undefined) return "checkpoint active profile is unavailable"
+  const activeProfile = profileForFallback(supervisor, expectedProfile)
+  if (activeProfile === null) return `checkpoint profile is unavailable: ${expectedProfile}`
+  if (checkpoint.model !== `${activeProfile.providerID}/${activeProfile.modelID}`) {
+    return "checkpoint profile configuration drifted"
+  }
+  if (checkpoint.selectedProfile !== undefined && checkpoint.selectedProfile !== expectedProfile) {
+    return "checkpoint selected profile drifted"
+  }
+  if (checkpoint.nextProfile !== undefined && checkpoint.nextProfile !== expectedProfile) {
+    return "checkpoint next profile drifted"
+  }
+  for (const name of checkpoint.fallbackChain) {
+    if (profileForFallback(supervisor, name) === null) return `checkpoint profile is unavailable: ${name}`
+  }
+  return null
+}
+
+type WorkerAttempt = {
+  readonly result?: WorkerRunResult
+  readonly error?: unknown
+  readonly failureCategory: ProviderFailureCategory
+}
+
+const runWorkerWithRetries = async (
+  supervisor: SupervisorInput,
+  input: WorkerRunInput,
+): Promise<WorkerAttempt> => {
+  const delays = supervisor.retryDelaysMs ?? []
+  let retryIndex = 0
+  let attemptCount = 0
+  while (true) {
+    attemptCount += 1
+    try {
+      return { result: await supervisor.worker(input), failureCategory: "none" }
+    } catch (error) {
+      const category = classifyProviderFailure(error)
+      const belowAttemptLimit = supervisor.retryLimit === undefined || supervisor.retryLimit <= 0 || attemptCount < supervisor.retryLimit
+      if (isTransportFailure(error) && belowAttemptLimit && retryIndex < delays.length) {
+        const millis = delays[retryIndex] ?? 0
+        retryIndex += 1
+        await supervisor.sleep?.({ millis, signal: supervisor.signal })
+        continue
+      }
+      return { error, failureCategory: category }
+    }
+  }
+}
+
+const fallbackReason = (category: ProviderFailureCategory, profile: string, next?: string): string =>
+  next === undefined
+    ? `fallback chain exhausted after ${profile} (${category})`
+    : `provider failure ${category} in ${profile}; next profile ${next}`
+
+const runFallbackAttempts = async (input: {
+  readonly supervisor: SupervisorInput
+  readonly issue: number
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly checkpoint: Checkpoint
+}): Promise<{
+  readonly result: WorkerRunResult
+  readonly checkpoint: Checkpoint
+} | { readonly failure: SupervisorResult; readonly checkpoint: Checkpoint }> => {
+  let checkpoint = input.checkpoint
+  let activeProfile = profileForFallback(
+    input.supervisor,
+    checkpoint.nextProfile ?? checkpoint.selectedProfile ?? checkpoint.profileName,
+  )
+  if (activeProfile === null) {
+    return { failure: statusResult("RECOVERY_REQUIRED", input.issue, "checkpoint profile is unavailable"), checkpoint }
+  }
+  let resumeSessionId = checkpoint.sessionId
+  let remaining = checkpoint.fallbackRemaining.length > 0
+    ? [...checkpoint.fallbackRemaining]
+    : checkpoint.fallbackChain.length > 0
+      ? [...checkpoint.fallbackChain.slice(checkpoint.fallbackPosition)]
+      : [...activeProfile.fallbacks]
+
+  while (true) {
+    const currentProfile = activeProfile
+    const attempt = await runWorkerWithRetries(input.supervisor, {
+      issue: input.issue,
+      branch: input.branch,
+      baseBranch: input.baseBranch,
+      baseSha: input.baseSha,
+      profile: currentProfile,
+      promptText: input.supervisor.promptText ?? defaultPrompt,
+      resumeSessionId,
+      signal: input.supervisor.signal,
+      onSessionCaptured: async (sessionId) => {
+        checkpoint = await saveCheckpoint({
+          supervisor: input.supervisor,
+          checkpoint: { ...checkpoint, sessionId, selectedProfile: currentProfile.name },
+          state: "mutating",
+        })
+      },
+    })
+    if (attempt.result !== undefined) return { result: attempt.result, checkpoint }
+
+    const category = attempt.failureCategory
+    if (!isFallbackEligible(category)) {
+      return { failure: failureFromError(attempt.error, input.issue), checkpoint }
+    }
+    const nextName = remaining[0]
+    if (nextName === undefined) {
+      checkpoint = await saveCheckpoint({
+        supervisor: input.supervisor,
+        checkpoint: { ...checkpoint, failedProfile: activeProfile.name, fallbackFailure: category },
+        state: "fallback_in_progress",
+      }).catch(() => checkpoint)
+      return {
+        failure: statusResult("RECOVERY_REQUIRED", input.issue, fallbackReason(category, activeProfile.name)),
+        checkpoint,
+      }
+    }
+    const nextProfile = profileForFallback(input.supervisor, nextName)
+    if (nextProfile === null) {
+      return {
+        failure: statusResult("RECOVERY_REQUIRED", input.issue, `fallback profile is unavailable: ${nextName}`),
+        checkpoint,
+      }
+    }
+    remaining = remaining.slice(1)
+    checkpoint = await saveCheckpoint({
+      supervisor: input.supervisor,
+      checkpoint: {
+        ...checkpoint,
+        selectedProfile: nextProfile.name,
+        model: `${nextProfile.providerID}/${nextProfile.modelID}`,
+        cli: nextProfile.cli,
+        command: nextProfile.command,
+        failedProfile: activeProfile.name,
+        nextProfile: nextProfile.name,
+        fallbackRemaining: remaining,
+        fallbackPosition: checkpoint.fallbackPosition + 1,
+        fallbackFailure: category,
+      },
+      state: "fallback_in_progress",
+    })
+    activeProfile = nextProfile
+    resumeSessionId = checkpoint.sessionId
+  }
+}
+
 export const runVerticalSlice = async (input: SupervisorInput): Promise<SupervisorResult> => {
   const commonDir = await input.git.commonDir({ cwd: input.directory })
   const clean = await input.git.worktreeIsClean({ cwd: input.directory })
   if (!clean) return statusResult("RECOVERY_REQUIRED", undefined, "worktree is not clean")
-  if ((await input.git.currentBranch({ cwd: input.directory })) !== input.baseBranch) {
+  const existing = await input.checkpoint.load({ gitCommonDir: commonDir, runnerName: input.runnerName })
+  const currentBranch = await input.git.currentBranch({ cwd: input.directory })
+  if (existing === null && currentBranch !== input.baseBranch) {
     return statusResult("RECOVERY_REQUIRED", undefined, "current branch is not the configured base branch")
   }
-
-  const existing = await input.checkpoint.load({ gitCommonDir: commonDir, runnerName: input.runnerName })
+  let recoveryCheckpoint = existing
   if (existing !== null) {
-    return statusResult("RECOVERY_REQUIRED", undefined, "an existing checkpoint requires explicit recovery")
+    const recoveredIdentity = trackerIdentityFromCheckpoint(existing) ?? input.adoptIssue
+    if (recoveredIdentity === undefined) {
+      return statusResult("RECOVERY_REQUIRED", undefined, "checkpoint identity is ambiguous; explicit issue adoption is required")
+    }
+    if (existing.baseBranch !== input.baseBranch) {
+      return statusResult("RECOVERY_REQUIRED", undefined, "checkpoint base branch drifted")
+    }
+    const currentBaseSha = await input.git.currentBaseSha({ cwd: input.directory, baseBranch: input.baseBranch })
+    if (currentBaseSha !== existing.baseSha) {
+      return statusResult("RECOVERY_REQUIRED", undefined, "checkpoint base identity drifted")
+    }
+    if (currentBranch !== existing.branch) {
+      return statusResult("RECOVERY_REQUIRED", undefined, "checkpoint branch drifted")
+    }
+    if (trackerIdentityFromCheckpoint(existing) === null && input.adoptIssue === undefined) {
+      return statusResult("RECOVERY_REQUIRED", undefined, "legacy checkpoint requires explicit issue adoption")
+    }
+    const configurationDrift = checkpointConfigurationDrift(input, existing)
+    if (configurationDrift !== null) return statusResult("RECOVERY_REQUIRED", undefined, configurationDrift)
   }
 
   const acquired = await input.lock.acquire({ gitCommonDir: commonDir, owner: input.owner })
@@ -174,10 +395,17 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
         })
         return statusResult("BLOCKED", lastIssue, "run was cancelled")
       }
-      const selection = await input.tracker.selectEligibleIssue({
-        baseBranch: input.baseBranch,
-        currentState: "starting",
-      })
+      const priorCheckpoint = recoveryCheckpoint
+      const selection: TrackerSelection = priorCheckpoint === null
+        ? await input.tracker.selectEligibleIssue({
+            baseBranch: input.baseBranch,
+            currentState: "starting",
+          })
+        : {
+            kind: "selected",
+            identity: trackerIdentityFromCheckpoint(priorCheckpoint) ?? input.adoptIssue as TrackerIdentity,
+          }
+      recoveryCheckpoint = null
       if (selection.kind !== "selected") {
         const status = selection.kind === "empty" ? "QUEUE_EMPTY" : selection.kind === "blocked" ? "BLOCKED" : "RECOVERY_REQUIRED"
         await input.lock.writeStatus({
@@ -193,13 +421,13 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
 
       const issue = identityNumber(selection.identity)
       lastIssue = issue
-      let branch = await input.git.currentBranch({ cwd: input.directory })
-      if (branch === input.baseBranch && input.git.createBranch !== undefined) {
+      let branch = priorCheckpoint?.branch ?? currentBranch
+      if (priorCheckpoint === null && branch === input.baseBranch && input.git.createBranch !== undefined) {
         branch = `issue-${issue}`
         await input.git.createBranch({ cwd: input.directory, branch })
       }
-      const baseSha = await input.git.currentBaseSha({ cwd: input.directory, baseBranch: input.baseBranch })
-      let checkpoint = emptyCheckpoint({
+      const baseSha = priorCheckpoint?.baseSha ?? await input.git.currentBaseSha({ cwd: input.directory, baseBranch: input.baseBranch })
+      let checkpoint = priorCheckpoint ?? emptyCheckpoint({
         pid: input.owner.pid,
         iteration: completed + 1,
         branch,
@@ -212,43 +440,45 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
         state: "issue_selected",
         updatedAt: input.now(),
       })
-      checkpoint = { ...checkpoint, identity: identityForCheckpoint(selection.identity) }
-      checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "issue_selected" })
-      await input.tracker.claimIssue({ identity: selection.identity })
+      checkpoint = {
+        ...checkpoint,
+        identity: identityForCheckpoint(selection.identity),
+        selectedProfile: checkpoint.selectedProfile ?? input.profile.name,
+        fallbackChain: priorCheckpoint === null ? [...input.profile.fallbacks] : checkpoint.fallbackChain,
+        fallbackRemaining: priorCheckpoint === null ? [...input.profile.fallbacks] : checkpoint.fallbackRemaining,
+      }
+      if (priorCheckpoint === null) {
+        checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "issue_selected" })
+        await input.tracker.claimIssue({ identity: selection.identity })
+      }
       if (input.signal?.aborted) {
         await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)
         return statusResult("BLOCKED", issue, "run was cancelled")
       }
 
       try {
-        const workerInput: WorkerRunInput = {
-          issue,
-          branch,
-          baseBranch: input.baseBranch,
-          baseSha,
-          profile: input.profile,
-          promptText: input.promptText ?? defaultPrompt,
-          signal: input.signal,
-          onSessionCaptured: async (sessionId) => {
-            checkpoint = await saveCheckpoint({
-              supervisor: input,
-              checkpoint: { ...checkpoint, sessionId },
-              state: "mutating",
-            })
-          },
-        }
         const startedAt = Date.now()
         const intervalSeconds = input.progressIntervalSeconds ?? 0
         const heartbeat = intervalSeconds > 0
           ? setInterval(() => input.onHeartbeat?.({ issue, elapsedMs: Date.now() - startedAt }), intervalSeconds * 1000)
           : undefined
         heartbeat?.unref?.()
-        let worker: WorkerRunResult
+        let workerAttempt: Awaited<ReturnType<typeof runFallbackAttempts>>
         try {
-          worker = await input.worker(workerInput)
+          workerAttempt = await runFallbackAttempts({
+            supervisor: input,
+            issue,
+            branch,
+            baseBranch: input.baseBranch,
+            baseSha,
+            checkpoint,
+          })
         } finally {
           if (heartbeat !== undefined) clearInterval(heartbeat)
         }
+        checkpoint = workerAttempt.checkpoint
+        if ("failure" in workerAttempt) return workerAttempt.failure
+        const worker = workerAttempt.result
         checkpoint = { ...checkpoint, sessionId: worker.sessionId }
         if (input.signal?.aborted) {
           await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)

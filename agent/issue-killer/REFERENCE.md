@@ -299,13 +299,7 @@ Before every retry the supervisor:
    already-merged PR with a closed issue) is treated as completed; the
    supervisor injects a synthetic `ISSUE_COMPLETED` status and advances the
    loop without launching another worker.
-3. Resumes the captured Claude session when the checkpoint carries one, the
-   worktree still matches the recorded branch and base SHA, and the runtime
-   adapter confirms the conversation exists in its own store (issue #51).
-   Otherwise the supervisor launches a fresh recovery worker constrained to
-   the same issue. The fresh worker persists its session by default
-   (`disable_session_persistence = false`); only an explicit operator opt-out
-   triggers `--no-session-persistence`.
+3. Confirms an OpenCode session with `session.get()` when the checkpoint carries one, the worktree still matches the recorded issue, branch, base branch, and base SHA. A fallback continues the same resumable session with the next profile's model. If confirmation fails, the runtime starts a fresh OpenCode session constrained to the checkpointed issue; local branch, base, tracker, or profile drift stops with `RECOVERY_REQUIRED`.
 4. Writes `state=recovering`, `recovery_attempt`, `recovery_delay`, and
    `recovery_category` into the lock status snapshot so operators can
    observe the in-flight retry without reading the checkpoint file.
@@ -329,90 +323,28 @@ overflow. Each fallback transitions through `fallback_pending` →
 fallback chain that lacks a remaining profile produces
 `fallback_exhausted` and exits with `RECOVERY_REQUIRED`.
 
-## Mixed-provider fallback chains
+## OpenCode fallback chains
 
-The fallback chain is now profile-neutral, not OpenCode-only. An operator
-may declare an ordered chain that mixes Claude, Codex, and OpenCode
-profiles in any order selected at startup. Each entry is a complete
-execution profile (CLI, model, command, options); the runner never
-substitutes another CLI, model, or command. Configuration validation
-rejects duplicate entries, missing profiles, direct or indirect cycles,
-and chains that target an unknown CLI.
+The fallback chain is OpenCode-only and ordered. The supervisor advances only
+on `provider_quota`, `provider_rate_limit`, or `provider_model_unavailable`.
+Transport failures are retried using the bounded delay schedule before any
+fallback is considered; generic implementation failures, malformed output,
+`BLOCKED`, `FAILED`, and context overflow never consume a fallback.
 
-The normalized provider failure categories that drive a fallback are
-`provider_quota`, `provider_rate_limit`, and `provider_model_unavailable`.
-All three are produced by the active runtime adapter's provider-failure
-classification; the orchestrator consumes only the normalized category.
-Implementation failures, generic non-zero exits, `BLOCKED`, `FAILED`,
-malformed output, and context-window exhaustion are never classified as
-provider failures and therefore never consume a fallback.
-
-Cross-CLI transitions preserve the issue scope, branch, worktree state,
-and chain order. The destination CLI is activated through the same
-runtime activation path used by the primary profile, so the destination
-adapter's executable, model, and option validation run before the
-worker launches. Session ownership is recorded alongside the captured
-session id; the cross-CLI guard rejects a session whose owning CLI
-differs from the active profile, so the destination CLI never receives
-an opaque foreign session id. A cross-CLI transition always launches a
-fresh destination session constrained to the checkpointed issue and the
-existing worktree; the previous native session id is discarded.
+Each fallback persists the failed profile, category, next profile, and
+remaining chain in the checkpoint. A resumable session is confirmed with
+`session.get()` and reused with the next profile's model. If that session is
+missing or its pinned issue, branch, base branch, or base SHA does not match,
+OpenCode starts a fresh session constrained to the checkpointed issue. An
+exhausted or malformed chain produces `RECOVERY_REQUIRED` without advancing.
 
 Restart recovery restores the active profile and remaining chain at the
-persisted chain position. Chain drift, profile drift, branch mismatch,
-stale base SHA, missing issue identity, or ambiguous tracker/PR state
-retain `RECOVERY_REQUIRED` without launching a new worker. The public
-status protocol (`ISSUE_COMPLETED`, `QUEUE_EMPTY`, `BLOCKED`, `FAILED`,
-`RECOVERY_REQUIRED`) is unchanged. Checkpoints, lock status, and any
-retained artifact exclude credentials, complete prompts, and complete
-provider commands.
-
-## Restart recovery and legacy adoption
-
-On startup, a dirty worktree is no longer treated as a generic failure when
-there is enough recovery identity to continue safely. The supervisor first
-checks the Git common directory for `issue-killer.checkpoint`. When the
-checkpoint is valid and matches the current worktree, the runner prints the
-exact issue number, branch, base SHA, last checkpoint state, dirty files,
-and recovery strategy. It then reconciles the issue/work-item and PR state
-with the active tracker before any worker is launched.
-
-Recovery only proceeds after explicit TTY confirmation. A declined prompt,
-missing TTY, stale base SHA, branch mismatch, missing issue number, ambiguous
-PR state, or unavailable tracker state exits with code `4`
-(`RECOVERY_REQUIRED`) and leaves the checkpoint and worktree untouched.
-
-If the checkpoint contains a usable Claude session id, the runtime adapter
-confirms the conversation still exists in its own store, the
-branch/base SHA still match, the captured CLI matches the active profile,
-and the runner reconciles tracker liveness first, the first recovery
-worker is invoked with `--resume <session_id>`. Otherwise the runner
-starts a fresh worker (persistence enabled by default) with a prompt
-constrained to the checkpointed issue. A checkpoint whose issue is
-already closed is recognised as stale, cleared, and advanced past
-without launching a recovery worker. The existence probe is owned by
-the runtime adapter so the
-orchestrator encodes no provider's on-disk layout — Claude resolves its
-own JSONL transcript, and Codex or OpenCode defer to their CLI's own
-resume answer. In both cases the worker is instructed to inspect and
-complete the existing partial work, never select a new issue, and never
-discard, reset, stash, or overwrite dirty files.
-
-For older interrupted work created before checkpoint support existed, use
-legacy adoption:
-
-```bash
-ISSUE_RUNNER_ADOPT_ISSUE=123 issue-killer /path/to/repo
-```
-
-The issue number is mandatory. The runner never infers it from the branch,
-filenames, dirty paths, or queue ordering. Before adoption it displays the
-dirty files and proposed recovery identity, reconciles issue/dependency/PR
-state, and requires TTY confirmation. Only after confirmation does it
-create a synthetic checkpoint with `session_id=unavailable` and launch a
-fresh recovery worker constrained to that supplied issue.
+persisted position. Config, branch, base, or tracker drift remains
+`RECOVERY_REQUIRED`; legacy or ambiguous checkpoints require explicit
+`ISSUE_RUNNER_ADOPT_ISSUE` and never infer an issue from files or branches.
 
 ### Legacy binary migration
+
 
 A live lock or checkpoint produced by the historical
 `claude-minimax-issue-runner` binary blocks startup. The supervisor detects

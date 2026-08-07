@@ -44,6 +44,7 @@ export type OpenCodeRuntimePort = {
     readonly sessionId: SessionId
     readonly directory: string
     readonly scope?: OpenCodeSessionScope
+    readonly allowProfileChange?: boolean
   }): Promise<{ readonly sessionId: SessionId; readonly directory: string; readonly title: string }>
   abortSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>
   deleteSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>

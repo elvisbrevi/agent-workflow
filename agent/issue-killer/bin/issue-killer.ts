@@ -20,6 +20,9 @@ import { bunCommandRunner } from "../src/system/command"
 import { WORKER_STATUS_EXIT_CODE } from "../src/domain/outcome"
 import type { ExecutionProfile } from "../src/domain/execution-profile"
 import { redactMultiline } from "../src/system/redaction"
+import { parseAdoptionValue } from "../src/domain/recovery"
+import type { TrackerIdentity } from "../src/domain/tracker"
+import { IssueKillerError } from "../src/domain/errors"
 
 const env = process.env as Readonly<Record<string, string | undefined>>
 const commandRunner = bunCommandRunner()
@@ -53,6 +56,20 @@ const positiveEnv = (name: string, fallback: number): number => {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a positive integer or 0`)
   return parsed
+}
+
+const retryDelaysMs = (): ReadonlyArray<number> => {
+  const value = env.ISSUE_RUNNER_RETRY_DELAYS ?? "15,30,60"
+  if (value.trim() === "") return []
+  const entries = value.split(",").map((entry) => entry.trim())
+  if (entries.some((entry) => !/^[0-9]+$/.test(entry))) {
+    throw new IssueKillerError("invalid_input", "ISSUE_RUNNER_RETRY_DELAYS must be a comma-separated list of non-negative seconds")
+  }
+  const seconds = entries.map((entry) => Number(entry))
+  if (seconds.some((entry) => !Number.isSafeInteger(entry))) {
+    throw new IssueKillerError("invalid_input", "ISSUE_RUNNER_RETRY_DELAYS contains a number outside the safe integer range")
+  }
+  return seconds.map((entry) => entry * 1000)
 }
 
 class CliOutcome extends Error {
@@ -105,6 +122,11 @@ const main = async (): Promise<SupervisorResult> => {
 
   const profile = loaded.config.profiles.get(loaded.config.defaultProfile) as ExecutionProfile | undefined
   if (profile === undefined) return stop("FAILED", "default execution profile is unavailable")
+  const adoption = parseAdoptionValue(env.ISSUE_RUNNER_ADOPT_ISSUE)
+  if (adoption.kind === "malformed") {
+    return stop("RECOVERY_REQUIRED", adoption.reason)
+  }
+  const adoptIssue: TrackerIdentity | undefined = adoption.kind === "ok" ? adoption.identity : undefined
   const baseBranch = args.baseBranch ?? env.ISSUE_RUNNER_BASE_BRANCH ?? "main"
   const iterationLimit = args.iterationLimit ?? positiveEnv("ISSUE_RUNNER_MAX_ITERATIONS", 0)
   const preflight = await preflightGithubTracker({ runner: commandRunner, git, cwd: directory })
@@ -133,7 +155,28 @@ const main = async (): Promise<SupervisorResult> => {
       directory,
       baseBranch,
       profile,
+      profiles: loaded.config.profiles,
+      adoptIssue,
       iterationLimit,
+      retryDelaysMs: retryDelaysMs(),
+      retryLimit: env.ISSUE_RUNNER_RETRY_LIMIT === undefined
+        ? undefined
+        : positiveEnv("ISSUE_RUNNER_RETRY_LIMIT", 0),
+      sleep: async ({ millis, signal }) => {
+        await new Promise<void>((resolveSleep, rejectSleep) => {
+          const timer = setTimeout(resolveSleep, millis)
+          if (signal === undefined) return
+          if (signal.aborted) {
+            clearTimeout(timer)
+            rejectSleep(new IssueKillerError("cancelled", "retry sleep was cancelled"))
+            return
+          }
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer)
+            rejectSleep(new IssueKillerError("cancelled", "retry sleep was cancelled"))
+          }, { once: true })
+        })
+      },
       runnerName: "issue-killer",
       owner: {
         pid: process.pid,
@@ -172,6 +215,7 @@ const main = async (): Promise<SupervisorResult> => {
             profile: input.profile.name,
           },
           expectedIssue: input.issue,
+          resumeSessionId: input.resumeSessionId,
           model: { providerID: input.profile.providerID, modelID: input.profile.modelID },
           variant: input.profile.variant,
           promptText,

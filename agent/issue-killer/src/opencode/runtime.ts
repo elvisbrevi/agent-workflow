@@ -60,6 +60,7 @@ export type OpenCodeWorkerSessionInput = {
   readonly directory: string
   readonly scope?: OpenCodeSessionScope
   readonly expectedIssue?: number
+  readonly resumeSessionId?: SessionId
   readonly model: { readonly providerID: string; readonly modelID: string }
   readonly variant?: string
   readonly promptText: string
@@ -107,13 +108,18 @@ const scopeMetadata = (scope: OpenCodeSessionScope): Readonly<Record<string, str
   profile: scope.profile,
 })
 
-const hasMatchingScope = (metadata: unknown, scope: OpenCodeSessionScope): boolean => {
+const hasMatchingScope = (
+  metadata: unknown,
+  scope: OpenCodeSessionScope,
+  allowProfileChange = false,
+): boolean => {
   if (typeof metadata !== "object" || metadata === null) return false
   const stored = (metadata as { readonly issue_killer?: unknown }).issue_killer
   if (typeof stored !== "object" || stored === null) return false
   const values = stored as Record<string, unknown>
   const expected = scopeMetadata(scope)
-  return Object.entries(expected).every(([key, value]) => values[key] === value)
+  return Object.entries(expected).every(([key, value]) =>
+    allowProfileChange && key === "profile" ? true : values[key] === value)
 }
 
 const lifecycleForOutcome = (status: string): LifecycleState => {
@@ -218,7 +224,7 @@ export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Pr
       }
       return { sessionId, directory: response.data.directory }
     },
-    getSession: async ({ sessionId, directory: requestedDirectory, scope }) => {
+    getSession: async ({ sessionId, directory: requestedDirectory, scope, allowProfileChange }) => {
       const validSessionId = assertSessionId(sessionId)
       const response = await client.session.get(
         { sessionID: validSessionId, directory: scopedDirectory(requestedDirectory) },
@@ -228,7 +234,7 @@ export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Pr
       if (
         returnedSessionId !== validSessionId ||
         response.data.directory !== directory ||
-        (scope !== undefined && !hasMatchingScope(response.data.metadata, scope))
+        (scope !== undefined && !hasMatchingScope(response.data.metadata, scope, allowProfileChange))
       ) {
         throw new IssueKillerError("drift_detected", "OpenCode session identity does not match the pinned scope")
       }
@@ -289,7 +295,24 @@ export const runOpenCodeWorkerSession = async (
   if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
     await input.harnessLog.startRun({ runId: input.runId, repository: input.directory })
   }
-  const session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+  let session: { readonly sessionId: SessionId; readonly directory: string }
+  if (input.resumeSessionId !== undefined) {
+    try {
+      const loaded = await input.runtime.getSession({
+        sessionId: input.resumeSessionId,
+        directory: input.directory,
+        scope: input.scope,
+        allowProfileChange: true,
+      })
+      session = { sessionId: loaded.sessionId, directory: loaded.directory }
+    } catch {
+      // A missing or scope-mismatched session is unresumable. Start a fresh
+      // session while retaining the host-pinned issue and branch scope.
+      session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+    }
+  } else {
+    session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+  }
   if (input.signal?.aborted) {
     await input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory }).catch(() => undefined)
     await input.runtime.close().catch(() => undefined)
@@ -363,6 +386,7 @@ export const runOpenCodeWorkerSession = async (
     if (events.permissionStopped) {
       throw new IssueKillerError("permission_denied", "OpenCode requested permission during autonomous execution")
     }
+    if (events.providerError !== undefined) throw events.providerError
     if (events.malformedOutcome || events.missingOutcome) {
       throw new IssueKillerError("malformed_outcome", "OpenCode emitted an invalid or contradictory worker outcome")
     }
