@@ -575,6 +575,24 @@ test("verifyCompletion returns verified for a merged PR into the configured base
     expect(result.kind).toBe("tracker_unreachable")
   })
 
+  test("verifyCompletion rejects a response for a different issue", async () => {
+    await stub.reset()
+    await stub.setResponse("issue view 91", stubIssue({ number: 92, state: "CLOSED" }))
+    await stub.setResponse("pr list", JSON.stringify([stubPr()]))
+    const adapter = createGithubTracker({
+      runner,
+      git: systemGitPort({ runner }),
+      cwd,
+      slug: "example/fixture",
+    })
+    const result = await adapter.verifyCompletion({
+      identity: { kind: "github", number: 91 as never },
+      branch: "issue-91",
+      baseBranch: "main",
+    })
+    expect(result.kind).toBe("drift")
+  })
+
   test("verifyCompletion rejects mismatched tracker identity kinds", async () => {
     const adapter = createGithubTracker({
       runner,
