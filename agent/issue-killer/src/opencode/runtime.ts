@@ -30,7 +30,7 @@ export const AUTONOMOUS_PERMISSION = {
   doom_loop: "allow",
 } satisfies PermissionConfig
 
-export const SUPPORTED_OPENCODE_VERSIONS = new Set(["1.18.14"])
+export const SUPPORTED_OPENCODE_VERSIONS = new Set(["1.18.14", "1.18.15"])
 
 const OUTCOME_SCHEMA = {
   type: "json_schema",
@@ -67,6 +67,7 @@ export type OpenCodeWorkerSessionInput = {
   readonly signal?: AbortSignal
   readonly harnessLog?: HarnessLogPort
   readonly runId?: string
+  readonly harnessLifecycle?: boolean
   readonly onSessionCaptured?: (sessionId: SessionId) => Promise<void> | void
   readonly onEvent?: (event: ObservedEvent) => Promise<void> | void
 }
@@ -283,11 +284,17 @@ export const runOpenCodeWorkerSession = async (
 ): Promise<OpenCodeWorkerSessionResult> => {
   if (input.signal?.aborted) throw new Error("OpenCode worker was cancelled before session creation")
 
-  const harnessStarted = input.harnessLog !== undefined && input.runId !== undefined
+  const harnessEnabled = input.harnessLog !== undefined && input.runId !== undefined
+  const harnessStarted = harnessEnabled && input.harnessLifecycle !== false
   if (harnessStarted && input.harnessLog !== undefined && input.runId !== undefined) {
     await input.harnessLog.startRun({ runId: input.runId, repository: input.directory })
   }
   const session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+  if (input.signal?.aborted) {
+    await input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory }).catch(() => undefined)
+    await input.runtime.close().catch(() => undefined)
+    throw new Error("OpenCode worker was cancelled")
+  }
   const controller = new AbortController()
   let abortPromise: Promise<void> | undefined
   let closePromise: Promise<void> | undefined
@@ -295,12 +302,16 @@ export const runOpenCodeWorkerSession = async (
     controller.abort()
     abortPromise ??= input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory })
       .catch(() => undefined)
-    closePromise ??= input.runtime.close().catch(() => undefined)
+    closePromise ??= (abortPromise ?? Promise.resolve()).then(
+      () => input.runtime.close(),
+      () => input.runtime.close(),
+    ).catch(() => undefined)
   }
   const signalHandler = (): void => abortSession()
   input.signal?.addEventListener("abort", signalHandler, { once: true })
 
   try {
+    await input.onSessionCaptured?.(session.sessionId)
     const subscription = input.runtime.subscribeEvents({
       directory: input.directory,
       sessionId: session.sessionId,

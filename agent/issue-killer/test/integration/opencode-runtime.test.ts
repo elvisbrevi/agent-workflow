@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseSessionId } from "../../src/domain/session-id"
 import type { OpenCodeRuntimePort } from "../../src/domain/ports"
-import { createOpenCodeRuntime, runOpenCodeWorkerSession } from "../../src/opencode/runtime"
+import { createOpenCodeRuntime, runOpenCodeWorkerSession, SUPPORTED_OPENCODE_VERSIONS } from "../../src/opencode/runtime"
 
 async function nextWithTimeout<T>(stream: AsyncIterator<T>, timeoutMs: number): Promise<IteratorResult<T>> {
   return await Promise.race([
@@ -18,13 +18,13 @@ test("wraps one loopback OpenCode server with directory-scoped session operation
   const canonicalDirectory = await realpath(directory)
   const runtime = await createOpenCodeRuntime({
     directory,
-    supportedVersions: new Set(["1.18.14"]),
+    supportedVersions: SUPPORTED_OPENCODE_VERSIONS,
   })
   let events: AsyncIterable<unknown> | undefined
 
   try {
     const health = await runtime.health()
-    expect(health.version).toBe("1.18.14")
+    expect(SUPPORTED_OPENCODE_VERSIONS.has(health.version)).toBe(true)
     const sessionId = parseSessionId("ses_runtime_test")
     if (sessionId === null) throw new Error("test session id is invalid")
     events = runtime.subscribeEvents({ directory: canonicalDirectory, sessionId })
