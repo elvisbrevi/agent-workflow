@@ -6796,6 +6796,7 @@ test_heartbeat_lock_loss_stops_worker_and_returns_recovery() {
     runtime_invoke() {
       trap 'exit 143' TERM INT HUP
       : > "${work}/worker-started"
+      printf '%s\n' 'ISSUE_KILLER_STATUS=ISSUE_COMPLETED'
       sleep 5
       : > "${work}/worker-finished"
     }

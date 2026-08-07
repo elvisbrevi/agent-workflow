@@ -85,7 +85,8 @@ lock_integrity_failure() {
   # This is an abort path, so it must never make things worse: only
   # attempt the write when the checkpoint machinery is fully available.
   # A partially staged environment would otherwise strand temp files.
-  if [[ -n "${ITERATION:-}" && -n "${BASE_BRANCH:-}" && -n "${GIT_COMMON_DIR:-}" ]] &&
+  if [[ "${LOCK_FAILURE_DEFER_CHECKPOINT:-false}" != "true" &&
+        -n "${ITERATION:-}" && -n "${BASE_BRANCH:-}" && -n "${GIT_COMMON_DIR:-}" ]] &&
      [[ -d "${GIT_COMMON_DIR}" ]] &&
      declare -F write_checkpoint >/dev/null 2>&1 &&
      declare -F timestamp >/dev/null 2>&1; then

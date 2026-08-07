@@ -25,16 +25,22 @@ run_worker_with_progress() {
 
   mkfifo "$stream_fifo" || \
     die "unable to create worker output pipe: ${stream_fifo}"
-  "$sink" "$output_file" < "$stream_fifo" &
-  sink_pid=$!
+  LOCK_FAILURE_FILE="$lock_failure_file"
+  LOCK_FAILURE_DEFER_CHECKPOINT=true
   {
     set +e
-    runtime_invoke "$prompt" "$session_id"
-    printf '%s\n' "$?" > "$exit_file"
+    runtime_invoke "$prompt" "$session_id" &
+    worker_pid=$!
+    trap 'kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; exit 143' HUP INT TERM
+    wait "$worker_pid"
+    worker_exit=$?
+    trap - HUP INT TERM
+    printf '%s\n' "$worker_exit" > "$exit_file"
   } > "$stream_fifo" 2>&1 &
   pipeline_pid=$!
-  LOCK_FAILURE_FILE="$lock_failure_file"
   LOCK_FAILURE_PID="$pipeline_pid"
+  "$sink" "$output_file" < "$stream_fifo" &
+  sink_pid=$!
 
   if [[ "$PROGRESS_INTERVAL" -gt 0 ]]; then
     (
@@ -69,6 +75,7 @@ run_worker_with_progress() {
   if [[ -s "$lock_failure_file" ]]; then
     reason="$(<"$lock_failure_file")"
     rm -f "$lock_failure_file" "$stream_fifo"
+    LOCK_FAILURE_DEFER_CHECKPOINT=false
     lock_integrity_failure "$reason"
   fi
 
@@ -82,6 +89,7 @@ run_worker_with_progress() {
   rm -f "$exit_file" "$touch_file" "$lock_failure_file" "$stream_fifo"
   LOCK_FAILURE_FILE=""
   LOCK_FAILURE_PID=""
+  LOCK_FAILURE_DEFER_CHECKPOINT=false
   write_lock_status "worker_finished" "$elapsed"
   printf '[%s] Worker %s exited after %ss (code %s).\n' \
     "$RUNNER_NAME" "$ITERATION" "$elapsed" "$WORKER_EXIT"
