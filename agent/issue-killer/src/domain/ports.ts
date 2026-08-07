@@ -18,6 +18,7 @@ export type TrackerPort = {
     readonly baseBranch: string
     readonly currentState: LifecycleState
   }): Promise<TrackerSelection>
+  claimIssue(input: { readonly identity: TrackerIdentity }): Promise<void>
   verifyCompletion(input: {
     readonly identity: TrackerIdentity
     readonly branch: string

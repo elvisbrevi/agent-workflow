@@ -97,6 +97,16 @@ case "$key" in
         printf 'closed %s\\\\n' "$number"
         exit 0
         ;;
+      edit)
+        number="$1"
+        err=$(jq -r --arg n "$number" '.errors["issue edit " + $n] // empty' "$STATE")
+        if [ -n "$err" ]; then
+          printf '%s' "$err" 1>&2
+          exit 1
+        fi
+        printf 'claimed %s\\n' "$number"
+        exit 0
+        ;;
     esac
     ;;
   pr)
@@ -282,6 +292,62 @@ describe("preflightGithubTracker", () => {
       ghPath: "gh-does-not-exist",
     })
     expect(result.kind).toBe("gh_missing")
+  })
+
+  test("rejects an unsupported remote instead of treating it as missing", async () => {
+    const fakeRunner: CommandRunnerPort = {
+      spawn: async (input) => {
+        if (input.program === "gh" && input.args[0] === "--version") {
+          return { stdout: "gh version fixture", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "gh" && input.args[0] === "auth") {
+          return { stdout: "logged in", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "git" && input.args[0] === "remote") {
+          return { stdout: "origin\n", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "git" && input.args[0] === "config") {
+          return { stdout: "https://gitlab.com/example/fixture.git\n", stderr: "", exitCode: 0 }
+        }
+        return { stdout: "", stderr: "", exitCode: 1 }
+      },
+    }
+    const result = await preflightGithubTracker({
+      runner: fakeRunner,
+      git: systemGitPort({ runner: fakeRunner }),
+      cwd,
+      ghPath: "gh",
+    })
+    expect(result.kind).toBe("remote_unsupported")
+  })
+
+  test("rejects remotes that resolve to different GitHub repositories", async () => {
+    const fakeRunner: CommandRunnerPort = {
+      spawn: async (input) => {
+        if (input.program === "gh" && input.args[0] === "--version") {
+          return { stdout: "gh version fixture", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "gh" && input.args[0] === "auth") {
+          return { stdout: "logged in", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "git" && input.args[0] === "remote") {
+          return { stdout: "origin\nupstream\n", stderr: "", exitCode: 0 }
+        }
+        if (input.program === "git" && input.args[0] === "config") {
+          return input.args[2] === "remote.origin.url"
+            ? { stdout: "https://github.com/example/fixture.git\n", stderr: "", exitCode: 0 }
+            : { stdout: "https://github.com/example/other.git\n", stderr: "", exitCode: 0 }
+        }
+        return { stdout: "", stderr: "", exitCode: 1 }
+      },
+    }
+    const result = await preflightGithubTracker({
+      runner: fakeRunner,
+      git: systemGitPort({ runner: fakeRunner }),
+      cwd,
+      ghPath: "gh",
+    })
+    expect(result.kind).toBe("remote_ambiguous")
   })
 })
 
@@ -535,6 +601,26 @@ test("verifyCompletion returns verified for a merged PR into the configured base
     await adapter.closeIssue({ identity: { kind: "github", number: 91 as never } })
     const calls = await stub.calls()
     expect(calls.some((line) => line.startsWith("issue close 91"))).toBe(true)
+  })
+
+  test("claimIssue delegates to gh issue edit with the current user", async () => {
+    await stub.reset()
+    const adapter = createGithubTracker({
+      runner,
+      git: systemGitPort({ runner }),
+      cwd,
+      slug: "example/fixture",
+    })
+    await adapter.claimIssue({ identity: { kind: "github", number: 91 as never } })
+    const calls = await stub.calls()
+    expect(
+      calls.some(
+        (line) =>
+          line.startsWith("issue edit 91") &&
+          line.includes("--repo example/fixture") &&
+          line.includes("--add-assignee @me"),
+      ),
+    ).toBe(true)
   })
 
   test("closeIssue surfaces gh failures", async () => {

@@ -25,6 +25,7 @@ if (hu1 === null) throw new Error("invalid HU for port test")
 const trackerPort: TrackerPort = {
   kind: "github",
   selectEligibleIssue: async () => ({ kind: "empty", reason: "no issues" }),
+  claimIssue: async () => undefined,
   verifyCompletion: async () => ({
     kind: "verified",
     identity: { kind: "github", number: issue91 },
@@ -119,8 +120,9 @@ const terminalPort: TerminalPort = {
 }
 
 describe("ports shape", () => {
-  test("verify that every port declared in src/domain/ports.ts matches its runtime signature", () => {
+    test("verify that every port declared in src/domain/ports.ts matches its runtime signature", () => {
     expect(typeof trackerPort.selectEligibleIssue).toBe("function")
+    expect(typeof trackerPort.claimIssue).toBe("function")
     expect(typeof trackerPort.verifyCompletion).toBe("function")
     expect(typeof trackerPort.closeIssue).toBe("function")
     expect(typeof trackerPort.readEvidenceScope).toBe("function")
