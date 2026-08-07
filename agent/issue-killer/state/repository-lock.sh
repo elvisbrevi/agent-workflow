@@ -238,6 +238,8 @@ acquire_repository_lock() {
   LOCK_TOKEN="$$-$(date +%s)"
 
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    [[ ! -e "${LOCK_DIR}/release" ]] || \
+      die "repository lock release is in progress; refusing to inspect or reclaim it: ${LOCK_DIR}"
     if [[ ! -r "$owner_file" ]]; then
       sleep 1
       [[ -r "$owner_file" ]] || \
