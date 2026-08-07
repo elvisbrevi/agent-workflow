@@ -157,7 +157,7 @@ export const gitWorktreeIsClean = async (input: {
 }): Promise<boolean> => {
   const result = await runGit(
     input.runner,
-    ["status", "--porcelain", "--untracked-files=no"],
+    ["status", "--porcelain", "--untracked-files=all"],
     input.cwd,
   )
   if (result.exitCode !== 0) {
@@ -168,6 +168,19 @@ export const gitWorktreeIsClean = async (input: {
     })
   }
   return result.stdout.trim().length === 0
+}
+
+const gitSwitchBranch = async (input: {
+  readonly runner: CommandRunnerPort
+  readonly cwd: string
+  readonly branch: string
+  readonly create: boolean
+}): Promise<void> => {
+  const args = input.create ? ["switch", "--create", input.branch] : ["switch", input.branch]
+  const result = await runGit(input.runner, args, input.cwd)
+  if (result.exitCode !== 0) {
+    throw new GitPortError({ kind: "command_failed", cwd: input.cwd, stderr: result.stderr || result.stdout })
+  }
 }
 
 export type SystemGitOptions = RunGitOptions
@@ -185,4 +198,8 @@ export const systemGitPort = (options: SystemGitOptions): GitPort => ({
     }),
   worktreeIsClean: async (input): Promise<boolean> =>
     gitWorktreeIsClean({ runner: options.runner, cwd: input.cwd }),
+  createBranch: async (input): Promise<void> =>
+    gitSwitchBranch({ runner: options.runner, cwd: input.cwd, branch: input.branch, create: true }),
+  checkoutBranch: async (input): Promise<void> =>
+    gitSwitchBranch({ runner: options.runner, cwd: input.cwd, branch: input.branch, create: false }),
 })
