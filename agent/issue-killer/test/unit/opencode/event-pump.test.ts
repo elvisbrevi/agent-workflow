@@ -8,6 +8,7 @@ async function* fromEvents(events: ReadonlyArray<unknown>): AsyncGenerator<unkno
 
 test("drains every matching event, ignores foreign sessions, and captures a session id from any event shape", async () => {
   const seen: string[] = []
+  const captured: string[] = []
   const result = await drainSessionEvents({
     events: fromEvents([
       { type: "server.connected", properties: {} },
@@ -21,10 +22,12 @@ test("drains every matching event, ignores foreign sessions, and captures a sess
       } },
     ]),
     expectedIssue: 84,
+    onSessionCaptured: (sessionId) => { captured.push(sessionId) },
     onEvent: (event) => { seen.push(event.type) },
   })
 
   expect(result.capturedSessionId).toBe(parseSessionId("ses_from_text"))
+  expect(captured).toEqual(["ses_from_text"])
   expect(result.eventsSeen).toBe(5)
   expect(result.eventsIgnored).toBe(1)
   expect(seen).toEqual([
@@ -73,4 +76,24 @@ test("rejects contradictory structured outcomes", async () => {
 
   expect(result.malformedOutcome).toBe(true)
   expect(result.outcome).toBeNull()
+})
+
+test("accepts a compatibility marker split across text events", async () => {
+  const result = await drainSessionEvents({
+    events: fromEvents([
+      { type: "message.part.updated", properties: {
+        sessionID: "ses_marker",
+        part: { type: "text", text: "ISSUE_KILLER_STATUS=ISSUE_" },
+      } },
+      { type: "message.part.updated", properties: {
+        sessionID: "ses_marker",
+        part: { type: "text", text: "COMPLETED" },
+      } },
+    ]),
+    expectedSessionId: parseSessionId("ses_marker") ?? undefined,
+    expectedIssue: 84,
+  })
+
+  expect(result.outcome?.status).toBe("ISSUE_COMPLETED")
+  expect(result.missingOutcome).toBe(false)
 })

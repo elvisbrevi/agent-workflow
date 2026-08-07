@@ -5,8 +5,10 @@ import {
   type Config,
   type PermissionConfig,
 } from "@opencode-ai/sdk/v2"
-import type { OpenCodeRuntimePort, OpenCodeSessionScope } from "../domain/ports"
+import type { HarnessLogPort, OpenCodeRuntimePort, OpenCodeSessionScope } from "../domain/ports"
 import { IssueKillerError } from "../domain/errors"
+import type { EventPumpResult, ObservedEvent } from "./event-pump"
+import { drainSessionEvents } from "./event-pump"
 import { parseSessionId, type SessionId } from "../domain/session-id"
 
 export const AUTONOMOUS_PERMISSION = {
@@ -24,7 +26,10 @@ export const AUTONOMOUS_PERMISSION = {
   websearch: "allow",
   lsp: "allow",
   skill: "allow",
+  doom_loop: "allow",
 } satisfies PermissionConfig
+
+export const SUPPORTED_OPENCODE_VERSIONS = new Set(["1.18.14"])
 
 const OUTCOME_SCHEMA = {
   type: "json_schema",
@@ -47,6 +52,28 @@ export type OpenCodeRuntimeOptions = {
   readonly config?: Config
   readonly supportedVersions?: ReadonlySet<string>
   readonly maxBindAttempts?: number
+}
+
+export type OpenCodeWorkerSessionInput = {
+  readonly runtime: OpenCodeRuntimePort
+  readonly directory: string
+  readonly scope?: OpenCodeSessionScope
+  readonly expectedIssue?: number
+  readonly model: { readonly providerID: string; readonly modelID: string }
+  readonly variant?: string
+  readonly promptText: string
+  readonly autonomous?: boolean
+  readonly signal?: AbortSignal
+  readonly harnessLog?: HarnessLogPort
+  readonly runId?: string
+  readonly onSessionCaptured?: (sessionId: SessionId) => Promise<void> | void
+  readonly onEvent?: (event: ObservedEvent) => Promise<void> | void
+}
+
+export type OpenCodeWorkerSessionResult = {
+  readonly sessionId: SessionId
+  readonly runId: string
+  readonly events: EventPumpResult
 }
 
 export type OpenCodeRuntime = OpenCodeRuntimePort & {
@@ -90,6 +117,7 @@ const hasMatchingScope = (metadata: unknown, scope: OpenCodeSessionScope): boole
 export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Promise<OpenCodeRuntime> => {
   const directory = await realpath(options.directory)
   const maxBindAttempts = Math.max(1, options.maxBindAttempts ?? 3)
+  const supportedVersions = options.supportedVersions ?? SUPPORTED_OPENCODE_VERSIONS
   const permission = options.autonomous === true ? AUTONOMOUS_PERMISSION : "ask"
   const config: Config = { ...options.config, permission }
 
@@ -138,7 +166,7 @@ export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Pr
     if (!response.data.healthy || typeof version !== "string" || version.length === 0) {
       throw runtimeError("OpenCode health check failed")
     }
-    if (options.supportedVersions !== undefined && !options.supportedVersions.has(version)) {
+    if (!supportedVersions.has(version)) {
       throw runtimeError("unsupported OpenCode version", { version })
     }
     healthChecked = true
@@ -223,4 +251,79 @@ export const createOpenCodeRuntime = async (options: OpenCodeRuntimeOptions): Pr
   }
 
   return runtime
+}
+
+export const runOpenCodeWorkerSession = async (
+  input: OpenCodeWorkerSessionInput,
+): Promise<OpenCodeWorkerSessionResult> => {
+  if (input.signal?.aborted) throw new Error("OpenCode worker was cancelled before session creation")
+
+  const session = await input.runtime.createSession({ directory: input.directory, scope: input.scope })
+  const controller = new AbortController()
+  let abortPromise: Promise<void> | undefined
+  const abortSession = (): void => {
+    controller.abort()
+    abortPromise ??= input.runtime.abortSession({ sessionId: session.sessionId, directory: input.directory })
+      .catch(() => undefined)
+  }
+  const signalHandler = (): void => abortSession()
+  input.signal?.addEventListener("abort", signalHandler, { once: true })
+
+  try {
+    const eventStream = input.runtime.subscribeEvents({
+      directory: input.directory,
+      sessionId: session.sessionId,
+    })
+    const eventResultPromise = drainSessionEvents({
+      events: eventStream,
+      expectedSessionId: session.sessionId,
+      expectedIssue: input.expectedIssue,
+      autonomous: input.autonomous,
+      stopOnOutcome: true,
+      signal: controller.signal,
+      harnessLog: input.harnessLog,
+      runId: input.runId,
+      onSessionCaptured: input.onSessionCaptured,
+      onEvent: input.onEvent,
+    })
+    const promptPromise = input.runtime.sendPrompt({
+      sessionId: session.sessionId,
+      directory: input.directory,
+      model: input.model,
+      variant: input.variant,
+      promptText: input.promptText,
+    })
+    const firstResult = await Promise.race([
+      promptPromise.then((value) => ({ kind: "prompt" as const, value })),
+      eventResultPromise.then((value) => ({ kind: "events" as const, value })),
+    ])
+    if (firstResult.kind === "events" && firstResult.value.permissionStopped) {
+      abortSession()
+      await abortPromise
+      await promptPromise.catch(() => undefined)
+      throw new IssueKillerError("permission_denied", "OpenCode requested permission during autonomous execution")
+    }
+    if (controller.signal.aborted) {
+      await promptPromise.catch(() => undefined)
+      throw new Error("OpenCode worker was cancelled")
+    }
+    const promptResult = firstResult.kind === "prompt" ? firstResult.value : await promptPromise
+    const events = firstResult.kind === "events" ? firstResult.value : await eventResultPromise
+    if (events.permissionStopped) {
+      throw new IssueKillerError("permission_denied", "OpenCode requested permission during autonomous execution")
+    }
+    if (events.malformedOutcome || events.missingOutcome) {
+      throw new IssueKillerError("malformed_outcome", "OpenCode emitted an invalid or contradictory worker outcome")
+    }
+    return { sessionId: session.sessionId, runId: promptResult.runId, events }
+  } catch (error) {
+    abortSession()
+    await abortPromise
+    throw error
+  } finally {
+    input.signal?.removeEventListener("abort", signalHandler)
+    if (controller.signal.aborted) {
+      await input.runtime.close()
+    }
+  }
 }

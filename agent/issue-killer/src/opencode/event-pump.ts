@@ -26,6 +26,7 @@ export type EventPumpInput = {
   readonly signal?: AbortSignal
   readonly harnessLog?: HarnessLogPort
   readonly runId?: string
+  readonly onSessionCaptured?: (sessionId: SessionId) => Promise<void> | void
   readonly onEvent?: (event: ObservedEvent) => Promise<void> | void
 }
 
@@ -93,20 +94,34 @@ const observedPayload = (event: ObservedEvent): Readonly<Record<string, unknown>
   const payload: Record<string, unknown> = { type: event.type }
   const session = sessionIdFromEvent(event)
   if (session !== null) payload.session_id = session
-  if (typeof properties.file === "string") {
+  if (event.type === "file.watcher.updated" && typeof properties.event === "string") {
+    payload.kind = "file_mutation"
+    payload.file = properties.file
+    payload.action = properties.event
+  } else if (typeof properties.file === "string") {
     payload.kind = "file_edit"
     payload.file = properties.file
   } else if (event.type === "command.executed") {
     payload.kind = "command"
     payload.name = properties.name
-    payload.arguments = properties.arguments
+    payload.argument_count = typeof properties.arguments === "string" && properties.arguments.length > 0
+      ? properties.arguments.trim().split(/\s+/).length
+      : 0
   } else if (typeof properties.command === "string") {
     payload.kind = "command"
-    payload.command = properties.command
-  } else if (event.type === "file.watcher.updated" && typeof properties.event === "string") {
-    payload.kind = "file_mutation"
-    payload.file = properties.file
-    payload.action = properties.event
+    payload.command_name = properties.command.trim().split(/\s+/)[0] ?? ""
+    payload.argument_count = properties.command.trim().split(/\s+/).slice(1).length
+  } else if (event.type.includes("permission.") && typeof properties.action === "string") {
+    payload.kind = "permission"
+    payload.action = properties.action
+  } else if (event.type.includes("tool.")) {
+    payload.kind = "tool"
+    payload.action = event.type.split(".").pop()
+    payload.tool = properties.tool
+  } else if (event.type === "session.error") {
+    payload.kind = "error"
+    const error = recordOf(properties.error)
+    payload.error = error?.name
   } else {
     payload.kind = "progress"
   }
@@ -124,6 +139,7 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
   let outcome: WorkerOutcome | null = null
   let malformedOutcome = false
   let permissionStopped = false
+  let markerBuffer = ""
 
   for await (const rawEvent of input.events) {
     if (input.signal?.aborted) break
@@ -144,7 +160,10 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
         eventsIgnored += 1
         continue
       }
-      if (capturedSessionId === null && eventSessionId !== null) capturedSessionId = eventSessionId
+      if (capturedSessionId === null && eventSessionId !== null) {
+        capturedSessionId = eventSessionId
+        await input.onSessionCaptured?.(eventSessionId)
+      }
     }
 
     eventsSeen += 1
@@ -176,7 +195,8 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
 
     const text = textFromEvent(event)
     if (text !== null) {
-      const status = markerStatus(text)
+      markerBuffer = `${markerBuffer}${text}`.slice(-256)
+      const status = markerStatus(markerBuffer)
       if (status !== null && input.expectedIssue !== undefined) {
         const markerOutcome: WorkerOutcome = {
           status,

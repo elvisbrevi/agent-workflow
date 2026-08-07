@@ -3,7 +3,8 @@ import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseSessionId } from "../../src/domain/session-id"
-import { createOpenCodeRuntime } from "../../src/opencode/runtime"
+import type { OpenCodeRuntimePort } from "../../src/domain/ports"
+import { createOpenCodeRuntime, runOpenCodeWorkerSession } from "../../src/opencode/runtime"
 
 async function nextWithTimeout<T>(stream: AsyncIterator<T>, timeoutMs: number): Promise<IteratorResult<T>> {
   return await Promise.race([
@@ -63,4 +64,47 @@ test("rejects an unsupported server version at the health gate", async () => {
     await runtime.close()
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("subscribes before prompting through the worker session coordinator", async () => {
+  const sessionId = parseSessionId("ses_ordered")
+  if (sessionId === null) throw new Error("test session id is invalid")
+  const calls: string[] = []
+  const runtime: OpenCodeRuntimePort = {
+    host: "127.0.0.1",
+    ephemeralPort: true,
+    health: async () => ({ version: "1.18.14" }),
+    createSession: async () => {
+      calls.push("create")
+      return { sessionId, directory: "/repo" }
+    },
+    getSession: async () => ({ sessionId, directory: "/repo", title: "test" }),
+    abortSession: async () => { calls.push("abort") },
+    deleteSession: async () => undefined,
+    sendPrompt: async () => {
+      calls.push("prompt")
+      return { runId: "run_ordered" }
+    },
+    subscribeEvents: () => {
+      calls.push("subscribe")
+      return (async function* () {
+        yield { type: "message.updated", properties: {
+          sessionID: "ses_ordered",
+          info: { role: "assistant", structured: { status: "ISSUE_COMPLETED", issue: 84, summary: "done" } },
+        } }
+      })()
+    },
+    close: async () => { calls.push("close") },
+  }
+
+  const result = await runOpenCodeWorkerSession({
+    runtime,
+    directory: "/repo",
+    expectedIssue: 84,
+    model: { providerID: "provider", modelID: "model" },
+    promptText: "work on the pinned issue",
+  })
+
+  expect(calls.slice(0, 3)).toEqual(["create", "subscribe", "prompt"])
+  expect(result.events.outcome?.status).toBe("ISSUE_COMPLETED")
 })

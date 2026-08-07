@@ -50,6 +50,13 @@ describe("redactLine", () => {
     }
   })
 
+  test("redacts credentials embedded in URLs", () => {
+    const { text, reasons } = redactLine("https://operator:super-secret@example.test/path")
+    expect(text).toBe("https://<redacted:credential>@example.test/path")
+    expect(text.includes("super-secret")).toBe(false)
+    expect(reasons).toContain("credential_pair")
+  })
+
   test("redacts GitHub provider tokens of every shape", () => {
     const tokens = ["ghp_abc123XYZ", "ghs_def456ABC", "gho_ghi789JKL", "ghu_mno012PQR", "ghr_stu345VWX"]
     for (const token of tokens) {
