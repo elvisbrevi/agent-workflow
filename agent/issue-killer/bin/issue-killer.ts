@@ -114,9 +114,9 @@ const main = async (): Promise<SupervisorResult> => {
   const lock = repositoryLockPort()
   const harness = createHarnessLog({ logDir: loaded.config.expandedLogDir })
   const promptAsset = await readFile(new URL("../PROMPT.md", import.meta.url), "utf8")
-  const runtime = await createOpenCodeRuntime({ directory, autonomous: true })
   const runId = `issue-killer-${randomUUID()}`
   await harness.startRun({ runId, repository: directory })
+  const runtime = await createOpenCodeRuntime({ directory, autonomous: true })
   let harnessEnded = false
   const abortController = new AbortController()
   const onInterrupt = (): void => abortController.abort()

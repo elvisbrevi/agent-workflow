@@ -141,6 +141,9 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
   const commonDir = await input.git.commonDir({ cwd: input.directory })
   const clean = await input.git.worktreeIsClean({ cwd: input.directory })
   if (!clean) return statusResult("RECOVERY_REQUIRED", undefined, "worktree is not clean")
+  if ((await input.git.currentBranch({ cwd: input.directory })) !== input.baseBranch) {
+    return statusResult("RECOVERY_REQUIRED", undefined, "current branch is not the configured base branch")
+  }
 
   const existing = await input.checkpoint.load({ gitCommonDir: commonDir, runnerName: input.runnerName })
   if (existing !== null) {
@@ -203,6 +206,10 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
       checkpoint = { ...checkpoint, identity: identityForCheckpoint(selection.identity) }
       checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "issue_selected" })
       await input.tracker.claimIssue({ identity: selection.identity })
+      if (input.signal?.aborted) {
+        await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)
+        return statusResult("BLOCKED", issue, "run was cancelled")
+      }
 
       try {
         const workerInput: WorkerRunInput = {
@@ -234,6 +241,10 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           if (heartbeat !== undefined) clearInterval(heartbeat)
         }
         checkpoint = { ...checkpoint, sessionId: worker.sessionId }
+        if (input.signal?.aborted) {
+          await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)
+          return statusResult("BLOCKED", issue, "run was cancelled")
+        }
         if (worker.outcome === null || worker.outcome.issue !== issue) {
           await saveCheckpoint({ supervisor: input, checkpoint, state: "failed" }).catch(() => undefined)
           return statusResult("FAILED", issue, "worker did not emit a valid outcome for the pinned issue")
@@ -261,22 +272,13 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           return statusResult("RECOVERY_REQUIRED", issue, readCompletionReason(verification))
         }
         checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "verified" })
+        if (input.signal?.aborted) {
+          return statusResult("BLOCKED", issue, "run was cancelled after completion verification")
+        }
         try {
           await input.deleteSession({ sessionId: worker.sessionId, directory: input.directory })
-          await input.checkpoint.clear({ gitCommonDir: commonDir, runnerName: input.runnerName })
         } catch (error) {
           return statusResult("RECOVERY_REQUIRED", issue, `verified completion cleanup failed: ${errorMessage(error)}`)
-        }
-        completed += 1
-        if (input.iterationLimit > 0 && completed >= input.iterationLimit) {
-          await input.lock.writeStatus({
-            gitCommonDir: commonDir,
-            token: input.owner.token,
-            status: "issue_completed",
-            issueLabel: String(issue),
-            updatedAt: input.now(),
-          })
-          return statusResult("ISSUE_COMPLETED", issue, undefined, 3)
         }
         if (!(await input.git.worktreeIsClean({ cwd: input.directory }))) {
           return statusResult("RECOVERY_REQUIRED", issue, "worktree is dirty after verified completion")
@@ -287,6 +289,18 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
             return statusResult("RECOVERY_REQUIRED", issue, "unable to return to the configured base branch")
           }
           await input.git.checkoutBranch({ cwd: input.directory, branch: input.baseBranch })
+        }
+        await input.checkpoint.clear({ gitCommonDir: commonDir, runnerName: input.runnerName })
+        completed += 1
+        if (input.iterationLimit > 0 && completed >= input.iterationLimit) {
+          await input.lock.writeStatus({
+            gitCommonDir: commonDir,
+            token: input.owner.token,
+            status: "issue_completed",
+            issueLabel: String(issue),
+            updatedAt: input.now(),
+          })
+          return statusResult("ISSUE_COMPLETED", issue, undefined, 3)
         }
       } catch (error) {
         const failure = failureFromError(error, issue)

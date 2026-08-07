@@ -28,6 +28,7 @@ const makeInput = (overrides: Partial<SupervisorInput> = {}): TestInput => {
   const states: string[] = []
   const cleared: string[] = []
   const deleted: string[] = []
+  let branch = "main"
   const selections: TrackerSelection[] = [{ kind: "selected", identity: { kind: "github", number: issue } }]
   const tracker: TrackerPort = {
     kind: "github",
@@ -44,9 +45,11 @@ const makeInput = (overrides: Partial<SupervisorInput> = {}): TestInput => {
   }
   const git: GitPort = {
     commonDir: async () => "/repo/.git",
-    currentBranch: async () => "issue-17",
+    currentBranch: async () => branch,
     currentBaseSha: async () => "base-sha",
     worktreeIsClean: async () => true,
+    createBranch: async ({ branch: value }) => { branch = value },
+    checkoutBranch: async ({ branch: value }) => { branch = value },
   }
   const checkpoint: CheckpointStorePort = {
     load: async () => null,
