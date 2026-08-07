@@ -38,10 +38,12 @@ export type OpenCodeRuntimePort = {
   health(): Promise<{ readonly version: string }>
   createSession(input: {
     readonly directory: string
+    readonly scope?: OpenCodeSessionScope
   }): Promise<{ readonly sessionId: SessionId; readonly directory: string }>
   getSession(input: {
     readonly sessionId: SessionId
     readonly directory: string
+    readonly scope?: OpenCodeSessionScope
   }): Promise<{ readonly sessionId: SessionId; readonly directory: string; readonly title: string }>
   abortSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>
   deleteSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>
@@ -57,6 +59,14 @@ export type OpenCodeRuntimePort = {
     readonly sessionId: SessionId
   }): AsyncIterable<unknown>
   close(): Promise<void>
+}
+
+export type OpenCodeSessionScope = {
+  readonly issue: number
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly profile: string
 }
 
 export type GitPort = {
