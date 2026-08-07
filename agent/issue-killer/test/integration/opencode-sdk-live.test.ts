@@ -66,8 +66,8 @@ test.skipIf(!liveEnabled)("runs the opt-in structured-output model smoke in an e
           },
           required: ["status", "issue", "summary"],
         },
-        parts: [{ type: "text", text: "Return status ISSUE_COMPLETED, issue 1, and summary live smoke." }],
       },
+      parts: [{ type: "text", text: "Return status ISSUE_COMPLETED, issue 1, and summary live smoke." }],
     }, { throwOnError: true })
 
     expect(prompted.data.info.role).toBe("assistant")
