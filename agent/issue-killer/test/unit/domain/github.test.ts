@@ -57,10 +57,10 @@ describe("GitHub eligibility helpers", () => {
     expect(issueIsClosed({ ...baseIssue, state: GITHUB_CLOSED_STATE })).toBe(true)
   })
 
-  test("unassigned treats missing array as unassigned and rejects non-empty arrays", () => {
+  test("unassigned requires an array and rejects non-empty arrays", () => {
     expect(issueIsUnassigned(baseIssue)).toBe(true)
     expect(issueIsUnassigned({ ...baseIssue, assignees: [{}] })).toBe(false)
-    expect(issueIsUnassigned({ ...baseIssue, assignees: undefined })).toBe(true)
+    expect(issueIsUnassigned({ ...baseIssue, assignees: undefined })).toBe(false)
   })
 
   test("epic type and title-prefix checks target the documented shapes", () => {
@@ -171,6 +171,17 @@ describe("evaluateGithubEligibility", () => {
     }
   })
 
+  test("rejects incomplete issue shapes rather than treating missing fields as safe", () => {
+    const decision = evaluateGithubEligibility({
+      issue: { ...baseIssue, title: undefined, issueType: undefined },
+      blockedByCount: 0,
+    })
+    expect(decision.kind).toBe("ineligible")
+    if (decision.kind === "ineligible") {
+      expect(decision.reasons).toContain("malformed_issue_shape")
+    }
+  })
+
   test("aggregates every disqualifying reason", () => {
     const decision = evaluateGithubEligibility({
       issue: {
@@ -208,6 +219,7 @@ describe("evaluateGithubEligibility", () => {
       "epic_title_prefix",
       "open_blocker_present",
       "missing_issue_number",
+      "malformed_issue_shape",
     ] as const) {
       expect(eligibilityReasonLabel(reason)).toBeTruthy()
     }
@@ -317,6 +329,25 @@ describe("verifyGithubCompletion", () => {
     }
   })
 
+  test("rejects a PR whose head does not equal the pinned source branch", () => {
+    const result = verifyGithubCompletion({
+      issue: closedIssue,
+      baseBranch: "main",
+      sourceBranch: "issue-91",
+      pullRequests: [{ ...singleMergedPr, headRefName: "other-branch" }],
+    })
+    expect(result.kind).toBe("malformed")
+  })
+
+  test("compares base branch names exactly", () => {
+    const result = verifyGithubCompletion({
+      issue: closedIssue,
+      baseBranch: "main",
+      pullRequests: [{ ...singleMergedPr, baseRefName: "main/" }],
+    })
+    expect(result.kind).toBe("wrong_base_branch")
+  })
+
   test("returns malformed when base branch is empty", () => {
     const result = verifyGithubCompletion({
       issue: closedIssue,
@@ -398,13 +429,8 @@ describe("verifyGithubCompletion", () => {
 })
 
 describe("GitHub JSON parsers", () => {
-  test("parseGithubIssue tolerates missing optional fields", () => {
-    const issue = parseGithubIssue({ number: 5 })
-    expect(issue).not.toBeNull()
-    if (issue !== null) {
-      expect(issue.number).toBe(5)
-      expect(issue.state).toBeUndefined()
-    }
+  test("parseGithubIssue rejects missing required fields", () => {
+    expect(parseGithubIssue({ number: 5 })).toBeNull()
   })
 
   test("parseGithubIssue rejects non-objects", () => {

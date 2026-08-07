@@ -359,7 +359,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       return null
     }
     const trimmed = result.stdout.trim()
-    if (trimmed.length === 0) return 0
+    if (trimmed.length === 0) return null
     const parsed = Number(trimmed)
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
   }
@@ -416,7 +416,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
         "--repo",
         slug,
         "--json",
-        "number,state,title",
+        "number,state,title,labels,assignees,issueType",
       ])
       if (issueResult.exitCode !== 0) {
         return {
@@ -449,6 +449,13 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
           kind: "tracker_unreachable",
           identity: input.identity,
           error: "gh issue view returned an unexpected shape",
+        }
+      }
+      if (issue.number !== input.identity.number) {
+        return {
+          kind: "drift",
+          identity: input.identity,
+          details: `issue response identified ${issue.number}, expected ${input.identity.number}`,
         }
       }
 
@@ -494,6 +501,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       const completion = verifyGithubCompletion({
         issue,
         baseBranch: input.baseBranch,
+        sourceBranch: input.branch,
         pullRequests,
       })
       return toCompletionVerification(input.identity, completion)

@@ -63,6 +63,7 @@ export type GithubEligibilityReason =
   | "epic_title_prefix"
   | "open_blocker_present"
   | "missing_issue_number"
+  | "malformed_issue_shape"
 
 const READY_LABEL_LOWER = GITHUB_READY_LABEL.toLowerCase()
 const EPIC_LABEL_LOWER = GITHUB_EPIC_LABEL.toLowerCase()
@@ -112,8 +113,15 @@ export const issueIsClosed = (issue: GithubIssue): boolean =>
 
 export const issueIsUnassigned = (issue: GithubIssue): boolean => {
   const assignees = issue.assignees
-  return !(Array.isArray(assignees) && assignees.length > 0)
+  return Array.isArray(assignees) && assignees.length === 0
 }
+
+const issueHasValidShape = (issue: GithubIssue): boolean =>
+  typeof issue.state === "string" &&
+  typeof issue.title === "string" &&
+  Array.isArray(issue.labels) &&
+  Array.isArray(issue.assignees) &&
+  Object.prototype.hasOwnProperty.call(issue, "issueType")
 
 export const evaluateGithubEligibility = (input: {
   readonly issue: GithubIssue
@@ -125,6 +133,9 @@ export const evaluateGithubEligibility = (input: {
   if (number === null) {
     reasons.push("missing_issue_number")
     return { kind: "ineligible", issueNumber: null, reasons }
+  }
+  if (!issueHasValidShape(input.issue)) {
+    return { kind: "ineligible", issueNumber: number, reasons: ["malformed_issue_shape"] }
   }
   if (!issueIsOpen(input.issue)) {
     reasons.push("state_not_open")
@@ -186,13 +197,18 @@ const parseNonEmptyString = (value: unknown): string | null => {
   return trimmed.length > 0 ? trimmed : null
 }
 
+const parseExactNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return null
+  return value
+}
+
 export const verifyGithubCompletion = (input: {
   readonly issue: GithubIssue
   readonly baseBranch: string
+  readonly sourceBranch?: string
   readonly pullRequests: ReadonlyArray<GithubPullRequest>
 }): GithubCompletion => {
-  const expectedBase = parseNonEmptyString(input.baseBranch)
-  if (expectedBase === null) {
+  if (input.baseBranch.length === 0 || input.baseBranch.trim() !== input.baseBranch) {
     return { kind: "malformed", reason: "base branch is empty" }
   }
   const number = asIssueNumber(input.issue.number)
@@ -224,16 +240,19 @@ export const verifyGithubCompletion = (input: {
   if (mergedAt === null) {
     return { kind: "pr_unmerged", issueNumber: number, prNumber }
   }
-  const baseRef = parseNonEmptyString(pr.baseRefName)
+  const baseRef = parseExactNonEmptyString(pr.baseRefName)
   if (baseRef === null || mergedAt === null) {
     return { kind: "malformed", reason: "pull request base or merge timestamp missing" }
   }
-  if (baseRef !== expectedBase) {
+  if (input.sourceBranch !== undefined && pr.headRefName !== input.sourceBranch) {
+    return { kind: "malformed", reason: "pull request source branch does not match the pinned branch" }
+  }
+  if (baseRef !== input.baseBranch) {
     return {
       kind: "wrong_base_branch",
       issueNumber: number,
       prNumber,
-      expected: expectedBase,
+      expected: input.baseBranch,
       actual: baseRef,
     }
   }
@@ -258,7 +277,16 @@ export const parseGithubIssue = (value: unknown): GithubIssue | null => {
   const labels = parseGithubLabels(record["labels"])
   const assignees = parseGithubAssignees(record["assignees"])
   const issueType = parseGithubIssueType(record["issueType"])
-  if (labels === INVALID_GITHUB_FIELD || assignees === INVALID_GITHUB_FIELD || issueType === INVALID_GITHUB_FIELD) {
+  if (
+    record["state"] === undefined ||
+    record["title"] === undefined ||
+    record["labels"] === undefined ||
+    record["assignees"] === undefined ||
+    record["issueType"] === undefined ||
+    labels === INVALID_GITHUB_FIELD ||
+    assignees === INVALID_GITHUB_FIELD ||
+    issueType === INVALID_GITHUB_FIELD
+  ) {
     return null
   }
   if (record["state"] !== undefined && typeof record["state"] !== "string") return null
@@ -369,6 +397,8 @@ export const eligibilityReasonLabel = (reason: GithubEligibilityReason): string 
       return "open blocker present"
     case "missing_issue_number":
       return "issue number missing or invalid"
+    case "malformed_issue_shape":
+      return "issue payload has an invalid shape"
     default: {
       const exhaustive: never = reason
       throw new Error(`unhandled eligibility reason: ${(exhaustive as string)}`)
