@@ -353,7 +353,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       "api",
       `repos/${slug}/issues/${issueNumber}/dependencies/blocked_by`,
       "--jq",
-      "length",
+      '[.[] | select(.state == "open")] | length',
     ])
     if (result.exitCode !== 0) {
       return null

@@ -59,7 +59,11 @@ case "$key" in
       esac
     done
     payload=$(jq -r --arg k "$target" '.responses[$k] // "0"' "$STATE")
-    printf '%s' "$payload"
+    if printf '%s' "$payload" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      printf '%s' "$payload" | jq '[.[] | select(.state == "open")] | length'
+    else
+      printf '%s' "$payload"
+    fi
     exit 0
     ;;
   issue)
@@ -430,6 +434,37 @@ describe("GitHub tracker adapter", () => {
       currentState: "starting",
     })
     expect(selection.kind).toBe("empty")
+  })
+
+  test("selectEligibleIssue ignores closed blockers but rejects open blockers", async () => {
+    await stub.reset()
+    await stub.setResponse("issue list", JSON.stringify([{
+      number: 3,
+      title: "ready issue",
+      state: "OPEN",
+      labels: [{ name: "ready-for-agent" }],
+      assignees: [],
+      issueType: { name: "Feature" },
+    }]))
+    await stub.setResponse(
+      "repos/example/fixture/issues/3/dependencies/blocked_by",
+      JSON.stringify([{ state: "closed" }]),
+    )
+    const adapter = createGithubTracker({
+      runner,
+      git: systemGitPort({ runner }),
+      cwd,
+      slug: "example/fixture",
+    })
+    const unblocked = await adapter.selectEligibleIssue({ baseBranch: "main", currentState: "starting" })
+    expect(unblocked.kind).toBe("selected")
+
+    await stub.setResponse(
+      "repos/example/fixture/issues/3/dependencies/blocked_by",
+      JSON.stringify([{ state: "open" }]),
+    )
+    const blocked = await adapter.selectEligibleIssue({ baseBranch: "main", currentState: "starting" })
+    expect(blocked.kind).toBe("empty")
   })
 
   test("selectEligibleIssue reports blocked on gh error", async () => {
