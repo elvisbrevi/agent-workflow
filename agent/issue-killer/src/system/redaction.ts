@@ -5,7 +5,8 @@ export type RedactionReason =
   | "provider_token"
   | "private_key_block"
 
-const AUTHORIZATION_PATTERN = /(authorization)([\s:;,=]+)([A-Za-z0-9._~+/-]+)/gi
+const AUTHORIZATION_PATTERN =
+  /(authorization)([\s:;,=]+)(?:(?:bearer|basic)(?:[\s:;,=]+))?[A-Za-z0-9._~+/-]+/gi
 
 const BEARER_PATTERN = /\b(bearer)([\s:;,=]+)([A-Za-z0-9._~+/-]{6,})/gi
 
