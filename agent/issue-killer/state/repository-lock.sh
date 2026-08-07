@@ -31,7 +31,7 @@ lock_ownership_intact() {
 # cause has been hard to pin down after the fact, so record everything
 # needed to name the culprit at the moment it happens.
 report_lock_integrity_diagnostics() {
-  local competing
+  local owner_pid
 
   printf '  lock_dir=%s\n' "${LOCK_DIR:-unset}"
   printf '  our_pid=%s\n' "$$"
@@ -39,18 +39,16 @@ report_lock_integrity_diagnostics() {
   if [[ -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
     printf '  lock_dir_present=true\n'
     if [[ -r "${LOCK_DIR}/owner" ]]; then
+      owner_pid="$(sed -n 's/^pid=//p' "${LOCK_DIR}/owner" 2>/dev/null | head -n 1)"
       sed -e '/^token=/d' -e 's/^/  owner_/' "${LOCK_DIR}/owner" 2>/dev/null || true
+      if [[ -n "$owner_pid" && "$owner_pid" != "$$" ]]; then
+        printf '  competing_pid=%s\n' "$owner_pid"
+      fi
     else
       printf '  owner_file=missing\n'
     fi
   else
     printf '  lock_dir_present=false\n'
-  fi
-  if command -v pgrep >/dev/null 2>&1; then
-    competing="$(pgrep -f "$RUNNER_NAME" 2>/dev/null | grep -v -x "$$" || true)"
-    if [[ -n "$competing" ]]; then
-      printf '  competing_pid=%s\n' $competing
-    fi
   fi
 }
 
@@ -199,8 +197,14 @@ release_repository_lock() {
     # token means another run already owns this directory, and removing
     # it here would delete that run's lock.
     if [[ -n "$current_token" && "$current_token" == "${LOCK_TOKEN:-}" ]]; then
-      rm -f "${LOCK_DIR}/status" "${LOCK_DIR}"/status.* "${LOCK_DIR}/owner"
-      rmdir "$LOCK_DIR" 2>/dev/null || true
+      rm -f "${LOCK_DIR}/status"
+      # Re-read after the first deletion. A replacement owner is never
+      # removed even if the lock changes during EXIT cleanup.
+      current_token="$(repository_lock_token || true)"
+      if [[ "$current_token" == "${LOCK_TOKEN:-}" ]]; then
+        rm -f "${LOCK_DIR}/owner"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+      fi
     fi
   fi
   LOCK_HELD=false

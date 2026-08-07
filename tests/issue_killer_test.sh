@@ -6768,6 +6768,7 @@ test_lock_status_write_aborts_cleanly_when_lock_directory_disappears() {
 test_heartbeat_lock_loss_stops_worker_and_returns_recovery() {
   local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
   local supervisor="${ROOT_DIR}/agent/issue-killer/runtime/supervisor.sh"
+  local startup recovery_output recovery_status
   local work output status
 
   work="$(mktemp -d "${TEST_ROOT}/heartbeat-lock-lost.XXXXXX")"
@@ -6825,42 +6826,30 @@ test_heartbeat_lock_loss_stops_worker_and_returns_recovery() {
   [[ ! -e "${work}/worker-finished" ]] || \
     fail 'Worker continued after the heartbeat lost the repository lock'
 
-  pass 'heartbeat lock loss stops the worker and returns structured recovery'
-}
-
-test_lock_lost_checkpoint_is_rejected_by_startup_recovery() {
-  local checkpoint startup output status work
-
-  work="$(mktemp -d "${TEST_ROOT}/lock-lost-recovery.XXXXXX")"
-  checkpoint="${work}/issue-killer.checkpoint"
-  output="$(mktemp "${TEST_ROOT}/lock-lost-recovery-out.XXXXXX")"
   startup="${ROOT_DIR}/agent/issue-killer/recovery/startup.sh"
-  printf 'issue=83\nbranch=stale-branch\nbase_branch=main\nbase_sha=%s\nstate=lock_lost\n' \
-    "$(git rev-parse HEAD)" > "$checkpoint"
-
+  recovery_output="$(mktemp "${TEST_ROOT}/heartbeat-lock-recovery-out.XXXXXX")"
   set +e
   (
     set -euo pipefail
     RUNNER_NAME=issue-killer
     BASE_BRANCH=main
     GIT_COMMON_DIR="$work"
-    checkpoint_file() { printf '%s\n' "$checkpoint"; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
     emit_recovery_required() { printf 'RECOVERY_REQUIRED: %s\n' "$1"; exit 4; }
     # shellcheck source=/dev/null
     source "${ROOT_DIR}/agent/issue-killer/state/checkpoint.sh"
     # shellcheck source=/dev/null
     source "$startup"
     adopt_migrated_checkpoint
-  ) >"$output" 2>&1
-  status=$?
+  ) >"$recovery_output" 2>&1
+  recovery_status=$?
   set -e
+  [[ "$recovery_status" -eq 4 ]] || \
+    fail "Following startup did not reject the produced lock_lost checkpoint, got ${recovery_status}"
+  grep -Fq 'lost repository lock' "$recovery_output" || \
+    fail 'Following startup did not explain why the produced checkpoint was rejected'
 
-  [[ "$status" -eq 4 ]] || \
-    fail "lock_lost checkpoint was not rejected by startup recovery, got ${status}"
-  grep -Fq 'lost repository lock' "$output" || \
-    fail 'Startup recovery did not explain why the lock_lost checkpoint was rejected'
-
-  pass 'startup recovery refuses a checkpoint created by lock loss'
+  pass 'heartbeat lock loss stops the worker and returns structured recovery'
 }
 
 test_stale_lock_recovery_refuses_owner_without_readable_pid() {
@@ -6922,7 +6911,6 @@ test_transcript_retained_on_recovery_required_outcome
 test_transcript_removal_failure_does_not_fail_run
 test_lock_status_write_aborts_cleanly_when_lock_directory_disappears
 test_heartbeat_lock_loss_stops_worker_and_returns_recovery
-test_lock_lost_checkpoint_is_rejected_by_startup_recovery
 test_stale_lock_recovery_refuses_owner_without_readable_pid
 
 printf '%s issue-killer tests passed.\n' "$TESTS_RUN"
