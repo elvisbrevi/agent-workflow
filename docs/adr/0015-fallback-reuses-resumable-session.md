@@ -1,0 +1,11 @@
+# Fallback reuses a resumable worker session
+
+An eligible fallback continues the previous OpenCode **worker session** when that session is still resumable, sending the next execution profile's model on the same session. It starts a fresh session only when no resumable session exists. This reverses the "every fallback starts a fresh session, no mid-session model switch is assumed safe" rule closed in the 2026-08-06 domain grill.
+
+Three facts drove the reversal. The runtime already supports it: `client.session.prompt` takes `model` as a per-call body parameter alongside `sessionID`, so the model was never a property of the session — the V2 `OpenCodeRuntimePort.sendPrompt` port mirrors that shape. The original rule's stated justification was an assumption ("not assumed safe") rather than an observed failure, and the concrete portability risk behind it was cross-CLI handoff, which [ADR 0014](0014-opencode-sdk-sole-runtime.md) already removed by making OpenCode the sole runtime. And the behavior the rule forbade was in fact already implemented and regression-tested in V1, so the documents, the code, and the tests disagreed with each other.
+
+The operational cost of discarding a session is real: a worker interrupted by **provider quota** exhaustion late in an issue restarted from zero context on the fallback model, paying again for work it had already done.
+
+Reuse is conditional, not automatic. The persisted **opaque session id** must pass allowlist validation, and directory, issue, branch, and base identity must still match; anything else fails closed to a fresh worker constrained to the checkpointed issue. Cross-CLI reuse stays prohibited and is now unreachable rather than merely forbidden, since OpenCode is the only runtime. Fallback eligibility itself is unchanged — only `provider_quota`, `provider_rate_limit`, and `provider_model_unavailable` consume a chain entry.
+
+Session capture must therefore be reliable, because a missed capture silently degrades every fallback to the old fresh-session behavior without any signal: `is_session_resumable` rejects `unavailable` before any other check. Capture keys off the presence of a valid `sessionID` on any event rather than off a `session` event type.

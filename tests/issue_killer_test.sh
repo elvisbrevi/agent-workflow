@@ -6707,6 +6707,206 @@ test_github_tracker_supplement_is_loaded_from_adapter() {
   pass 'github adapter exposes a tracker worker supplement'
 }
 
+test_lock_status_write_aborts_cleanly_when_lock_directory_disappears() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-lost.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-lost-out.XXXXXX")"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=2
+    BASE_BRANCH=main
+    LOCK_HELD=false
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    is_non_negative_integer() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    runner_cleanup() { release_repository_lock; }
+    write_checkpoint() { printf 'state=%s\n' "$1" > "$(checkpoint_file)"; }
+    # shellcheck source=/dev/null
+    source "$module"
+
+    acquire_repository_lock >/dev/null
+    # Reproduce the production failure: the lock directory is removed by
+    # something outside this process while the run still holds it.
+    rm -rf "$LOCK_DIR"
+    write_lock_status "starting" 0
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Lost repository lock did not exit 4 (RECOVERY_REQUIRED), got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Lost repository lock did not emit a RECOVERY_REQUIRED diagnostic'
+  if grep -Fq 'No such file or directory' "$output"; then
+    fail 'Lost repository lock surfaced a raw shell redirect error'
+  fi
+  grep -Fq 'lock_dir_present=false' "$output" || \
+    fail 'Lost repository lock did not record ownership diagnostics'
+  grep -Fxq 'state=lock_lost' "${work}/issue-killer.checkpoint" || \
+    fail 'Lost repository lock left the checkpoint resumable'
+
+  pass 'lost repository lock aborts with RECOVERY_REQUIRED instead of a raw shell failure'
+}
+
+test_stale_lock_recovery_refuses_owner_without_readable_pid() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-nopid.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-nopid-out.XXXXXX")"
+
+  # A lock whose owner metadata carries no pid. Treating it as stale
+  # would delete a live lock out from under a running drain loop.
+  mkdir -p "${work}/issue-killer.lock"
+  printf 'token=someone-else\n' > "${work}/issue-killer.lock/owner"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=1
+    BASE_BRANCH=main
+    LOCK_HELD=false
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    is_non_negative_integer() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+    die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+    runner_cleanup() { :; }
+    write_checkpoint() { :; }
+    # shellcheck source=/dev/null
+    source "$module"
+
+    acquire_repository_lock
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || \
+    fail 'Unreadable lock owner pid was silently treated as a stale lock'
+  grep -Fq 'refusing to treat it as stale' "$output" || \
+    fail 'Unreadable lock owner pid did not produce an explicit refusal'
+  [[ -d "${work}/issue-killer.lock" ]] || \
+    fail 'Unreadable lock owner pid caused another runner lock to be deleted'
+
+  pass 'stale lock recovery refuses an owner file without a readable pid'
+}
+
+# Shared driver for the session-capture cases: feed raw event lines to
+# the adapter and leave the captured id in the side-channel file.
+run_opencode_session_capture() {
+  local target="$1"; shift
+  local adapter="${ROOT_DIR}/agent/issue-killer/runtime/opencode-adapter.sh"
+  local line
+
+  : > "$target"
+  (
+    export RUNNER_NAME=session-test
+    # shellcheck source=/dev/null
+    source "$adapter"
+    for line in "$@"; do
+      opencode_runtime_capture_session "$line" "$target"
+    done
+  )
+}
+
+test_opencode_session_capture_accepts_any_event_carrying_session_id() {
+  local work captured
+
+  work="$(mktemp -d "${TEST_ROOT}/session-capture.XXXXXX")"
+
+  # Real OpenCode runs have carried the session id on `text` events
+  # only; a `type == "session"` filter drops them and leaves the
+  # checkpoint recording session_id=unavailable, which silently
+  # disables session reuse on every fallback.
+  run_opencode_session_capture "${work}/text" \
+    '{"type":"text","sessionID":"ses_023ca8f22ffeALaMhXIC1CTEEg"}'
+  captured="$(<"${work}/text")"
+  [[ "$captured" == "ses_023ca8f22ffeALaMhXIC1CTEEg" ]] || \
+    fail "Session id on a text event was not captured (got '${captured}')"
+
+  run_opencode_session_capture "${work}/session" \
+    '{"type":"session","sessionID":"ses_fastpath"}'
+  captured="$(<"${work}/session")"
+  [[ "$captured" == "ses_fastpath" ]] || \
+    fail "Session id on a session event was not captured (got '${captured}')"
+
+  run_opencode_session_capture "${work}/first" \
+    '{"type":"text","sessionID":"ses_first"}' \
+    '{"type":"text","sessionID":"ses_second"}'
+  captured="$(<"${work}/first")"
+  [[ "$captured" == "ses_first" ]] || \
+    fail "Session capture did not keep the first id (got '${captured}')"
+
+  run_opencode_session_capture "${work}/late" \
+    '{"type":"step_start"}' \
+    '{"type":"text","sessionID":"ses_late"}'
+  captured="$(<"${work}/late")"
+  [[ "$captured" == "ses_late" ]] || \
+    fail 'Session id arriving after other events was not captured'
+
+  pass 'opencode session capture accepts a session id from any event shape'
+}
+
+test_opencode_session_capture_rejects_unsafe_session_ids() {
+  local work oversized captured leaked
+
+  work="$(mktemp -d "${TEST_ROOT}/session-reject.XXXXXX")"
+  oversized="$(printf 'a%.0s' $(seq 1 129))"
+
+  # The persisted id must satisfy the same opaque-token rule as V2
+  # (`^[A-Za-z0-9_-]+$`, max 128): never a path, never free text.
+  run_opencode_session_capture "${work}/traversal" \
+    '{"type":"text","sessionID":"../../etc/passwd"}'
+  [[ ! -s "${work}/traversal" ]] || \
+    fail 'Session capture persisted a path-traversal session id'
+
+  run_opencode_session_capture "${work}/absolute" \
+    '{"type":"text","sessionID":"/tmp/session"}'
+  [[ ! -s "${work}/absolute" ]] || \
+    fail 'Session capture persisted a filesystem path as a session id'
+
+  run_opencode_session_capture "${work}/oversized" \
+    "{\"type\":\"text\",\"sessionID\":\"${oversized}\"}"
+  [[ ! -s "${work}/oversized" ]] || \
+    fail 'Session capture persisted a session id longer than 128 characters'
+
+  run_opencode_session_capture "${work}/sentinel" \
+    '{"type":"text","sessionID":"unavailable"}'
+  [[ ! -s "${work}/sentinel" ]] || \
+    fail 'Session capture persisted the unavailable sentinel as a real id'
+
+  run_opencode_session_capture "${work}/malformed" 'not json at all'
+  [[ ! -s "${work}/malformed" ]] || \
+    fail 'Session capture persisted an id from a malformed event'
+
+  # A long stream must not rewrite the file per line or leave staging
+  # files beside the side-channel the orchestrator reads.
+  run_opencode_session_capture "${work}/stable" \
+    '{"type":"text","sessionID":"ses_stable"}' \
+    '{"type":"text","sessionID":"ses_stable"}' \
+    '{"type":"text","sessionID":"ses_stable"}'
+  captured="$(<"${work}/stable")"
+  [[ "$captured" == "ses_stable" ]] || \
+    fail "Repeated session events corrupted the captured id (got '${captured}')"
+  leaked="$(find "$work" -name 'stable.*' | wc -l | tr -d ' ')"
+  [[ "$leaked" -eq 0 ]] || \
+    fail 'Session capture leaked staging files beside the side-channel'
+
+  pass 'opencode session capture rejects unsafe session ids and stays idempotent'
+}
+
 test_github_tracker_supplement_is_delivered_to_worker
 test_runtime_config_section_follows_supplement
 test_tracker_supplement_excluded_from_checkpoint_and_status
@@ -6718,5 +6918,9 @@ test_transcript_retained_on_blocked_outcome
 test_transcript_retained_on_failed_outcome
 test_transcript_retained_on_recovery_required_outcome
 test_transcript_removal_failure_does_not_fail_run
+test_lock_status_write_aborts_cleanly_when_lock_directory_disappears
+test_stale_lock_recovery_refuses_owner_without_readable_pid
+test_opencode_session_capture_accepts_any_event_carrying_session_id
+test_opencode_session_capture_rejects_unsafe_session_ids
 
 printf '%s issue-killer tests passed.\n' "$TESTS_RUN"

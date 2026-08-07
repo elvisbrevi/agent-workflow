@@ -310,23 +310,58 @@ opencode_runtime_decode_command() {
   esac
 }
 
-# Capture the OpenCode session id from a `session` event. The id is
+# Capture the OpenCode session id from the event stream. The id is
 # written to <output_file>.session so the orchestrator can resume the
 # same session on the next retry or restart without re-deriving it from
-# the stream. OpenCode is expected to emit a `session` event at the
-# beginning of every run; the orchestrator treats its presence as the
-# authoritative "session is resumable" signal.
+# the stream.
+#
+# Capture keys off the presence of a valid `sessionID`, not off the
+# event type. OpenCode does emit a `session` event, but not reliably
+# enough to depend on: real runs have produced streams whose session id
+# only ever appeared on `text` events, leaving the side-channel empty
+# and the checkpoint recording `session_id=unavailable`. That silently
+# disables session reuse, because is_session_resumable rejects
+# "unavailable" before any other check.
+#
+# First valid id wins, so a long stream does not rewrite the file on
+# every line and a later event cannot replace an established identity.
 opencode_runtime_capture_session() {
   local raw_line="$1"
   local session_file="$2"
+  local sid existing tmp
 
-  [[ "$(opencode_runtime_event_field 'type' "$raw_line")" == "session" ]] || return 0
-
-  local sid
-  sid="$(jq -r '.sessionID // ""' 2>/dev/null <<<"$raw_line")"
-  if [[ -n "$sid" && "$sid" != "null" ]]; then
-    printf '%s' "$sid" > "$session_file"
+  # Already captured: nothing to do. Cheap enough to run per line.
+  if [[ -s "$session_file" ]]; then
+    existing="$(<"$session_file")"
+    opencode_runtime_valid_session_id "$existing" && return 0
   fi
+
+  # jq exits non-zero on a malformed line. The stream is not guaranteed
+  # to be well-formed JSON end to end, and a capture attempt must never
+  # be able to fail the run it is only observing.
+  sid="$(jq -r '.sessionID // ""' 2>/dev/null <<<"$raw_line")" || sid=""
+  opencode_runtime_valid_session_id "$sid" || return 0
+
+  # Atomic publish: the orchestrator reads this file from another
+  # process once the worker exits, and must never observe a partial id.
+  tmp="$(mktemp "${session_file}.XXXXXXXX" 2>/dev/null)" || return 0
+  printf '%s' "$sid" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  mv -f "$tmp" "$session_file" 2>/dev/null || rm -f "$tmp"
+  return 0
+}
+
+# Shared shape rule for a persisted session id, mirroring the V2 domain
+# rule in src/domain/session-id.ts so V1 and V2 cannot drift: an opaque
+# token of at most 128 characters, never a path or free text.
+opencode_runtime_valid_session_id() {
+  local candidate="${1:-}"
+
+  [[ -n "$candidate" ]] || return 1
+  [[ "$candidate" != "null" ]] || return 1
+  [[ "$candidate" != "unavailable" ]] || return 1
+  [[ "${#candidate}" -le 128 ]] || return 1
+  [[ "$candidate" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+  return 0
 }
 
 # Dispatch a normalized event into the orchestrator's

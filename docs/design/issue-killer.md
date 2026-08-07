@@ -96,7 +96,7 @@ Non-TTY: `default_profile` + declared `fallbacks`.
 
 **Opaque session id**: `^[A-Za-z0-9_-]+$`, max 128; revalidated before persist/resume/delete.
 
-Fallback always starts a **fresh worker session** on the same issue/worktree after persisting failed profile, next profile, chain position, and **provider failure category**.
+Fallback continues the **same worker session** when it is still resumable, sending the next profile's model on that session, after persisting failed profile, next profile, chain position, and **provider failure category**. It falls back to a fresh session on the same issue/worktree only when no resumable session exists.
 
 ## Harness Execution Log
 

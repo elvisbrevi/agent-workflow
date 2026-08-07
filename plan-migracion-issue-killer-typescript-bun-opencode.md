@@ -71,7 +71,7 @@ Durante la transición, Bash V1 queda solo como rollback. No mezclar Bash y Type
 | Outcome | Structured output primario; marcador texto solo coexistencia V1; se retira en M12 |
 | Permisos | Post-confirmación: allow total; sin prompt mid-run; permiso inesperado detiene |
 | Harness log | Supervisor escribe JSONL por run bajo `log_dir` obligatorio del TOML; no tokens de modelo |
-| Fallback | Siempre sesión OpenCode nueva al mismo issue/worktree |
+| Fallback | Reutiliza la sesión OpenCode previa si sigue reanudable, con el modelo del perfil siguiente; sesión nueva solo si no hay sesión reanudable (ADR 0015) |
 | Serve | Solo `127.0.0.1`, puerto efímero, retries acotados, una instancia por run del supervisor |
 | Docs runtime | `AGENT.md`/`REFERENCE.md` del runner se alinean en M10/M11; design/CONTEXT/ADRs ya V2 |
 
@@ -543,7 +543,7 @@ Trabajo:
 - permitir fallback solo en quota, rate limit persistente o model unavailable;
 - persistir posición, perfil fallido, perfil siguiente y categoría;
 - reanudar únicamente si `session.get()` confirma sesión, directory, issue, rama y base SHA;
-- en todo fallback elegible, crear siempre una sesión OpenCode nueva restringida al mismo issue/worktree (nunca mid-session model switch).
+- en todo fallback elegible, continuar la sesión OpenCode previa cuando siga reanudable, enviando el modelo del perfil siguiente sobre esa misma sesión; crear una sesión nueva restringida al mismo issue/worktree solo cuando no exista sesión reanudable (ADR 0015).
 
 Aceptación:
 

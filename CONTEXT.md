@@ -9,8 +9,8 @@ A named, validated pairing of the OpenCode runtime with one provider/model and t
 _Avoid_: Agent configuration, CLI/model combination, multi-CLI profile
 
 **Fallback chain**:
-An ordered list of alternative OpenCode **execution profiles** that may continue the same issue after an eligible provider failure. A chain contains only OpenCode profiles and ends when no alternatives remain or the operator selects none. Each fallback starts a fresh **worker session** on the same issue and worktree rather than switching models inside the previous session.
-_Avoid_: Backup model, model rotation, mixed-provider fallback, cross-CLI handoff, mid-session model switch
+An ordered list of alternative OpenCode **execution profiles** that may continue the same issue after an eligible provider failure. A chain contains only OpenCode profiles and ends when no alternatives remain or the operator selects none. A fallback continues the previous **worker session** when that session is still resumable, sending the next profile's model on the same session; it starts a fresh session only when no resumable session exists.
+_Avoid_: Backup model, model rotation, mixed-provider fallback, cross-CLI handoff
 
 **Host-owned issue selection**:
 The supervisor rule that the runner alone chooses and pins the exact tracker item before any worker session starts. The model must not inspect, choose, or switch issues.
