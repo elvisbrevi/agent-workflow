@@ -271,7 +271,11 @@ export const parseGithubIssue = (value: unknown): GithubIssue | null => {
     return null
   }
   const record = value as Record<string, unknown>
-  if (typeof record["number"] !== "number" || !Number.isInteger(record["number"])) {
+  if (
+    typeof record["number"] !== "number" ||
+    !Number.isInteger(record["number"]) ||
+    record["number"] <= 0
+  ) {
     return null
   }
   const labels = parseGithubLabels(record["labels"])
