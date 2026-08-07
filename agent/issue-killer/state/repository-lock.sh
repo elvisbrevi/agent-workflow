@@ -189,7 +189,7 @@ write_lock_status() {
 }
 
 release_repository_lock() {
-  local current_token=""
+  local current_token="" release_guard=""
 
   if [[ "${LOCK_HELD:-false}" == "true" && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
     # The owner file may already be gone; reading it must not fail the
@@ -201,8 +201,14 @@ release_repository_lock() {
     # token means another run already owns this directory, and removing
     # it here would delete that run's lock.
     if [[ -n "$current_token" && "$current_token" == "${LOCK_TOKEN:-}" ]]; then
+      release_guard="${LOCK_DIR}/release"
+      if ! mkdir "$release_guard" 2>/dev/null; then
+        LOCK_HELD=false
+        return
+      fi
       current_token="$(repository_lock_token || true)"
       [[ "$current_token" == "${LOCK_TOKEN:-}" ]] || {
+        rmdir "$release_guard" 2>/dev/null || true
         LOCK_HELD=false
         return
       }
@@ -212,7 +218,10 @@ release_repository_lock() {
       current_token="$(repository_lock_token || true)"
       if [[ "$current_token" == "${LOCK_TOKEN:-}" ]]; then
         rm -f "${LOCK_DIR}/owner"
+        rmdir "$release_guard" 2>/dev/null || true
         rmdir "$LOCK_DIR" 2>/dev/null || true
+      else
+        rmdir "$release_guard" 2>/dev/null || true
       fi
     fi
   fi
