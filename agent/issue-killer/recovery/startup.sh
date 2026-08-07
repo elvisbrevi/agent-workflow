@@ -106,6 +106,15 @@ emit_recovery_required() {
   exit 4
 }
 
+reject_lock_lost_checkpoint() {
+  local checkpoint="$1"
+  local state
+
+  state="$(checkpoint_value state "$checkpoint")"
+  [[ "$state" != "lock_lost" ]] || \
+    emit_recovery_required "checkpoint records a lost repository lock and cannot be resumed"
+}
+
 validate_checkpoint_for_dirty_recovery() {
   local checkpoint="$1"
   local issue branch base_branch base_sha state
@@ -121,6 +130,8 @@ validate_checkpoint_for_dirty_recovery() {
   base_sha="$(checkpoint_value base_sha "$checkpoint")"
   state="$(checkpoint_value state "$checkpoint")"
   current="$(current_branch)"
+
+  reject_lock_lost_checkpoint "$checkpoint"
 
   [[ "$issue" =~ ^[0-9]+$ ]] || \
     emit_recovery_required "checkpoint is missing a concrete issue number"
@@ -335,6 +346,7 @@ adopt_migrated_checkpoint() {
   local hu ticket strategy
 
   [[ -r "$(checkpoint_file)" ]] || return 1
+  reject_lock_lost_checkpoint "$(checkpoint_file)"
   issue="$(checkpoint_value issue "$(checkpoint_file)" || true)"
   [[ "$issue" =~ ^[0-9]+$ ]] || return 1
   if [[ "${TRACKER_KIND:-}" == "azure-devops" ]]; then

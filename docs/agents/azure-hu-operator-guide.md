@@ -169,6 +169,9 @@ checkpoint that already reached `pr_merged` or `issue_closed` is treated
 as completed; the supervisor injects a synthetic `ISSUE_COMPLETED` status
 and advances the loop without launching another worker.
 
+A `lock_lost` checkpoint is diagnostic only. It clears the issue, branch,
+and base identity, and startup recovery refuses to resume it.
+
 Mixed-provider fallback chains, transport retries, and the orchestrator
 recovery clauses emit their own progress phases through the same pipeline.
 When the chain is exhausted, the operator sees `RECOVERY_REQUIRED` and
