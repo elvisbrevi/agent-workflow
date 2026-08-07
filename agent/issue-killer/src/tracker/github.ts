@@ -103,13 +103,17 @@ const readTextFile = async (input: {
 }
 
 const fileExists = async (input: { readonly runner: CommandRunnerPort; readonly path: string }): Promise<boolean> => {
-  const result = await input.runner.spawn({
-    program: "test",
-    args: ["-r", input.path],
-    cwd: "/",
-    env: {},
-  })
-  return result.exitCode === 0
+  try {
+    const result = await input.runner.spawn({
+      program: "test",
+      args: ["-r", input.path],
+      cwd: "/",
+      env: {},
+    })
+    return result.exitCode === 0
+  } catch {
+    return false
+  }
 }
 
 const runGh = async (
@@ -130,45 +134,69 @@ const runGh = async (
   })
 }
 
-export const detectGithubSlug = async (input: {
+type GithubRemoteInspection =
+  | { readonly kind: "ok"; readonly slug: string }
+  | { readonly kind: "missing" }
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "command_failed" }
+
+const inspectGithubRemotes = async (input: {
   readonly runner: CommandRunnerPort
   readonly git: GitPort
   readonly cwd: string
-}): Promise<string | null> => {
-  const remoteList = await input.runner.spawn({
-    program: "git",
-    args: ["remote"],
-    cwd: input.cwd,
-    env: {},
-  })
+}): Promise<GithubRemoteInspection> => {
+  let remoteList: { readonly stdout: string; readonly stderr: string; readonly exitCode: number }
+  try {
+    remoteList = await input.runner.spawn({
+      program: "git",
+      args: ["remote"],
+      cwd: input.cwd,
+      env: {},
+    })
+  } catch {
+    return { kind: "command_failed" }
+  }
   if (remoteList.exitCode !== 0) {
-    return null
+    return { kind: "command_failed" }
   }
   const remotes = remoteList.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-  if (remotes.length === 0) {
-    return null
-  }
+  if (remotes.length === 0) return { kind: "missing" }
   const slugs: string[] = []
   for (const remote of remotes) {
-    const urlResult = await input.runner.spawn({
-      program: "git",
-      args: ["config", "--get", `remote.${remote}.url`],
-      cwd: input.cwd,
-      env: {},
-    })
-    if (urlResult.exitCode !== 0) continue
+    let urlResult: { readonly stdout: string; readonly stderr: string; readonly exitCode: number }
+    try {
+      urlResult = await input.runner.spawn({
+        program: "git",
+        args: ["config", "--get", `remote.${remote}.url`],
+        cwd: input.cwd,
+        env: {},
+      })
+    } catch {
+      return { kind: "command_failed" }
+    }
+    if (urlResult.exitCode !== 0) return { kind: "unsupported" }
     const parsed = parseGithubRemoteUrl(urlResult.stdout)
-    if (parsed === null) continue
+    if (parsed === null) return { kind: "unsupported" }
     slugs.push(`${parsed.owner}/${parsed.repo}`)
   }
-  if (slugs.length === 0) return null
+  if (slugs.length === 0) return { kind: "missing" }
   const first = slugs[0]
-  if (first === undefined) return null
-  if (!slugs.every((slug) => slug === first)) return null
-  return first
+  if (first === undefined) return { kind: "missing" }
+  if (!slugs.every((slug) => slugEquals(slug, first))) return { kind: "ambiguous" }
+  return { kind: "ok", slug: first }
+}
+
+export const detectGithubSlug = async (input: {
+  readonly runner: CommandRunnerPort
+  readonly git: GitPort
+  readonly cwd: string
+}): Promise<string | null> => {
+  const inspection = await inspectGithubRemotes(input)
+  return inspection.kind === "ok" ? inspection.slug : null
 }
 
 export const preflightGithubTracker = async (
@@ -197,12 +225,18 @@ export const preflightGithubTracker = async (
     }
   }
 
-  const authResult = await input.runner.spawn({
-    program: ghPath,
-    args: ["auth", "status"],
-    cwd: input.cwd,
-    env: {},
-  })
+  let authResult: { readonly stdout: string; readonly stderr: string; readonly exitCode: number }
+  try {
+    authResult = await input.runner.spawn({
+      program: ghPath,
+      args: ["auth", "status", "--hostname", "github.com"],
+      cwd: input.cwd,
+      env: {},
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { kind: "gh_auth_missing", message: `gh CLI auth status failed: ${message}` }
+  }
   if (authResult.exitCode !== 0) {
     const combined = `${authResult.stdout}\n${authResult.stderr}`.toLowerCase()
     if (combined.includes("not logged in") || combined.includes("no oauth token")) {
@@ -217,17 +251,28 @@ export const preflightGithubTracker = async (
     }
   }
 
-  const slug = await detectGithubSlug({
+  const remoteInspection = await inspectGithubRemotes({
     runner: input.runner,
     git: input.git,
     cwd: input.cwd,
   })
-  if (slug === null) {
-    return {
-      kind: "remote_missing",
-      message: "no GitHub remote is configured for the current repository",
+  if (remoteInspection.kind !== "ok") {
+    switch (remoteInspection.kind) {
+      case "missing":
+        return { kind: "remote_missing", message: "no GitHub remote is configured for the current repository" }
+      case "unsupported":
+        return { kind: "remote_unsupported", message: "a repository remote is not a supported GitHub URL" }
+      case "ambiguous":
+        return { kind: "remote_ambiguous", message: "repository remotes resolve to different GitHub repositories" }
+      case "command_failed":
+        return { kind: "command_failed", message: "unable to inspect GitHub repository remotes" }
+      default: {
+        const exhaustive: never = remoteInspection
+        throw new Error(`unhandled GitHub remote inspection: ${(exhaustive as { kind: string }).kind}`)
+      }
     }
   }
+  const slug = remoteInspection.slug
 
   const docsPath = input.docsPath ?? defaultTrackerDocsPath(input.cwd)
   const exists = await fileExists({ runner: input.runner, path: docsPath })
@@ -237,7 +282,13 @@ export const preflightGithubTracker = async (
       message: `tracker documentation is missing: ${docsPath}`,
     }
   }
-  const docsBody = await readTextFile({ runner: input.runner, path: docsPath })
+  let docsBody: string
+  try {
+    docsBody = await readTextFile({ runner: input.runner, path: docsPath })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { kind: "command_failed", message }
+  }
   if (!docsBody.includes("# Issue Tracker: GitHub")) {
     return {
       kind: "tracker_doc_mismatch",
@@ -261,6 +312,8 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
     const result = await runGh(options, [
       "issue",
       "list",
+      "--repo",
+      slug,
       "--state",
       "open",
       "--limit",
@@ -303,15 +356,11 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       "length",
     ])
     if (result.exitCode !== 0) {
-      const stderr = (result.stderr || "").toLowerCase()
-      if (stderr.includes("not found") || stderr.includes("404")) {
-        return 0
-      }
       return null
     }
     const trimmed = result.stdout.trim()
     if (trimmed.length === 0) return 0
-    const parsed = Number.parseInt(trimmed, 10)
+    const parsed = Number(trimmed)
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
   }
 
@@ -337,6 +386,25 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       }
       return { kind: "empty", reason: "no eligible issues found in the open queue" }
     },
+    async claimIssue(input): Promise<void> {
+      if (input.identity.kind !== "github") {
+        throw new Error("claimIssue called with a non-GitHub identity")
+      }
+      const result = await runGh(options, [
+        "issue",
+        "edit",
+        String(input.identity.number),
+        "--repo",
+        slug,
+        "--add-assignee",
+        "@me",
+      ])
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `gh issue edit failed: ${(result.stderr || result.stdout).trim() || "exit " + result.exitCode}`,
+        )
+      }
+    },
     async verifyCompletion(input): Promise<CompletionVerification> {
       if (input.identity.kind !== "github") {
         return { kind: "drift", identity: input.identity, details: "expected a GitHub identity" }
@@ -345,6 +413,8 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
         "issue",
         "view",
         String(input.identity.number),
+        "--repo",
+        slug,
         "--json",
         "number,state,title",
       ])
@@ -385,6 +455,8 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       const prResult = await runGh(options, [
         "pr",
         "list",
+        "--repo",
+        slug,
         "--state",
         "all",
         "--head",
@@ -430,7 +502,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       if (input.identity.kind !== "github") {
         throw new Error("closeIssue called with a non-GitHub identity")
       }
-      const result = await runGh(options, ["issue", "close", String(input.identity.number)])
+      const result = await runGh(options, ["issue", "close", String(input.identity.number), "--repo", slug])
       if (result.exitCode !== 0) {
         throw new Error(
           `gh issue close failed: ${(result.stderr || result.stdout).trim() || "exit " + result.exitCode}`,

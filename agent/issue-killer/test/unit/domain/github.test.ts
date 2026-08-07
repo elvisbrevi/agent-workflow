@@ -247,14 +247,11 @@ describe("verifyGithubCompletion", () => {
     expect(result.kind).toBe("issue_still_open")
   })
 
-  test("returns no_attributable_pr when no PR has a mergedAt timestamp", () => {
+  test("returns no_attributable_pr when no PR exists", () => {
     const result = verifyGithubCompletion({
       issue: closedIssue,
       baseBranch: "main",
-      pullRequests: [
-        { number: 12, state: "OPEN", baseRefName: "main", mergedAt: null },
-        { number: 13, state: "MERGED", baseRefName: "main", mergedAt: undefined },
-      ],
+      pullRequests: [],
     })
     expect(result.kind).toBe("no_attributable_pr")
   })
@@ -274,13 +271,31 @@ describe("verifyGithubCompletion", () => {
     }
   })
 
-  test("returns pr_unmerged for an open PR (no mergedAt)", () => {
+  test("returns multiple_prs when a merged and an open PR share the branch", () => {
+    const result = verifyGithubCompletion({
+      issue: closedIssue,
+      baseBranch: "main",
+      pullRequests: [
+        { number: 12, mergedAt: "2026-08-01T00:00:00Z", baseRefName: "main" },
+        { number: 13, state: "OPEN", mergedAt: null, baseRefName: "main" },
+      ],
+    })
+    expect(result.kind).toBe("multiple_prs")
+    if (result.kind === "multiple_prs") {
+      expect(result.count).toBe(2)
+    }
+  })
+
+  test("returns pr_unmerged for a lone open PR", () => {
     const result = verifyGithubCompletion({
       issue: closedIssue,
       baseBranch: "main",
       pullRequests: [{ number: 12, state: "OPEN", baseRefName: "main" }],
     })
-    expect(result.kind).toBe("no_attributable_pr")
+    expect(result.kind).toBe("pr_unmerged")
+    if (result.kind === "pr_unmerged") {
+      expect(result.prNumber).toBe(12)
+    }
   })
 
   test("returns wrong_base_branch when baseRefName does not match", () => {
@@ -403,6 +418,13 @@ describe("GitHub JSON parsers", () => {
     expect(parseGithubIssue({})).toBeNull()
   })
 
+  test("parseGithubIssue rejects malformed optional tracker fields", () => {
+    expect(parseGithubIssue({ number: 5, assignees: "not-an-array" })).toBeNull()
+    expect(parseGithubIssue({ number: 5, assignees: ["not-an-assignee"] })).toBeNull()
+    expect(parseGithubIssue({ number: 5, labels: [{ name: 7 }] })).toBeNull()
+    expect(parseGithubIssue({ number: 5, issueType: { name: 7 } })).toBeNull()
+  })
+
   test("parseGithubPullRequest preserves mergedAt null and string variants", () => {
     expect(parseGithubPullRequest({ number: 1, mergedAt: null })?.mergedAt).toBeNull()
     expect(parseGithubPullRequest({ number: 1, mergedAt: "x" })?.mergedAt).toBe("x")
@@ -411,6 +433,8 @@ describe("GitHub JSON parsers", () => {
 
   test("parseGithubPullRequest rejects malformed entries", () => {
     expect(parseGithubPullRequest({ mergedAt: "x" })).toBeNull()
+    expect(parseGithubPullRequest({ number: 1, baseRefName: 7 })).toBeNull()
+    expect(parseGithubPullRequest({ number: 1, mergedAt: 7 })).toBeNull()
   })
 
   test("parseGithubPullRequestList returns null on any malformed entry", () => {

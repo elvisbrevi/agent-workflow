@@ -66,6 +66,7 @@ export type GithubEligibilityReason =
 
 const READY_LABEL_LOWER = GITHUB_READY_LABEL.toLowerCase()
 const EPIC_LABEL_LOWER = GITHUB_EPIC_LABEL.toLowerCase()
+const INVALID_GITHUB_FIELD = Symbol("invalid-github-field")
 
 export const issueHasReadyForAgentLabel = (issue: GithubIssue): boolean => {
   const labels = issue.labels
@@ -203,23 +204,14 @@ export const verifyGithubCompletion = (input: {
     return { kind: "issue_still_open", issueNumber: number }
   }
 
-  const attributable: GithubPullRequest[] = []
-  for (const pr of input.pullRequests) {
-    const mergedAt = parseNonEmptyString(pr.mergedAt)
-    if (mergedAt === null) {
-      continue
-    }
-    attributable.push(pr)
-  }
-
-  if (attributable.length === 0) {
+  if (input.pullRequests.length === 0) {
     return { kind: "no_attributable_pr", issueNumber: number }
   }
-  if (attributable.length > 1) {
-    return { kind: "multiple_prs", issueNumber: number, count: attributable.length }
+  if (input.pullRequests.length > 1) {
+    return { kind: "multiple_prs", issueNumber: number, count: input.pullRequests.length }
   }
 
-  const pr = attributable[0]
+  const pr = input.pullRequests[0]
   if (pr === undefined) {
     return { kind: "no_attributable_pr", issueNumber: number }
   }
@@ -228,8 +220,11 @@ export const verifyGithubCompletion = (input: {
   if (prNumber === null) {
     return { kind: "malformed", reason: "pull request number is invalid" }
   }
-  const baseRef = parseNonEmptyString(pr.baseRefName)
   const mergedAt = parseNonEmptyString(pr.mergedAt)
+  if (mergedAt === null) {
+    return { kind: "pr_unmerged", issueNumber: number, prNumber }
+  }
+  const baseRef = parseNonEmptyString(pr.baseRefName)
   if (baseRef === null || mergedAt === null) {
     return { kind: "malformed", reason: "pull request base or merge timestamp missing" }
   }
@@ -260,40 +255,58 @@ export const parseGithubIssue = (value: unknown): GithubIssue | null => {
   if (typeof record["number"] !== "number" || !Number.isInteger(record["number"])) {
     return null
   }
+  const labels = parseGithubLabels(record["labels"])
+  const assignees = parseGithubAssignees(record["assignees"])
+  const issueType = parseGithubIssueType(record["issueType"])
+  if (labels === INVALID_GITHUB_FIELD || assignees === INVALID_GITHUB_FIELD || issueType === INVALID_GITHUB_FIELD) {
+    return null
+  }
+  if (record["state"] !== undefined && typeof record["state"] !== "string") return null
+  if (record["title"] !== undefined && typeof record["title"] !== "string") return null
   const issue: GithubIssue = {
     number: record["number"],
     state: typeof record["state"] === "string" ? (record["state"] as string) : undefined,
     title: typeof record["title"] === "string" ? (record["title"] as string) : undefined,
-    labels: parseGithubLabels(record["labels"]),
-    assignees: parseGithubAssignees(record["assignees"]),
-    issueType: parseGithubIssueType(record["issueType"]),
+    labels,
+    assignees,
+    issueType,
   }
   return issue
 }
 
-const parseGithubLabels = (value: unknown): ReadonlyArray<GithubLabel> | undefined => {
-  if (!Array.isArray(value)) return undefined
+const parseGithubLabels = (
+  value: unknown,
+): ReadonlyArray<GithubLabel> | undefined | typeof INVALID_GITHUB_FIELD => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return INVALID_GITHUB_FIELD
   const labels: GithubLabel[] = []
   for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) continue
+    if (typeof entry !== "object" || entry === null) return INVALID_GITHUB_FIELD
     const record = entry as Record<string, unknown>
-    if (typeof record["name"] !== "string") continue
+    if (typeof record["name"] !== "string") return INVALID_GITHUB_FIELD
     labels.push({ name: record["name"] })
   }
   return labels
 }
 
-const parseGithubAssignees = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value)) return undefined
+const parseGithubAssignees = (
+  value: unknown,
+): ReadonlyArray<unknown> | undefined | typeof INVALID_GITHUB_FIELD => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return INVALID_GITHUB_FIELD
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) return INVALID_GITHUB_FIELD
+  }
   return value
 }
 
-const parseGithubIssueType = (value: unknown): GithubIssueType => {
+const parseGithubIssueType = (value: unknown): GithubIssueType | typeof INVALID_GITHUB_FIELD => {
+  if (value === undefined) return undefined
   if (value === null) return null
-  if (typeof value !== "object") return undefined
+  if (typeof value !== "object") return INVALID_GITHUB_FIELD
   const record = value as Record<string, unknown>
-  const name = typeof record["name"] === "string" ? (record["name"] as string) : undefined
-  return { name }
+  if (typeof record["name"] !== "string") return INVALID_GITHUB_FIELD
+  return { name: record["name"] }
 }
 
 export const parseGithubPullRequest = (value: unknown): GithubPullRequest | null => {
@@ -303,6 +316,17 @@ export const parseGithubPullRequest = (value: unknown): GithubPullRequest | null
   if (typeof numberRaw !== "number" || !Number.isInteger(numberRaw) || numberRaw <= 0) {
     return null
   }
+  if (record["state"] !== undefined && typeof record["state"] !== "string") return null
+  if (
+    record["mergedAt"] !== undefined &&
+    record["mergedAt"] !== null &&
+    typeof record["mergedAt"] !== "string"
+  ) {
+    return null
+  }
+  if (record["baseRefName"] !== undefined && typeof record["baseRefName"] !== "string") return null
+  if (record["headRefName"] !== undefined && typeof record["headRefName"] !== "string") return null
+  if (record["title"] !== undefined && typeof record["title"] !== "string") return null
   return {
     number: numberRaw,
     state: typeof record["state"] === "string" ? (record["state"] as string) : undefined,
