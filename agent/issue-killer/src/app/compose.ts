@@ -12,6 +12,7 @@ import type {
 import type { LifecycleState } from "../domain/lifecycle"
 import type { SessionId } from "../domain/session-id"
 import type { CompletionVerification, TrackerIdentity, TrackerSelection } from "../domain/tracker"
+import { redactMultiline } from "../system/redaction"
 
 export type WorkerRunInput = {
   readonly issue: number
@@ -82,7 +83,7 @@ const statusResult = (status: WorkerStatus, issue?: number, reason?: string, exi
   status,
   exitCode: exitCode ?? WORKER_STATUS_EXIT_CODE[status],
   ...(issue === undefined ? {} : { issue }),
-  ...(reason === undefined ? {} : { reason }),
+  ...(reason === undefined ? {} : { reason: redactMultiline(reason).text.slice(0, 256) }),
 })
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -164,7 +165,15 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
     })
 
     while (input.iterationLimit === 0 || completed < input.iterationLimit) {
-      if (input.signal?.aborted) return statusResult("BLOCKED", lastIssue, "run was cancelled")
+      if (input.signal?.aborted) {
+        await input.lock.writeStatus({
+          gitCommonDir: commonDir,
+          token: input.owner.token,
+          status: "blocked",
+          updatedAt: input.now(),
+        })
+        return statusResult("BLOCKED", lastIssue, "run was cancelled")
+      }
       const selection = await input.tracker.selectEligibleIssue({
         baseBranch: input.baseBranch,
         currentState: "starting",
@@ -273,6 +282,7 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
         }
         checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "verified" })
         if (input.signal?.aborted) {
+          await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)
           return statusResult("BLOCKED", issue, "run was cancelled after completion verification")
         }
         try {
@@ -288,7 +298,11 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
           if (input.git.checkoutBranch === undefined) {
             return statusResult("RECOVERY_REQUIRED", issue, "unable to return to the configured base branch")
           }
-          await input.git.checkoutBranch({ cwd: input.directory, branch: input.baseBranch })
+          try {
+            await input.git.checkoutBranch({ cwd: input.directory, branch: input.baseBranch })
+          } catch (error) {
+            return statusResult("RECOVERY_REQUIRED", issue, `unable to return to the configured base branch: ${errorMessage(error)}`)
+          }
         }
         await input.checkpoint.clear({ gitCommonDir: commonDir, runnerName: input.runnerName })
         completed += 1

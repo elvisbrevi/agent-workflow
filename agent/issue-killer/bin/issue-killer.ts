@@ -9,7 +9,7 @@ import {
   resolveConfigPath,
 } from "../src/config/index"
 import { createGithubTracker, preflightGithubTracker } from "../src/tracker/github"
-import { createOpenCodeRuntime, runOpenCodeWorkerSession } from "../src/opencode/runtime"
+import { createOpenCodeRuntime, runOpenCodeWorkerSession, type OpenCodeRuntime } from "../src/opencode/runtime"
 import { createHarnessLog } from "../src/opencode/harness-log"
 import { runVerticalSlice, type SupervisorResult } from "../src/app/compose"
 import { parseCliArgs } from "../src/config/cli-args"
@@ -115,8 +115,8 @@ const main = async (): Promise<SupervisorResult> => {
   const harness = createHarnessLog({ logDir: loaded.config.expandedLogDir })
   const promptAsset = await readFile(new URL("../PROMPT.md", import.meta.url), "utf8")
   const runId = `issue-killer-${randomUUID()}`
-  await harness.startRun({ runId, repository: directory })
-  const runtime = await createOpenCodeRuntime({ directory, autonomous: true })
+  let runtime: OpenCodeRuntime | null = null
+  let harnessStarted = false
   let harnessEnded = false
   const abortController = new AbortController()
   const onInterrupt = (): void => abortController.abort()
@@ -124,6 +124,10 @@ const main = async (): Promise<SupervisorResult> => {
   process.once("SIGTERM", onInterrupt)
 
   try {
+    await harness.startRun({ runId, repository: directory })
+    harnessStarted = true
+    runtime = await createOpenCodeRuntime({ directory, autonomous: true })
+    const activeRuntime = runtime
     const result = await runVerticalSlice({
       directory,
       baseBranch,
@@ -157,7 +161,7 @@ const main = async (): Promise<SupervisorResult> => {
           "Do not print ISSUE_COMPLETED until the pull request is merged into the configured base branch.",
         ].join("\n")
         const session = await runOpenCodeWorkerSession({
-          runtime,
+          runtime: activeRuntime,
           directory,
           scope: {
             issue: input.issue,
@@ -179,17 +183,17 @@ const main = async (): Promise<SupervisorResult> => {
         })
         return { sessionId: session.sessionId, outcome: session.events.outcome }
       },
-      deleteSession: async (input) => runtime.deleteSession(input),
+      deleteSession: async (input) => activeRuntime.deleteSession(input),
       promptText: promptAsset,
     })
     await harness.endRun({ runId, status: harnessLifecycleFor(result.status) })
     harnessEnded = true
     return result
   } finally {
-    if (!harnessEnded) await harness.endRun({ runId, status: "failed" }).catch(() => undefined)
+    if (harnessStarted && !harnessEnded) await harness.endRun({ runId, status: "failed" }).catch(() => undefined)
     process.removeListener("SIGINT", onInterrupt)
     process.removeListener("SIGTERM", onInterrupt)
-    await runtime.close().catch(() => undefined)
+    await runtime?.close().catch(() => undefined)
   }
 }
 
