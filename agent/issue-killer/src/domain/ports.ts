@@ -111,6 +111,7 @@ export type RepositoryLockPort = {
 
 export type ClockPort = {
   now(): string
+  sleep(input: { readonly millis: number; readonly signal?: AbortSignal }): Promise<void>
 }
 
 export type CommandRunnerPort = {
@@ -120,6 +121,7 @@ export type CommandRunnerPort = {
     readonly cwd: string
     readonly env: Readonly<Record<string, string>>
     readonly signal?: AbortSignal
+    readonly timeoutMs?: number
   }): Promise<{ readonly stdout: string; readonly stderr: string; readonly exitCode: number }>
 }
 

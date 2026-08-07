@@ -15,14 +15,46 @@ const formatTimestamp = (date: Date): string => {
   return `${year}-${month}-${day} ${hour}:${minute}:${second} ${offsetSign}${offsetHours}${offsetMins}`
 }
 
+export type SystemSleepFn = (input: { readonly millis: number; readonly signal?: AbortSignal }) => Promise<void>
+
 export type SystemClockInput = {
   readonly now?: () => Date
+  readonly sleep?: SystemSleepFn
 }
+
+const defaultSleep: SystemSleepFn = ({ millis, signal }) =>
+  new Promise<void>((resolve, reject) => {
+    if (millis < 0) {
+      reject(new Error(`sleep millis must be non-negative; received ${millis}`))
+      return
+    }
+    if (signal?.aborted === true) {
+      reject(new Error("sleep aborted"))
+      return
+    }
+    const handle = setTimeout(() => {
+      resolve()
+    }, millis)
+    if (typeof handle.unref === "function") {
+      handle.unref()
+    }
+    if (signal) {
+      const onAbort = (): void => {
+        clearTimeout(handle)
+        reject(new Error("sleep aborted"))
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+  })
 
 export const systemClock = (input?: SystemClockInput): ClockPort => {
   const source = input?.now ?? ((): Date => new Date())
+  const sleep = input?.sleep ?? defaultSleep
   return {
     now: (): string => formatTimestamp(source()),
+    sleep: async ({ millis, signal }): Promise<void> => {
+      await sleep({ millis, signal })
+    },
   }
 }
 

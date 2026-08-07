@@ -20,4 +20,36 @@ describe("systemClock", () => {
     expect(value.length).toBeGreaterThan(0)
     expect(value).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$/)
   })
+
+  test("sleep uses the injected sleep function", async () => {
+    let calls = 0
+    const clock = systemClock({
+      sleep: async () => {
+        calls += 1
+      },
+    })
+    await clock.sleep({ millis: 5 })
+    expect(calls).toBe(1)
+  })
+
+  test("default sleep resolves after the requested delay", async () => {
+    const clock = systemClock()
+    const started = Date.now()
+    await clock.sleep({ millis: 25 })
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(20)
+  })
+
+  test("default sleep rejects when the signal aborts before the timer fires", async () => {
+    const clock = systemClock()
+    const controller = new AbortController()
+    const promise = clock.sleep({ millis: 1_000, signal: controller.signal })
+    controller.abort()
+    await expect(promise).rejects.toThrow(/aborted/)
+  })
+
+  test("default sleep rejects negative durations immediately", async () => {
+    const clock = systemClock()
+    await expect(clock.sleep({ millis: -1 })).rejects.toThrow(/non-negative/)
+  })
 })
