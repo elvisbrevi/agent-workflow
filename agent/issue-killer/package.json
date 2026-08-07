@@ -1,0 +1,16 @@
+{
+  "name": "issue-killer-opencode-sdk-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.18.14"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.3",
+    "typescript": "5.9.2"
+  }
+}
