@@ -6898,6 +6898,117 @@ test_stale_lock_recovery_refuses_owner_without_readable_pid() {
   pass 'stale lock recovery refuses an owner file without a readable pid'
 }
 
+test_status_publish_rechecks_lock_ownership_after_atomic_move() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-replaced.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-replaced-out.XXXXXX")"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=2
+    BASE_BRANCH=main
+    LOCK_DIR="${work}/issue-killer.lock"
+    LOCK_TOKEN=ours
+    LOCK_HELD=true
+    mkdir -p "$LOCK_DIR"
+    printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    write_checkpoint() {
+      printf 'issue=unknown\nbranch=unknown\nbase_sha=unknown\nstate=%s\n' "$1" > "$(checkpoint_file)"
+    }
+    mv() {
+      command mv "$@"
+      if [[ "$*" == *"${LOCK_DIR}/status" ]]; then
+        printf 'pid=999\ntoken=competitor\n' > "${LOCK_DIR}/owner"
+      fi
+    }
+    # shellcheck source=/dev/null
+    source "$module"
+
+    write_lock_status "worker_running" 1
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Replacing the lock after status publication did not exit 4, got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Replacing the lock after status publication did not emit RECOVERY_REQUIRED'
+  grep -Fq 'competing_pid=999' "$output" || \
+    fail 'Replacing the lock after status publication did not identify the competitor'
+
+  pass 'status publication detects lock replacement before the run continues'
+}
+
+test_lock_loss_is_monitored_without_progress_heartbeats() {
+  local module="${ROOT_DIR}/agent/issue-killer/state/repository-lock.sh"
+  local supervisor="${ROOT_DIR}/agent/issue-killer/runtime/supervisor.sh"
+  local work output status
+
+  work="$(mktemp -d "${TEST_ROOT}/lock-no-heartbeat.XXXXXX")"
+  output="$(mktemp "${TEST_ROOT}/lock-no-heartbeat-out.XXXXXX")"
+  mkdir -p "${work}/issue-killer.lock"
+
+  set +e
+  (
+    set -euo pipefail
+    RUNNER_NAME=issue-killer
+    GIT_COMMON_DIR="$work"
+    REPO_ROOT="$work"
+    ITERATION=2
+    BASE_BRANCH=main
+    STREAM_OUTPUT=false
+    PROGRESS_INTERVAL=0
+    LOCK_DIR="${work}/issue-killer.lock"
+    LOCK_TOKEN=heartbeat-disabled-token
+    LOCK_HELD=true
+    printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
+    timestamp() { printf 'now\n'; }
+    current_branch() { printf 'main\n'; }
+    checkpoint_file() { printf '%s/issue-killer.checkpoint\n' "$GIT_COMMON_DIR"; }
+    write_checkpoint() { printf 'state=%s\n' "$1" > "$(checkpoint_file)"; }
+    runtime_invoke() {
+      trap 'exit 143' TERM INT HUP
+      : > "${work}/worker-started"
+      sleep 5
+      : > "${work}/worker-finished"
+    }
+    # shellcheck source=/dev/null
+    source "$module"
+    # shellcheck source=/dev/null
+    source "$supervisor"
+
+    (
+      while [[ ! -e "${work}/worker-started" ]]; do sleep 0.05; done
+      sleep 1.2
+      rm -rf "$LOCK_DIR"
+    ) &
+    run_worker_with_progress prompt "${work}/worker-output"
+  ) >"$output" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 4 ]] || \
+    fail "Lock loss without progress heartbeats did not exit 4, got ${status}"
+  grep -Fq 'RECOVERY_REQUIRED' "$output" || \
+    fail 'Lock loss without progress heartbeats did not emit RECOVERY_REQUIRED'
+  [[ ! -e "${work}/worker-finished" ]] || \
+    fail 'Worker continued after losing the lock with progress heartbeats disabled'
+
+  pass 'lock loss is monitored even when visible progress heartbeats are disabled'
+}
+
+test_status_publish_rechecks_lock_ownership_after_atomic_move
+test_lock_loss_is_monitored_without_progress_heartbeats
+
 test_github_tracker_supplement_is_delivered_to_worker
 test_runtime_config_section_follows_supplement
 test_tracker_supplement_excluded_from_checkpoint_and_status

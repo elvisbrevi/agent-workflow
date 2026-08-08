@@ -11,16 +11,14 @@ repository_lock_token() {
 # True only while this process can still prove it owns the lock.
 #
 # The directory must exist: losing it is the failure this guard exists
-# to catch. The ownership token is checked only once LOCK_TOKEN is set,
-# which acquire_repository_lock does immediately before LOCK_HELD, so a
-# real run always gets the full check; callers that stage lock state
-# directly are held only to the directory requirement.
+# to catch. The ownership token is published immediately before LOCK_HELD
+# is set, so a held lock without one cannot be treated as owned.
 lock_ownership_intact() {
   local current_token
 
   [[ -n "${LOCK_DIR:-}" ]] || return 1
   [[ -d "$LOCK_DIR" ]] || return 1
-  [[ -n "${LOCK_TOKEN:-}" ]] || return 0
+  [[ -n "${LOCK_TOKEN:-}" ]] || return 1
 
   [[ -r "${LOCK_DIR}/owner" ]] || return 1
   current_token="$(repository_lock_token || true)"
@@ -71,6 +69,10 @@ lock_integrity_failure() {
   fi
   if [[ -n "${LOCK_FAILURE_PID:-}" ]]; then
     kill "$LOCK_FAILURE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${OUTPUT_FILE:-}" ]]; then
+    printf '%sRECOVERY_REQUIRED\n' "${STATUS_PREFIX:-ISSUE_KILLER_STATUS=}" \
+      >> "${OUTPUT_FILE}" 2>/dev/null || true
   fi
 
   printf '%s: RECOVERY_REQUIRED: %s\n' "$RUNNER_NAME" "$reason" >&2
@@ -176,16 +178,20 @@ write_lock_status() {
     if [[ -n "${TRACKER_HU_PHASE:-}" ]]; then
       printf 'hu_phase=%s\n' "$TRACKER_HU_PHASE"
     fi
-  } > "$status_tmp" || {
-    rm -f "$status_tmp"
+  } > "$status_tmp" 2>/dev/null || {
+    rm -f "$status_tmp" 2>/dev/null || true
     lock_integrity_failure "unable to write the lock status snapshot (state=${state})"
   }
   lock_ownership_intact || {
-    rm -f "$status_tmp"
+    rm -f "$status_tmp" 2>/dev/null || true
     lock_integrity_failure "repository lock changed before publishing status (state=${state})"
   }
-  mv -f "$status_tmp" "${LOCK_DIR}/status" || \
+  if ! mv -f "$status_tmp" "${LOCK_DIR}/status" 2>/dev/null; then
+    rm -f "$status_tmp" 2>/dev/null || true
     lock_integrity_failure "unable to publish the lock status snapshot (state=${state})"
+  fi
+  lock_ownership_intact || \
+    lock_integrity_failure "repository lock changed after publishing status (state=${state})"
 }
 
 release_repository_lock() {

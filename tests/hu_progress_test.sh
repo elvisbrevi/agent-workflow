@@ -122,8 +122,8 @@ pass 'sanitization redacts credentials, PEM blocks, attachments, and base64 payl
 
 LOCK_DIR="${GIT_COMMON_DIR}/issue-killer.lock"
 mkdir -p "$LOCK_DIR"
-printf 'pid=%s\n' "$$" > "${LOCK_DIR}/owner"
-printf 'token=%s\n' "t-$$" >> "${LOCK_DIR}/owner"
+LOCK_TOKEN="t-$$"
+printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
 LOCK_HELD=true
 TRACKER_HU_TICKET_BRANCH=""
 TRACKER_HU_EVIDENCE_URL=""
@@ -170,6 +170,7 @@ pass 'phase transitions advance the lock status with the latest phase'
 
 output="$(
   LOCK_HELD=true
+  LOCK_TOKEN="t-$$"
   TRACKER_HU_PHASE=""
   TRACKER_HU_TICKET_BRANCH=""
   TRACKER_HU_EVIDENCE_URL=""

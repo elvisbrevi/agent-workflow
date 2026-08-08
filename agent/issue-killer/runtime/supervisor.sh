@@ -11,7 +11,7 @@ run_worker_with_progress() {
   local lock_failure_file="${output_file}.lock-failure"
   local stream_fifo="${output_file}.fifo"
   local pipeline_pid sink_pid heartbeat_pid=""
-  local started_at now elapsed pipeline_exit sink reason
+  local monitor_interval started_at now elapsed pipeline_exit sink reason
 
   started_at="$(date +%s)"
   rm -f "$touch_file" "$exit_file" "$lock_failure_file" "$stream_fifo" "${output_file}.session"
@@ -43,10 +43,18 @@ run_worker_with_progress() {
   "$sink" "$output_file" < "$stream_fifo" &
   sink_pid=$!
 
-  if [[ "$PROGRESS_INTERVAL" -gt 0 ]]; then
+  monitor_interval="$PROGRESS_INTERVAL"
+  if [[ "$monitor_interval" -eq 0 ]]; then
+    # A zero visible-heartbeat interval must not disable lock-loss detection.
+    monitor_interval=1
+  fi
+  if [[ "$monitor_interval" -gt 0 ]]; then
     (
-      while sleep "$PROGRESS_INTERVAL"; do
+      while sleep "$monitor_interval"; do
         kill -0 "$pipeline_pid" 2>/dev/null || exit 0
+        lock_ownership_intact || \
+          lock_integrity_failure "repository lock was lost while worker was running"
+        [[ "$PROGRESS_INTERVAL" -gt 0 ]] || continue
         now="$(date +%s)"
         elapsed=$((now - started_at))
         write_lock_status "worker_running" "$elapsed"
