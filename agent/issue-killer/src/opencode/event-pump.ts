@@ -16,6 +16,7 @@ export type EventPumpResult = {
   readonly malformedOutcome: boolean
   readonly missingOutcome: boolean
   readonly permissionStopped: boolean
+  readonly providerError?: unknown
 }
 
 export type EventPumpInput = {
@@ -156,6 +157,7 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
   let outcome: WorkerOutcome | null = null
   let malformedOutcome = false
   let permissionStopped = false
+  let providerError: unknown
   let markerBuffer = ""
 
   for await (const rawEvent of input.events) {
@@ -188,6 +190,11 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
       await input.harnessLog.appendEvent({ runId: input.runId, payload: observedPayload(event) })
     }
     await input.onEvent?.(redactEvent(event))
+
+    if (event.type === "session.error") {
+      const properties = eventProperties(event)
+      providerError = properties.error ?? new Error("OpenCode session emitted an error")
+    }
 
     if (input.autonomous === true && /(^|\.)permission\.(?:v2\.)?asked$/.test(type)) {
       permissionStopped = true
@@ -241,5 +248,6 @@ export const drainSessionEvents = async (input: EventPumpInput): Promise<EventPu
     malformedOutcome,
     missingOutcome: outcome === null && !malformedOutcome && !permissionStopped,
     permissionStopped,
+    ...(providerError === undefined ? {} : { providerError }),
   }
 }

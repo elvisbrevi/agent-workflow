@@ -543,7 +543,7 @@ Trabajo:
 - permitir fallback solo en quota, rate limit persistente o model unavailable;
 - persistir posición, perfil fallido, perfil siguiente y categoría;
 - reanudar únicamente si `session.get()` confirma sesión, directory, issue, rama y base SHA;
-- en todo fallback elegible, crear siempre una sesión OpenCode nueva restringida al mismo issue/worktree (nunca mid-session model switch).
+- en todo fallback elegible, continuar la sesión OpenCode previa cuando `session.get()` confirme el directorio, issue, branch, base branch y base SHA; el nuevo modelo se envía sobre la misma sesión. Si la confirmación falla, abrir una sesión OpenCode nueva restringida al issue del checkpoint.
 
 Aceptación:
 

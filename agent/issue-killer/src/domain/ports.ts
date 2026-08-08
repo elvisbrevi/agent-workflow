@@ -24,6 +24,11 @@ export type TrackerPort = {
     readonly branch: string
     readonly baseBranch: string
   }): Promise<CompletionVerification>
+  reconcileRecovery?: (input: {
+    readonly identity: TrackerIdentity
+    readonly branch: string
+    readonly baseBranch: string
+  }) => Promise<CompletionVerification>
   closeIssue(input: { readonly identity: TrackerIdentity }): Promise<void>
   readEvidenceScope(input: { readonly hu: number }): Promise<AzureDeliveryScope>
   evidenceForCompletion(input: {
@@ -44,6 +49,7 @@ export type OpenCodeRuntimePort = {
     readonly sessionId: SessionId
     readonly directory: string
     readonly scope?: OpenCodeSessionScope
+    readonly allowProfileChange?: boolean
   }): Promise<{ readonly sessionId: SessionId; readonly directory: string; readonly title: string }>
   abortSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>
   deleteSession(input: { readonly sessionId: SessionId; readonly directory: string }): Promise<void>

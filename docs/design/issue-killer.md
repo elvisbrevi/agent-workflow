@@ -96,7 +96,7 @@ Non-TTY: `default_profile` + declared `fallbacks`.
 
 **Opaque session id**: `^[A-Za-z0-9_-]+$`, max 128; revalidated before persist/resume/delete.
 
-Fallback always starts a **fresh worker session** on the same issue/worktree after persisting failed profile, next profile, chain position, and **provider failure category**.
+An eligible fallback reuses the previous **worker session** when `session.get()` confirms its directory, issue, branch, base branch, and base SHA. The next profile's model is sent on that session. If confirmation fails, OpenCode starts a fresh worker session constrained to the same issue/worktree after persisting the failed profile, next profile, chain position, and **provider failure category**.
 
 ## Harness Execution Log
 
