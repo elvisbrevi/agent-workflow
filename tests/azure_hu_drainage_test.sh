@@ -355,6 +355,8 @@ AZSCRIPT
   BASE_BRANCH="main"
   LOCK_DIR="${repo}/.git/issue-killer.lock"
   mkdir -p "$LOCK_DIR"
+  LOCK_TOKEN="drainage-test-token"
+  printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
   LOCK_HELD=true
   write_lock_status "scope_selected" 0
   status_file="${LOCK_DIR}/status"

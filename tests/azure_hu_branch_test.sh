@@ -372,6 +372,8 @@ git -C "$checksum_repo" -c init.defaultBranch=main commit --allow-empty -m seed 
 GIT_COMMON_DIR="$(git -C "$checksum_repo" rev-parse --git-common-dir)"
 LOCK_DIR="${GIT_COMMON_DIR}/issue-killer.lock"
 mkdir "$LOCK_DIR"
+LOCK_TOKEN="branch-test-token"
+printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "${LOCK_DIR}/owner"
 LOCK_HELD=true
 ITERATION=1
 write_lock_status "scope_selected" 0
