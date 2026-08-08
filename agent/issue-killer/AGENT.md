@@ -17,8 +17,9 @@ The bundled `bin/issue-killer.ts` entrypoint launches one fresh OpenCode
 worker session per issue, configured through an execution profile. A later
 restart can resume the captured opaque OpenCode session id when its pinned
 issue, branch, base branch, and base SHA still match; otherwise the runtime
-starts a fresh session constrained to the checkpointed identity. Operators
-can opt out with `disable_session_persistence = true` on the profile.
+starts a fresh session constrained to the checkpointed identity when that
+session cannot be confirmed. Session reuse is controlled by recovery state,
+not by an unsupported profile field.
 
 ## Before launch
 

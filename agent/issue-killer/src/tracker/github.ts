@@ -375,7 +375,7 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
     return openBlockers
   }
 
-  return {
+  const tracker: TrackerPort = {
     kind: "github",
     async selectEligibleIssue(_input): Promise<TrackerSelection> {
       const list = await fetchIssueList()
@@ -538,6 +538,12 @@ export const createGithubTracker = (options: GithubTrackerOptions): TrackerPort 
       // call this port unconditionally on every tracker.
     },
   }
+  tracker.reconcileRecovery = async (input: {
+    readonly identity: TrackerIdentity
+    readonly branch: string
+    readonly baseBranch: string
+  }) => tracker.verifyCompletion(input)
+  return tracker
 }
 
 export const toCompletionVerification = (

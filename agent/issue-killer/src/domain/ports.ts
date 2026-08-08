@@ -24,6 +24,11 @@ export type TrackerPort = {
     readonly branch: string
     readonly baseBranch: string
   }): Promise<CompletionVerification>
+  reconcileRecovery?: (input: {
+    readonly identity: TrackerIdentity
+    readonly branch: string
+    readonly baseBranch: string
+  }) => Promise<CompletionVerification>
   closeIssue(input: { readonly identity: TrackerIdentity }): Promise<void>
   readEvidenceScope(input: { readonly hu: number }): Promise<AzureDeliveryScope>
   evidenceForCompletion(input: {

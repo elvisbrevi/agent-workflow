@@ -299,7 +299,7 @@ Before every retry the supervisor:
    already-merged PR with a closed issue) is treated as completed; the
    supervisor injects a synthetic `ISSUE_COMPLETED` status and advances the
    loop without launching another worker.
-3. Confirms an OpenCode session with `session.get()` when the checkpoint carries one, the worktree still matches the recorded issue, branch, base branch, and base SHA. A fallback continues the same resumable session with the next profile's model. If confirmation fails, the runtime starts a fresh OpenCode session constrained to the checkpointed issue; local branch, base, tracker, or profile drift stops with `RECOVERY_REQUIRED`.
+3. Confirms an OpenCode session with `session.get()` when the checkpoint carries one, the worktree still matches the recorded issue, branch, base branch, and base SHA. A fallback continues the same resumable session with the next profile's model. If confirmation fails, the runtime starts a fresh OpenCode session constrained to the checkpointed issue; local branch, base, tracker, or primary-chain configuration drift stops with `RECOVERY_REQUIRED`.
 4. Writes `state=recovering`, `recovery_attempt`, `recovery_delay`, and
    `recovery_category` into the lock status snapshot so operators can
    observe the in-flight retry without reading the checkpoint file.
@@ -318,10 +318,8 @@ When the selected profile uses OpenCode, the operator may declare an ordered
 fallback chain. The supervisor advances only on explicit provider quota
 exhaustion, persistent rate limits, or model unavailability — never on
 generic network errors, malformed output, `BLOCKED`, `FAILED`, or context
-overflow. Each fallback transitions through `fallback_pending` →
-`fallback_ready`, with full tracker/PR reconciliation between stages. A
-fallback chain that lacks a remaining profile produces
-`fallback_exhausted` and exits with `RECOVERY_REQUIRED`.
+overflow. Each fallback is persisted as `fallback_in_progress`; a chain that
+lacks a remaining profile produces `RECOVERY_REQUIRED`.
 
 ## OpenCode fallback chains
 

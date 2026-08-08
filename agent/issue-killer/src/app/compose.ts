@@ -216,6 +216,7 @@ type WorkerAttempt = {
   readonly result?: WorkerRunResult
   readonly error?: unknown
   readonly failureCategory: ProviderFailureCategory
+  readonly retryExhausted?: boolean
 }
 
 const runWorkerWithRetries = async (
@@ -238,7 +239,11 @@ const runWorkerWithRetries = async (
         await supervisor.sleep?.({ millis, signal: supervisor.signal })
         continue
       }
-      return { error, failureCategory: category }
+      return {
+        error,
+        failureCategory: category,
+        retryExhausted: isTransportFailure(error),
+      }
     }
   }
 }
@@ -296,6 +301,17 @@ const runFallbackAttempts = async (input: {
     if (attempt.result !== undefined) return { result: attempt.result, checkpoint }
 
     const category = attempt.failureCategory
+    if (attempt.retryExhausted === true && !isFallbackEligible(category)) {
+      checkpoint = await saveCheckpoint({
+        supervisor: input.supervisor,
+        checkpoint: { ...checkpoint, failedProfile: activeProfile.name, fallbackFailure: "transport_disconnect" },
+        state: "recovery_required",
+      }).catch(() => checkpoint)
+      return {
+        failure: statusResult("RECOVERY_REQUIRED", input.issue, `transport retry budget exhausted in ${activeProfile.name}`),
+        checkpoint,
+      }
+    }
     if (!isFallbackEligible(category)) {
       return { failure: failureFromError(attempt.error, input.issue), checkpoint }
     }
@@ -450,6 +466,19 @@ export const runVerticalSlice = async (input: SupervisorInput): Promise<Supervis
       if (priorCheckpoint === null) {
         checkpoint = await saveCheckpoint({ supervisor: input, checkpoint, state: "issue_selected" })
         await input.tracker.claimIssue({ identity: selection.identity })
+      } else if (input.tracker.reconcileRecovery !== undefined) {
+        const reconciliation = await input.tracker.reconcileRecovery({
+          identity: selection.identity,
+          branch,
+          baseBranch: input.baseBranch,
+        })
+        if (reconciliation.kind === "drift" || reconciliation.kind === "tracker_unreachable" || reconciliation.kind === "verified") {
+          return statusResult("RECOVERY_REQUIRED", issue, reconciliation.kind === "drift"
+            ? reconciliation.details
+            : reconciliation.kind === "tracker_unreachable"
+              ? reconciliation.error
+              : "tracker already reports verified completion during recovery")
+        }
       }
       if (input.signal?.aborted) {
         await saveCheckpoint({ supervisor: input, checkpoint, state: "blocked" }).catch(() => undefined)

@@ -269,6 +269,23 @@ describe("runVerticalSlice", () => {
     expect(attempts).toEqual(["main", "main"])
   })
 
+  test("retains recovery state when the transport retry budget is exhausted", async () => {
+    const attempts: string[] = []
+    const input = makeInput({
+      retryDelaysMs: [0],
+      worker: async ({ profile: active }) => {
+        attempts.push(active.name)
+        throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
+      },
+    })
+
+    const result = await runVerticalSlice(input)
+
+    expect(result.status).toBe("RECOVERY_REQUIRED")
+    expect(attempts).toEqual(["main", "main"])
+    expect(input._test.states).toContain("lock:recovery_required")
+  })
+
   test("consumes fallbacks in order after an eligible provider failure", async () => {
     const attempts: string[] = []
     const input = makeInput({
@@ -361,6 +378,49 @@ describe("runVerticalSlice", () => {
 
     expect(result.status).toBe("RECOVERY_REQUIRED")
     expect(result.reason).toMatch(/configuration drift|fallback chain drift/)
+  })
+
+  test("stops restart recovery when the tracker reports drift", async () => {
+    const checkpoint: Checkpoint = {
+      pid: 99,
+      iteration: 1,
+      identity: { kind: "github", number: issue },
+      branch: "main",
+      baseBranch: "main",
+      baseSha: "base-sha",
+      profileName: "main",
+      cli: "opencode",
+      model: "provider/model",
+      command: "opencode",
+      fallbackChain: [],
+      fallbackRemaining: [],
+      fallbackPosition: 0,
+      state: "mutating",
+      updatedAt: "2026-08-07T00:00:00Z",
+      formatVersion: 2,
+    }
+    const tracker = makeInput().tracker
+    const input = makeInput({
+      tracker: {
+        ...tracker,
+        reconcileRecovery: async ({ identity }) => ({
+          kind: "drift",
+          identity,
+          details: "issue identity changed",
+        }),
+      },
+      worker: async () => { throw new Error("worker must not start") },
+      checkpoint: {
+        load: async () => checkpoint,
+        save: async () => undefined,
+        clear: async () => undefined,
+      },
+    })
+
+    const result = await runVerticalSlice(input)
+
+    expect(result.status).toBe("RECOVERY_REQUIRED")
+    expect(result.reason).toBe("issue identity changed")
   })
 
   test("emits idle heartbeats without adding concurrent status writes", async () => {
