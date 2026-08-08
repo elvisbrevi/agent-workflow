@@ -1,8 +1,8 @@
 // Tracker adapter placeholder for issue-killer V2.
 //
-// The `tracker/github` module landed in issue #83 (M4). The Azure adapter
-// and supervisor wiring land in issues #87, #88, and #85. This file
-// remains so the package layout matches `docs/design/issue-killer.md`.
+// The concrete GitHub and Azure adapters live beside this scaffold. This file
+// remains so the package layout matches `docs/design/issue-killer.md` while the
+// remaining supervisor wiring lands in a later milestone.
 
 export const PLACEHOLDER_NOT_WIRED: unique symbol = Symbol("issue-killer/tracker.placeholder")
 
