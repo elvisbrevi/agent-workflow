@@ -64,7 +64,7 @@ The frozen contract is constrained by the following non-negotiable rules:
 | Tracker boundary | GitHub uses `gh`; Azure uses `az boards` for work items and relations and `az repos` for pull requests. Provider commands stay in adapters. | The application consumes normalized tracker ports, not provider-specific stdout. |
 | Execution profile | A profile is an indivisible OpenCode runtime plus provider/model pairing. `cli` and `command` are `opencode`; `model` is split once into `providerID/modelID`. | Configuration validation rejects other runtimes, malformed models, credentials, unknown keys, and unsafe values. |
 | Fallback chain | Fallbacks contain existing OpenCode profiles only, in declared order, with no duplicates, missing references, or cycles. Only `provider_quota`, `provider_rate_limit`, and `provider_model_unavailable` consume a fallback. | Transport retries happen first. Implementation failures, malformed output, `BLOCKED`, and `FAILED` never consume a fallback. |
-| Fallback session | Every eligible fallback starts a fresh OpenCode worker session on the same pinned issue, branch, worktree, base identity, and remaining chain position. No mid-session model switch is assumed safe. | Checkpoint records failed profile, next profile, category, and chain position. |
+| Fallback session | An eligible fallback continues the previous OpenCode worker session when `session.get()` confirms the directory, issue, branch, base branch, and base SHA still match. The next profile's model is sent on the same session. If confirmation fails, OpenCode starts a fresh session constrained to the checkpointed identity; the chain position is restored. | Checkpoint records failed profile, next profile, category, and chain position. |
 | OpenCode server | One server exists per supervisor run, binds only to `127.0.0.1`, and uses an ephemeral port (`port: 0` or bounded reserve-and-retry when required by the pinned SDK). | Health/version compatibility is checked before a worker prompt. `EADDRINUSE` retries are bounded. |
 | Event pump | Subscribe before prompting, filter by session identity, and drain every matching event in order. Foreign session events are ignored. | Multiple tool/file/retry/status events in one run are all observed; no first-event-only behavior is allowed. |
 | Autonomous permission mode | The destructive confirmation is the one authorization boundary. After confirmation the OpenCode instance uses full autonomous permission for the run. An unexpected permission event stops safely rather than being silently approved. | Non-interactive destructive execution with `auto_approve = false` fails before session creation. |
@@ -130,8 +130,9 @@ asserting private helper structure:
 - `QUEUE_EMPTY` clears state only after a live empty-queue check.
 - `BLOCKED`, `FAILED`, malformed, cancellation, retry exhaustion, and fallback
   exhaustion never start a second issue.
-- Fallback order, fresh-session creation, checkpoint chain position, restart
-  drift, and explicit adoption are all preserved.
+- Fallback order, resumable-session reuse, fresh-session creation on
+  unresumable sessions, checkpoint chain position, restart drift, and explicit
+  adoption are all preserved.
 - GitHub eligibility covers assigned, epic type, epic label, `[Epic]` title,
   open blocker, and eligible cases.
 - Azure selection covers HU pinning, direct child scope, ordering, blocked

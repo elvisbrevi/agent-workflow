@@ -2,7 +2,7 @@
 
 V2 of `issue-killer` runs on TypeScript under Bun and uses `@opencode-ai/sdk` as the only agent runtime integration. It does not invoke `opencode run --format json`, and it does not port Claude or Codex adapters. Variety of models comes only from OpenCode **execution profiles** and their **fallback chain**.
 
-This replaces the multi-CLI architecture recorded in older decisions: Claude session persistence defaults and mixed-provider fallback chains are withdrawn so readers cannot treat them as current domain language. Session create/get/delete, event subscription, abort, and server lifecycle go through the SDK; resume requires `session.get()` to confirm directory, issue, branch, base identity, and profile compatibility.
+This replaces the multi-CLI architecture recorded in older decisions: Claude session persistence defaults and mixed-provider fallback chains are withdrawn so readers cannot treat them as current domain language. Session create/get/delete, event subscription, abort, and server lifecycle go through the SDK; resume requires `session.get()` to confirm directory, issue, branch, and base identity. An eligible fallback may change the profile model on that confirmed session as defined by ADR 0015.
 
 Direct runtime dependencies stay minimal and exact-pinned (`@opencode-ai/sdk`, plus dev-only `typescript` and `@types/bun`). Any additional runtime dependency needs its own ADR. Checkpoint format stays compatible with the existing `key=value` file during cutover so recovery fixtures remain valid.
 

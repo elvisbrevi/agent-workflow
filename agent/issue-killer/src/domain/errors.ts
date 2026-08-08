@@ -4,6 +4,7 @@ export type IssueKillerErrorCode =
   | "invalid_checkpoint"
   | "invalid_execution_profile"
   | "invalid_fallback_chain"
+  | "invalid_input"
   | "lock_contention"
   | "missing_field"
   | "unknown_status"
@@ -13,6 +14,7 @@ export type IssueKillerErrorCode =
   | "permission_denied"
   | "drift_detected"
   | "resume_failed"
+  | "cancelled"
 
 export class IssueKillerError extends Error {
   readonly code: IssueKillerErrorCode
