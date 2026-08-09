@@ -1,11 +1,7 @@
-import { $ } from "bun";
 import { HuInfoService } from "./hu-info-service.ts";
+import { OpenCodeService, type OpenCodeRunOptions } from "./open-code-service.ts";
 
-type CliOptions = {
-  model: string;
-  variant: string;
-  session: string | null;
-  prompt: string;
+type CliOptions = OpenCodeRunOptions & {
   hu: number;
 };
 
@@ -32,7 +28,10 @@ function parseOptions(args: string[]): CliOptions {
 }
 
 export class LazyWorkflowCli {
-  constructor(private readonly huInfoService = new HuInfoService()) {}
+  constructor(
+    private readonly huInfoService = new HuInfoService(),
+    private readonly openCodeService = new OpenCodeService(),
+  ) {}
 
   async run(args: string[]): Promise<void> {
     if (args[0] === "hu-info") {
@@ -50,19 +49,9 @@ export class LazyWorkflowCli {
 
   private async runPlanner(args: string[]): Promise<void> {
     const options = parseOptions(args);
-    const sessionArgs = options.session ? ["--session", options.session] : [];
-    const output = await $`
-      opencode run \
-      --auto \
-      --model ${options.model} \
-      --variant ${options.variant} \
-      ${sessionArgs} \
-      --format json \
-      ${options.prompt}
-    `.text();
+    const result = await this.openCodeService.run(options);
 
-    console.log(output);
-    console.log(args);
+    console.log(JSON.stringify(result, null, 2));
   }
 }
 
