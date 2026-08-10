@@ -562,6 +562,8 @@ test("code passes the operator prompt to OpenCode, not to the Azure boundary", a
 
   expect(code).toBe(1);
   expect(openCodePrompt).toContain(prompt);
+  expect(openCodePrompt).toContain("git push --set-upstream origin");
+  expect(openCodePrompt).toContain("git ls-remote --heads origin");
   expect(contextBranch).toBe(branch);
   expect(openCodeCalls).toBe(1);
 });
