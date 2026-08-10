@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
+import type { AutocodeContext } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 
@@ -309,4 +310,73 @@ test("resume usa una sola invocacion simple con continue", async () => {
     "json",
     "continue",
   ]]);
+});
+
+test("code entrega un ticket y solo avanza después de la verificación Azure", async () => {
+  const contexts: Array<AutocodeContext | null> = [
+    {
+      hu: { id: 23438, title: "HU" },
+      ticket: { id: 51, title: "Implementar", type: "Task" },
+      integrationBranch: "refs/heads/hu/23438",
+    },
+    null,
+  ];
+  const prompts: string[] = [];
+  const verified: number[] = [];
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_code",
+    part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => new HuInfo({ id: 23438, title: "HU" }),
+        waitForAccess: async () => undefined,
+        getAutocodeContext: async () => contexts.shift() ?? null,
+        verifyTicketCompletion: async (context) => { verified.push(context.ticket.id); return true; },
+      },
+      {
+        run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; },
+        resume: async () => result,
+      },
+    ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(verified).toEqual([51]);
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain("one Azure delivery ticket");
+  expect(prompts[0]).toContain("/implement");
+  expect(prompts[0]).toContain("/ponytail");
+  expect(prompts[0]).toContain("/tdd");
+  expect(prompts[0]).toContain("/code-review");
+  expect(prompts[0]).toContain("refs/heads/hu/23438");
+  expect(output).toEqual([JSON.stringify(result, null, 2)]);
+});
+
+test("code no avanza con un marcador sin evidencia Azure completa", async () => {
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_code", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  let verificationCalls = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, title: "T", type: "Bug" }, integrationBranch: "refs/heads/hu/23438" }),
+      verifyTicketCompletion: async () => { verificationCalls += 1; return false; },
+    },
+    { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(verificationCalls).toBe(1);
 });
