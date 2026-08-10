@@ -1,3 +1,0 @@
-# Bootstrap the Azure HU integration branch interactively
-
-On the first execution of an Azure delivery HU, `issue-killer` will ask the operator whether its integration branch starts from `master` or `develop` when that branch does not already exist. The non-interactive worker will infer `feature`, `hotfix`, or `refactor` from the HU type, title, and description and use that category with the HU ID and normalized title for the branch name; later executions reuse the existing branch and do not ask again. The supervisor owns the source-branch question because print-mode workers cannot safely prompt the operator.

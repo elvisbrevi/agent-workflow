@@ -49,24 +49,20 @@ seed_cache() {
     "${cache}/.git" \
     "${cache}/utility/alpha" \
     "${cache}/design/beta" \
-    "${cache}/agent/runner" \
-    "${cache}/docs/agents"
+    "${cache}/agent/runner"
 
   printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' > "${cache}/utility/alpha/SKILL.md"
   printf '%s\n' '---' 'name: beta' 'description: Beta fixture.' '---' > "${cache}/design/beta/SKILL.md"
   printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' > "${cache}/agent/runner/AGENT.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${cache}/agent/runner/run.sh"
   chmod +x "${cache}/agent/runner/run.sh"
-  printf '%s\n' '# Adjacent Azure HU operator guide fixture.' \
-    > "${cache}/docs/agents/azure-hu-operator-guide.md"
 }
 
 seed_remote() {
   mkdir -p \
     "${FIXTURE_SOURCE}/utility/alpha" \
     "${FIXTURE_SOURCE}/design/beta" \
-    "${FIXTURE_SOURCE}/agent/runner" \
-    "${FIXTURE_SOURCE}/docs/agents"
+    "${FIXTURE_SOURCE}/agent/runner"
 
   printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' \
     > "${FIXTURE_SOURCE}/utility/alpha/SKILL.md"
@@ -76,9 +72,6 @@ seed_remote() {
     > "${FIXTURE_SOURCE}/agent/runner/AGENT.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${FIXTURE_SOURCE}/agent/runner/run.sh"
   chmod +x "${FIXTURE_SOURCE}/agent/runner/run.sh"
-  printf '%s\n' '# Adjacent Azure HU operator guide fixture.' \
-    > "${FIXTURE_SOURCE}/docs/agents/azure-hu-operator-guide.md"
-
   git -C "$FIXTURE_SOURCE" init --quiet
   git -C "$FIXTURE_SOURCE" config user.name 'Installer Test'
   git -C "$FIXTURE_SOURCE" config user.email 'installer@example.invalid'
@@ -281,11 +274,11 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
   git clone --quiet "$remote" "$cache"
 
   rm -rf "${source}/agent/old-runner"
-  mkdir -p "${source}/agent/issue-killer"
-  printf '%s\n' '---' 'name: issue-killer' 'description: Current runner fixture.' '---' \
-    > "${source}/agent/issue-killer/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/issue-killer/run.sh"
-  chmod +x "${source}/agent/issue-killer/run.sh"
+  mkdir -p "${source}/agent/lazy-workflow"
+  printf '%s\n' '---' 'name: lazy-workflow' 'description: Current agent fixture.' '---' \
+    > "${source}/agent/lazy-workflow/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/lazy-workflow/run.sh"
+  chmod +x "${source}/agent/lazy-workflow/run.sh"
   git -C "$source" add -A
   git -C "$source" commit --quiet -m 'rename runner'
   git -C "$source" push --quiet origin HEAD:main
@@ -302,8 +295,8 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
     "$BASH_BIN" "$INSTALLER" --claude-global --force >"$output" 2>&1 || \
     fail 'Reconciled Claude Code install failed'
 
-  assert_file_symlink "${home}/.claude/agents/issue-killer.md"
-  assert_file_symlink "${home}/.local/bin/issue-killer"
+  assert_file_symlink "${home}/.claude/agents/lazy-workflow.md"
+  assert_file_symlink "${home}/.local/bin/lazy-workflow"
   [[ ! -e "${home}/.claude/skills/removed-skill" && \
      ! -L "${home}/.claude/skills/removed-skill" ]] || \
     fail 'Removed skill link survived reconciliation'
@@ -314,43 +307,11 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
     fail 'Removed runner link survived reconciliation'
   [[ -L "${home}/.claude/agents/unrelated.md" ]] || \
     fail 'Unrelated agent symlink was removed'
-  [[ -d "${cache}/agent/issue-killer" ]] || fail 'Cache was not refreshed to the current catalog'
+  [[ -d "${cache}/agent/lazy-workflow" ]] || fail 'Cache was not refreshed to the current catalog'
   [[ ! -e "${cache}/agent/old-runner" ]] || fail 'Dirty stale cache content survived refresh'
   assert_contains "$output" 'Removed managed link:'
 
   pass 'install refreshes dirty cache and reconciles only repository-owned links'
-}
-
-test_install_preserves_azure_hu_operator_guide() {
-  local home="${TEST_ROOT}/guide-home"
-  local output="${TEST_ROOT}/guide.log"
-  local cache="${home}/.cache/agent-workflow"
-
-  seed_cache "$home"
-
-  set +e
-  HOME="$home" AGENT_WORKFLOW_REPO_URL="$FIXTURE_REMOTE" \
-    "$BASH_BIN" "$INSTALLER" --global --force >"$output" 2>&1
-  install_status=$?
-  set -e
-  [[ "$install_status" -eq 0 ]] || {
-    printf 'Install output:\n' >&2
-    cat "$output" >&2
-    fail 'Shared global install failed while preserving the Azure HU operator guide'
-  }
-
-  [[ -f "${cache}/docs/agents/azure-hu-operator-guide.md" ]] || \
-    fail 'Adjacent Azure HU operator guide was not preserved in the cache'
-  [[ ! -e "${home}/.agents/skills/azure-hu-operator-guide" && \
-     ! -L "${home}/.agents/skills/azure-hu-operator-guide" ]] || \
-    fail 'Adjacent operator guide was promoted into another agent namespace'
-  [[ ! -e "${home}/.agents/agents/azure-hu-operator-guide" && \
-     ! -L "${home}/.agents/agents/azure-hu-operator-guide" ]] || \
-    fail 'Adjacent operator guide was promoted into another agent namespace'
-  assert_contains "$output" '1 agents processed.'
-  assert_contains "$output" '2 skills processed.'
-
-  pass 'install preserves the Azure HU operator guide without polluting other namespaces'
 }
 
 seed_remote
@@ -362,6 +323,5 @@ test_shared_global_round_trip
 test_claude_destinations
 test_all_global_round_trip
 test_install_reconciles_dirty_cache_and_stale_managed_links
-test_install_preserves_azure_hu_operator_guide
 
 printf '%s installer tests passed.\n' "$TESTS_RUN"
