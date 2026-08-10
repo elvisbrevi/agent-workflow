@@ -10,7 +10,7 @@ type CliOptions = OpenCodeRunOptions & {
 };
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
-  ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null>;
+  ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
@@ -145,7 +145,7 @@ export class LazyWorkflowCli {
             : { context: await this.huInfoService.getAutocodeContext(hu), pending: false };
           integrationBranch = state.context?.integrationBranch ?? null;
         } else {
-          integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu, options.prompt);
+          integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu);
         }
         if (!integrationBranch) {
           console.error(`lazy-workflow: no se encontró todavía la rama base para la HU ${hu}; reintentando en 10s.`);
