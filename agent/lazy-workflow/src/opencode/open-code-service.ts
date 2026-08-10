@@ -1,4 +1,5 @@
 import { OpenCodeResult, type OpenCodeEventData } from "./open-code-result.ts";
+import { reportOperator } from "../output/operator-output.ts";
 
 export interface OpenCodeRunOptions {
   model: string;
@@ -46,6 +47,8 @@ function renderEvent(line: string): string {
     const part = event.part;
     if (event.type === "text" && part?.text) return `OpenCode: ${part.text}`;
     if (event.type === "step_start") {
+      const command = part?.input?.command?.trim();
+      if (command) return `OpenCode ejecutando comando: ${JSON.stringify(command)}`;
       return `OpenCode ejecutando herramienta: ${part?.tool ?? "desconocida"}`;
     }
     if (event.type === "step_finish") {
@@ -127,7 +130,7 @@ async function readLines(
 export class OpenCodeService {
   constructor(
     private readonly spawn: OpenCodeSpawner = spawnOpenCode,
-    private readonly report: (message: string) => void = (message) => console.error(message),
+    private readonly report: (message: string) => void = reportOperator,
   ) {}
 
   async run(options: OpenCodeRunOptions, detectAzureLogin = false): Promise<OpenCodeExecution> {

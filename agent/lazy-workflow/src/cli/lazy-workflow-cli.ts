@@ -2,6 +2,7 @@ import { HuInfoService } from "../azure/hu-info-service.ts";
 import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { reportOperator } from "../output/operator-output.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number;
@@ -109,7 +110,7 @@ export class LazyWorkflowCli {
     const execution = await this.openCodeService.run(options, true);
     let result = execution.result;
     if (execution.azureLoginRequired && options.hu > 0) {
-      console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
+      reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
       await this.huInfoService.waitForAccess(options.hu);
       result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
     }
@@ -119,12 +120,12 @@ export class LazyWorkflowCli {
 
   private async runCode(options: CliOptions): Promise<number> {
     if (!this.huInfoService.getAutocodeContext || !this.huInfoService.verifyTicketCompletion) {
-      console.error("El servicio Azure no soporta autocode");
+      reportOperator("El servicio Azure no soporta autocode");
       return 1;
     }
 
     if (!this.huInfoService.ensureIntegrationBranch) {
-      console.error("El servicio Azure no soporta autocode");
+      reportOperator("El servicio Azure no soporta autocode");
       return 1;
     }
     const checkpoint = await this.checkpointStore.read();
@@ -135,7 +136,7 @@ export class LazyWorkflowCli {
     let integrationBranch: string | null = null;
     let sessionId = options.session;
     let lastResult;
-    console.error(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
+    reportOperator(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
     while (true) {
       let state: AutocodeState;
       try {
@@ -148,7 +149,7 @@ export class LazyWorkflowCli {
           integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu);
         }
         if (!integrationBranch) {
-          console.error(`lazy-workflow: no se encontró todavía la rama base para la HU ${hu}; reintentando en 10s.`);
+          reportOperator(`lazy-workflow: no se encontró todavía la rama base para la HU ${hu}; reintentando en 10s.`);
           await this.retryTimer.wait(10_000);
           continue;
         }
@@ -156,7 +157,7 @@ export class LazyWorkflowCli {
           ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
           : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
       } catch (error) {
-        console.error(`lazy-workflow: Azure no respondió (${errorMessage(error)}); reintentando en 10s.`);
+        reportOperator(`lazy-workflow: Azure no respondió (${errorMessage(error)}); reintentando en 10s.`);
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
         continue;
       }
@@ -164,10 +165,10 @@ export class LazyWorkflowCli {
       if (!state.context) {
         if (!state.pending) {
           if (lastResult) console.log(JSON.stringify(lastResult, null, 2));
-          console.error(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
+          reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
           return 0;
         }
-        console.error(`lazy-workflow: no hay un ticket elegible todavía; reintentando en 10s.`);
+        reportOperator(`lazy-workflow: no hay un ticket elegible todavía; reintentando en 10s.`);
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
         continue;
       }
@@ -201,7 +202,7 @@ export class LazyWorkflowCli {
           sessionId = result.sessionId;
           await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId });
           if (execution.azureLoginRequired) {
-            console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
+            reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
             await this.huInfoService.waitForAccess(hu);
             resumePrompt = "continue";
             continue;
@@ -218,7 +219,7 @@ export class LazyWorkflowCli {
             break;
           }
         } catch (error) {
-          console.error(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);
+          reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);
         }
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
       }
