@@ -44,6 +44,14 @@ _Avoid_: Ticket type, branch prefix
 A non-completed Task or Bug that is a direct hierarchical child of an **Azure delivery HU**. It is implemented, integrated into the **HU integration branch**, and moved to the configured completed state as one delivery unit; related links and indirect descendants do not establish membership.
 _Avoid_: HU, Azure issue
 
+**Autoplan workflow**:
+The `lazy-workflow` mode that turns one Azure delivery HU into documented decisions and child Tasks without implementing them.
+_Avoid_: Plan agent, implementation planning session
+
+**Autocode workflow**:
+The `lazy-workflow` mode that repeatedly selects one eligible Azure delivery ticket, gives it one clean OpenCode session, and advances only after live completion verification.
+_Avoid_: Multi-ticket session, model-selected ticket, bulk coding session
+
 **Azure field mapping**:
 The repository-owned association between a delivery evidence concept and the exact Azure DevOps field reference name that stores it. A mapping is discovered and validated once before ticket delivery and then reused.
 _Avoid_: Display name, inferred field
