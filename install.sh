@@ -3,8 +3,9 @@ set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
-# Clones elvisbrevi/agent-workflow and symlinks skills, agents,
-# and autonomous-agent runners into supported destinations.
+# Clones elvisbrevi/agent-workflow and symlinks skills and agent definitions
+# into supported destinations. Legacy shell runners are installed only when
+# an agent explicitly provides run.sh.
 # ─────────────────────────────────────────────────────────────
 
 REPO_URL="${AGENT_WORKFLOW_REPO_URL:-https://github.com/elvisbrevi/agent-workflow.git}"
@@ -481,7 +482,7 @@ process_claude_agents() {
   echo -e "  ${GREEN}${count} Claude agents processed.${NC}"
 }
 
-# ── Agent runner launchers ──────────────────────────────────
+# ── Optional legacy agent runner launchers ──────────────────
 install_runner() {
   local cache="$1" dest_base="$2" agent="$3"
   local src="${cache}/agent/${agent}/run.sh"

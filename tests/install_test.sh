@@ -136,8 +136,8 @@ test_shared_global_round_trip() {
 
   seed_cache "$home"
   mkdir -p "${home}/.agents/agents"
-  ln -s "${home}/.cache/agent-workflow/agent/afk-issuemerger" \
-    "${home}/.agents/agents/afk-issuemerger"
+  ln -s "${home}/.cache/agent-workflow/agent/issue-killer" \
+    "${home}/.agents/agents/issue-killer"
 
   HOME="$home" "$BASH_BIN" "$INSTALLER" --global --force >"$install_output" 2>&1 || \
     fail 'Shared global install failed'
@@ -145,8 +145,8 @@ test_shared_global_round_trip() {
   assert_symlink "${home}/.agents/skills/alpha"
   assert_symlink "${home}/.agents/skills/beta"
   [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected runner agent symlink'
-  [[ ! -L "${home}/.agents/agents/afk-issuemerger" ]] || \
-    fail 'Legacy afk-issuemerger symlink was not removed'
+  [[ ! -L "${home}/.agents/agents/issue-killer" ]] || \
+    fail 'Removed issue-killer symlink was not removed'
   assert_contains "$install_output" '2 skills processed.'
   assert_contains "$install_output" '1 agents processed.'
   assert_contains "$install_output" 'Removed managed link:'
@@ -254,13 +254,13 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
   local output="${TEST_ROOT}/reconcile.log"
   local unrelated_target="${TEST_ROOT}/unrelated-agent.md"
 
-  mkdir -p "${source}/utility/current-skill" "${source}/agent/old-runner"
+  mkdir -p "${source}/utility/current-skill" "${source}/agent/issue-killer"
   printf '%s\n' '---' 'name: current-skill' 'description: Current fixture.' '---' \
     > "${source}/utility/current-skill/SKILL.md"
-  printf '%s\n' '---' 'name: old-runner' 'description: Old runner fixture.' '---' \
-    > "${source}/agent/old-runner/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/old-runner/run.sh"
-  chmod +x "${source}/agent/old-runner/run.sh"
+  printf '%s\n' '---' 'name: issue-killer' 'description: Removed agent fixture.' '---' \
+    > "${source}/agent/issue-killer/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/issue-killer/run.sh"
+  chmod +x "${source}/agent/issue-killer/run.sh"
 
   git -C "$source" init --quiet
   git -C "$source" config user.name 'Installer Test'
@@ -273,21 +273,19 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
   mkdir -p "$(dirname "$cache")"
   git clone --quiet "$remote" "$cache"
 
-  rm -rf "${source}/agent/old-runner"
+  rm -rf "${source}/agent/issue-killer"
   mkdir -p "${source}/agent/lazy-workflow"
   printf '%s\n' '---' 'name: lazy-workflow' 'description: Current agent fixture.' '---' \
     > "${source}/agent/lazy-workflow/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/lazy-workflow/run.sh"
-  chmod +x "${source}/agent/lazy-workflow/run.sh"
   git -C "$source" add -A
-  git -C "$source" commit --quiet -m 'rename runner'
+  git -C "$source" commit --quiet -m 'replace issue-killer with lazy-workflow'
   git -C "$source" push --quiet origin HEAD:main
 
-  printf '%s\n' '# local cache modification' >> "${cache}/agent/old-runner/run.sh"
+  printf '%s\n' '# local cache modification' >> "${cache}/agent/issue-killer/run.sh"
   mkdir -p "${home}/.claude/skills" "${home}/.claude/agents" "${home}/.local/bin"
   ln -s "${cache}/utility/removed-skill" "${home}/.claude/skills/removed-skill"
-  ln -s "${cache}/agent/old-runner/AGENT.md" "${home}/.claude/agents/old-runner.md"
-  ln -s "${cache}/agent/old-runner/run.sh" "${home}/.local/bin/old-runner"
+  ln -s "${cache}/agent/issue-killer/AGENT.md" "${home}/.claude/agents/issue-killer.md"
+  ln -s "${cache}/agent/issue-killer/run.sh" "${home}/.local/bin/issue-killer"
   printf '%s\n' 'unrelated' > "$unrelated_target"
   ln -s "$unrelated_target" "${home}/.claude/agents/unrelated.md"
 
@@ -296,19 +294,21 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
     fail 'Reconciled Claude Code install failed'
 
   assert_file_symlink "${home}/.claude/agents/lazy-workflow.md"
-  assert_file_symlink "${home}/.local/bin/lazy-workflow"
+  [[ ! -e "${home}/.local/bin/lazy-workflow" && \
+     ! -L "${home}/.local/bin/lazy-workflow" ]] || \
+    fail 'lazy-workflow was incorrectly installed as a shell runner'
   [[ ! -e "${home}/.claude/skills/removed-skill" && \
      ! -L "${home}/.claude/skills/removed-skill" ]] || \
     fail 'Removed skill link survived reconciliation'
-  [[ ! -e "${home}/.claude/agents/old-runner.md" && \
-     ! -L "${home}/.claude/agents/old-runner.md" ]] || \
-    fail 'Removed Claude agent link survived reconciliation'
-  [[ ! -e "${home}/.local/bin/old-runner" && ! -L "${home}/.local/bin/old-runner" ]] || \
-    fail 'Removed runner link survived reconciliation'
+  [[ ! -e "${home}/.claude/agents/issue-killer.md" && \
+     ! -L "${home}/.claude/agents/issue-killer.md" ]] || \
+    fail 'Removed issue-killer Claude link survived reconciliation'
+  [[ ! -e "${home}/.local/bin/issue-killer" && ! -L "${home}/.local/bin/issue-killer" ]] || \
+    fail 'Removed issue-killer runner link survived reconciliation'
   [[ -L "${home}/.claude/agents/unrelated.md" ]] || \
     fail 'Unrelated agent symlink was removed'
   [[ -d "${cache}/agent/lazy-workflow" ]] || fail 'Cache was not refreshed to the current catalog'
-  [[ ! -e "${cache}/agent/old-runner" ]] || fail 'Dirty stale cache content survived refresh'
+  [[ ! -e "${cache}/agent/issue-killer" ]] || fail 'Dirty stale issue-killer survived refresh'
   assert_contains "$output" 'Removed managed link:'
 
   pass 'install refreshes dirty cache and reconciles only repository-owned links'
