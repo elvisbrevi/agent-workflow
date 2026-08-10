@@ -302,9 +302,9 @@ test("OpenCode solo detecta az login para flujos Azure y conserva la sesion", as
   const output = [
     JSON.stringify({ type: "session", sessionID: "ses_stream" }),
     JSON.stringify({
-      type: "step_start",
+      type: "tool_use",
       sessionID: "ses_stream",
-      part: { type: "tool", tool: "bash", input: { command: "az login --use-device-code" } },
+      part: { type: "tool", tool: "bash", state: { status: "running", input: { command: "az login --use-device-code" } } },
     }),
   ].join("\n");
   const service = new OpenCodeService((command) => {
@@ -340,10 +340,11 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
   const output = [
     JSON.stringify({ type: "session", sessionID: "ses_visible" }),
     JSON.stringify({
-      type: "step_start",
+      type: "tool_use",
       sessionID: "ses_visible",
-      part: { type: "tool", tool: "bash", input: { command: "git status --short" } },
+      part: { type: "tool", tool: "bash", state: { status: "completed", input: { command: "git status --short" } } },
     }),
+    JSON.stringify({ type: "reasoning", sessionID: "ses_visible", part: { type: "reasoning", text: "Revisando árbol" } }),
     JSON.stringify({ type: "text", sessionID: "ses_visible", part: { type: "text", text: "avance" } }),
   ].join("\n");
   const service = new OpenCodeService((_, options) => {
@@ -366,8 +367,9 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
 
   expect(result.result.text).toBe("avance");
   expect(spawnOptions).toEqual({ cwd: "/repo/objetivo" });
-  expect(reports).toContain('OpenCode ejecutando comando: "git status --short"');
-  expect(reports).toContain("OpenCode: avance");
+  expect(reports).toContain('OpenCode [sesión ses_visible] herramienta bash (completed): "git status --short"');
+  expect(reports).toContain("OpenCode [sesión ses_visible] razonando: Revisando árbol");
+  expect(reports).toContain("OpenCode [sesión ses_visible]: avance");
   expect(reports).toContain("OpenCode stderr: transport listo");
 });
 
@@ -398,6 +400,7 @@ test("resume usa una sola invocacion simple con continue", async () => {
     "ses_resume",
     "--format",
     "json",
+    "--thinking",
     "continue",
   ]]);
 });
