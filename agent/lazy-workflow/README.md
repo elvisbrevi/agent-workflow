@@ -21,12 +21,23 @@ To obtain the information of a HU:
 bun run main.ts hu-info --hu 23438
 ```
 
-To deliver one ticket and recover an interrupted session:
+To drain the HU's direct Task and Bug delivery tickets one at a time:
 
 ```bash
 bun run main.ts code --hu 23438 --working-directory /path/to/repository
+```
+
+To recover an interrupted ticket, use the opaque session identifier printed by
+OpenCode. The HU and ticket are restored from the repository checkpoint, so no
+`--hu` argument is needed:
+
+```bash
 bun run main.ts code --session <session-id> --prompt continue
 ```
+
+The complete command help is available with an unsupported subcommand or no
+subcommand. `--model`, `--variant`, `--prompt`, and `--working-directory` are
+forwarded to OpenCode; `--number-of-questions` applies to `plan`.
 
 Autocode stores only its HU, ticket, and opaque OpenCode session in repository
 Git metadata. Failed or incomplete attempts retry the same ticket every ten
