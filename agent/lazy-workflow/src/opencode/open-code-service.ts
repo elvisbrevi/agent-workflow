@@ -98,7 +98,7 @@ async function readLines(
 export class OpenCodeService {
   constructor(private readonly spawn: OpenCodeSpawner = spawnOpenCode) {}
 
-  async run(options: OpenCodeRunOptions): Promise<OpenCodeExecution> {
+  async run(options: OpenCodeRunOptions, detectAzureLogin = false): Promise<OpenCodeExecution> {
     return this.execute([
       "opencode",
       "run",
@@ -111,7 +111,7 @@ export class OpenCodeService {
       "--format",
       "json",
       options.prompt,
-    ]);
+    ], detectAzureLogin);
   }
 
   async resume(sessionId: string): Promise<OpenCodeResult> {
@@ -124,21 +124,21 @@ export class OpenCodeService {
       "--format",
       "json",
       "continue",
-    ]);
+    ], true);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
     return execution.result;
   }
 
-  private async execute(command: string[]): Promise<OpenCodeExecution> {
+  private async execute(command: string[], detectAzureLogin: boolean): Promise<OpenCodeExecution> {
     const process = this.spawn(command);
     const stderrPromise = new Response(process.stderr).text();
-    const streamed = await readLines(process.stdout, requiresAzureLogin);
+    const streamed = await readLines(process.stdout, detectAzureLogin ? requiresAzureLogin : () => false);
     if (streamed.stopped) process.kill();
 
     const [exitCode, stderr] = await Promise.all([process.exited, stderrPromise]);
-    const azureLoginRequired = streamed.stopped || loginInstructionPattern.test(stderr);
+    const azureLoginRequired = detectAzureLogin && (streamed.stopped || loginInstructionPattern.test(stderr));
     if (exitCode !== 0 && !azureLoginRequired) {
       throw new Error(stderr.trim() || `OpenCode termino con codigo ${exitCode}`);
     }

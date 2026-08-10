@@ -60,12 +60,9 @@ export class LazyWorkflowCli {
       ].join("\n");
     }
 
-    const execution = await this.openCodeService.run(options);
+    const execution = await this.openCodeService.run(options, options.hu > 0);
     let result = execution.result;
-    if (execution.azureLoginRequired) {
-      if (options.hu <= 0) {
-        throw new Error("OpenCode requiere login Azure, pero no hay una HU para verificar el acceso");
-      }
+    if (execution.azureLoginRequired && options.hu > 0) {
       console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
       await this.huInfoService.waitForAccess(options.hu);
       result = await this.openCodeService.resume(result.sessionId);

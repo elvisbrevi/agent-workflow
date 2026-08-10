@@ -80,9 +80,11 @@ test("main imprime OpenCode con formato JSON legible", async () => {
     }),
   );
   const receivedOptions: { value: OpenCodeRunOptions | null } = { value: null };
+  let detectsAzureLogin: boolean | null = null;
   const service = {
-    run: async (options: OpenCodeRunOptions) => {
+    run: async (options: OpenCodeRunOptions, detectAzureLogin: boolean) => {
       receivedOptions.value = options;
+      detectsAzureLogin = detectAzureLogin;
       return { result, azureLoginRequired: false };
     },
     resume: async () => result,
@@ -104,6 +106,7 @@ test("main imprime OpenCode con formato JSON legible", async () => {
 
   expect(receivedOptions.value?.model).toBe("modelo-test");
   expect(receivedOptions.value?.prompt).toBe("pregunta-test");
+  expect(detectsAzureLogin).toBeFalse();
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
@@ -151,7 +154,7 @@ test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", a
   expect(output).toEqual([JSON.stringify(completed, null, 2)]);
 });
 
-test("OpenCode detecta az login desde el stream y conserva la sesion", async () => {
+test("OpenCode solo detecta az login para flujos Azure y conserva la sesion", async () => {
   const commands: string[][] = [];
   let kills = 0;
   const output = [
@@ -172,17 +175,21 @@ test("OpenCode detecta az login desde el stream y conserva la sesion", async () 
     };
   });
 
-  const execution = await service.run({
+  const options = {
     model: "provider/model",
     variant: "high",
     session: null,
     prompt: "planifica",
-  });
+  };
 
-  expect(execution.azureLoginRequired).toBeTrue();
-  expect(execution.result.sessionId).toBe("ses_stream");
+  const genericExecution = await service.run(options);
+  const azureExecution = await service.run(options, true);
+
+  expect(genericExecution.azureLoginRequired).toBeFalse();
+  expect(azureExecution.azureLoginRequired).toBeTrue();
+  expect(azureExecution.result.sessionId).toBe("ses_stream");
   expect(kills).toBe(1);
-  expect(commands).toHaveLength(1);
+  expect(commands).toHaveLength(2);
 });
 
 test("resume usa una sola invocacion simple con continue", async () => {
