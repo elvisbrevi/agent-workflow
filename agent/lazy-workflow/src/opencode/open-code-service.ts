@@ -7,6 +7,7 @@ export interface OpenCodeRunOptions {
   session: string | null;
   prompt: string;
   workingDirectory?: string;
+  terminalMarker?: string;
 }
 
 export interface OpenCodeExecution {
@@ -19,7 +20,7 @@ export interface OpenCodeProcess {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   exited: Promise<number>;
-  kill(): void;
+  kill(signal: "SIGTERM" | "SIGKILL"): void;
 }
 
 export interface OpenCodeSpawnOptions {
@@ -34,7 +35,7 @@ const spawnOpenCode: OpenCodeSpawner = (command, options) => {
     stdout: process.stdout,
     stderr: process.stderr,
     exited: process.exited,
-    kill: () => process.kill("SIGTERM"),
+    kill: (signal) => process.kill(signal),
   };
 };
 
@@ -50,12 +51,12 @@ function renderEvent(line: string): string {
     if (event.type === "reasoning" && part?.text) return `${prefix} razonando: ${part.text}`;
     if (event.type === "step_start") return `${prefix} inició un paso`;
     if (event.type === "tool_use" || part?.type === "tool") {
-      const status = part.state?.status ? ` (${part.state.status})` : "";
-      const detail = part.state?.input?.command?.trim()
-        ?? part.input?.command?.trim()
-        ?? part.state?.input?.description?.trim()
-        ?? part.state?.title?.trim();
-      return `${prefix} herramienta ${part.tool ?? "desconocida"}${status}${detail ? `: ${JSON.stringify(detail)}` : ""}`;
+      const status = part?.state?.status ? ` (${part.state.status})` : "";
+      const detail = part?.state?.input?.command?.trim()
+        ?? part?.input?.command?.trim()
+        ?? part?.state?.input?.description?.trim()
+        ?? part?.state?.title?.trim();
+      return `${prefix} herramienta ${part?.tool ?? "desconocida"}${status}${detail ? `: ${JSON.stringify(detail)}` : ""}`;
     }
     if (event.type === "step_finish") {
       return `${prefix} terminó un paso${part?.reason ? ` (${part.reason})` : ""}`;
@@ -96,40 +97,71 @@ function requiresAzureLogin(line: string): boolean {
   ].filter(Boolean).join(" "));
 }
 
+function containsTerminalMarker(line: string, marker: string | undefined): boolean {
+  if (!marker) return false;
+  try {
+    const event = JSON.parse(line) as OpenCodeEventData;
+    return event.type === "text"
+      && event.part?.text?.split(/\r?\n/).some((text) => text.trim() === marker) === true;
+  } catch {
+    return line.split(/\r?\n/).some((text) => text.trim() === marker);
+  }
+}
+
 async function readLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => boolean,
   reportLine?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ lines: string[]; stopped: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const lines: string[] = [];
   let buffer = "";
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<"aborted">((resolve) => {
+    if (!signal) return;
+    abortListener = () => resolve("aborted");
+    if (signal.aborted) abortListener();
+    else signal.addEventListener("abort", abortListener, { once: true });
+  });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const parts = buffer.split(/\r?\n/);
-    buffer = done ? "" : parts.pop() ?? "";
+  try {
+    while (true) {
+      const next = await Promise.race([
+        reader.read().then((value) => ({ type: "read" as const, value })),
+        aborted.then(() => ({ type: "aborted" as const })),
+      ]);
+      if (next.type === "aborted") {
+        try { await reader.cancel(); } catch { /* stream already closed */ }
+        return { lines, stopped: false };
+      }
+      const { done, value } = next.value;
+      buffer += decoder.decode(value, { stream: !done });
+      const parts = buffer.split(/\r?\n/);
+      buffer = done ? "" : parts.pop() ?? "";
 
-    for (const line of parts) {
-      if (line.trim().length === 0) continue;
-      lines.push(line);
-      reportLine?.(line);
-      if (onLine(line)) {
-        await reader.cancel();
-        return { lines, stopped: true };
+      for (const line of parts) {
+        if (line.trim().length === 0) continue;
+        lines.push(line);
+        reportLine?.(line);
+        if (onLine(line)) {
+          await reader.cancel();
+          return { lines, stopped: true };
+        }
+      }
+
+      if (done) {
+        if (buffer.trim().length > 0) {
+          lines.push(buffer);
+          reportLine?.(buffer);
+          if (onLine(buffer)) return { lines, stopped: true };
+        }
+        return { lines, stopped: false };
       }
     }
-
-    if (done) {
-      if (buffer.trim().length > 0) {
-        lines.push(buffer);
-        reportLine?.(buffer);
-        if (onLine(buffer)) return { lines, stopped: true };
-      }
-      return { lines, stopped: false };
-    }
+  } finally {
+    if (signal && abortListener) signal.removeEventListener("abort", abortListener);
   }
 }
 
@@ -137,6 +169,7 @@ export class OpenCodeService {
   constructor(
     private readonly spawn: OpenCodeSpawner = spawnOpenCode,
     private readonly report: (message: string) => void = reportOperator,
+    private readonly shutdownGraceMs = 5_000,
   ) {}
 
   async run(options: OpenCodeRunOptions, detectAzureLogin = false): Promise<OpenCodeExecution> {
@@ -153,10 +186,10 @@ export class OpenCodeService {
       "json",
       "--thinking",
       options.prompt,
-    ], detectAzureLogin, options.workingDirectory);
+    ], detectAzureLogin, options.workingDirectory, options.terminalMarker);
   }
 
-  async resume(sessionId: string, prompt = "continue", workingDirectory?: string): Promise<OpenCodeResult> {
+  async resume(sessionId: string, prompt = "continue", workingDirectory?: string, terminalMarker?: string): Promise<OpenCodeResult> {
     const execution = await this.execute([
       "opencode",
       "run",
@@ -167,7 +200,7 @@ export class OpenCodeService {
       "json",
       "--thinking",
       prompt,
-    ], true, workingDirectory);
+    ], true, workingDirectory, terminalMarker);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
@@ -175,7 +208,12 @@ export class OpenCodeService {
     return execution.result;
   }
 
-  private async execute(command: string[], detectAzureLogin: boolean, workingDirectory?: string): Promise<OpenCodeExecution> {
+  private async execute(
+    command: string[],
+    detectAzureLogin: boolean,
+    workingDirectory?: string,
+    terminalMarker?: string,
+  ): Promise<OpenCodeExecution> {
     this.report(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
     const child = this.spawn(command, { cwd: workingDirectory });
     let lastEventAt = Date.now();
@@ -193,17 +231,26 @@ export class OpenCodeService {
     }, HEARTBEAT_INTERVAL_MS);
 
     try {
-      const stderrPromise = readLines(child.stderr, () => false, reportStderr);
+      const stderrAbort = new AbortController();
+      const stderrPromise = readLines(child.stderr, () => false, reportStderr, stderrAbort.signal);
       const streamed = await readLines(
         child.stdout,
-        detectAzureLogin ? requiresAzureLogin : () => false,
+        (line) => (detectAzureLogin && requiresAzureLogin(line)) || containsTerminalMarker(line, terminalMarker),
         reportStdout,
       );
-      if (streamed.stopped) child.kill();
-
-      const [exitCode, stderrOutput] = await Promise.all([child.exited, stderrPromise]);
+      let exitCode: number;
+      let stderrOutput: Awaited<ReturnType<typeof readLines>>;
+      if (streamed.stopped) {
+        exitCode = await this.terminate(child);
+        stderrAbort.abort();
+        stderrOutput = await stderrPromise;
+      } else {
+        [exitCode, stderrOutput] = await Promise.all([child.exited, stderrPromise]);
+      }
       const stderr = stderrOutput.lines.join("\n");
-      const azureLoginRequired = detectAzureLogin && (streamed.stopped || loginInstructionPattern.test(stderr));
+      const azureLoginRequired = detectAzureLogin
+        && (streamed.lines.some(requiresAzureLogin) || loginInstructionPattern.test(stderr));
+      const terminalMarkerReceived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
       if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
         throw new Error("OpenCode no devolvio eventos");
       }
@@ -211,10 +258,25 @@ export class OpenCodeService {
       return {
         result: OpenCodeResult.fromJsonLines(streamed.lines.join("\n")),
         azureLoginRequired,
-        failed: exitCode !== 0,
+        failed: exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived,
       };
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  private async terminate(child: OpenCodeProcess): Promise<number> {
+    try { child.kill("SIGTERM"); } catch { /* process already exited */ }
+    const gracefulExit = await this.waitForExit(child.exited);
+    if (gracefulExit !== null) return gracefulExit;
+    try { child.kill("SIGKILL"); } catch { /* process exited during escalation */ }
+    return await this.waitForExit(child.exited) ?? 137;
+  }
+
+  private async waitForExit(exited: Promise<number>): Promise<number | null> {
+    return Promise.race([
+      exited,
+      Bun.sleep(this.shutdownGraceMs).then(() => null),
+    ]);
   }
 }

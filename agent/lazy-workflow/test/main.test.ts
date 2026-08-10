@@ -6,6 +6,7 @@ import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine } from "../src/output/operator-output.ts";
+import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
@@ -54,6 +55,119 @@ test("Azure propone la rama HU sin escribir un campo personalizado cuando aún n
   expect(await service.ensureIntegrationBranch(23438)).toBe("refs/heads/hu/23438");
   expect(commands).toHaveLength(1);
   expect(commands[0]).not.toContain("update");
+});
+
+test("Azure obtiene la rama exacta del único PR completado del ticket", async () => {
+  let includeCommitLink = true;
+  const service = new AzureAutocodeService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) {
+      return JSON.stringify({
+        id: 51,
+        fields: {
+          "System.State": "Done",
+          "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71": "evidencia verificada",
+          "Custom.EsfuerzoReal": 8,
+          "Custom.EsfuerzoRealHH": 8,
+          "Custom.URLCommit": "https://example.test/commit/abc123",
+        },
+        relations: [
+          { rel: "AttachedFile", attributes: { name: "evidencia.json" } },
+          ...(includeCommitLink ? [{
+            rel: "ArtifactLink",
+            url: "vstfs:///Git/Commit/project-id%2Frepository-id%2Fmerge-commit",
+            attributes: { name: "Fixed in Commit" },
+          }] : []),
+        ],
+      });
+    }
+    if (args[0] === "boards" && args.includes("23438")) {
+      return JSON.stringify({
+        id: 23438,
+        relations: [{
+          rel: "ArtifactLink",
+          url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438",
+          attributes: { name: "Branch" },
+        }],
+      });
+    }
+    if (args[0] === "repos") {
+      if (args.includes("work-item")) return JSON.stringify([51]);
+      return JSON.stringify([
+        {
+          status: "completed",
+          mergeStatus: "succeeded",
+          target: "refs/heads/hu/23438",
+          source: "refs/heads/ticket/51-programas",
+          id: 4499,
+          projectId: "project-id",
+          repositoryId: "repository-id",
+          mergeCommit: "merge-commit",
+        },
+        {
+          status: "completed",
+          mergeStatus: "succeeded",
+          target: "refs/heads/hu/23438",
+          source: "refs/heads/ticket/151-no-corresponde",
+        },
+      ]);
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+  const context: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+
+  expect(await service.verifyTicketCompletion(context)).toEqual({
+    ticketBranch: "refs/heads/ticket/51-programas",
+  });
+  expect(await service.getCompletedTicketBranch(context)).toBe("refs/heads/ticket/51-programas");
+  includeCommitLink = false;
+  expect(await service.verifyTicketCompletion(context)).toBeNull();
+});
+
+test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y remota", async () => {
+  const commands: string[][] = [];
+  const cleaner = new GitTicketBranchCleaner(async (args) => {
+    commands.push(args);
+    if (args[0] === "status") return "";
+    if (args[0] === "branch" && args[1] === "--list") return "  ticket/51-programas\n";
+    if (args[0] === "ls-remote") return "abc123\trefs/heads/ticket/51-programas\n";
+    return "";
+  });
+
+  await cleaner.deleteTicketBranch(
+    "refs/heads/ticket/51-programas",
+    "refs/heads/hu/23438",
+    "/repo",
+  );
+
+  expect(commands).toEqual([
+    ["status", "--porcelain"],
+    ["fetch", "origin", "+refs/heads/hu/23438:refs/remotes/origin/hu/23438"],
+    ["switch", "hu/23438"],
+    ["merge", "--ff-only", "origin/hu/23438"],
+    ["branch", "--list", "ticket/51-programas"],
+    ["branch", "-D", "ticket/51-programas"],
+    ["ls-remote", "--heads", "origin", "refs/heads/ticket/51-programas"],
+    ["push", "origin", "--delete", "ticket/51-programas"],
+  ]);
+});
+
+test("Git no elimina ramas cuando el repositorio tiene cambios locales", async () => {
+  const commands: string[][] = [];
+  const cleaner = new GitTicketBranchCleaner(async (args) => {
+    commands.push(args);
+    return "?? evidencia-local.png\n";
+  });
+
+  await expect(cleaner.deleteTicketBranch(
+    "refs/heads/ticket/51-programas",
+    "refs/heads/hu/23438",
+    "/repo",
+  )).rejects.toThrow("cambios sin guardar");
+  expect(commands).toEqual([["status", "--porcelain"]]);
 });
 
 test("HuInfo expone sus campos", () => {
@@ -373,6 +487,61 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
   expect(reports).toContain("OpenCode stderr: transport listo");
 });
 
+test("OpenCode termina al recibir el marcador aunque stdout permanezca abierto", async () => {
+  const encoder = new TextEncoder();
+  let closeStdout: () => void = () => undefined;
+  const stdout = new ReadableStream<Uint8Array>({
+    start(controller) {
+      closeStdout = () => controller.close();
+      controller.enqueue(encoder.encode(`${JSON.stringify({
+        type: "text",
+        sessionID: "ses_terminal",
+        part: { type: "text", text: "Trabajo completado.\n\nTICKET_COMPLETED" },
+      })}\n`));
+    },
+  });
+  let closeStderr: () => void = () => undefined;
+  const stderr = new ReadableStream<Uint8Array>({
+    start(controller) {
+      closeStderr = () => controller.close();
+    },
+  });
+  let resolveExit: (code: number) => void = () => undefined;
+  const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+  const signals: string[] = [];
+  const service = new OpenCodeService(() => ({
+    stdout,
+    stderr,
+    exited,
+    kill: (signal) => {
+      signals.push(signal);
+      if (signal === "SIGKILL") resolveExit(137);
+    },
+  }), undefined, 5);
+
+  const execution = service.run({
+    model: "provider/model",
+    variant: "medium",
+    session: null,
+    prompt: "trabaja",
+    terminalMarker: "TICKET_COMPLETED",
+  }, true);
+  const outcome = await Promise.race([
+    execution.then(() => "completed" as const),
+    Bun.sleep(50).then(() => "timeout" as const),
+  ]);
+  if (outcome === "timeout") {
+    closeStdout();
+    closeStderr();
+    resolveExit(0);
+    await execution;
+  }
+
+  expect(outcome).toBe("completed");
+  expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  expect((await execution).failed).toBeFalse();
+});
+
 test("resume usa una sola invocacion simple con continue", async () => {
   const commands: string[][] = [];
   const service = new OpenCodeService((command) => {
@@ -419,7 +588,7 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_code",
-    part: { type: "text", text: "TICKET_COMPLETED" },
+    part: { type: "text", text: "Resumen final\n\nTICKET_COMPLETED" },
   }));
   const output: string[] = [];
   const originalLog = console.log;
@@ -432,13 +601,19 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
         waitForAccess: async () => undefined,
         ensureIntegrationBranch: async () => "refs/heads/hu/23438",
         getAutocodeContext: async () => contexts.shift() ?? null,
-        verifyTicketCompletion: async (context) => { verified.push(context.ticket.id); return true; },
+        verifyTicketCompletion: async (context) => {
+          verified.push(context.ticket.id);
+          return { ticketBranch: `refs/heads/ticket/${context.ticket.id}` };
+        },
+        getCompletedTicketBranch: async (context) => `refs/heads/ticket/${context.ticket.id}`,
       },
       {
         run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
       emptyCheckpointStore(),
+      undefined,
+      { deleteTicketBranch: async () => undefined },
     ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
@@ -456,6 +631,8 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   expect(prompts[0]).toContain("refs/heads/hu/23438");
   expect(prompts[0]).toContain("operator's instruction");
   expect(prompts[0]).toContain("If the operator did not specify a base branch");
+  expect(prompts[0]).toContain("native PR work-item association");
+  expect(prompts[0]).toContain("exact merge commit as a native `ArtifactLink`");
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
@@ -466,6 +643,7 @@ test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", as
     { context: null, pending: false },
   ];
   const sessions: string[] = [];
+  const cleanedBranches: Array<[string, string, string]> = [];
   const checkpoints: Array<AutocodeCheckpoint | "clear"> = [];
   const store: AutocodeCheckpointStore = {
     read: async () => null,
@@ -483,7 +661,8 @@ test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", as
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
       getAutocodeState: async () => contexts.shift()!,
       getAutocodeContext: async () => { throw new Error("must use queue state"); },
-      verifyTicketCompletion: async () => true,
+      verifyTicketCompletion: async (context) => ({ ticketBranch: `refs/heads/ticket/${context.ticket.id}` }),
+      getCompletedTicketBranch: async (context) => `refs/heads/ticket/${context.ticket.id}`,
     },
     {
       run: async () => {
@@ -494,12 +673,22 @@ test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", as
       resume: async () => { throw new Error("must not resume another ticket"); },
     },
     store,
+    undefined,
+    {
+      deleteTicketBranch: async (ticketBranch, integrationBranch, workingDirectory) => {
+        cleanedBranches.push([ticketBranch, integrationBranch, workingDirectory]);
+      },
+    },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(0);
   expect(sessions).toEqual(["ses-1", "ses-2"]);
   expect(checkpoints.map((value) => value === "clear" ? "clear" : value.ticket)).toEqual([
     51, 51, "clear", 52, 52, "clear",
+  ]);
+  expect(cleanedBranches).toEqual([
+    ["refs/heads/ticket/51", "refs/heads/hu/23438", process.cwd()],
+    ["refs/heads/ticket/52", "refs/heads/hu/23438", process.cwd()],
   ]);
 });
 
@@ -517,7 +706,8 @@ test("code espera y refresca cuando quedan tickets bloqueados", async () => {
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
       getAutocodeState: async () => states.shift()!,
       getAutocodeContext: async () => { throw new Error("must use queue state"); },
-      verifyTicketCompletion: async () => true,
+      verifyTicketCompletion: async (context) => ({ ticketBranch: `refs/heads/ticket/${context.ticket.id}` }),
+      getCompletedTicketBranch: async (context) => `refs/heads/ticket/${context.ticket.id}`,
     },
     {
       run: async () => ({ result: OpenCodeResult.fromJsonLines(JSON.stringify({
@@ -527,6 +717,7 @@ test("code espera y refresca cuando quedan tickets bloqueados", async () => {
     },
     emptyCheckpointStore(),
     { wait: async (milliseconds) => { waits.push(milliseconds); } },
+    { deleteTicketBranch: async () => undefined },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(0);
@@ -544,7 +735,7 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
       getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, title: "T", type: "Bug" }, integrationBranch: "refs/heads/hu/23438" }),
-      verifyTicketCompletion: async () => { verificationCalls += 1; return false; },
+      verifyTicketCompletion: async () => { verificationCalls += 1; return null; },
     },
     { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
     emptyCheckpointStore(),
@@ -573,7 +764,7 @@ test("code passes the operator prompt to OpenCode, not to the Azure boundary", a
         contextBranch = integrationBranch ?? "";
         return { hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: contextBranch };
       },
-      verifyTicketCompletion: async () => false,
+      verifyTicketCompletion: async () => null,
     },
     { run: async (options) => { openCodeCalls += 1; openCodePrompt = options.prompt; return { result, azureLoginRequired: false }; }, resume: async () => result },
     emptyCheckpointStore(),
@@ -596,7 +787,7 @@ test("code stays incomplete and does not invoke OpenCode while Azure cannot reso
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => null,
       getAutocodeContext: async () => { throw new Error("must not select a ticket"); },
-      verifyTicketCompletion: async () => false,
+      verifyTicketCompletion: async () => null,
     },
     { run: async () => { openCodeCalls += 1; throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
     emptyCheckpointStore(),
@@ -626,7 +817,8 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
       getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438" }),
-      verifyTicketCompletion: async () => true,
+      verifyTicketCompletion: async (context) => ({ ticketBranch: `refs/heads/ticket/${context.ticket.id}` }),
+      getCompletedTicketBranch: async (context) => `refs/heads/ticket/${context.ticket.id}`,
     },
     {
       run: async () => { attempts += 1; return { result: result("not-complete"), azureLoginRequired: false, failed: true }; },
@@ -637,6 +829,7 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
     },
     store,
     { wait: async (milliseconds) => { waits.push(milliseconds); } },
+    { deleteTicketBranch: async () => undefined },
   ).run(["code", "--hu", "23438", "--prompt", "continua con la rama corregida", "--working-directory", "/repo/objetivo"]);
 
   expect(code).toBe(0);
@@ -644,6 +837,107 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
   expect(waits).toEqual([10_000]);
   expect(resumed).toEqual([["ses_retry", "continua con la rama corregida", "/repo/objetivo"]]);
   expect(checkpoint.sessionId).toBeNull();
+});
+
+test("code reconcilia un checkpoint completado sin sesion y continúa con el siguiente ticket", async () => {
+  const completedContext: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+  const nextContext: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 52, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+  const states: AutocodeState[] = [
+    { context: nextContext, pending: true },
+    { context: null, pending: false },
+  ];
+  const cleanups: number[] = [];
+  let checkpoint: AutocodeCheckpoint | null = {
+    workflow: "autocode",
+    hu: 23438,
+    ticket: 51,
+    sessionId: null,
+  };
+  const store: AutocodeCheckpointStore = {
+    read: async () => checkpoint,
+    write: async (value) => { checkpoint = value; },
+    clear: async () => { checkpoint = null; },
+  };
+  const completedResult = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-52",
+    part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeContextForTicket: async () => completedContext,
+      getAutocodeState: async () => states.shift()!,
+      getAutocodeContext: async () => { throw new Error("must use queue state"); },
+      verifyTicketCompletion: async (context) => ({ ticketBranch: `refs/heads/ticket/${context.ticket.id}` }),
+      getCompletedTicketBranch: async (context) => `refs/heads/ticket/${context.ticket.id}`,
+    },
+    {
+      run: async () => ({ result: completedResult, azureLoginRequired: false }),
+      resume: async () => { throw new Error("must use a fresh session"); },
+    },
+    store,
+    undefined,
+    {
+      deleteTicketBranch: async (ticketBranch) => {
+        cleanups.push(Number(ticketBranch.split("/").at(-1)));
+      },
+    },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(0);
+  expect(cleanups).toEqual([51, 52]);
+  expect(checkpoint).toBeNull();
+});
+
+test("code conserva el checkpoint y detiene el flujo ante un error de limpieza Git", async () => {
+  const checkpoint: AutocodeCheckpoint = {
+    workflow: "autocode",
+    hu: 23438,
+    ticket: 51,
+    sessionId: null,
+  };
+  let waits = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeContextForTicket: async () => ({
+        hu: { id: 23438 },
+        ticket: { id: 51, type: "Task" },
+        integrationBranch: "refs/heads/hu/23438",
+      }),
+      getAutocodeContext: async () => null,
+      verifyTicketCompletion: async (context) => ({ ticketBranch: `refs/heads/ticket/${context.ticket.id}` }),
+      getCompletedTicketBranch: async () => "refs/heads/ticket/51",
+    },
+    {
+      run: async () => { throw new Error("must not run"); },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    {
+      read: async () => checkpoint,
+      write: async () => undefined,
+      clear: async () => { throw new Error("must preserve checkpoint"); },
+    },
+    { wait: async () => { waits += 1; throw new Error("must not retry Git cleanup"); } },
+    { deleteTicketBranch: async () => { throw new Error("worktree sucio"); } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(waits).toBe(0);
 });
 
 test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", async () => {

@@ -14,10 +14,16 @@ _Avoid_: issue runner, queue supervisor
 A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
 User Story, combines that data with the English autoplan prompt, and starts
 OpenCode in the selected working directory.
-_Avoid_: ticket implementation run, backlog drain
+_Avoid_: Azure ticket delivery run
+
+**Azure ticket delivery run**:
+A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
+direct Task or Bug per fresh OpenCode session, verifies completion, removes the
+completed ticket branch, and refreshes Azure before selecting the next ticket.
+_Avoid_: Azure HU planning run
 
 **Explicit command**:
-The first argument must be `plan` or `hu-info`. Missing or unsupported
+The first argument must be `plan`, `code`, or `hu-info`. Missing or unsupported
 subcommands print help and do not call Azure Boards or OpenCode.
 _Avoid_: accidental OpenCode execution
 
