@@ -10,6 +10,7 @@ export interface OpenCodeRunOptions {
 export interface OpenCodeExecution {
   result: OpenCodeResult;
   azureLoginRequired: boolean;
+  failed?: boolean;
 }
 
 export interface OpenCodeProcess {
@@ -114,7 +115,7 @@ export class OpenCodeService {
     ], detectAzureLogin);
   }
 
-  async resume(sessionId: string): Promise<OpenCodeResult> {
+  async resume(sessionId: string, prompt = "continue"): Promise<OpenCodeResult> {
     const execution = await this.execute([
       "opencode",
       "run",
@@ -123,11 +124,12 @@ export class OpenCodeService {
       sessionId,
       "--format",
       "json",
-      "continue",
+      prompt,
     ], true);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
+    if (execution.failed) throw new Error("OpenCode termino con error");
     return execution.result;
   }
 
@@ -139,13 +141,14 @@ export class OpenCodeService {
 
     const [exitCode, stderr] = await Promise.all([process.exited, stderrPromise]);
     const azureLoginRequired = detectAzureLogin && (streamed.stopped || loginInstructionPattern.test(stderr));
-    if (exitCode !== 0 && !azureLoginRequired) {
-      throw new Error(stderr.trim() || `OpenCode termino con codigo ${exitCode}`);
+    if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
+      throw new Error("OpenCode no devolvio eventos");
     }
 
     return {
       result: OpenCodeResult.fromJsonLines(streamed.lines.join("\n")),
       azureLoginRequired,
+      failed: exitCode !== 0,
     };
   }
 }

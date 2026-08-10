@@ -4,6 +4,13 @@ import { HuInfo } from "../src/azure/hu-info.ts";
 import type { AutocodeContext } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
+
+const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
+  read: async () => null,
+  write: async () => undefined,
+  clear: async () => undefined,
+});
 
 test("HuInfo expone sus campos", () => {
   const huInfo = new HuInfo({
@@ -345,6 +352,7 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
         run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
+      emptyCheckpointStore(),
     ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
@@ -377,6 +385,8 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
       verifyTicketCompletion: async () => { verificationCalls += 1; return false; },
     },
     { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+    emptyCheckpointStore(),
+    { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(1);
@@ -407,6 +417,8 @@ test.each([
       verifyTicketCompletion: async () => false,
     },
     { run: async () => { openCodeCalls += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
+    emptyCheckpointStore(),
+    { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438", "--prompt", prompt]);
 
   expect(code).toBe(1);
@@ -426,8 +438,63 @@ test("code stays incomplete and does not invoke OpenCode without a valid source 
       verifyTicketCompletion: async () => false,
     },
     { run: async () => { openCodeCalls += 1; throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+    emptyCheckpointStore(),
+    { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(1);
   expect(openCodeCalls).toBe(0);
+});
+
+test("code conserva el ticket, espera diez segundos y reanuda la misma sesion con el prompt indicado", async () => {
+  const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: null };
+  const store: AutocodeCheckpointStore = {
+    read: async () => checkpoint.sessionId ? checkpoint : null,
+    write: async (value) => { Object.assign(checkpoint, value); },
+    clear: async () => { checkpoint.sessionId = null; },
+  };
+  const result = (text: string) => OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_retry", part: { type: "text", text },
+  }));
+  const resumed: Array<[string, string]> = [];
+  const waits: number[] = [];
+  let attempts = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438" }),
+      verifyTicketCompletion: async () => true,
+    },
+    {
+      run: async () => { attempts += 1; return { result: result("not-complete"), azureLoginRequired: false, failed: true }; },
+      resume: async (sessionId: string, prompt?: string) => { resumed.push([sessionId, prompt ?? ""]); return result("TICKET_COMPLETED"); },
+    },
+    store,
+    { wait: async (milliseconds) => { waits.push(milliseconds); } },
+  ).run(["code", "--hu", "23438", "--prompt", "continua con la rama corregida"]);
+
+  expect(code).toBe(0);
+  expect(attempts).toBe(1);
+  expect(waits).toEqual([10_000]);
+  expect(resumed).toEqual([["ses_retry", "continua con la rama corregida"]]);
+  expect(checkpoint.sessionId).toBeNull();
+});
+
+test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", async () => {
+  const store: AutocodeCheckpointStore = {
+    read: async () => ({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses-real" }),
+    write: async () => undefined,
+    clear: async () => undefined,
+  };
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
+    store,
+  ).run(["code", "--session", "ses-otro", "--prompt", "continue"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
 });

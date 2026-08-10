@@ -21,6 +21,17 @@ To obtain the information of a HU:
 bun run main.ts hu-info --hu 23438
 ```
 
+To deliver one ticket and recover an interrupted session:
+
+```bash
+bun run main.ts code --hu 23438 --working-directory /path/to/repository
+bun run main.ts code --session <session-id> --prompt continue
+```
+
+Autocode stores only its HU, ticket, and opaque OpenCode session in repository
+Git metadata. Failed or incomplete attempts retry the same ticket every ten
+seconds; the checkpoint is removed only after live completion verification.
+
 If OpenCode requests `az login`, lazy-workflow keeps the OpenCode session,
 prints `az login --use-device-code`, waits until the HU is accessible again,
 and resumes that session once with `continue`.
