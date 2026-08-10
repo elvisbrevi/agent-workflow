@@ -2,7 +2,7 @@
 
 # agent-workflow
 
-Reusable AI-agent workflows for software engineering: **18 prompt-driven
+Reusable AI-agent workflows for software engineering: **19 prompt-driven
 skills** and one autonomous agent, [`issue-killer`](agent/issue-killer/AGENT.md).
 
 Skills describe a process that an AI session follows. Agents are executable
@@ -60,7 +60,7 @@ trigger matches the request.
 | Implementation | `implement`, `tdd` | A ticket/spec is ready to build and test |
 | Diagnosis | `diagnose` | A defect needs reproduction and a regression test |
 | Review | `code-review`, `handoff` | Changes need independent review or session transfer |
-| Utility | `caveman`, `grilling`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, setup, or new skill authoring |
+| Utility | `caveman`, `grilling`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, setup, or new skill authoring |
 
 Typical paths:
 
