@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
+import { reportOperator } from "../output/operator-output.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
@@ -164,13 +165,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async waitForAccess(hu: number): Promise<void> {
-    console.error("OpenCode requiere autenticacion Azure. Ejecuta: az login --use-device-code");
+    reportOperator("OpenCode requiere autenticacion Azure. Ejecuta: az login --use-device-code");
     let attempts = 0;
     while (true) {
       try { await this.getHuInfo(hu); return; } catch (error) {
         attempts += 1;
         if (attempts % 5 === 0) {
-          console.error(`Esperando acceso Azure para la HU ${hu}... Último error: ${commandError(error)}`);
+          reportOperator(`Esperando acceso Azure para la HU ${hu}... Último error: ${commandError(error)}`);
         }
         await Bun.sleep(2_000);
       }

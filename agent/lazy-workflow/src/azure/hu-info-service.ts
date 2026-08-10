@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
+import { reportOperator } from "../output/operator-output.ts";
 
 const AZURE_ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const HU_QUERY = `{
@@ -31,13 +32,13 @@ export class HuInfoService {
   }
 
   async waitForAccess(hu: number): Promise<void> {
-    console.error("OpenCode requiere autenticacion Azure.");
-    console.error("Ejecuta en otra terminal: az login --use-device-code");
+    reportOperator("OpenCode requiere autenticacion Azure.");
+    reportOperator("Ejecuta en otra terminal: az login --use-device-code");
 
     while (true) {
       try {
         await this.getHuInfo(hu);
-        console.error("Login Azure detectado. Continuando la sesion OpenCode una vez.");
+        reportOperator("Login Azure detectado. Continuando la sesion OpenCode una vez.");
         return;
       } catch {
         await Bun.sleep(2_000);

@@ -5,11 +5,22 @@ import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
+import { operatorLine } from "../src/output/operator-output.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
   write: async () => undefined,
   clear: async () => undefined,
+});
+
+test("las salidas operativas incluyen fecha y hora local con segundos", () => {
+  const date = new Date(2026, 7, 10, 16, 23, 5);
+
+  expect(operatorLine("avance", date)).toBe("[10/08/26 16:23:05] avance");
+  expect(operatorLine("uno\ndos", date)).toBe([
+    "[10/08/26 16:23:05] uno",
+    "[10/08/26 16:23:05] dos",
+  ].join("\n"));
 });
 
 test("Azure usa el vínculo Branch nativo de la HU como rama de integración", async () => {
@@ -328,6 +339,11 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
   let spawnOptions: { cwd?: string } | undefined;
   const output = [
     JSON.stringify({ type: "session", sessionID: "ses_visible" }),
+    JSON.stringify({
+      type: "step_start",
+      sessionID: "ses_visible",
+      part: { type: "tool", tool: "bash", input: { command: "git status --short" } },
+    }),
     JSON.stringify({ type: "text", sessionID: "ses_visible", part: { type: "text", text: "avance" } }),
   ].join("\n");
   const service = new OpenCodeService((_, options) => {
@@ -350,6 +366,7 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
 
   expect(result.result.text).toBe("avance");
   expect(spawnOptions).toEqual({ cwd: "/repo/objetivo" });
+  expect(reports).toContain('OpenCode ejecutando comando: "git status --short"');
   expect(reports).toContain("OpenCode: avance");
   expect(reports).toContain("OpenCode stderr: transport listo");
 });

@@ -13,8 +13,10 @@ When installed globally by `install.sh --all-global` or
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 ```
 
-OpenCode events and periodic no-output heartbeats are printed while the
-workflow runs. The working directory is passed as OpenCode's real process
+OpenCode events and periodic no-output heartbeats are printed with local
+`dd/mm/yy HH:mm:ss` timestamps while the workflow runs. Shell-tool events show
+the actual command reported by OpenCode instead of only the tool name. The
+working directory is passed as OpenCode's real process
 directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
 
