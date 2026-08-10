@@ -12,6 +12,8 @@ To run:
 bun run main.ts --hu 23438 --working-directory /path/to/repository
 ```
 
+Without `--hu`, the same command runs a generic workflow without Azure Boards lookup or login handling.
+
 To obtain the information of a HU:
 
 ```bash
