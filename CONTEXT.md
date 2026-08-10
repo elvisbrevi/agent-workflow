@@ -11,15 +11,15 @@ OpenCode and emits a normalized JSON result.
 _Avoid_: issue runner, queue supervisor
 
 **Azure HU planning run**:
-A lazy-workflow invocation with `--hu <ID>`. It reads the Azure DevOps User
-Story, combines that data with the SAG planning prompt, and starts OpenCode in
-the selected working directory.
+A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
+User Story, combines that data with the English autoplan prompt, and starts
+OpenCode in the selected working directory.
 _Avoid_: ticket implementation run, backlog drain
 
-**Generic run**:
-A lazy-workflow invocation without `--hu`. It sends the supplied prompt to
-OpenCode without Azure Boards lookup or Azure-login handling.
-_Avoid_: HU planning run
+**Explicit command**:
+The first argument must be `plan` or `hu-info`. Missing or unsupported
+subcommands print help and do not call Azure Boards or OpenCode.
+_Avoid_: accidental OpenCode execution
 
 **HU information query**:
 The `hu-info --hu <ID>` command that prints the selected User Story as JSON

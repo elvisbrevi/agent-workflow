@@ -19,7 +19,6 @@ function optionValue(args: string[], name: string): string | null {
 }
 
 function parseOptions(args: string[]): CliOptions {
-
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
@@ -31,36 +30,60 @@ function parseOptions(args: string[]): CliOptions {
   };
 }
 
+function printHelp(): void {
+  console.log([
+    "Usage:",
+    "  lazy-workflow plan --hu <id> [options]",
+    "  lazy-workflow hu-info --hu <id>",
+    "",
+    "Options:",
+    "  --model <model>",
+    "  --variant <variant>",
+    "  --prompt <prompt>",
+    "  --number-of-questions <count>",
+    "  --working-directory <path>",
+  ].join("\n"));
+}
+
 export class LazyWorkflowCli {
   constructor(
     private readonly huInfoService: Pick<HuInfoService, "getHuInfo" | "waitForAccess"> = new HuInfoService(),
     private readonly openCodeService: Pick<OpenCodeService, "run" | "resume"> = new OpenCodeService(),
   ) {}
 
-  async run(args: string[]): Promise<void> {
-    let options = parseOptions(args);
+  async run(args: string[]): Promise<number> {
+    const command = args[0];
+    if (command !== "plan" && command !== "hu-info") {
+      printHelp();
+      return 1;
+    }
 
-    if (args.indexOf("hu-info") >= 0) {
+    const options = parseOptions(args);
+
+    if (command === "hu-info") {
       const huInfo = await this.huInfoService.getHuInfo(options.hu);
       console.log(JSON.stringify(huInfo, null, 2));
-      return;
+      return 0;
     }
 
-    if (options.hu > 0) {
-      const huInfo = await this.huInfoService.getHuInfo(options.hu);
-      const sagPrompt = Bun.file(new URL("../../prompts/sag-plan-prompt.md", import.meta.url));
-      const sagPromptContent = await sagPrompt.text();
-
-      options.prompt = [
-        JSON.stringify(huInfo),
-        sagPromptContent,
-        `el numero de preguntas debe ser de ${options.numberOfQuestions}`,
-        options.prompt,
-        `el directorio de trabajo es ${options.workingDirectory}`,
-      ].join("\n");
+    if (options.hu <= 0) {
+      printHelp();
+      return 1;
     }
 
-    const execution = await this.openCodeService.run(options, options.hu > 0);
+    const huInfo = await this.huInfoService.getHuInfo(options.hu);
+    const autoplanPrompt = Bun.file(new URL("../../prompts/autoplan-prompt.md", import.meta.url));
+    const autoplanPromptContent = await autoplanPrompt.text();
+
+    options.prompt = [
+      JSON.stringify(huInfo),
+      autoplanPromptContent,
+      `The number of questions must be ${options.numberOfQuestions}`,
+      options.prompt,
+      `The working directory is ${options.workingDirectory}`,
+    ].join("\n");
+
+    const execution = await this.openCodeService.run(options, true);
     let result = execution.result;
     if (execution.azureLoginRequired && options.hu > 0) {
       console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
@@ -68,5 +91,6 @@ export class LazyWorkflowCli {
       result = await this.openCodeService.resume(result.sessionId);
     }
     console.log(JSON.stringify(result, null, 2));
+    return 0;
   }
 }
