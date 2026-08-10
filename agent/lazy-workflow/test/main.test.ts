@@ -337,6 +337,7 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
       {
         getHuInfo: async () => new HuInfo({ id: 23438, title: "HU" }),
         waitForAccess: async () => undefined,
+        ensureIntegrationBranch: async () => "refs/heads/hu/23438",
         getAutocodeContext: async () => contexts.shift() ?? null,
         verifyTicketCompletion: async (context) => { verified.push(context.ticket.id); return true; },
       },
@@ -371,6 +372,7 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
     {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
       getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, title: "T", type: "Bug" }, integrationBranch: "refs/heads/hu/23438" }),
       verifyTicketCompletion: async () => { verificationCalls += 1; return false; },
     },
@@ -379,4 +381,53 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
 
   expect(code).toBe(1);
   expect(verificationCalls).toBe(1);
+});
+
+test.each([
+  ["existing branch", "", "refs/heads/hu/existing"],
+  ["prompt branch", "Use source branch feature/custom", "refs/heads/hu/from-prompt"],
+  ["main fallback", "", "refs/heads/hu/from-main"],
+  ["master fallback", "", "refs/heads/hu/from-master"],
+])("code bootstraps the HU integration branch through the public CLI seam: %s", async (_name, prompt, branch) => {
+  let ensuredPrompt = "";
+  let contextBranch = "";
+  let openCodeCalls = 0;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_code", part: { type: "text", text: "not-complete" },
+  }));
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async (_hu, receivedPrompt) => { ensuredPrompt = receivedPrompt; return branch; },
+      getAutocodeContext: async (_hu, integrationBranch) => {
+        contextBranch = integrationBranch ?? "";
+        return { hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: contextBranch };
+      },
+      verifyTicketCompletion: async () => false,
+    },
+    { run: async () => { openCodeCalls += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
+  ).run(["code", "--hu", "23438", "--prompt", prompt]);
+
+  expect(code).toBe(1);
+  expect(ensuredPrompt).toBe(prompt);
+  expect(contextBranch).toBe(branch);
+  expect(openCodeCalls).toBe(1);
+});
+
+test("code stays incomplete and does not invoke OpenCode without a valid source branch", async () => {
+  let openCodeCalls = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => null,
+      getAutocodeContext: async () => { throw new Error("must not select a ticket"); },
+      verifyTicketCompletion: async () => false,
+    },
+    { run: async () => { openCodeCalls += 1; throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(openCodeCalls).toBe(0);
 });
