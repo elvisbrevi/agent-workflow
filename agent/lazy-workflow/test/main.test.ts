@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
-import type { AutocodeContext, AutocodeState } from "../src/azure/autocode-service.ts";
+import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
@@ -10,6 +10,39 @@ const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
   write: async () => undefined,
   clear: async () => undefined,
+});
+
+test("Azure usa el vínculo Branch nativo de la HU como rama de integración", async () => {
+  const commands: string[][] = [];
+  const service = new AzureAutocodeService(async (args) => {
+    commands.push(args);
+    return JSON.stringify({
+      id: 23438,
+      relations: [{
+        rel: "ArtifactLink",
+        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438",
+        attributes: { name: "Branch" },
+      }],
+    });
+  });
+
+  expect(await service.ensureIntegrationBranch(23438)).toBe("refs/heads/hu/23438");
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toContain("--expand");
+  expect(commands[0]).not.toContain("update");
+  expect(commands[0]).not.toContain("Custom.IntegrationBranch");
+});
+
+test("Azure propone la rama HU sin escribir un campo personalizado cuando aún no está vinculada", async () => {
+  const commands: string[][] = [];
+  const service = new AzureAutocodeService(async (args) => {
+    commands.push(args);
+    return JSON.stringify({ id: 23438, relations: [] });
+  });
+
+  expect(await service.ensureIntegrationBranch(23438)).toBe("refs/heads/hu/23438");
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).not.toContain("update");
 });
 
 test("HuInfo expone sus campos", () => {

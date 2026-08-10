@@ -36,21 +36,27 @@ export interface AutocodeAzureService {
 interface WorkItem {
   id: number;
   fields?: Record<string, unknown>;
-  relations?: Array<{ rel?: string; url?: string }>;
+  relations?: Array<{
+    rel?: string;
+    url?: string;
+    attributes?: { name?: string };
+  }>;
 }
+
+type AzRunner = (args: string[]) => Promise<string>;
 
 const field = (item: WorkItem, name: string): string | undefined => {
   const value = item.fields?.[name];
   return typeof value === "string" ? value : undefined;
 };
 
-async function show(id: number, expandRelations = false): Promise<WorkItem> {
+async function show(id: number, expandRelations: boolean, az: AzRunner): Promise<WorkItem> {
   const args = [
     "boards", "work-item", "show", "--id", `${id}`, "--organization", ORGANIZATION,
     ...(expandRelations ? ["--expand", "relations"] : []),
     "--output", "json",
   ];
-  const output = await runAz(args);
+  const output = await az(args);
   return JSON.parse(output) as WorkItem;
 }
 
@@ -59,9 +65,23 @@ function relationId(url: string | undefined): number | undefined {
   return id ? Number(id) : undefined;
 }
 
+function integrationBranchFrom(item: WorkItem): string | undefined {
+  const relation = item.relations?.find(({ rel, attributes }) =>
+    rel === "ArtifactLink" && attributes?.name === "Branch"
+  );
+  if (!relation?.url) return undefined;
+  const decoded = decodeURIComponent(relation.url);
+  const marker = "/GB";
+  const markerIndex = decoded.lastIndexOf(marker);
+  const name = markerIndex >= 0 ? decoded.slice(markerIndex + marker.length) : "";
+  return name ? `refs/heads/${name}` : undefined;
+}
+
 export class AzureAutocodeService implements AutocodeAzureService {
+  constructor(private readonly az: AzRunner = runAz) {}
+
   async getHuInfo(hu: number): Promise<HuInfo> {
-    const item = await show(hu);
+    const item = await show(hu, false, this.az);
     return new HuInfo({
       id: item.id,
       title: field(item, "System.Title"),
@@ -75,11 +95,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async ensureIntegrationBranch(hu: number): Promise<string | null> {
-    const parent = await show(hu, true);
-    const registered = field(parent, "Custom.IntegrationBranch");
-    const integrationBranch = registered ?? `refs/heads/hu/${hu}`;
-    if (!registered) await this.registerIntegrationBranch(hu, integrationBranch);
-    return integrationBranch;
+    const parent = await show(hu, true, this.az);
+    return integrationBranchFrom(parent) ?? `refs/heads/hu/${hu}`;
   }
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {
@@ -87,12 +104,12 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState> {
-    const parent = await show(hu, true);
+    const parent = await show(hu, true, this.az);
     const children = (parent.relations ?? [])
       .filter((relation) => relation.rel === "System.LinkTypes.Hierarchy-Forward")
       .map((relation) => relationId(relation.url))
       .filter((id): id is number => id !== undefined);
-    const candidates = await Promise.all(children.map((id) => show(id, true)));
+    const candidates = await Promise.all(children.map((id) => show(id, true, this.az)));
     const eligible: DeliveryTicket[] = [];
     let pending = false;
     for (const item of candidates) {
@@ -104,7 +121,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
         .filter((relation) => relation.rel === "System.LinkTypes.Dependency-Reverse")
         .map((relation) => relationId(relation.url))
         .filter((id): id is number => id !== undefined);
-      const predecessors = await Promise.all(predecessorIds.map((id) => show(id)));
+      const predecessors = await Promise.all(predecessorIds.map((id) => show(id, false, this.az)));
       if (predecessors.some((predecessor) => !COMPLETED_STATES.has(field(predecessor, "System.State") ?? ""))) continue;
       eligible.push({
         id: item.id,
@@ -115,7 +132,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       });
     }
     eligible.sort((a, b) => (a.createdDate ?? "").localeCompare(b.createdDate ?? "") || a.id - b.id);
-    const branch = integrationBranch ?? field(parent, "Custom.IntegrationBranch");
+    const branch = integrationBranch ?? integrationBranchFrom(parent);
     if (!branch || eligible.length === 0) return { context: null, pending };
     return {
       context: {
@@ -129,13 +146,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async verifyTicketCompletion(context: AutocodeContext): Promise<boolean> {
-    const item = await show(context.ticket.id);
+    const item = await show(context.ticket.id, false, this.az);
     if (field(item, "System.State") !== "Done") return false;
     const evidence = field(item, "Custom.CompletionEvidence");
     if (!evidence?.trim()) return false;
-    const parent = await show(context.hu.id);
-    if (field(parent, "Custom.IntegrationBranch") !== context.integrationBranch) return false;
-    const output = await runAz([
+    const parent = await show(context.hu.id, true, this.az);
+    if (integrationBranchFrom(parent) !== context.integrationBranch) return false;
+    const output = await this.az([
       "repos", "pr", "list", "--organization", ORGANIZATION,
       ...(context.project ? ["--project", context.project] : []),
       "--status", "completed", "--target-branch", context.integrationBranch,
@@ -158,10 +175,6 @@ export class AzureAutocodeService implements AutocodeAzureService {
         await Bun.sleep(2_000);
       }
     }
-  }
-
-  private async registerIntegrationBranch(hu: number, integrationBranch: string): Promise<void> {
-    await runAz(["boards", "work-item", "update", "--id", `${hu}`, "--organization", ORGANIZATION, "--fields", `Custom.IntegrationBranch=${integrationBranch}`]);
   }
 }
 
