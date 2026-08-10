@@ -1,4 +1,5 @@
 import { HuInfoService } from "../azure/hu-info-service.ts";
+import { AzureAutocodeService, type AutocodeContext } from "../azure/autocode-service.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
@@ -6,6 +7,11 @@ type CliOptions = OpenCodeRunOptions & {
   numberOfQuestions: number;
   workingDirectory: string;
 };
+
+type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
+  getAutocodeContext(hu: number): Promise<AutocodeContext | null>;
+  verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
+}>;
 
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
@@ -34,6 +40,7 @@ function printHelp(): void {
   console.log([
     "Usage:",
     "  lazy-workflow plan --hu <id> [options]",
+    "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow hu-info --hu <id>",
     "",
     "Options:",
@@ -47,13 +54,13 @@ function printHelp(): void {
 
 export class LazyWorkflowCli {
   constructor(
-    private readonly huInfoService: Pick<HuInfoService, "getHuInfo" | "waitForAccess"> = new HuInfoService(),
+    private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
     private readonly openCodeService: Pick<OpenCodeService, "run" | "resume"> = new OpenCodeService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (command !== "plan" && command !== "hu-info") {
+    if (command !== "plan" && command !== "code" && command !== "hu-info") {
       printHelp();
       return 1;
     }
@@ -70,6 +77,8 @@ export class LazyWorkflowCli {
       printHelp();
       return 1;
     }
+
+    if (command === "code") return this.runCode(options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
     const autoplanPrompt = Bun.file(new URL("../../prompts/autoplan-prompt.md", import.meta.url));
@@ -90,6 +99,35 @@ export class LazyWorkflowCli {
       await this.huInfoService.waitForAccess(options.hu);
       result = await this.openCodeService.resume(result.sessionId);
     }
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
+  private async runCode(options: CliOptions): Promise<number> {
+    if (!this.huInfoService.getAutocodeContext || !this.huInfoService.verifyTicketCompletion) {
+      console.error("El servicio Azure no soporta autocode");
+      return 1;
+    }
+
+    const context = await this.huInfoService.getAutocodeContext(options.hu);
+    if (!context) return 0;
+    const promptAsset = Bun.file(new URL("../../prompts/autocode-prompt.md", import.meta.url));
+    options.prompt = [
+      await promptAsset.text(),
+      JSON.stringify(context),
+      `The working directory is ${options.workingDirectory}`,
+      options.prompt,
+    ].join("\n");
+
+    const execution = await this.openCodeService.run(options, true);
+    let result = execution.result;
+    if (execution.azureLoginRequired) {
+      console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
+      await this.huInfoService.waitForAccess(options.hu);
+      result = await this.openCodeService.resume(result.sessionId);
+    }
+    if (result.text.trim() !== "TICKET_COMPLETED") return 1;
+    if (!await this.huInfoService.verifyTicketCompletion(context)) return 1;
     console.log(JSON.stringify(result, null, 2));
     return 0;
   }
