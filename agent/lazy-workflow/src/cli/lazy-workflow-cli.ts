@@ -48,7 +48,7 @@ export class LazyWorkflowCli {
 
     if (options.hu > 0) {
       const huInfo = await this.huInfoService.getHuInfo(options.hu);
-      const sagPrompt = Bun.file(new URL("../../prompts/sag-azure-prompt.md", import.meta.url));
+      const sagPrompt = Bun.file(new URL("../../prompts/sag-plan-prompt.md", import.meta.url));
       const sagPromptContent = await sagPrompt.text();
 
       options.prompt = [
