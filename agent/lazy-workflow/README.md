@@ -14,10 +14,10 @@ lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 ```
 
 OpenCode events and periodic no-output heartbeats are printed with local
-`dd/mm/yy HH:mm:ss` timestamps while the workflow runs. Shell-tool events show
-the actual command reported by OpenCode instead of only the tool name. The
-working directory is passed as OpenCode's real process
-directory, so tools operate in the selected repository. Azure and OpenCode
+`dd/mm/yy HH:mm:ss` timestamps while the workflow runs. Events show their
+session ID, reasoning summaries, tool status, and sanitized tool input such as
+the shell command reported by OpenCode. The working directory is passed as
+OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
 
 The coordinator does not parse the operator prompt to choose a base branch.

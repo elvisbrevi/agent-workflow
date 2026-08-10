@@ -15,6 +15,14 @@ interface OpenCodePartData {
   input?: {
     command?: string;
   };
+  state?: {
+    status?: string;
+    title?: string;
+    input?: {
+      command?: string;
+      description?: string;
+    };
+  };
   text?: string;
   output?: string;
   error?: string;
@@ -25,7 +33,7 @@ interface OpenCodePartData {
 
 export interface OpenCodeEventData {
   type: string;
-  sessionID: string;
+  sessionID?: string;
   part?: OpenCodePartData;
 }
 

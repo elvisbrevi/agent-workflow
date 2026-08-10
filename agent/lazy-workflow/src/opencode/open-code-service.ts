@@ -45,18 +45,24 @@ function renderEvent(line: string): string {
   try {
     const event = JSON.parse(line) as OpenCodeEventData;
     const part = event.part;
-    if (event.type === "text" && part?.text) return `OpenCode: ${part.text}`;
-    if (event.type === "step_start") {
-      const command = part?.input?.command?.trim();
-      if (command) return `OpenCode ejecutando comando: ${JSON.stringify(command)}`;
-      return `OpenCode ejecutando herramienta: ${part?.tool ?? "desconocida"}`;
+    const prefix = event.sessionID ? `OpenCode [sesión ${event.sessionID}]` : "OpenCode";
+    if (event.type === "text" && part?.text) return `${prefix}: ${part.text}`;
+    if (event.type === "reasoning" && part?.text) return `${prefix} razonando: ${part.text}`;
+    if (event.type === "step_start") return `${prefix} inició un paso`;
+    if (event.type === "tool_use" || part?.type === "tool") {
+      const status = part.state?.status ? ` (${part.state.status})` : "";
+      const detail = part.state?.input?.command?.trim()
+        ?? part.input?.command?.trim()
+        ?? part.state?.input?.description?.trim()
+        ?? part.state?.title?.trim();
+      return `${prefix} herramienta ${part.tool ?? "desconocida"}${status}${detail ? `: ${JSON.stringify(detail)}` : ""}`;
     }
     if (event.type === "step_finish") {
-      return `OpenCode terminó un paso${part?.reason ? ` (${part.reason})` : ""}`;
+      return `${prefix} terminó un paso${part?.reason ? ` (${part.reason})` : ""}`;
     }
-    if (event.type === "session") return `OpenCode sesión: ${event.sessionID}`;
-    if (part?.error) return `OpenCode error: ${part.error}`;
-    return `OpenCode evento: ${event.type}`;
+    if (event.type === "session") return `${prefix} iniciada`;
+    if (part?.error) return `${prefix} error: ${part.error}`;
+    return `${prefix} evento: ${event.type}`;
   } catch {
     return line;
   }
@@ -70,9 +76,9 @@ function requiresAzureLogin(line: string): boolean {
     return loginInstructionPattern.test(line);
   }
 
-  const command = event.part?.input?.command ?? "";
+  const command = event.part?.state?.input?.command ?? event.part?.input?.command ?? "";
   if (
-    event.type === "step_start" &&
+    (event.type === "step_start" || event.type === "tool_use" || event.part?.type === "tool") &&
     (event.part?.tool === "bash" || event.part?.tool === "shell") &&
     /(?:^|[;&|]\s*)az\s+login\b/i.test(command)
   ) {
@@ -145,6 +151,7 @@ export class OpenCodeService {
       ...(options.session ? ["--session", options.session] : []),
       "--format",
       "json",
+      "--thinking",
       options.prompt,
     ], detectAzureLogin, options.workingDirectory);
   }
@@ -158,6 +165,7 @@ export class OpenCodeService {
       sessionId,
       "--format",
       "json",
+      "--thinking",
       prompt,
     ], true, workingDirectory);
     if (execution.azureLoginRequired) {
