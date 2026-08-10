@@ -6,6 +6,13 @@ To install dependencies:
 bun install
 ```
 
+When installed globally by `install.sh --all-global` or
+`install.sh --claude-global`, use the `lazy-workflow` command directly:
+
+```bash
+lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+```
+
 To plan an Azure HU:
 
 ```bash

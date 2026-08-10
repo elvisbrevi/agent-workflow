@@ -277,6 +277,8 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
   mkdir -p "${source}/agent/lazy-workflow"
   printf '%s\n' '---' 'name: lazy-workflow' 'description: Current agent fixture.' '---' \
     > "${source}/agent/lazy-workflow/AGENT.md"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/lazy-workflow/run.sh"
+  chmod +x "${source}/agent/lazy-workflow/run.sh"
   git -C "$source" add -A
   git -C "$source" commit --quiet -m 'replace issue-killer with lazy-workflow'
   git -C "$source" push --quiet origin HEAD:main
@@ -294,9 +296,7 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
     fail 'Reconciled Claude Code install failed'
 
   assert_file_symlink "${home}/.claude/agents/lazy-workflow.md"
-  [[ ! -e "${home}/.local/bin/lazy-workflow" && \
-     ! -L "${home}/.local/bin/lazy-workflow" ]] || \
-    fail 'lazy-workflow was incorrectly installed as a shell runner'
+  assert_file_symlink "${home}/.local/bin/lazy-workflow"
   [[ ! -e "${home}/.claude/skills/removed-skill" && \
      ! -L "${home}/.claude/skills/removed-skill" ]] || \
     fail 'Removed skill link survived reconciliation'
