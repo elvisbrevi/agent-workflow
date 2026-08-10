@@ -1,0 +1,3 @@
+# Run autocode one ticket per session
+
+The `autocode` workflow will refresh the direct Task and Bug children of its Azure delivery HU before every selection, pin the first unblocked ticket by creation time and ID, and run that ticket in a clean OpenCode session. It advances only after an explicit `TICKET_COMPLETED` outcome and live verification of the merged HU-targeted PR, completion evidence, and `Done` state; every incomplete or failed attempt resumes the same session after ten seconds, including Internet and subscription-quota failures, so a later ticket can never hide partial delivery from the active one.
