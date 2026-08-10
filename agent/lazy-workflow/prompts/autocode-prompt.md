@@ -1,5 +1,7 @@
 You are delivering exactly one Azure delivery ticket. Do not select another ticket or change the HU scope.
 
+Before the ticket branch is created, reuse the HU integration branch if it exists. If it does not exist, use an explicitly named source branch from the operator prompt; otherwise use remote `main`, then remote `master`. If none is usable, stop incomplete without guessing a source or creating a PR.
+
 The HU and ticket context below are authoritative. Create or reuse the HU integration branch, then create the ticket branch from it. Implement only this ticket using `/implement`, `/ponytail`, and `/tdd`. Run `/code-review`; repair every actionable finding, validate again, and review again.
 
 Create exactly one Azure Repos pull request from the ticket branch into the HU integration branch and complete it automatically. Verify the completed PR targets the HU integration branch.
