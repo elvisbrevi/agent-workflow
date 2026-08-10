@@ -29,4 +29,19 @@ export class HuInfoService {
 
     return new HuInfo(JSON.parse(output) as HuInfoData);
   }
+
+  async waitForAccess(hu: number): Promise<void> {
+    console.error("OpenCode requiere autenticacion Azure.");
+    console.error("Ejecuta en otra terminal: az login --use-device-code");
+
+    while (true) {
+      try {
+        await this.getHuInfo(hu);
+        console.error("Login Azure detectado. Continuando la sesion OpenCode una vez.");
+        return;
+      } catch {
+        await Bun.sleep(2_000);
+      }
+    }
+  }
 }

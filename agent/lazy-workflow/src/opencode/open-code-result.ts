@@ -10,7 +10,14 @@ export interface OpenCodeTokens {
 }
 
 interface OpenCodePartData {
+  type?: string;
+  tool?: string;
+  input?: {
+    command?: string;
+  };
   text?: string;
+  output?: string;
+  error?: string;
   reason?: string;
   tokens?: OpenCodeTokens;
   cost?: number;
@@ -57,8 +64,13 @@ export class OpenCodeResult {
       .map((event) => event.part?.text ?? "")
       .join("");
 
+    const sessionId = events.find((event) => typeof event.sessionID === "string")?.sessionID;
+    if (!sessionId) {
+      throw new Error("OpenCode no devolvio un identificador de sesion");
+    }
+
     return new OpenCodeResult({
-      sessionId: events[0]!.sessionID,
+      sessionId,
       text,
       reason: finishEvent?.part?.reason,
       tokens: finishEvent?.part?.tokens,
