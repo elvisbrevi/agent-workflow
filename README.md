@@ -23,6 +23,15 @@ Narrower modes include `--claude-global`, `--global`, `--local`,
 `--opencode`, and `--both`. Use `--target <directory>` for local modes
 and run `./install.sh --help` for the complete option list.
 
+With `--all-global` or `--claude-global`, the executable launcher is installed
+at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
+
+```bash
+lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+lazy-workflow code --hu 23438 --working-directory /path/to/repository
+lazy-workflow hu-info --hu 23438
+```
+
 ## Skills
 
 Skills are stored as `SKILL.md` files. Invoke them explicitly with the
