@@ -1,5 +1,5 @@
 import { HuInfoService } from "../azure/hu-info-service.ts";
-import { AzureAutocodeService, type AutocodeContext } from "../azure/autocode-service.ts";
+import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 
@@ -11,6 +11,7 @@ type CliOptions = OpenCodeRunOptions & {
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null>;
+  getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
 }>;
@@ -120,76 +121,94 @@ export class LazyWorkflowCli {
       return 1;
     }
     const checkpoint = await this.checkpointStore.read();
-    const recovering = options.session !== null;
+    let recovering = options.session !== null;
     if (recovering && (!checkpoint || checkpoint.sessionId !== options.session)) return 1;
     if (!recovering && checkpoint) return 1;
     const hu = recovering ? checkpoint!.hu : options.hu;
     let integrationBranch: string | null = null;
-    let context: AutocodeContext | null = null;
+    let sessionId = options.session;
+    let lastResult;
     while (true) {
+      let state: AutocodeState;
       try {
-        integrationBranch = recovering
-          ? (checkpoint!.sessionId && (await this.huInfoService.getAutocodeContext(hu))?.integrationBranch) ?? null
-          : await this.huInfoService.ensureIntegrationBranch(hu, options.prompt);
+        if (recovering && !integrationBranch) {
+          state = this.huInfoService.getAutocodeState
+            ? await this.huInfoService.getAutocodeState(hu)
+            : { context: await this.huInfoService.getAutocodeContext(hu), pending: false };
+          integrationBranch = state.context?.integrationBranch ?? null;
+        } else {
+          integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu, options.prompt);
+        }
         if (!integrationBranch) {
           await this.retryTimer.wait(10_000);
           continue;
         }
-        context = await this.huInfoService.getAutocodeContext(hu, integrationBranch);
-        if (context) break;
-        if (!recovering) return 0;
-        await this.retryTimer.wait(10_000);
+        state = this.huInfoService.getAutocodeState
+          ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
+          : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
       } catch {
-        integrationBranch = null;
-        context = null;
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
+        continue;
       }
-    }
-    if (recovering && context.ticket.id !== checkpoint!.ticket) return 1;
-    if (!recovering) {
-      while (true) {
-        try {
-          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId: null });
-          break;
-        } catch {
-          try { await this.retryTimer.wait(10_000); } catch { return 1; }
-        }
-      }
-    }
-    const promptAsset = Bun.file(new URL("../../prompts/autocode-prompt.md", import.meta.url));
-    const prompt = [
-      await promptAsset.text(),
-      JSON.stringify(context),
-      `The working directory is ${options.workingDirectory}`,
-      options.prompt,
-    ].join("\n");
 
-    let sessionId = options.session;
-    let resumePrompt = options.prompt;
-    while (true) {
-      let result;
-      try {
-        const execution = sessionId
-          ? { result: await this.openCodeService.resume(sessionId, resumePrompt), azureLoginRequired: false }
-          : await this.openCodeService.run({ ...options, prompt, session: null }, true);
-        result = execution.result;
-        sessionId = result.sessionId;
-        await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId });
-        if (execution.azureLoginRequired) {
-          await this.huInfoService.waitForAccess(hu);
-          resumePrompt = "continue";
-          continue;
-        }
-        resumePrompt = options.prompt;
-        if (!execution.failed && result.text.trim() === "TICKET_COMPLETED" && await this.huInfoService.verifyTicketCompletion(context)) {
-          await this.checkpointStore.clear();
-          console.log(JSON.stringify(result, null, 2));
+      if (!state.context) {
+        if (!state.pending) {
+          if (lastResult) console.log(JSON.stringify(lastResult, null, 2));
           return 0;
         }
-      } catch {
-        // Keep the pinned ticket and checkpoint; the next attempt may recover it.
+        try { await this.retryTimer.wait(10_000); } catch { return 1; }
+        continue;
       }
-      try { await this.retryTimer.wait(10_000); } catch { return 1; }
+
+      if (recovering && state.context.ticket.id !== checkpoint!.ticket) return 1;
+      const context = state.context;
+      if (!recovering) {
+        try {
+          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId: null });
+        } catch {
+          try { await this.retryTimer.wait(10_000); } catch { return 1; }
+          continue;
+        }
+      }
+
+      const promptAsset = Bun.file(new URL("../../prompts/autocode-prompt.md", import.meta.url));
+      const prompt = [
+        await promptAsset.text(),
+        JSON.stringify(context),
+        `The working directory is ${options.workingDirectory}`,
+        options.prompt,
+      ].join("\n");
+      let resumePrompt = options.prompt;
+      while (true) {
+        try {
+          const execution = sessionId
+            ? { result: await this.openCodeService.resume(sessionId, resumePrompt), azureLoginRequired: false }
+            : await this.openCodeService.run({ ...options, prompt, session: null }, true);
+          const result = execution.result;
+          lastResult = result;
+          sessionId = result.sessionId;
+          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId });
+          if (execution.azureLoginRequired) {
+            await this.huInfoService.waitForAccess(hu);
+            resumePrompt = "continue";
+            continue;
+          }
+          resumePrompt = options.prompt;
+          if (!execution.failed && result.text.trim() === "TICKET_COMPLETED" && await this.huInfoService.verifyTicketCompletion(context)) {
+            await this.checkpointStore.clear();
+            if (!this.huInfoService.getAutocodeState) {
+              console.log(JSON.stringify(result, null, 2));
+              return 0;
+            }
+            recovering = false;
+            sessionId = null;
+            break;
+          }
+        } catch {
+          // Keep the pinned ticket and checkpoint; the next attempt may recover it.
+        }
+        try { await this.retryTimer.wait(10_000); } catch { return 1; }
+      }
     }
   }
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
-import type { AutocodeContext } from "../src/azure/autocode-service.ts";
+import type { AutocodeContext, AutocodeState } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
@@ -369,6 +369,80 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   expect(prompts[0]).toContain("/code-review");
   expect(prompts[0]).toContain("refs/heads/hu/23438");
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
+});
+
+test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", async () => {
+  const contexts: Array<AutocodeState> = [
+    { context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438" }, pending: true },
+    { context: { hu: { id: 23438 }, ticket: { id: 52, type: "Bug" }, integrationBranch: "refs/heads/hu/23438" }, pending: true },
+    { context: null, pending: false },
+  ];
+  const sessions: string[] = [];
+  const checkpoints: Array<AutocodeCheckpoint | "clear"> = [];
+  const store: AutocodeCheckpointStore = {
+    read: async () => null,
+    write: async (checkpoint) => { checkpoints.push(checkpoint); },
+    clear: async () => { checkpoints.push("clear"); },
+  };
+  const result = (sessionId: string) => OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: sessionId, part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => contexts.shift()!,
+      getAutocodeContext: async () => { throw new Error("must use queue state"); },
+      verifyTicketCompletion: async () => true,
+    },
+    {
+      run: async () => {
+        const sessionId = `ses-${sessions.length + 1}`;
+        sessions.push(sessionId);
+        return { result: result(sessionId), azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume another ticket"); },
+    },
+    store,
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(0);
+  expect(sessions).toEqual(["ses-1", "ses-2"]);
+  expect(checkpoints.map((value) => value === "clear" ? "clear" : value.ticket)).toEqual([
+    51, 51, "clear", 52, 52, "clear",
+  ]);
+});
+
+test("code espera y refresca cuando quedan tickets bloqueados", async () => {
+  const states: AutocodeState[] = [
+    { context: null, pending: true },
+    { context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438" }, pending: true },
+    { context: null, pending: false },
+  ];
+  const waits: number[] = [];
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => states.shift()!,
+      getAutocodeContext: async () => { throw new Error("must use queue state"); },
+      verifyTicketCompletion: async () => true,
+    },
+    {
+      run: async () => ({ result: OpenCodeResult.fromJsonLines(JSON.stringify({
+        type: "text", sessionID: "ses-1", part: { type: "text", text: "TICKET_COMPLETED" },
+      })), azureLoginRequired: false }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    emptyCheckpointStore(),
+    { wait: async (milliseconds) => { waits.push(milliseconds); } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(0);
+  expect(waits).toEqual([10_000]);
 });
 
 test("code no avanza con un marcador sin evidencia Azure completa", async () => {
