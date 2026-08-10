@@ -126,6 +126,8 @@ test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcom
   expect(azureCalls).toBe(0);
   expect(openCodeCalls).toBe(0);
   expect(output[0]).toContain("plan --hu <id>");
+  expect(output[0]).toContain("code --session <id> --prompt continue");
+  expect(output[0]).toContain("--session <id>");
 });
 
 test("OpenCodeResult normaliza la salida JSONL", () => {
