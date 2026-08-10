@@ -77,9 +77,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
   async ensureIntegrationBranch(hu: number): Promise<string | null> {
     const parent = await show(hu, true);
     const registered = field(parent, "Custom.IntegrationBranch");
-    const project = field(parent, "System.TeamProject");
     const integrationBranch = registered ?? `refs/heads/hu/${hu}`;
-    if (!registered) await this.registerIntegrationBranch(hu, integrationBranch, project);
+    if (!registered) await this.registerIntegrationBranch(hu, integrationBranch);
     return integrationBranch;
   }
 
@@ -161,8 +160,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
     }
   }
 
-  private async registerIntegrationBranch(hu: number, integrationBranch: string, project?: string): Promise<void> {
-    await runAz(["boards", "work-item", "update", "--id", `${hu}`, "--organization", ORGANIZATION, ...(project ? ["--project", project] : []), "--fields", `Custom.IntegrationBranch=${integrationBranch}`]);
+  private async registerIntegrationBranch(hu: number, integrationBranch: string): Promise<void> {
+    await runAz(["boards", "work-item", "update", "--id", `${hu}`, "--organization", ORGANIZATION, "--fields", `Custom.IntegrationBranch=${integrationBranch}`]);
   }
 }
 
