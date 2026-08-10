@@ -45,7 +45,7 @@ Skills with `disable-model-invocation: true` are explicit-only. See each
 
 | Agent | Purpose | Source |
 |---|---|---|
-| `lazy-workflow` | Plans one Azure HU or queries HU information | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
+| `lazy-workflow` | Plans, delivers, and inspects Azure HUs | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
 
 Install dependencies and run it from its directory:
 
@@ -53,6 +53,18 @@ Install dependencies and run it from its directory:
 cd agent/lazy-workflow
 bun install
 bun run main.ts plan --hu 23438 --working-directory /path/to/repository
+```
+
+To drain the HU's direct delivery tickets one at a time:
+
+```bash
+bun run main.ts code --hu 23438 --working-directory /path/to/repository
+```
+
+To recover the exact interrupted ticket from its repository checkpoint:
+
+```bash
+bun run main.ts code --session <session-id> --prompt continue
 ```
 
 To query HU data without starting OpenCode:
