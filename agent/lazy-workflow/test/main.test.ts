@@ -290,6 +290,37 @@ test("OpenCode solo detecta az login para flujos Azure y conserva la sesion", as
   expect(commands).toHaveLength(2);
 });
 
+test("OpenCode transmite eventos y usa el working directory solicitado", async () => {
+  const reports: string[] = [];
+  let spawnOptions: { cwd?: string } | undefined;
+  const output = [
+    JSON.stringify({ type: "session", sessionID: "ses_visible" }),
+    JSON.stringify({ type: "text", sessionID: "ses_visible", part: { type: "text", text: "avance" } }),
+  ].join("\n");
+  const service = new OpenCodeService((_, options) => {
+    spawnOptions = options;
+    return {
+      stdout: new Blob([output]).stream(),
+      stderr: new Blob(["transport listo\n"]).stream(),
+      exited: Promise.resolve(0),
+      kill: () => undefined,
+    };
+  }, (message) => reports.push(message));
+
+  const result = await service.run({
+    model: "provider/model",
+    variant: "medium",
+    session: null,
+    prompt: "trabaja",
+    workingDirectory: "/repo/objetivo",
+  });
+
+  expect(result.result.text).toBe("avance");
+  expect(spawnOptions).toEqual({ cwd: "/repo/objetivo" });
+  expect(reports).toContain("OpenCode: avance");
+  expect(reports).toContain("OpenCode stderr: transport listo");
+});
+
 test("resume usa una sola invocacion simple con continue", async () => {
   const commands: string[][] = [];
   const service = new OpenCodeService((command) => {
@@ -532,7 +563,7 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
   const result = (text: string) => OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_retry", part: { type: "text", text },
   }));
-  const resumed: Array<[string, string]> = [];
+  const resumed: Array<[string, string, string | undefined]> = [];
   const waits: number[] = [];
   let attempts = 0;
   const code = await new LazyWorkflowCli(
@@ -545,16 +576,19 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
     },
     {
       run: async () => { attempts += 1; return { result: result("not-complete"), azureLoginRequired: false, failed: true }; },
-      resume: async (sessionId: string, prompt?: string) => { resumed.push([sessionId, prompt ?? ""]); return result("TICKET_COMPLETED"); },
+      resume: async (sessionId: string, prompt?: string, workingDirectory?: string) => {
+        resumed.push([sessionId, prompt ?? "", workingDirectory]);
+        return result("TICKET_COMPLETED");
+      },
     },
     store,
     { wait: async (milliseconds) => { waits.push(milliseconds); } },
-  ).run(["code", "--hu", "23438", "--prompt", "continua con la rama corregida"]);
+  ).run(["code", "--hu", "23438", "--prompt", "continua con la rama corregida", "--working-directory", "/repo/objetivo"]);
 
   expect(code).toBe(0);
   expect(attempts).toBe(1);
   expect(waits).toEqual([10_000]);
-  expect(resumed).toEqual([["ses_retry", "continua con la rama corregida"]]);
+  expect(resumed).toEqual([["ses_retry", "continua con la rama corregida", "/repo/objetivo"]]);
   expect(checkpoint.sessionId).toBeNull();
 });
 

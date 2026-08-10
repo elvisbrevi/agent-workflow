@@ -13,6 +13,11 @@ When installed globally by `install.sh --all-global` or
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 ```
 
+OpenCode events and periodic no-output heartbeats are printed while the
+workflow runs. The working directory is passed as OpenCode's real process
+directory, so tools operate in the selected repository. Azure and OpenCode
+retry messages are printed when a transient failure causes a retry.
+
 To plan an Azure HU:
 
 ```bash

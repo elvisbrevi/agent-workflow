@@ -171,8 +171,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   async waitForAccess(hu: number): Promise<void> {
     console.error("OpenCode requiere autenticacion Azure. Ejecuta: az login --use-device-code");
+    let attempts = 0;
     while (true) {
-      try { await this.getHuInfo(hu); return; } catch { await Bun.sleep(2_000); }
+      try { await this.getHuInfo(hu); return; } catch {
+        attempts += 1;
+        if (attempts % 5 === 0) console.error(`Esperando acceso Azure para la HU ${hu}...`);
+        await Bun.sleep(2_000);
+      }
     }
   }
 
