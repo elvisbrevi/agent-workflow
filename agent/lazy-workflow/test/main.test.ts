@@ -40,6 +40,86 @@ test("el comando hu-info obtiene y muestra la HU solicitada", async () => {
   expect(output).toEqual([JSON.stringify(huInfo, null, 2)]);
 });
 
+test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
+  const huInfo = new HuInfo({ id: 12345, title: "HU de prueba" });
+  let requestedHu = 0;
+  const received: { options: OpenCodeRunOptions | null; azure: boolean | null } = {
+    options: null,
+    azure: null,
+  };
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_plan",
+    part: { type: "text", text: "plan" },
+  }));
+  const huInfoService = {
+    getHuInfo: async (hu: number) => {
+      requestedHu = hu;
+      return huInfo;
+    },
+    waitForAccess: async () => undefined,
+  };
+  const openCodeService = {
+    run: async (options: OpenCodeRunOptions, azure: boolean) => {
+      received.options = options;
+      received.azure = azure;
+      return { result, azureLoginRequired: false };
+    },
+    resume: async () => result,
+  };
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    await new LazyWorkflowCli(huInfoService, openCodeService).run([
+      "plan",
+      "--hu",
+      "12345",
+      "--number-of-questions",
+      "3",
+      "--working-directory",
+      "/repo",
+      "--prompt",
+      "pregunta",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(requestedHu).toBe(12345);
+  expect(received.azure).toBeTrue();
+  expect(received.options?.prompt).toContain("Do not implement code");
+  expect(received.options?.prompt).toContain('"id":12345');
+  expect(received.options?.prompt).toContain("3");
+  expect(received.options?.prompt).toContain("/repo");
+  expect(received.options?.prompt).toContain("pregunta");
+  expect(output).toEqual([JSON.stringify(result, null, 2)]);
+});
+
+test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcomando %j muestra ayuda sin ejecutar servicios", async ({ args }) => {
+  let azureCalls = 0;
+  let openCodeCalls = 0;
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      { run: async () => { openCodeCalls += 1; throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    ).run(args);
+
+    expect(code).toBe(1);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(azureCalls).toBe(0);
+  expect(openCodeCalls).toBe(0);
+  expect(output[0]).toContain("plan --hu <id>");
+});
+
 test("OpenCodeResult normaliza la salida JSONL", () => {
   const result = OpenCodeResult.fromJsonLines([
     JSON.stringify({
@@ -71,7 +151,7 @@ test("OpenCodeResult normaliza la salida JSONL", () => {
   expect(result.cost).toBe(0.01);
 });
 
-test("main imprime OpenCode con formato JSON legible", async () => {
+test("plan imprime OpenCode con formato JSON legible", async () => {
   const result = OpenCodeResult.fromJsonLines(
     JSON.stringify({
       type: "text",
@@ -82,6 +162,10 @@ test("main imprime OpenCode con formato JSON legible", async () => {
   const receivedOptions: { value: OpenCodeRunOptions | null } = { value: null };
   let detectsAzureLogin: boolean | null = null;
   const service = {
+    getHuInfo: async () => new HuInfo({ id: 12345, title: "HU de prueba" }),
+    waitForAccess: async () => undefined,
+  };
+  const openCodeService = {
     run: async (options: OpenCodeRunOptions, detectAzureLogin: boolean) => {
       receivedOptions.value = options;
       detectsAzureLogin = detectAzureLogin;
@@ -94,7 +178,10 @@ test("main imprime OpenCode con formato JSON legible", async () => {
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    await new LazyWorkflowCli(undefined, service).run([
+    await new LazyWorkflowCli(service, openCodeService).run([
+      "plan",
+      "--hu",
+      "12345",
       "--model",
       "modelo-test",
       "--prompt",
@@ -105,8 +192,8 @@ test("main imprime OpenCode con formato JSON legible", async () => {
   }
 
   expect(receivedOptions.value?.model).toBe("modelo-test");
-  expect(receivedOptions.value?.prompt).toBe("pregunta-test");
-  expect(detectsAzureLogin).toBeFalse();
+  expect(receivedOptions.value?.prompt).toContain("pregunta-test");
+  expect(detectsAzureLogin).toBeTrue();
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
@@ -140,6 +227,7 @@ test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", a
 
   try {
     await new LazyWorkflowCli(huInfoService, openCodeService).run([
+      "plan",
       "--hu",
       "12345",
       "--working-directory",

@@ -6,13 +6,14 @@ To install dependencies:
 bun install
 ```
 
-To run:
+To plan an Azure HU:
 
 ```bash
-bun run main.ts --hu 23438 --working-directory /path/to/repository
+bun run main.ts plan --hu 23438 --working-directory /path/to/repository
 ```
 
-Without `--hu`, the same command runs a generic workflow without Azure Boards lookup or login handling.
+Planning uses the English autoplan prompt and never implements code. Missing or
+unsupported subcommands print help and do not call Azure Boards or OpenCode.
 
 To obtain the information of a HU:
 
