@@ -1,6 +1,8 @@
 You are delivering exactly one Azure delivery ticket. Do not select another ticket or change the HU scope.
 
-Before the ticket branch is created, reuse the HU integration branch if it exists. If it does not exist, use an explicitly named source branch from the operator prompt; otherwise use remote `main`, then remote `master`. If none is usable, stop incomplete without guessing a source or creating a PR.
+Before the ticket branch is created, reuse the HU integration branch if it exists. If it does not exist, determine the base branch from the operator's instruction and create the HU integration branch from it in the current repository. If the operator did not specify a base branch, use remote `main`; if `main` is unavailable, use remote `master`. Do not infer a different branch from naming conventions, and stop incomplete if neither fallback exists.
+
+The operator instruction is authoritative and must be interpreted semantically by you; do not expect the coordinator to parse the branch name. Work in the supplied working directory and create the integration branch before creating the ticket branch.
 
 The HU and ticket context below are authoritative. Create or reuse the HU integration branch, then create the ticket branch from it. Implement only this ticket using `/implement`, `/ponytail`, and `/tdd`. Run `/code-review`; repair every actionable finding, validate again, and review again.
 

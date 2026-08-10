@@ -26,7 +26,7 @@ export interface AutocodeState {
 
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
-  ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null>;
+  ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
@@ -39,35 +39,24 @@ interface WorkItem {
   relations?: Array<{ rel?: string; url?: string }>;
 }
 
-interface GitRef {
-  name?: string;
-  objectId?: string;
-}
-
 const field = (item: WorkItem, name: string): string | undefined => {
   const value = item.fields?.[name];
   return typeof value === "string" ? value : undefined;
 };
 
 async function show(id: number, expandRelations = false): Promise<WorkItem> {
-  const output = expandRelations
-    ? await $`az boards work-item show --id ${id} --organization ${ORGANIZATION} --expand relations --output json`.text()
-    : await $`az boards work-item show --id ${id} --organization ${ORGANIZATION} --output json`.text();
+  const args = [
+    "boards", "work-item", "show", "--id", `${id}`, "--organization", ORGANIZATION,
+    ...(expandRelations ? ["--expand", "relations"] : []),
+    "--output", "json",
+  ];
+  const output = await runAz(args);
   return JSON.parse(output) as WorkItem;
 }
 
 function relationId(url: string | undefined): number | undefined {
   const id = url?.match(/workItems\/(\d+)$/)?.[1];
   return id ? Number(id) : undefined;
-}
-
-function branchName(value: string): string {
-  return value.replace(/^refs\/heads\//, "");
-}
-
-function promptSourceBranch(prompt: string): string | null {
-  const match = prompt.match(/(?:source|origen)\s+branch(?:\s+(?:is|es))?\s*[:=]?\s*([\w./-]+)/i);
-  return match?.[1] ? branchName(match[1]) : null;
 }
 
 export class AzureAutocodeService implements AutocodeAzureService {
@@ -85,28 +74,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
     } satisfies HuInfoData);
   }
 
-  async ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null> {
+  async ensureIntegrationBranch(hu: number): Promise<string | null> {
     const parent = await show(hu, true);
     const registered = field(parent, "Custom.IntegrationBranch");
     const project = field(parent, "System.TeamProject");
-    const repository = field(parent, "Custom.Repository");
-    const options = [promptSourceBranch(prompt), "main", "master"].filter((value): value is string => Boolean(value));
-    const refs = await this.listRefs(project, repository);
     const integrationBranch = registered ?? `refs/heads/hu/${hu}`;
-    const existing = refs.find((ref) => ref.name === integrationBranch);
-    if (existing?.name) {
-      if (!registered) await this.registerIntegrationBranch(hu, existing.name, project);
-      return existing.name;
-    }
-
-    for (const source of options) {
-      const sourceRef = refs.find((ref) => branchName(ref.name ?? "") === source && ref.objectId);
-      if (!sourceRef?.objectId) continue;
-      await this.az(["repos", "ref", "create", "--name", integrationBranch, "--object-id", sourceRef.objectId, ...this.repositoryArgs(project, repository)]);
-      await this.registerIntegrationBranch(hu, integrationBranch, project);
-      return integrationBranch;
-    }
-    return null;
+    if (!registered) await this.registerIntegrationBranch(hu, integrationBranch, project);
+    return integrationBranch;
   }
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {
@@ -162,9 +136,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (!evidence?.trim()) return false;
     const parent = await show(context.hu.id);
     if (field(parent, "Custom.IntegrationBranch") !== context.integrationBranch) return false;
-    const output = context.project
-      ? await $`az repos pr list --organization ${ORGANIZATION} --project ${context.project} --status completed --target-branch ${context.integrationBranch} --query ${`[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName}`} --output json`.text()
-      : await $`az repos pr list --organization ${ORGANIZATION} --status completed --target-branch ${context.integrationBranch} --query ${`[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName}`} --output json`.text();
+    const output = await runAz([
+      "repos", "pr", "list", "--organization", ORGANIZATION,
+      ...(context.project ? ["--project", context.project] : []),
+      "--status", "completed", "--target-branch", context.integrationBranch,
+      "--query", `[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName}`,
+      "--output", "json",
+    ]);
     const prs = JSON.parse(output) as Array<{ status?: string; mergeStatus?: string; target?: string }>;
     return prs.length === 1 && prs[0]?.status === "completed" && prs[0].mergeStatus === "succeeded" && prs[0].target === context.integrationBranch;
   }
@@ -173,28 +151,38 @@ export class AzureAutocodeService implements AutocodeAzureService {
     console.error("OpenCode requiere autenticacion Azure. Ejecuta: az login --use-device-code");
     let attempts = 0;
     while (true) {
-      try { await this.getHuInfo(hu); return; } catch {
+      try { await this.getHuInfo(hu); return; } catch (error) {
         attempts += 1;
-        if (attempts % 5 === 0) console.error(`Esperando acceso Azure para la HU ${hu}...`);
+        if (attempts % 5 === 0) {
+          console.error(`Esperando acceso Azure para la HU ${hu}... Último error: ${commandError(error)}`);
+        }
         await Bun.sleep(2_000);
       }
     }
   }
 
-  private async listRefs(project?: string, repository?: string): Promise<GitRef[]> {
-    const output = await this.az(["repos", "ref", "list", "--filter", "heads/", ...this.repositoryArgs(project, repository)]);
-    return JSON.parse(output) as GitRef[];
-  }
-
-  private repositoryArgs(project?: string, repository?: string): string[] {
-    return ["--organization", ORGANIZATION, ...(project ? ["--project", project] : []), ...(repository ? ["--repository", repository] : [])];
-  }
-
   private async registerIntegrationBranch(hu: number, integrationBranch: string, project?: string): Promise<void> {
-    await this.az(["boards", "work-item", "update", "--id", `${hu}`, "--organization", ORGANIZATION, ...(project ? ["--project", project] : []), "--fields", `Custom.IntegrationBranch=${integrationBranch}`]);
+    await runAz(["boards", "work-item", "update", "--id", `${hu}`, "--organization", ORGANIZATION, ...(project ? ["--project", project] : []), "--fields", `Custom.IntegrationBranch=${integrationBranch}`]);
   }
+}
 
-  private async az(args: string[]): Promise<string> {
+function commandError(error: unknown): string {
+  if (typeof error === "object" && error !== null && "stderr" in error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    if (typeof stderr === "string" && stderr.trim()) return stderr.trim();
+    if (stderr instanceof Uint8Array) {
+      const decoded = new TextDecoder().decode(stderr).trim();
+      if (decoded) return decoded;
+    }
+    if (stderr !== undefined && String(stderr).trim()) return String(stderr).trim();
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function runAz(args: string[]): Promise<string> {
+  try {
     return await $`az ${args}`.text();
+  } catch (error) {
+    throw new Error(`az ${args.join(" ")} fallo: ${commandError(error)}`, { cause: error });
   }
 }

@@ -18,6 +18,11 @@ workflow runs. The working directory is passed as OpenCode's real process
 directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
 
+The coordinator does not parse the operator prompt to choose a base branch.
+OpenCode interprets that instruction and creates the HU integration branch in
+the selected repository; when no base branch is specified, it uses remote
+`main`, or remote `master` when `main` is unavailable.
+
 To plan an Azure HU:
 
 ```bash
