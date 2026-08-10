@@ -19,9 +19,15 @@ export interface AutocodeContext {
   project?: string;
 }
 
+export interface AutocodeState {
+  context: AutocodeContext | null;
+  pending: boolean;
+}
+
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null>;
+  getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
   waitForAccess(hu: number): Promise<void>;
@@ -104,6 +110,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {
+    return (await this.getAutocodeState(hu, integrationBranch)).context;
+  }
+
+  async getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState> {
     const parent = await show(hu, true);
     const children = (parent.relations ?? [])
       .filter((relation) => relation.rel === "System.LinkTypes.Hierarchy-Forward")
@@ -111,10 +121,12 @@ export class AzureAutocodeService implements AutocodeAzureService {
       .filter((id): id is number => id !== undefined);
     const candidates = await Promise.all(children.map((id) => show(id, true)));
     const eligible: DeliveryTicket[] = [];
+    let pending = false;
     for (const item of candidates) {
       const type = field(item, "System.WorkItemType");
       const state = field(item, "System.State");
       if ((type !== "Task" && type !== "Bug") || (state && COMPLETED_STATES.has(state))) continue;
+      pending = true;
       const predecessorIds = (item.relations ?? [])
         .filter((relation) => relation.rel === "System.LinkTypes.Dependency-Reverse")
         .map((relation) => relationId(relation.url))
@@ -130,14 +142,16 @@ export class AzureAutocodeService implements AutocodeAzureService {
       });
     }
     eligible.sort((a, b) => (a.createdDate ?? "").localeCompare(b.createdDate ?? "") || a.id - b.id);
-    if (eligible.length === 0) return null;
     const branch = integrationBranch ?? field(parent, "Custom.IntegrationBranch");
-    if (!branch) return null;
+    if (!branch || eligible.length === 0) return { context: null, pending };
     return {
-      hu: { id: hu, title: field(parent, "System.Title") },
-      ticket: eligible[0]!,
-      integrationBranch: branch,
-      project: field(parent, "System.TeamProject"),
+      context: {
+        hu: { id: hu, title: field(parent, "System.Title") },
+        ticket: eligible[0]!,
+        integrationBranch: branch,
+        project: field(parent, "System.TeamProject"),
+      },
+      pending,
     };
   }
 
