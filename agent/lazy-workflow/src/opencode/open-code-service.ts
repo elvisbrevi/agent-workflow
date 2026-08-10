@@ -5,6 +5,7 @@ export interface OpenCodeRunOptions {
   variant: string;
   session: string | null;
   prompt: string;
+  workingDirectory?: string;
 }
 
 export interface OpenCodeExecution {
@@ -20,10 +21,14 @@ export interface OpenCodeProcess {
   kill(): void;
 }
 
-export type OpenCodeSpawner = (command: string[]) => OpenCodeProcess;
+export interface OpenCodeSpawnOptions {
+  cwd?: string;
+}
 
-const spawnOpenCode: OpenCodeSpawner = (command) => {
-  const process = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
+export type OpenCodeSpawner = (command: string[], options?: OpenCodeSpawnOptions) => OpenCodeProcess;
+
+const spawnOpenCode: OpenCodeSpawner = (command, options) => {
+  const process = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", ...options });
   return {
     stdout: process.stdout,
     stderr: process.stderr,
@@ -33,6 +38,26 @@ const spawnOpenCode: OpenCodeSpawner = (command) => {
 };
 
 const loginInstructionPattern = /(?:please\s+run|run|ejecuta|execute).{0,40}\baz\s+login\b/i;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+function renderEvent(line: string): string {
+  try {
+    const event = JSON.parse(line) as OpenCodeEventData;
+    const part = event.part;
+    if (event.type === "text" && part?.text) return `OpenCode: ${part.text}`;
+    if (event.type === "step_start") {
+      return `OpenCode ejecutando herramienta: ${part?.tool ?? "desconocida"}`;
+    }
+    if (event.type === "step_finish") {
+      return `OpenCode terminó un paso${part?.reason ? ` (${part.reason})` : ""}`;
+    }
+    if (event.type === "session") return `OpenCode sesión: ${event.sessionID}`;
+    if (part?.error) return `OpenCode error: ${part.error}`;
+    return `OpenCode evento: ${event.type}`;
+  } catch {
+    return line;
+  }
+}
 
 function requiresAzureLogin(line: string): boolean {
   let event: OpenCodeEventData;
@@ -65,6 +90,7 @@ function requiresAzureLogin(line: string): boolean {
 async function readLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => boolean,
+  reportLine?: (line: string) => void,
 ): Promise<{ lines: string[]; stopped: boolean }> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -80,6 +106,7 @@ async function readLines(
     for (const line of parts) {
       if (line.trim().length === 0) continue;
       lines.push(line);
+      reportLine?.(line);
       if (onLine(line)) {
         await reader.cancel();
         return { lines, stopped: true };
@@ -89,6 +116,7 @@ async function readLines(
     if (done) {
       if (buffer.trim().length > 0) {
         lines.push(buffer);
+        reportLine?.(buffer);
         if (onLine(buffer)) return { lines, stopped: true };
       }
       return { lines, stopped: false };
@@ -97,7 +125,10 @@ async function readLines(
 }
 
 export class OpenCodeService {
-  constructor(private readonly spawn: OpenCodeSpawner = spawnOpenCode) {}
+  constructor(
+    private readonly spawn: OpenCodeSpawner = spawnOpenCode,
+    private readonly report: (message: string) => void = (message) => console.error(message),
+  ) {}
 
   async run(options: OpenCodeRunOptions, detectAzureLogin = false): Promise<OpenCodeExecution> {
     return this.execute([
@@ -112,10 +143,10 @@ export class OpenCodeService {
       "--format",
       "json",
       options.prompt,
-    ], detectAzureLogin);
+    ], detectAzureLogin, options.workingDirectory);
   }
 
-  async resume(sessionId: string, prompt = "continue"): Promise<OpenCodeResult> {
+  async resume(sessionId: string, prompt = "continue", workingDirectory?: string): Promise<OpenCodeResult> {
     const execution = await this.execute([
       "opencode",
       "run",
@@ -125,7 +156,7 @@ export class OpenCodeService {
       "--format",
       "json",
       prompt,
-    ], true);
+    ], true, workingDirectory);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
@@ -133,22 +164,46 @@ export class OpenCodeService {
     return execution.result;
   }
 
-  private async execute(command: string[], detectAzureLogin: boolean): Promise<OpenCodeExecution> {
-    const process = this.spawn(command);
-    const stderrPromise = new Response(process.stderr).text();
-    const streamed = await readLines(process.stdout, detectAzureLogin ? requiresAzureLogin : () => false);
-    if (streamed.stopped) process.kill();
-
-    const [exitCode, stderr] = await Promise.all([process.exited, stderrPromise]);
-    const azureLoginRequired = detectAzureLogin && (streamed.stopped || loginInstructionPattern.test(stderr));
-    if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
-      throw new Error("OpenCode no devolvio eventos");
-    }
-
-    return {
-      result: OpenCodeResult.fromJsonLines(streamed.lines.join("\n")),
-      azureLoginRequired,
-      failed: exitCode !== 0,
+  private async execute(command: string[], detectAzureLogin: boolean, workingDirectory?: string): Promise<OpenCodeExecution> {
+    this.report(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
+    const child = this.spawn(command, { cwd: workingDirectory });
+    let lastEventAt = Date.now();
+    const reportStdout = (line: string) => {
+      lastEventAt = Date.now();
+      this.report(renderEvent(line));
     };
+    const reportStderr = (line: string) => {
+      lastEventAt = Date.now();
+      this.report(`OpenCode stderr: ${line}`);
+    };
+    const heartbeat = setInterval(() => {
+      const elapsed = Math.round((Date.now() - lastEventAt) / 1000);
+      this.report(`OpenCode sigue ejecutándose; sin eventos hace ${elapsed}s.`);
+    }, HEARTBEAT_INTERVAL_MS);
+
+    try {
+      const stderrPromise = readLines(child.stderr, () => false, reportStderr);
+      const streamed = await readLines(
+        child.stdout,
+        detectAzureLogin ? requiresAzureLogin : () => false,
+        reportStdout,
+      );
+      if (streamed.stopped) child.kill();
+
+      const [exitCode, stderrOutput] = await Promise.all([child.exited, stderrPromise]);
+      const stderr = stderrOutput.lines.join("\n");
+      const azureLoginRequired = detectAzureLogin && (streamed.stopped || loginInstructionPattern.test(stderr));
+      if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
+        throw new Error("OpenCode no devolvio eventos");
+      }
+
+      return {
+        result: OpenCodeResult.fromJsonLines(streamed.lines.join("\n")),
+        azureLoginRequired,
+        failed: exitCode !== 0,
+      };
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 }

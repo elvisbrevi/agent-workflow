@@ -18,6 +18,10 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "cuanto es uno mas 3";
@@ -107,7 +111,7 @@ export class LazyWorkflowCli {
     if (execution.azureLoginRequired && options.hu > 0) {
       console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
       await this.huInfoService.waitForAccess(options.hu);
-      result = await this.openCodeService.resume(result.sessionId);
+      result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
     }
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -131,6 +135,7 @@ export class LazyWorkflowCli {
     let integrationBranch: string | null = null;
     let sessionId = options.session;
     let lastResult;
+    console.error(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
     while (true) {
       let state: AutocodeState;
       try {
@@ -143,13 +148,15 @@ export class LazyWorkflowCli {
           integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu, options.prompt);
         }
         if (!integrationBranch) {
+          console.error(`lazy-workflow: no se encontró todavía la rama base para la HU ${hu}; reintentando en 10s.`);
           await this.retryTimer.wait(10_000);
           continue;
         }
         state = this.huInfoService.getAutocodeState
           ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
           : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
-      } catch {
+      } catch (error) {
+        console.error(`lazy-workflow: Azure no respondió (${errorMessage(error)}); reintentando en 10s.`);
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
         continue;
       }
@@ -157,8 +164,10 @@ export class LazyWorkflowCli {
       if (!state.context) {
         if (!state.pending) {
           if (lastResult) console.log(JSON.stringify(lastResult, null, 2));
+          console.error(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
           return 0;
         }
+        console.error(`lazy-workflow: no hay un ticket elegible todavía; reintentando en 10s.`);
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
         continue;
       }
@@ -185,13 +194,14 @@ export class LazyWorkflowCli {
       while (true) {
         try {
           const execution = sessionId
-            ? { result: await this.openCodeService.resume(sessionId, resumePrompt), azureLoginRequired: false }
+            ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory), azureLoginRequired: false }
             : await this.openCodeService.run({ ...options, prompt, session: null }, true);
           const result = execution.result;
           lastResult = result;
           sessionId = result.sessionId;
           await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId });
           if (execution.azureLoginRequired) {
+            console.error(`Sesion OpenCode detenida: ${result.sessionId}`);
             await this.huInfoService.waitForAccess(hu);
             resumePrompt = "continue";
             continue;
@@ -207,8 +217,8 @@ export class LazyWorkflowCli {
             sessionId = null;
             break;
           }
-        } catch {
-          // Keep the pinned ticket and checkpoint; the next attempt may recover it.
+        } catch (error) {
+          console.error(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);
         }
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
       }
