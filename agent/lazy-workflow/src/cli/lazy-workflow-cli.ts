@@ -9,7 +9,8 @@ type CliOptions = OpenCodeRunOptions & {
 };
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
-  getAutocodeContext(hu: number): Promise<AutocodeContext | null>;
+  ensureIntegrationBranch(hu: number, prompt: string): Promise<string | null>;
+  getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
 }>;
 
@@ -109,7 +110,13 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    const context = await this.huInfoService.getAutocodeContext(options.hu);
+    if (!this.huInfoService.ensureIntegrationBranch) {
+      console.error("El servicio Azure no soporta autocode");
+      return 1;
+    }
+    const integrationBranch = await this.huInfoService.ensureIntegrationBranch(options.hu, options.prompt);
+    if (!integrationBranch) return 1;
+    const context = await this.huInfoService.getAutocodeContext(options.hu, integrationBranch);
     if (!context) return 0;
     const promptAsset = Bun.file(new URL("../../prompts/autocode-prompt.md", import.meta.url));
     options.prompt = [
