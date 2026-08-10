@@ -3,12 +3,15 @@ import { OpenCodeService, type OpenCodeRunOptions } from "./open-code-service.ts
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number;
+  numberOfQuestions: number;
+  workingDirectory: string;
 };
 
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "cuanto es uno mas 3";
-const DEFAULT_HU = 23438;
+const DEFAULT_HU = -1;
+const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -16,14 +19,15 @@ function optionValue(args: string[], name: string): string | null {
 }
 
 function parseOptions(args: string[]): CliOptions {
-  const hu = Number.parseInt(optionValue(args, "--hu") ?? `${DEFAULT_HU}`, 10);
 
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
-    hu,
+    hu: Number.parseInt(optionValue(args, "--hu") ?? `${DEFAULT_HU}`, 10),
+    numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
+    workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
 }
 
@@ -34,23 +38,23 @@ export class LazyWorkflowCli {
   ) {}
 
   async run(args: string[]): Promise<void> {
-    if (args[0] === "hu-info") {
-      await this.showHuInfo(parseOptions(args.slice(1)));
+    let options = parseOptions(args);
+
+    if (args.indexOf("hu-info") >= 0) {
+      const huInfo = await this.huInfoService.getHuInfo(options.hu);
+      console.log(JSON.stringify(huInfo, null, 2));
       return;
     }
 
-    await this.runPlanner(args);
-  }
+    if (options.hu > 0) {
+      const huInfo = await this.huInfoService.getHuInfo(options.hu);
+      const sagPrompt = Bun.file("./sag-azure-prompt.md");
+      const sagPromptContent = await sagPrompt.text();
 
-  private async showHuInfo(options: CliOptions): Promise<void> {
-    const huInfo = await this.huInfoService.getHuInfo(options.hu);
-    console.log(JSON.stringify(huInfo, null, 2));
-  }
+      options.prompt = JSON.stringify(huInfo) + "\n" + sagPromptContent + "\n" + "\n el numero de preguntas debe ser de " + options.numberOfQuestions + "\n" + options.prompt + "\n" + "\n el directorio de trabajo es " + options.workingDirectory + "";
+    }
 
-  private async runPlanner(args: string[]): Promise<void> {
-    const options = parseOptions(args);
     const result = await this.openCodeService.run(options);
-
     console.log(JSON.stringify(result, null, 2));
   }
 }
