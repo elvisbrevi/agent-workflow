@@ -45,18 +45,17 @@ Skills with `disable-model-invocation: true` are explicit-only. See each
 
 | Agent | Purpose | Source |
 |---|---|---|
-| `lazy-workflow` | Runs generic OpenCode prompts or plans one Azure HU | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
+| `lazy-workflow` | Plans one Azure HU or queries HU information | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
 
 Install dependencies and run it from its directory:
 
 ```bash
 cd agent/lazy-workflow
 bun install
-bun run main.ts --hu 23438 --working-directory /path/to/repository
+bun run main.ts plan --hu 23438 --working-directory /path/to/repository
 ```
 
-Without `--hu`, the command runs a generic prompt. To query HU data without
-starting OpenCode:
+To query HU data without starting OpenCode:
 
 ```bash
 bun run main.ts hu-info --hu 23438

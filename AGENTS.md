@@ -19,7 +19,7 @@ inside that directory rather than a skill directory.
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
 | Change OpenCode invocation or JSONL decoding | `agent/lazy-workflow/src/opencode/` |
-| Change the planning prompt | `agent/lazy-workflow/prompts/sag-plan-prompt.md` |
+| Change the planning prompt | `agent/lazy-workflow/prompts/autoplan-prompt.md` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
 | Change installation or symlink behavior | `install.sh` and `tests/install_test.sh` |
 | Change user-facing orientation | `README.md` and `agent/lazy-workflow/README.md` |
