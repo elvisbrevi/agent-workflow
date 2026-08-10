@@ -4,6 +4,10 @@ import { reportOperator } from "../output/operator-output.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
+const COMPLETION_EVIDENCE_FIELDS = [
+  "Custom.CompletionEvidence",
+  "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71",
+] as const;
 
 export interface DeliveryTicket {
   id: number;
@@ -25,12 +29,18 @@ export interface AutocodeState {
   pending: boolean;
 }
 
+export interface VerifiedTicketCompletion {
+  ticketBranch: string;
+}
+
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
-  verifyTicketCompletion(context: AutocodeContext): Promise<boolean>;
+  getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
+  verifyTicketCompletion(context: AutocodeContext): Promise<VerifiedTicketCompletion | null>;
+  getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   waitForAccess(hu: number): Promise<void>;
 }
 
@@ -44,11 +54,30 @@ interface WorkItem {
   }>;
 }
 
+interface CompletedPullRequest {
+  status?: string;
+  mergeStatus?: string;
+  target?: string;
+  source?: string;
+  id?: number;
+  projectId?: string;
+  repositoryId?: string;
+  mergeCommit?: string;
+}
+
 type AzRunner = (args: string[]) => Promise<string>;
 
 const field = (item: WorkItem, name: string): string | undefined => {
   const value = item.fields?.[name];
   return typeof value === "string" ? value : undefined;
+};
+
+const firstField = (item: WorkItem, names: readonly string[]): string | undefined =>
+  names.map((name) => field(item, name)).find((value) => value?.trim());
+
+const positiveNumberField = (item: WorkItem, name: string): boolean => {
+  const value = item.fields?.[name];
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 };
 
 async function show(id: number, expandRelations: boolean, az: AzRunner): Promise<WorkItem> {
@@ -78,6 +107,19 @@ function integrationBranchFrom(item: WorkItem): string | undefined {
   return name ? `refs/heads/${name}` : undefined;
 }
 
+function belongsToTicket(source: string | undefined, ticket: number): boolean {
+  if (!source?.startsWith("refs/heads/")) return false;
+  return new RegExp(`(?:^|[/_.-])${ticket}(?:$|[/_.-])`).test(source.slice("refs/heads/".length));
+}
+
+function hasArtifactLink(item: WorkItem, expectedDecodedUri: string): boolean {
+  return (item.relations ?? []).some((relation) =>
+    relation.rel === "ArtifactLink"
+      && typeof relation.url === "string"
+      && decodeURIComponent(relation.url) === expectedDecodedUri
+  );
+}
+
 export class AzureAutocodeService implements AutocodeAzureService {
   constructor(private readonly az: AzRunner = runAz) {}
 
@@ -102,6 +144,35 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {
     return (await this.getAutocodeState(hu, integrationBranch)).context;
+  }
+
+  async getAutocodeContextForTicket(
+    hu: number,
+    ticket: number,
+    integrationBranch?: string,
+  ): Promise<AutocodeContext | null> {
+    const [parent, item] = await Promise.all([
+      show(hu, true, this.az),
+      show(ticket, false, this.az),
+    ]);
+    const isDirectChild = (parent.relations ?? []).some((relation) =>
+      relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === ticket
+    );
+    const type = field(item, "System.WorkItemType");
+    const branch = integrationBranch ?? integrationBranchFrom(parent);
+    if (!isDirectChild || (type !== "Task" && type !== "Bug") || !branch) return null;
+    return {
+      hu: { id: hu, title: field(parent, "System.Title") },
+      ticket: {
+        id: ticket,
+        title: field(item, "System.Title"),
+        type,
+        state: field(item, "System.State"),
+        createdDate: field(item, "System.CreatedDate"),
+      },
+      integrationBranch: branch,
+      project: field(parent, "System.TeamProject"),
+    };
   }
 
   async getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState> {
@@ -146,22 +217,67 @@ export class AzureAutocodeService implements AutocodeAzureService {
     };
   }
 
-  async verifyTicketCompletion(context: AutocodeContext): Promise<boolean> {
-    const item = await show(context.ticket.id, false, this.az);
-    if (field(item, "System.State") !== "Done") return false;
-    const evidence = field(item, "Custom.CompletionEvidence");
-    if (!evidence?.trim()) return false;
-    const parent = await show(context.hu.id, true, this.az);
-    if (integrationBranchFrom(parent) !== context.integrationBranch) return false;
+  async verifyTicketCompletion(context: AutocodeContext): Promise<VerifiedTicketCompletion | null> {
+    const [item, parent] = await Promise.all([
+      show(context.ticket.id, true, this.az),
+      show(context.hu.id, true, this.az),
+    ]);
+    if (field(item, "System.State") !== "Done") return null;
+    const evidence = firstField(item, COMPLETION_EVIDENCE_FIELDS);
+    if (!evidence?.trim()) return null;
+    if (!positiveNumberField(item, "Custom.EsfuerzoReal")) return null;
+    if (!positiveNumberField(item, "Custom.EsfuerzoRealHH")) return null;
+    if (!field(item, "Custom.URLCommit")?.trim()) return null;
+    if (!(item.relations ?? []).some((relation) => relation.rel === "AttachedFile")) return null;
+    if (integrationBranchFrom(parent) !== context.integrationBranch) return null;
+    const pr = await this.getCompletedPullRequest(context);
+    if (!pr) return null;
+    const artifactPrefix = `${pr.projectId}/${pr.repositoryId}`;
+    if (!await this.isPullRequestLinkedToTicket(pr.id!, context.ticket.id)) return null;
+    if (!hasArtifactLink(item, `vstfs:///Git/Commit/${artifactPrefix}/${pr.mergeCommit}`)) return null;
+    return { ticketBranch: pr.source! };
+  }
+
+  async getCompletedTicketBranch(context: AutocodeContext): Promise<string | null> {
+    return (await this.getCompletedPullRequest(context))?.source ?? null;
+  }
+
+  private async getCompletedPullRequest(context: AutocodeContext): Promise<CompletedPullRequest | null> {
     const output = await this.az([
       "repos", "pr", "list", "--organization", ORGANIZATION,
       ...(context.project ? ["--project", context.project] : []),
       "--status", "completed", "--target-branch", context.integrationBranch,
-      "--query", `[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName}`,
+      "--query", `[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName,source:sourceRefName,id:pullRequestId,projectId:repository.project.id,repositoryId:repository.id,mergeCommit:lastMergeCommit.commitId}`,
       "--output", "json",
     ]);
-    const prs = JSON.parse(output) as Array<{ status?: string; mergeStatus?: string; target?: string }>;
-    return prs.length === 1 && prs[0]?.status === "completed" && prs[0].mergeStatus === "succeeded" && prs[0].target === context.integrationBranch;
+    const prs = (JSON.parse(output) as CompletedPullRequest[])
+      .filter((pr) => belongsToTicket(pr.source, context.ticket.id));
+    const pr = prs.length === 1 ? prs[0] : undefined;
+    return pr?.status === "completed"
+      && pr.mergeStatus === "succeeded"
+      && pr.target === context.integrationBranch
+      && pr.source?.startsWith("refs/heads/")
+      && Number.isInteger(pr.id)
+      && typeof pr.projectId === "string"
+      && typeof pr.repositoryId === "string"
+      && typeof pr.mergeCommit === "string"
+      ? pr
+      : null;
+  }
+
+  private async isPullRequestLinkedToTicket(
+    pullRequest: number,
+    ticket: number,
+  ): Promise<boolean> {
+    const output = await this.az([
+      "repos", "pr", "work-item", "list",
+      "--id", `${pullRequest}`,
+      "--organization", ORGANIZATION,
+      "--query", "[].id",
+      "--output", "json",
+    ]);
+    const workItems = JSON.parse(output) as Array<number | string>;
+    return workItems.some((id) => Number(id) === ticket);
   }
 
   async waitForAccess(hu: number): Promise<void> {

@@ -46,6 +46,13 @@ To drain the HU's direct Task and Bug delivery tickets one at a time:
 bun run main.ts code --hu 23438 --working-directory /path/to/repository
 ```
 
+After `TICKET_COMPLETED`, the coordinator stops OpenCode even if its output
+stream remains open. It verifies the completed PR and Azure evidence, switches
+to the updated HU integration branch, deletes the completed ticket branch
+locally and remotely, clears the checkpoint, and refreshes Azure before
+starting the next eligible ticket. Branch cleanup stops safely when the
+working tree contains uncommitted or untracked changes.
+
 To recover an interrupted ticket, use the opaque session identifier printed by
 OpenCode. The HU and ticket are restored from the repository checkpoint, so no
 `--hu` argument is needed:
@@ -73,6 +80,7 @@ main.ts                 CLI entrypoint
 prompts/                OpenCode prompt assets
 src/azure/              Azure Boards model and service
 src/cli/                Workflow coordination
+src/git/                Verified ticket-branch cleanup
 src/opencode/           OpenCode execution and JSONL result
 test/                   Bun tests
 ```
