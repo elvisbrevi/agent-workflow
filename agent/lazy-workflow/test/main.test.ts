@@ -4,7 +4,13 @@ import { HuInfo } from "../src/azure/hu-info.ts";
 import type { AutocodeContext } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
-import { GitAutocodeCheckpointStore, type AutocodeCheckpoint, type AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
+import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
+
+const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
+  read: async () => null,
+  write: async () => undefined,
+  clear: async () => undefined,
+});
 
 test("HuInfo expone sus campos", () => {
   const huInfo = new HuInfo({
@@ -346,6 +352,7 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
         run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
+      emptyCheckpointStore(),
     ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
@@ -378,13 +385,12 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
       verifyTicketCompletion: async () => { verificationCalls += 1; return false; },
     },
     { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
-    undefined,
+    emptyCheckpointStore(),
     { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(1);
   expect(verificationCalls).toBe(1);
-  await new GitAutocodeCheckpointStore().clear();
 });
 
 test.each([
@@ -411,7 +417,7 @@ test.each([
       verifyTicketCompletion: async () => false,
     },
     { run: async () => { openCodeCalls += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
-    undefined,
+    emptyCheckpointStore(),
     { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438", "--prompt", prompt]);
 
@@ -419,7 +425,6 @@ test.each([
   expect(ensuredPrompt).toBe(prompt);
   expect(contextBranch).toBe(branch);
   expect(openCodeCalls).toBe(1);
-  await new GitAutocodeCheckpointStore().clear();
 });
 
 test("code stays incomplete and does not invoke OpenCode without a valid source branch", async () => {
@@ -433,7 +438,7 @@ test("code stays incomplete and does not invoke OpenCode without a valid source 
       verifyTicketCompletion: async () => false,
     },
     { run: async () => { openCodeCalls += 1; throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
-    undefined,
+    emptyCheckpointStore(),
     { wait: async () => { throw new Error("stop retry"); } },
   ).run(["code", "--hu", "23438"]);
 
