@@ -4,7 +4,7 @@ const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-const EVIDENCE_KINDS = ["screen", "json", "command"] as const;
+const EVIDENCE_KINDS = ["http-json", "screen", "command-output"] as const;
 
 const COMPLETION_FIELDS = [
   "Custom.CompletionEvidence",
@@ -229,10 +229,10 @@ function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
 }
 
 function validateEvidenceContent(content: string, kind: EvidenceKind): void {
-  if (/(?:authorization|access[_-]?token|password|cookie|set-cookie)\s*[:=]|bearer\s+[a-z0-9._~-]+/i.test(content)) {
+  if (/(?:["']?(?:authorization|access[_-]?token|token|api[_-]?key|secret|password|cookie|set-cookie)["']?\s*[:=]|--(?:token|api-key|password)\s+\S+|bearer\s+[a-z0-9._~-]+)/i.test(content)) {
     throw new Error("La evidencia contiene credenciales o secretos");
   }
-  if (kind === "json") {
+  if (kind === "http-json") {
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
@@ -284,18 +284,18 @@ export class AzureTicketInfoService {
     )) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
     }
-    const pullRequests = await this.readPullRequests(
+    const pullRequests = (await this.readPullRequests(
       ticket,
       integrationBranch.project ?? text(parent, "System.TeamProject"),
       integrationBranch.ref,
       integrationBranch.project,
       integrationBranch.repository,
-    );
-    const validPullRequests = pullRequests.filter((pullRequest) =>
+    )).filter((pullRequest) =>
       pullRequest.status === "completed"
       && pullRequest.mergeStatus === "succeeded"
       && pullRequest.target === integrationBranch.ref
     );
+    const validPullRequests = pullRequests;
     const associated = validPullRequests.filter((pullRequest) => pullRequest.associated);
     const canonical = associated.length === 1 ? associated[0]!.id : null;
     const completionEvidence = COMPLETION_FIELDS.map((fieldName) => text(item, fieldName)).find(Boolean) ?? null;
@@ -427,7 +427,15 @@ export class AzureTicketInfoService {
 
     const pullRequest = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
-    if (!pullRequest.associated) {
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository);
+    const validCandidates = candidates.filter((candidate) =>
+      candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
+    );
+    const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.length > 1 || (associatedCandidates[0] && associatedCandidates[0].id !== pullRequestId)) {
+      throw new Error(`El PR ${pullRequestId} entra en conflicto con el PR canónico ya asociado al ticket ${ticket}`);
+    }
+    if (!associatedCandidates[0]) {
       await this.addPullRequestWorkItem(pullRequestId, ticket, integration.project, integration.repository);
     }
     if (!await this.isPullRequestLinked(pullRequest, ticket)) {
@@ -444,12 +452,24 @@ export class AzureTicketInfoService {
     positiveId(pullRequestId, "El pull request");
 
     const item = await this.readWorkItemValidated(ticket);
-    const pullRequest = await this.readPullRequest(pullRequestId);
-    if (pullRequest.status !== "completed" || pullRequest.mergeStatus !== "succeeded" || !pullRequest.mergeCommit) {
-      throw new Error(`El PR ${pullRequestId} no está completado con merge exitoso`);
+    const parentId = relationId((item.relations ?? []).find(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")?.url);
+    if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
+    const parent = await this.readWorkItem(parentId);
+    const integration = uniqueBranch(parent);
+    const ticketBranch = uniqueBranch(item);
+    if (!integration.ref || !ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene ramas de integración y entrega verificables`);
+    if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
+      throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integración de su HU`);
     }
-    if (!pullRequest.associated && !await this.isPullRequestLinked(pullRequest, ticket)) {
-      throw new Error(`El PR ${pullRequestId} no está asociado nativamente al ticket ${ticket}`);
+    const pullRequest = await this.readPullRequest(pullRequestId);
+    this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository);
+    const validCandidates = candidates.filter((candidate) =>
+      candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
+    );
+    const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.length !== 1 || associatedCandidates[0]!.id !== pullRequestId) {
+      throw new Error(`El PR ${pullRequestId} no es el único PR canónico asociado al ticket ${ticket}`);
     }
     const project = pullRequest.projectId;
     const repository = pullRequest.repositoryId;
@@ -503,17 +523,26 @@ export class AzureTicketInfoService {
 
     const upload = await this.uploadAttachment(name, filePath);
     const current = await this.readWorkItem(ticket);
-    await this.patchWorkItem(current, [{
-      op: "test", path: "/rev", value: current.rev,
-    }, {
-      op: "add",
-      path: "/relations/-",
-      value: {
-        rel: "AttachedFile",
-        url: upload,
-        attributes: { name, comment: kind, digest },
-      },
-    }]);
+    try {
+      await this.patchWorkItem(current, [{
+        op: "test", path: "/rev", value: current.rev,
+      }, {
+        op: "add",
+        path: "/relations/-",
+        value: {
+          rel: "AttachedFile",
+          url: upload,
+          attributes: { name, comment: kind, digest },
+        },
+      }]);
+    } catch (error) {
+      const recovered = await this.readWorkItem(ticket).catch(() => null);
+      const relation = recovered?.relations?.find(({ rel, attributes }) =>
+        rel === "AttachedFile" && attributes?.digest === digest
+      );
+      if (!relation?.url) throw error;
+      return { ticket, name: relation.attributes?.name ?? name, kind, digest, url: relation.url };
+    }
     const verified = (await this.readWorkItem(ticket)).relations?.find(({ rel, attributes }) =>
       rel === "AttachedFile" && attributes?.digest === digest
     );
@@ -525,7 +554,7 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     const content = await Bun.file(filePath).text();
     if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
-    validateEvidenceContent(content, "command");
+    validateEvidenceContent(content, "command-output");
     const item = await this.readWorkItemValidated(ticket);
     const fieldName = COMPLETION_FIELDS.find((name) => text(item, name)) ?? COMPLETION_FIELDS[0];
     await this.patchWorkItem(item, [{

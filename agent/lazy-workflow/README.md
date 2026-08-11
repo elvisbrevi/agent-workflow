@@ -94,8 +94,8 @@ bun run main.ts ticket-attachment-info --ticket 23459
 bun run main.ts ticket-evidence-info --ticket 23459
 bun run main.ts ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 bun run main.ts ticket-commit-link --ticket 23459 --pr 123
-bun run main.ts ticket-attachment-add --ticket 23459 --file evidence.json --evidence-kind json
-bun run main.ts ticket-evidence-set --ticket 23459 --file completion.html
+bun run main.ts ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json
+bun run main.ts ticket-evidence-set --ticket 23459 --evidence-file completion.html
 bun run main.ts ticket-branch-info --hu 23438 --ticket 23459
 bun run main.ts ticket-branch-set --hu 23438 --ticket 23459 \
   --branch ticket/23459 --working-directory /path/to/repository
