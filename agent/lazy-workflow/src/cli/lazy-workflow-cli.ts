@@ -225,7 +225,8 @@ export class LazyWorkflowCli {
         reportOperator("ticket-branch-set requiere --branch <name>");
         return 1;
       }
-      if (!args.includes("--working-directory")) {
+      const workingDirectory = optionValue(args, "--working-directory");
+      if (!workingDirectory?.trim() || workingDirectory.startsWith("--")) {
         reportOperator("ticket-branch-set requiere --working-directory <path>");
         return 1;
       }

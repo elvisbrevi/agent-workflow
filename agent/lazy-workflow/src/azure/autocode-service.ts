@@ -403,6 +403,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (!isDirectChild) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
     const type = field(item, "System.WorkItemType");
     if (type !== "Task" && type !== "Bug") throw new Error(`El work item ${ticket} no es un Task o Bug de entrega`);
+    const revision = item.rev;
+    if (typeof revision !== "number" || !Number.isInteger(revision) || revision <= 0) {
+      throw new Error(`El ticket ${ticket} no tiene una revisión Azure válida`);
+    }
 
     const integration = uniqueBranchLinks(parent)[0];
     if (!integration) throw new Error(`La HU ${hu} no tiene una rama de integración vinculada`);
@@ -461,15 +465,20 @@ export class AzureAutocodeService implements AutocodeAzureService {
       } finally {
         await this.git(["update-ref", "-d", temporaryRef], workingDirectory);
       }
-    } else if (!linked) {
+    } else {
       const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se vinculará la rama del ticket");
     }
 
     if (!linked) {
+      const currentIntegrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
+      const currentTicketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+      if (currentIntegrationSha !== integrationSha || currentTicketSha !== integrationSha) {
+        throw new Error(`Las ramas remotas cambiaron antes de vincular ${normalized.ref}`);
+      }
       const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
       const patch = [
-        ...(typeof item.rev === "number" ? [{ op: "test", path: "/rev", value: item.rev }] : []),
+        { op: "test", path: "/rev", value: revision },
         {
           op: "add",
           path: "/relations/-",
