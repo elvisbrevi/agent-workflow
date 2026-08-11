@@ -1069,7 +1069,7 @@ export class AzureTicketInfoService {
         "--output", "json",
       ])));
     } catch (error) {
-      const existing = (await this.readPullRequests(ticket, project, target, project, repository, source, "active").catch(() => []))
+      const existing = (await this.readPullRequests(ticket, project, target, project, repository, source, "active"))
         .filter((pr) => pr.source === source && pr.target === target);
       if (existing.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
       if (existing.length === 1) return existing[0]!;

@@ -99,7 +99,12 @@ export class GitTicketBranchCleaner {
       "origin",
       `+${integrationBranchRef}:refs/remotes/origin/${integrationBranch}`,
     ], workingDirectory);
-    await this.git(["switch", integrationBranch], workingDirectory);
+    const integrationLocalBranch = await this.git(["branch", "--list", integrationBranch], workingDirectory);
+    if (integrationLocalBranch.trim()) {
+      await this.git(["switch", integrationBranch], workingDirectory);
+    } else {
+      await this.git(["switch", "--create", integrationBranch, "--track", `refs/remotes/origin/${integrationBranch}`], workingDirectory);
+    }
     await this.git(["merge", "--ff-only", `origin/${integrationBranch}`], workingDirectory);
 
     const localBranch = await this.git(["branch", "--list", ticketBranch], workingDirectory);
