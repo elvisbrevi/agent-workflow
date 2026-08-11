@@ -1,9 +1,9 @@
-# Deterministic Azure ticket operations plan
+# Deterministic Azure ticket operations
 
 ## Objective
 
-Move mechanical Azure DevOps and Git effects out of the OpenCode prompt and
-into typed, idempotent `lazy-workflow` commands. OpenCode remains responsible
+Mechanical Azure DevOps and Git effects are kept out of the OpenCode prompt and
+owned by typed, idempotent `lazy-workflow` commands. OpenCode remains responsible
 for implementation, review, commits, and producing behavior-appropriate
 evidence files. The coordinator owns ticket selection, branches, Azure fields,
 attachments, PR integration, completion verification, cleanup, and recovery.
@@ -118,9 +118,9 @@ Recovery resumes the persisted phase. A merged canonical PR always enters
 `integrating`/`evidencing` reconciliation even when the ticket is not yet
 `Done`; OpenCode is never resumed merely to repair Azure metadata.
 
-## Checkpoint evolution
+## Checkpoint contract
 
-Extend the checkpoint with a version and durable receipts:
+The checkpoint uses a version and durable receipts for:
 
 - `phase`, HU ID, ticket ID, integration branch, ticket branch, and session ID;
 - Azure revision and effort baseline;
@@ -130,8 +130,9 @@ Extend the checkpoint with a version and durable receipts:
   effort, and final state.
 
 Write intent before each external effect and its receipt immediately after
-verification. Migration must continue reading the existing four-field
-checkpoint and map it conservatively to `implementing` or `reconciling`.
+verification. Legacy four-field checkpoints remain readable and map
+conservatively to `implementing` or `reconciling`; all subsequent writes use the
+versioned shape.
 
 ## Prompt after migration
 
@@ -148,22 +149,15 @@ PRs, upload attachments, set fields, or move tickets to `Done`. The prompt will:
 The operator prompt is supplemental and cannot override identities, branches,
 state-machine phases, or gates.
 
-## Implementation slices
+## Delivered slices
 
-1. Add REST helper, normalized ticket model, and all read-only `*-info`
-   commands with fixture-based tests.
-2. Add field/state/description/effort setters with revision guards and rereads.
-3. Add ticket branch provisioning/linking with real-Git tests and Azure-last
-   mutation ordering.
-4. Add PR/commit association, attachment upload, and evidence setters with
-   CLI-first/REST-fallback and idempotency tests.
-5. Add `ticket-completion-apply` as a composition of the tested primitives;
-   never duplicate their mutation logic.
-6. Version the checkpoint and move branch/state creation into the coordinator.
-7. Introduce `IMPLEMENTATION_READY`, manifest validation, and deterministic
-   integration/evidence/completion phases.
-8. Remove migrated mutations from `autocode-prompt.md`, update documentation,
-   and run the full Bun and installer suites.
+1. The normalized ticket model and read-only `*-info` commands use fixture-based tests.
+2. Field, state, description, effort, branch, PR, attachment, and evidence mutations use revision guards, rereads, idempotency, and focused tests.
+3. `ticket-completion-apply` composes the tested primitives without duplicating their mutation logic.
+4. The versioned checkpoint and coordinator own branch/state creation and durable effect receipts.
+5. `IMPLEMENTATION_READY`, manifest validation, and deterministic integration/evidence/completion phases define the Azure delivery contract.
+6. `autocode-prompt.md` contains only scoped implementation, validation, review, commit, and evidence instructions; the obsolete legacy executor is removed.
+7. Generic no-HU runs remain Azure-independent, and the Bun, installer, and whitespace suites validate the contract.
 
-Each slice must keep generic no-HU runs independent of Azure and must not use
+Every slice keeps generic no-HU runs independent of Azure and must not use
 real credentials or a live backlog in automated tests.

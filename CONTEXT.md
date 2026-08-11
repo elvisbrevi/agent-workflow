@@ -38,9 +38,13 @@ branch and verifies or provisions `hu/<HU>` through structured
 starting OpenCode. The operator prompt is not a branch-management interface.
 
 **Azure ticket delivery run**:
-A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
-direct Task or Bug per fresh OpenCode session, verifies completion, removes the
-completed ticket branch, and refreshes Azure before selecting the next ticket.
+  A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
+  direct Task or Bug per fresh OpenCode session. The coordinator owns ticket
+  selection, branches, pull requests, Azure fields, evidence, effort, completion
+  gates, recovery, and cleanup; OpenCode owns only scoped implementation,
+  validation, review, commit, and completion-manifest generation. OpenCode emits
+  `IMPLEMENTATION_READY`, after which the coordinator verifies completion, removes
+  the completed ticket branch, and refreshes Azure before selecting the next ticket.
 _Avoid_: Azure HU planning run
 
 **Explicit command**:
