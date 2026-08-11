@@ -1,4 +1,6 @@
 import { $ } from "bun";
+import { relative, resolve, sep } from "node:path";
+import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
@@ -98,6 +100,20 @@ export interface TicketInfo {
   attachments: TicketAttachment[];
   completionEvidence: string | null;
   gates: { satisfied: CompletionGate[]; unmet: CompletionGate[] };
+}
+
+export interface CompletionManifestEvidence {
+  path: string;
+  kind: EvidenceKind;
+  sha256: string;
+}
+
+export interface CompletionManifest {
+  ticket: number;
+  ticketBranch: string;
+  commit: string;
+  validation: Array<{ command: string; result: string }>;
+  evidence: CompletionManifestEvidence[];
 }
 
 interface Relation {
@@ -293,8 +309,11 @@ async function readUtf8File(filePath: string): Promise<string> {
 }
 
 function workItemRevision(item: WorkItem): number {
-  if (!Number.isInteger(item.rev) || item.rev <= 0) throw new Error(`El work item ${item.id} no tiene una revision Azure válida`);
-  return item.rev;
+  const revision = item.rev;
+  if (typeof revision !== "number" || !Number.isInteger(revision) || revision <= 0) {
+    throw new Error(`El work item ${item.id} no tiene una revision Azure válida`);
+  }
+  return revision;
 }
 
 function validateState(state: string, name: string): void {
@@ -337,7 +356,10 @@ export async function runAzureCommand(args: string[]): Promise<string> {
 }
 
 export class AzureTicketInfoService {
-  constructor(private readonly az: AzRunner = runAzureCommand) {}
+  constructor(
+    private readonly az: AzRunner = runAzureCommand,
+    private readonly git: GitRunner = runGit,
+  ) {}
 
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
@@ -419,6 +441,69 @@ export class AzureTicketInfoService {
         unmet,
       },
     };
+  }
+
+  async getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }> {
+    const info = await this.getTicketInfo(hu, ticket);
+    return { hu, ticket, gates: info.gates };
+  }
+
+  async applyCompletion(
+    hu: number,
+    ticket: number,
+    pullRequest: number,
+    manifestPath: string,
+    workingDirectory: string,
+  ): Promise<{ hu: number; ticket: number; pullRequest: number; manifest: string; state: string; gates: TicketInfo["gates"] }> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    positiveId(pullRequest, "El pull request");
+
+    let info = await this.getTicketInfo(hu, ticket);
+    const manifest = await this.readCompletionManifest(manifestPath);
+    await this.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+
+    if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== pullRequest) {
+      throw new Error(`El ticket ${ticket} ya tiene otro PR canónico asociado: ${info.canonicalPullRequest}`);
+    }
+    if (info.canonicalPullRequest === null) {
+      await this.linkPullRequest(hu, ticket, pullRequest);
+      info = await this.getTicketInfo(hu, ticket);
+    }
+
+    if (info.gates.unmet.includes(GATE.mergeCommitArtifact)) {
+      await this.linkCommit(ticket, pullRequest);
+      info = await this.getTicketInfo(hu, ticket);
+    }
+
+    for (const evidence of manifest.evidence) {
+      if (info.attachments.some((attachment) =>
+        attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase() && attachment.evidenceKind === evidence.kind
+      )) continue;
+      await this.addAttachment(ticket, evidence.path, evidence.kind);
+      info = await this.getTicketInfo(hu, ticket);
+    }
+
+    if (!info.completionEvidence) {
+      const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
+      if (!textEvidence) throw new Error("El manifest no contiene evidencia textual para completion-evidence");
+      await this.setEvidence(ticket, textEvidence.path);
+      info = await this.getTicketInfo(hu, ticket);
+    }
+
+    const unmetBeforeDone = info.gates.unmet.filter((gate) => gate !== GATE.ticketState);
+    if (unmetBeforeDone.length > 0) {
+      throw new Error(`No se puede completar el ticket ${ticket}; gates incumplidos: ${unmetBeforeDone.join(", ")}`);
+    }
+
+    if (info.ticket.state !== "Done") {
+      await this.setState(ticket, "Done", info.ticket.state ?? "", true);
+      info = await this.getTicketInfo(hu, ticket);
+    }
+    if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {
+      throw new Error(`No se pudo verificar la finalización del ticket ${ticket}`);
+    }
+    return { hu, ticket, pullRequest, manifest: manifestPath, state: "Done", gates: info.gates };
   }
 
   async getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
@@ -530,6 +615,73 @@ export class AzureTicketInfoService {
     const state = text(verified, TICKET_FIELDS.state);
     if (state !== desiredState) throw new Error(`No se pudo verificar el estado del ticket ${ticket}`);
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
+  }
+
+  private async readCompletionManifest(path: string): Promise<CompletionManifest> {
+    const content = await readUtf8File(path);
+    let value: unknown;
+    try {
+      value = JSON.parse(content);
+    } catch (error) {
+      throw new Error(`El manifest de completion no es JSON válido: ${path}`, { cause: error });
+    }
+    if (typeof value !== "object" || value === null) throw new Error("El manifest de completion debe ser un objeto");
+    const manifest = value as Partial<CompletionManifest>;
+    const manifestTicket = manifest.ticket;
+    if (
+      typeof manifestTicket !== "number" || !Number.isInteger(manifestTicket) || manifestTicket <= 0
+      || typeof manifest.ticketBranch !== "string" || !manifest.ticketBranch.trim()
+      || typeof manifest.commit !== "string" || !/^[0-9a-f]{40,64}$/i.test(manifest.commit)
+      || !Array.isArray(manifest.validation) || manifest.validation.length === 0
+      || !Array.isArray(manifest.evidence)
+    ) throw new Error("El manifest de completion carece de campos requeridos");
+    if (manifest.validation.some((entry) =>
+      typeof entry !== "object" || entry === null
+      || typeof entry.command !== "string" || !entry.command.trim()
+      || typeof entry.result !== "string" || !entry.result.trim()
+    )) throw new Error("Las validaciones del manifest de completion son inválidas");
+    if (manifest.evidence.some((entry) =>
+      typeof entry !== "object" || entry === null
+      || typeof entry.path !== "string" || !entry.path.trim()
+      || typeof entry.kind !== "string" || !EVIDENCE_KINDS.includes(entry.kind as EvidenceKind)
+      || typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(entry.sha256)
+    )) throw new Error("La evidencia del manifest de completion es inválida");
+    return manifest as CompletionManifest;
+  }
+
+  private async validateCompletionManifest(
+    manifest: CompletionManifest,
+    info: TicketInfo,
+    ticket: number,
+    workingDirectory: string,
+  ): Promise<void> {
+    const manifestTicket = manifest.ticket as number;
+    if (manifestTicket !== ticket) throw new Error(`El manifest pertenece al ticket ${manifestTicket}, no al ticket ${ticket}`);
+    if (info.branch !== manifest.ticketBranch) throw new Error("La rama del manifest no coincide con la rama del ticket");
+    const head = (await this.git(["rev-parse", "HEAD"], workingDirectory)).trim();
+    if (head !== manifest.commit) throw new Error("El commit del manifest no coincide con HEAD");
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);
+    if (!manifest.ticketBranch.startsWith("refs/heads/") || branch !== expectedBranch) {
+      throw new Error("La rama activa no coincide con la rama del manifest");
+    }
+
+    const root = resolve(workingDirectory);
+    const seen = new Set<string>();
+    for (const evidence of manifest.evidence) {
+      const path = resolve(evidence.path);
+      const relativePath = relative(root, path);
+      if (!relativePath || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`))) {
+        throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
+      }
+      const expectedDigest = evidence.sha256.toLowerCase();
+      if (seen.has(expectedDigest)) throw new Error(`El digest de evidencia está duplicado: ${evidence.sha256}`);
+      seen.add(expectedDigest);
+      const file = Bun.file(path);
+      if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${evidence.path}`);
+      const digest = await sha256(new Uint8Array(await file.arrayBuffer()));
+      if (digest !== expectedDigest) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
+    }
   }
 
   async setEffort(
@@ -1073,8 +1225,8 @@ export class AzureTicketInfoService {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
     if (!evidence) unmet.push(GATE.completionEvidence);
-    if (!number(item, ["Custom.EsfuerzoReal"])) unmet.push(GATE.realEffort);
-    if (!number(item, ["Custom.EsfuerzoRealHH"])) unmet.push(GATE.realEffortHours);
+    if (number(item, ["Custom.EsfuerzoReal"]) === undefined) unmet.push(GATE.realEffort);
+    if (number(item, ["Custom.EsfuerzoRealHH"]) === undefined) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
     if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);

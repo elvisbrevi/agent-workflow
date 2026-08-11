@@ -92,6 +92,7 @@ bun run main.ts ticket-state-info --ticket 23459
 bun run main.ts ticket-effort-info --ticket 23459
 bun run main.ts ticket-attachment-info --ticket 23459
 bun run main.ts ticket-evidence-info --ticket 23459
+bun run main.ts ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 --manifest /path/to/completion.json
 bun run main.ts ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 bun run main.ts ticket-commit-link --ticket 23459 --pr 123
 bun run main.ts ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json

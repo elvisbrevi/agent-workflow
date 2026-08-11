@@ -21,6 +21,7 @@ type CliOptions = OpenCodeRunOptions & {
   baseBranch: string | null;
   ticket: number | null;
   pullRequest: number | null;
+  manifest: string | null;
   file: string | null;
   descriptionFile: string | null;
   state: string | null;
@@ -47,6 +48,8 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
+  getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
+  applyCompletion?(hu: number, ticket: number, pullRequest: number, manifestPath: string, workingDirectory: string): Promise<unknown>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -144,6 +147,7 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-commit-link",
   "ticket-attachment-add",
   "ticket-evidence-set",
+  "ticket-completion-apply",
 ]);
 
 function isStableIntegrationBranchFailure(error: unknown): boolean {
@@ -184,6 +188,7 @@ function parseOptions(args: string[]): CliOptions {
     baseBranch: optionValue(args, "--base-branch"),
     ticket: args.includes("--ticket") ? Number(ticket) : null,
     pullRequest: args.includes("--pr") ? Number(optionValue(args, "--pr")) : null,
+    manifest: optionValue(args, "--manifest"),
     file: optionValue(args, "--evidence-file") ?? optionValue(args, "--file"),
     descriptionFile: optionValue(args, "--description-file"),
     state: optionValue(args, "--state"),
@@ -222,6 +227,7 @@ function printHelp(): void {
     "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
     "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
     "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
+    "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
@@ -272,6 +278,46 @@ export class LazyWorkflowCli {
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
+
+    if (command === "ticket-completion-apply") {
+      if (!isValidHu(options.hu)) {
+        reportOperator("ticket-completion-apply requiere --hu <id>");
+        return 1;
+      }
+      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+        reportOperator("ticket-completion-apply requiere --ticket <id> con un entero positivo");
+        return 1;
+      }
+      if (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0) {
+        reportOperator("ticket-completion-apply requiere --pr <id> con un entero positivo");
+        return 1;
+      }
+      if (!options.manifest?.trim()) {
+        reportOperator("ticket-completion-apply requiere --manifest <path>");
+        return 1;
+      }
+      if (!this.huInfoService.applyCompletion) {
+        reportOperator("El servicio Azure no soporta ticket-completion-apply");
+        return 1;
+      }
+      try {
+        console.log(JSON.stringify(
+          await this.huInfoService.applyCompletion(
+            options.hu,
+            options.ticket,
+            options.pullRequest,
+            options.manifest,
+            options.workingDirectory,
+          ),
+          null,
+          2,
+        ));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo ejecutar ticket-completion-apply (${errorMessage(error)})`);
+        return 1;
+      }
+    }
 
     if (command === "ticket-description-set" || command === "ticket-state-set" || command === "ticket-effort-set") {
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
@@ -567,18 +613,20 @@ export class LazyWorkflowCli {
       } else if (command === "ticket-branch-info") {
         if (!this.huInfoService.getBranch) throw new Error("El servicio Azure no soporta ticket-branch-info");
         result = await this.huInfoService.getBranch(options.hu!, ticket);
+      } else if (command === "ticket-completion-info" && this.huInfoService.getCompletionInfo) {
+        result = await this.huInfoService.getCompletionInfo(options.hu!, ticket);
       } else {
         if (!this.huInfoService.getTicketInfo) throw new Error(`El servicio Azure no soporta ${command}`);
         const info = await this.huInfoService.getTicketInfo(options.hu!, ticket);
         result = command === "ticket-pr-info"
-            ? {
-              hu: options.hu,
-              ticket,
-              pullRequests: info.pullRequests,
-              canonicalPullRequest: info.canonicalPullRequest,
-              mergeCommit: info.mergeCommit,
-            }
-            : { hu: options.hu, ticket, gates: info.gates };
+          ? {
+            hu: options.hu,
+            ticket,
+            pullRequests: info.pullRequests,
+            canonicalPullRequest: info.canonicalPullRequest,
+            mergeCommit: info.mergeCommit,
+          }
+          : { hu: options.hu, ticket, gates: info.gates };
       }
       console.log(JSON.stringify(result, null, 2));
       return 0;
