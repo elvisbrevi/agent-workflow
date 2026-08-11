@@ -23,14 +23,23 @@ completed ticket branch, and refreshes Azure before selecting the next ticket.
 _Avoid_: Azure HU planning run
 
 **Explicit command**:
-The first argument must be `plan`, `code`, or `hu-info`. Missing or unsupported
-subcommands print help and do not call Azure Boards or OpenCode.
+The first argument must be `plan`, `code`, `hu-info`, or `hu-branch-info`.
+Missing or unsupported subcommands print help and do not call Azure Boards or
+OpenCode.
 _Avoid_: accidental OpenCode execution
 
 **HU information query**:
 The `hu-info --hu <ID>` command that prints the selected User Story as JSON
 without starting OpenCode.
 _Avoid_: planning execution
+
+**HU integration branch query**:
+The `hu-branch-info --hu <ID>` command that reads the HU's native Azure Git
+`Branch` ArtifactLink and prints one normalized JSON object, `{ "hu": ID,
+"branch": "refs/heads/..." | null }`, without starting OpenCode or mutating
+Git or Azure. Missing links are `null`; malformed or conflicting native links
+fail with a nonzero status.
+_Avoid_: proposing a branch from the HU number
 
 **OpenCode result**:
 The normalized JSON representation of OpenCode JSONL output, including the

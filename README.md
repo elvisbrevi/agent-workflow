@@ -30,6 +30,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
+lazy-workflow hu-branch-info --hu 23438
 ```
 
 ## Skills
@@ -80,6 +81,13 @@ To query HU data without starting OpenCode:
 
 ```bash
 bun run main.ts hu-info --hu 23438
+```
+
+To query its native integration branch without starting OpenCode or mutating
+Git or Azure:
+
+```bash
+bun run main.ts hu-branch-info --hu 23438
 ```
 
 See [the agent README](agent/lazy-workflow/README.md) for behavior and

@@ -51,6 +51,51 @@ test("Azure usa el vínculo Branch nativo de la HU como rama de integración", a
   expect(commands[0]).not.toContain("Custom.IntegrationBranch");
 });
 
+test("Azure consulta la rama nativa de la HU y normaliza su ref", async () => {
+  const commands: string[][] = [];
+  const service = new AzureAutocodeService(async (args) => {
+    commands.push(args);
+    return JSON.stringify({
+      id: 23438,
+      relations: [{
+        rel: "ArtifactLink",
+        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fhu-23438",
+        attributes: { name: "Branch" },
+      }],
+    });
+  });
+
+  expect(await service.getIntegrationBranchInfo(23438)).toEqual({
+    hu: 23438,
+    branch: "refs/heads/feature/hu-23438",
+  });
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toContain("--expand");
+});
+
+test("Azure representa la ausencia de Branch ArtifactLink como null", async () => {
+  const service = new AzureAutocodeService(async () => JSON.stringify({ id: 23438, relations: [] }));
+
+  expect(await service.getIntegrationBranchInfo(23438)).toEqual({ hu: 23438, branch: null });
+});
+
+test("Azure rechaza URI de rama malformada y ramas nativas ambiguas", async () => {
+  const malformed = new AzureAutocodeService(async () => JSON.stringify({
+    id: 23438,
+    relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/not-a-branch", attributes: { name: "Branch" } }],
+  }));
+  await expect(malformed.getIntegrationBranchInfo(23438)).rejects.toThrow("malformada");
+
+  const ambiguous = new AzureAutocodeService(async () => JSON.stringify({
+    id: 23438,
+    relations: [
+      { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project%2Frepo%2FGBhu%2F23438", attributes: { name: "Branch" } },
+      { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project%2Frepo%2FGBhu%2Fother", attributes: { name: "Branch" } },
+    ],
+  }));
+  await expect(ambiguous.getIntegrationBranchInfo(23438)).rejects.toThrow("multiples");
+});
+
 test("Azure propone la rama HU sin escribir un campo personalizado cuando aún no está vinculada", async () => {
   const commands: string[][] = [];
   const service = new AzureAutocodeService(async (args) => {
@@ -253,6 +298,46 @@ test("el comando hu-info obtiene y muestra la HU solicitada", async () => {
 
   expect(requestedHu).toBe(12345);
   expect(output).toEqual([JSON.stringify(huInfo, null, 2)]);
+});
+
+test("el comando hu-branch-info imprime una consulta JSON y no inicia OpenCode", async () => {
+  const output: string[] = [];
+  let openCodeCalls = 0;
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const result = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => new HuInfo({ id: 23438 }),
+        waitForAccess: async () => undefined,
+        getIntegrationBranchInfo: async (hu) => ({ hu, branch: "refs/heads/hu/23438" }),
+      },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("no debe ejecutarse"); },
+        resume: async () => { openCodeCalls += 1; throw new Error("no debe ejecutarse"); },
+      },
+    ).run(["hu-branch-info", "--hu", "23438"]);
+
+    expect(result).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(output).toEqual([JSON.stringify({ hu: 23438, branch: "refs/heads/hu/23438" }, null, 2)]);
+  expect(openCodeCalls).toBe(0);
+});
+
+test("hu-branch-info rechaza un HU inválido sin consultar Azure", async () => {
+  let calls = 0;
+  const result = await new LazyWorkflowCli({
+    getHuInfo: async () => new HuInfo({ id: 1 }),
+    waitForAccess: async () => undefined,
+    getIntegrationBranchInfo: async () => { calls += 1; return { hu: 1, branch: null }; },
+  }).run(["hu-branch-info", "--hu", "abc"]);
+
+  expect(result).toBe(1);
+  expect(calls).toBe(0);
 });
 
 test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
