@@ -10,7 +10,7 @@ import {
 } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
-import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
+import type { AutocodeCheckpoint, AutocodeCheckpointStore, StoredAutocodeCheckpoint } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine } from "../src/output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
 
@@ -1101,7 +1101,7 @@ test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", as
   ];
   const sessions: string[] = [];
   const cleanedBranches: Array<[string, string, string]> = [];
-  const checkpoints: Array<AutocodeCheckpoint | "clear"> = [];
+  const checkpoints: Array<StoredAutocodeCheckpoint | "clear"> = [];
   const store: AutocodeCheckpointStore = {
     read: async () => null,
     write: async (checkpoint) => { checkpoints.push(checkpoint); },
@@ -1702,7 +1702,7 @@ test("code convierte una sesion ausente en checkpoint sessionless sin reintentar
     },
     {
       read: async () => checkpoint,
-      write: async (value) => { checkpoint = value; },
+      write: async (value) => { checkpoint.sessionId = value.sessionId; },
       clear: async () => undefined,
     },
     { wait: async () => { retries += 1; } },
@@ -1737,7 +1737,7 @@ test("code reconcilia un checkpoint completado sin sesion y continúa con el sig
   };
   const store: AutocodeCheckpointStore = {
     read: async () => checkpoint,
-    write: async (value) => { checkpoint = value; },
+    write: async () => undefined,
     clear: async () => { checkpoint = null; },
   };
   const completedResult = OpenCodeResult.fromJsonLines(JSON.stringify({
@@ -1865,7 +1865,7 @@ test("code versionado persiste fases y prepara estado y rama antes de OpenCode",
       clear: async () => undefined,
     },
     undefined,
-    { deleteTicketBranch: async () => events.push("cleanup") },
+    { deleteTicketBranch: async () => { events.push("cleanup"); } },
     { now: () => clockValues.shift() ?? 1800 },
   ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
