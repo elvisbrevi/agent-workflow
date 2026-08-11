@@ -347,7 +347,7 @@ test("ticket-info falls back to the authenticated Azure REST read boundary", asy
 
 test("ticket reads reject invalid or non-direct delivery tickets", async () => {
   const service = new AzureTicketInfoService(async (args) => {
-    if (args.includes("23438")) return JSON.stringify({ id: 23438, fields: {}, relations: [] });
+    if (args.includes("23438")) return JSON.stringify({ id: 23438, fields: { "System.WorkItemType": "User Story" }, relations: [] });
     return JSON.stringify({ id: 51, fields: { "System.WorkItemType": "Task" }, relations: [] });
   });
 
