@@ -724,7 +724,8 @@ export class LazyWorkflowCli {
       this.huInfoService.getState
       && this.huInfoService.getEffort
       && this.huInfoService.setState
-      && this.huInfoService.setTicketBranch,
+      && this.huInfoService.setTicketBranch
+      && this.huInfoService.getBranch,
     );
   }
 
@@ -758,6 +759,7 @@ export class LazyWorkflowCli {
       activeDurationMs: 0,
       activeSince: null,
       sessionId: null,
+      intent: null,
       receipts: {},
     };
     const save = async (): Promise<void> => { await this.checkpointStore.write(checkpoint); };
@@ -765,9 +767,13 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, ...fields, phase, activeSince: null };
       await save();
     };
-    const track = async <T>(effect: AutocodeEffect | null, action: () => Promise<T>): Promise<T> => {
+    const track = async <T>(effect: AutocodeEffect | null, action: () => Promise<T>, target = effect ?? ""): Promise<T> => {
       const started = now();
-      checkpoint = { ...checkpoint, activeSince: new Date(started).toISOString() };
+      checkpoint = {
+        ...checkpoint,
+        activeSince: new Date(started).toISOString(),
+        intent: effect ? { effect, target } : null,
+      };
       await save();
       try {
         const result = await action();
@@ -776,6 +782,7 @@ export class LazyWorkflowCli {
           ...checkpoint,
           activeDurationMs: checkpoint.activeDurationMs + Math.max(0, finished - started),
           activeSince: null,
+          intent: null,
           ...(effect ? { receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(finished).toISOString() } } } : {}),
         };
         await save();
@@ -805,8 +812,11 @@ export class LazyWorkflowCli {
     try {
       if (!integrationBranch) {
         await markPhase("preflight-hu");
-        integrationBranch = await track("hu-integration-branch", async () =>
-          this.huInfoService.ensureIntegrationBranch!(hu, options.workingDirectory, options.baseBranch));
+        integrationBranch = await track(
+          "hu-integration-branch",
+          async () => this.huInfoService.ensureIntegrationBranch!(hu, options.workingDirectory, options.baseBranch),
+          `refs/heads/hu/${hu}`,
+        );
         if (!integrationBranch) {
           reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
           return 1;
@@ -819,7 +829,7 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (checkpoint.phase === "implementing" && checkpoint.ticket !== null && checkpoint.sessionId === null) {
+    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null) {
       if (!this.huInfoService.getAutocodeContextForTicket) return 1;
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
       if (!context || !this.huInfoService.verifyTicketCompletion) {
@@ -834,7 +844,11 @@ export class LazyWorkflowCli {
     }
 
     let context: AutocodeContext | null = null;
-    if (checkpoint.ticket !== null && this.huInfoService.getAutocodeContextForTicket) {
+    if (checkpoint.ticket !== null) {
+      if (!this.huInfoService.getAutocodeContextForTicket) {
+        reportOperator(`lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`);
+        return 1;
+      }
       context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
     } else if (this.huInfoService.getAutocodeState) {
       await markPhase("selected", { integrationBranch });
@@ -880,7 +894,7 @@ export class LazyWorkflowCli {
       reportOperator(`lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
       return 1;
     }
-    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch && existingBranch.branch !== ticketBranch) {
+    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch !== ticketBranch) {
       reportOperator(`lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
       return 1;
     }
@@ -893,14 +907,14 @@ export class LazyWorkflowCli {
         stateInfo.state ?? context!.ticket.state ?? "Active",
         false,
         stateInfo.revision ?? undefined,
-      ).then(() => undefined));
+      ).then(() => undefined), "En progreso");
     } else {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-state": { verifiedAt: new Date(now()).toISOString() } } };
       await save();
     }
     if (!this.huInfoService.setTicketBranch) return 1;
     if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
-      await track("ticket-branch", () => this.huInfoService.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined));
+      await track("ticket-branch", () => this.huInfoService.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
     } else {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch": { verifiedAt: new Date(now()).toISOString() } } };
       await save();
