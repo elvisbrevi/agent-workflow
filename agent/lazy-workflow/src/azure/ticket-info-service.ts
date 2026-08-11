@@ -444,66 +444,16 @@ export class AzureTicketInfoService {
   }
 
   async getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }> {
-    const info = await this.getTicketInfo(hu, ticket);
-    return { hu, ticket, gates: info.gates };
-  }
-
-  async applyCompletion(
-    hu: number,
-    ticket: number,
-    pullRequest: number,
-    manifestPath: string,
-    workingDirectory: string,
-  ): Promise<{ hu: number; ticket: number; pullRequest: number; manifest: string; state: string; gates: TicketInfo["gates"] }> {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
-    positiveId(pullRequest, "El pull request");
-
-    let info = await this.getTicketInfo(hu, ticket);
-    const manifest = await this.readCompletionManifest(manifestPath);
-    await this.validateCompletionManifest(manifest, info, ticket, workingDirectory);
-
-    if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== pullRequest) {
-      throw new Error(`El ticket ${ticket} ya tiene otro PR canónico asociado: ${info.canonicalPullRequest}`);
+    try {
+      const info = await this.getTicketInfo(hu, ticket);
+      return { hu, ticket, gates: info.gates };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/no es hijo directo|no es un Task o Bug de entrega/i.test(message)) throw error;
+      return { hu, ticket, gates: { satisfied: [], unmet: Object.values(GATE) } };
     }
-    if (info.canonicalPullRequest === null) {
-      await this.linkPullRequest(hu, ticket, pullRequest);
-      info = await this.getTicketInfo(hu, ticket);
-    }
-
-    if (info.gates.unmet.includes(GATE.mergeCommitArtifact)) {
-      await this.linkCommit(ticket, pullRequest);
-      info = await this.getTicketInfo(hu, ticket);
-    }
-
-    for (const evidence of manifest.evidence) {
-      if (info.attachments.some((attachment) =>
-        attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase() && attachment.evidenceKind === evidence.kind
-      )) continue;
-      await this.addAttachment(ticket, evidence.path, evidence.kind);
-      info = await this.getTicketInfo(hu, ticket);
-    }
-
-    if (!info.completionEvidence) {
-      const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
-      if (!textEvidence) throw new Error("El manifest no contiene evidencia textual para completion-evidence");
-      await this.setEvidence(ticket, textEvidence.path);
-      info = await this.getTicketInfo(hu, ticket);
-    }
-
-    const unmetBeforeDone = info.gates.unmet.filter((gate) => gate !== GATE.ticketState);
-    if (unmetBeforeDone.length > 0) {
-      throw new Error(`No se puede completar el ticket ${ticket}; gates incumplidos: ${unmetBeforeDone.join(", ")}`);
-    }
-
-    if (info.ticket.state !== "Done") {
-      await this.setState(ticket, "Done", info.ticket.state ?? "", true);
-      info = await this.getTicketInfo(hu, ticket);
-    }
-    if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {
-      throw new Error(`No se pudo verificar la finalización del ticket ${ticket}`);
-    }
-    return { hu, ticket, pullRequest, manifest: manifestPath, state: "Done", gates: info.gates };
   }
 
   async getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
@@ -617,7 +567,7 @@ export class AzureTicketInfoService {
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
   }
 
-  private async readCompletionManifest(path: string): Promise<CompletionManifest> {
+  async readCompletionManifest(path: string): Promise<CompletionManifest> {
     const content = await readUtf8File(path);
     let value: unknown;
     try {
@@ -649,7 +599,7 @@ export class AzureTicketInfoService {
     return manifest as CompletionManifest;
   }
 
-  private async validateCompletionManifest(
+  async validateCompletionManifest(
     manifest: CompletionManifest,
     info: TicketInfo,
     ticket: number,
