@@ -9,7 +9,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
+import type { EvidenceKind, TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
@@ -20,6 +20,9 @@ type CliOptions = OpenCodeRunOptions & {
   branch: string | null;
   baseBranch: string | null;
   ticket: number | null;
+  pullRequest: number | null;
+  file: string | null;
+  evidenceKind: EvidenceKind | null;
   numberOfQuestions: number;
   workingDirectory: string;
 };
@@ -42,6 +45,10 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
+  linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
+  linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
+  addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
+  setEvidence?(ticket: number, filePath: string): Promise<unknown>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -116,7 +123,13 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-evidence-info",
   "ticket-completion-info",
 ]);
-const TICKET_MUTATION_COMMANDS = new Set(["ticket-branch-set"]);
+const TICKET_MUTATION_COMMANDS = new Set([
+  "ticket-branch-set",
+  "ticket-pr-link",
+  "ticket-commit-link",
+  "ticket-attachment-add",
+  "ticket-evidence-set",
+]);
 
 function isStableIntegrationBranchFailure(error: unknown): boolean {
   return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
@@ -151,6 +164,9 @@ function parseOptions(args: string[]): CliOptions {
     branch: optionValue(args, "--branch"),
     baseBranch: optionValue(args, "--base-branch"),
     ticket: args.includes("--ticket") ? Number(ticket) : null,
+    pullRequest: args.includes("--pr") ? Number(optionValue(args, "--pr")) : null,
+    file: optionValue(args, "--file"),
+    evidenceKind: (optionValue(args, "--evidence-kind") ?? optionValue(args, "--kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -171,6 +187,10 @@ function printHelp(): void {
     "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
     "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
     "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
+    "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
+    "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
+    "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --evidence-kind <screen|json|command>",
+    "  lazy-workflow ticket-evidence-set --ticket <id> --file <path>",
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
@@ -181,6 +201,9 @@ function printHelp(): void {
     "  --branch <name>",
     "  --base-branch <name>",
     "  --ticket <id>",
+    "  --pr <id>",
+    "  --file <path>",
+    "  --evidence-kind <screen|json|command>",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
@@ -211,6 +234,51 @@ export class LazyWorkflowCli {
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
+
+    if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
+      if (command === "ticket-pr-link" && !isValidHu(options.hu)) {
+        reportOperator("ticket-pr-link requiere --hu <id>");
+        return 1;
+      }
+      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+        reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+        return 1;
+      }
+      if ((command === "ticket-pr-link" || command === "ticket-commit-link")
+        && (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0)) {
+        reportOperator(`${command} requiere --pr <id> con un entero positivo`);
+        return 1;
+      }
+      if ((command === "ticket-attachment-add" || command === "ticket-evidence-set") && !options.file?.trim()) {
+        reportOperator(`${command} requiere --file <path>`);
+        return 1;
+      }
+      if (command === "ticket-attachment-add" && !options.evidenceKind) {
+        reportOperator("ticket-attachment-add requiere --evidence-kind <screen|json|command>");
+        return 1;
+      }
+      try {
+        let result: unknown;
+        if (command === "ticket-pr-link") {
+          if (!this.huInfoService.linkPullRequest) throw new Error("El servicio Azure no soporta ticket-pr-link");
+          result = await this.huInfoService.linkPullRequest(options.hu!, options.ticket, options.pullRequest!);
+        } else if (command === "ticket-commit-link") {
+          if (!this.huInfoService.linkCommit) throw new Error("El servicio Azure no soporta ticket-commit-link");
+          result = await this.huInfoService.linkCommit(options.ticket, options.pullRequest!);
+        } else if (command === "ticket-attachment-add") {
+          if (!this.huInfoService.addAttachment) throw new Error("El servicio Azure no soporta ticket-attachment-add");
+          result = await this.huInfoService.addAttachment(options.ticket, options.file!, options.evidenceKind!);
+        } else {
+          if (!this.huInfoService.setEvidence) throw new Error("El servicio Azure no soporta ticket-evidence-set");
+          result = await this.huInfoService.setEvidence(options.ticket, options.file!);
+        }
+        console.log(JSON.stringify(result, null, 2));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        return 1;
+      }
+    }
 
     if (command === "ticket-branch-set") {
       if (!isValidHu(options.hu)) {
