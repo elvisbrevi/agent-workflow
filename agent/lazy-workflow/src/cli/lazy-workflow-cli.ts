@@ -758,7 +758,7 @@ export class LazyWorkflowCli {
   }
 
   private async runAzureCode(options: CliOptions): Promise<number> {
-    const checkpoint = await this.checkpointStore.read();
+    const checkpoint = await this.checkpointStore.read(options.workingDirectory);
     if (this.supportsVersionedLifecycle() || (checkpoint !== null && isVersionedAutocodeCheckpoint(checkpoint))) {
       return this.runVersionedAzureCode(options, checkpoint);
     }
@@ -790,7 +790,7 @@ export class LazyWorkflowCli {
       intent: null,
       receipts: {},
     };
-    const save = async (): Promise<void> => { await this.checkpointStore.write(checkpoint); };
+    const save = async (): Promise<void> => { await this.checkpointStore.write(checkpoint, options.workingDirectory); };
     const markPhase = async (phase: AutocodePhase, fields: Partial<VersionedAutocodeCheckpoint> = {}): Promise<void> => {
       checkpoint = { ...checkpoint, ...fields, phase, activeSince: null };
       await save();
@@ -827,6 +827,10 @@ export class LazyWorkflowCli {
       }
     };
 
+    if (options.hu !== null && checkpoint.hu !== options.hu) {
+      reportOperator(`lazy-workflow: la HU ${options.hu} no coincide con la HU fijada ${checkpoint.hu}.`);
+      return 1;
+    }
     if (options.session !== null && checkpoint.sessionId !== options.session) {
       reportOperator("lazy-workflow: la sesión no coincide con el checkpoint fijado.");
       return 1;
@@ -889,7 +893,7 @@ export class LazyWorkflowCli {
       const verification = await this.huInfoService.verifyTicketCompletion(context);
       if (!requireVerifiedCompletion(checkpoint.ticket, verification, `lazy-workflow: el ticket ${checkpoint.ticket} todavía no cumple el cierre verificable.`)) return 1;
       await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-      await this.checkpointStore.clear();
+      await this.checkpointStore.clear(options.workingDirectory);
       return 0;
     }
 
@@ -977,7 +981,7 @@ export class LazyWorkflowCli {
           await save();
         }
         await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch);
-        await this.checkpointStore.clear();
+        await this.checkpointStore.clear(options.workingDirectory);
         return this.runVersionedAzureCode({ ...options, session: null }, null);
       } catch (error) {
         reportOperator(`lazy-workflow: no se pudo reconciliar determinísticamente el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`);
@@ -1001,7 +1005,7 @@ export class LazyWorkflowCli {
           return 1;
         }
         reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
-        await this.checkpointStore.clear();
+        await this.checkpointStore.clear(options.workingDirectory);
         return 0;
       }
       context = state.context;
@@ -1165,7 +1169,7 @@ export class LazyWorkflowCli {
               await save();
               await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
               await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
-              await this.checkpointStore.clear();
+              await this.checkpointStore.clear(options.workingDirectory);
               return this.runVersionedAzureCode({ ...options, session: null }, null);
             } catch (error) {
               reportOperator(`lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`);
@@ -1177,7 +1181,7 @@ export class LazyWorkflowCli {
             const verification = await this.huInfoService.verifyTicketCompletion(context);
             if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
             await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-            await this.checkpointStore.clear();
+            await this.checkpointStore.clear(options.workingDirectory);
             return 0;
           } catch (error) {
             reportOperator(`lazy-workflow: no se pudo verificar o limpiar el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint sessionless conservado.`);
@@ -1211,9 +1215,13 @@ export class LazyWorkflowCli {
       reportOperator("El servicio Azure no soporta autocode");
       return 1;
     }
-    const storedCheckpoint = initialCheckpoint ?? await this.checkpointStore.read();
+    const storedCheckpoint = initialCheckpoint ?? await this.checkpointStore.read(options.workingDirectory);
     if (storedCheckpoint && isVersionedAutocodeCheckpoint(storedCheckpoint)) return 1;
     const checkpoint = storedCheckpoint;
+    if (checkpoint && options.hu !== null && checkpoint.hu !== options.hu) {
+      reportOperator(`lazy-workflow: la HU ${options.hu} no coincide con la HU fijada ${checkpoint.hu}.`);
+      return 1;
+    }
     let recovering = options.session !== null;
     let reconciling = !recovering && checkpoint?.sessionId === null;
     if (recovering && (!checkpoint || checkpoint.sessionId !== options.session)) return 1;
@@ -1266,7 +1274,7 @@ export class LazyWorkflowCli {
                 hu,
                 ticket: pinnedContext.ticket.id,
                 sessionId: null,
-              });
+              }, options.workingDirectory);
               recovering = false;
               sessionId = null;
               if (!requireVerifiedCompletion(
@@ -1284,7 +1292,7 @@ export class LazyWorkflowCli {
                 reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
                 return 1;
               }
-              await this.checkpointStore.clear();
+              await this.checkpointStore.clear(options.workingDirectory);
               continue;
             }
           }
@@ -1305,7 +1313,7 @@ export class LazyWorkflowCli {
               reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
               return 1;
             }
-            await this.checkpointStore.clear();
+            await this.checkpointStore.clear(options.workingDirectory);
             reconciling = false;
             continue;
           }
@@ -1336,7 +1344,7 @@ export class LazyWorkflowCli {
       const context = state.context;
       if (!recovering) {
         try {
-          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId: null });
+          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId: null }, options.workingDirectory);
         } catch {
           try { await this.retryTimer.wait(10_000); } catch { return 1; }
           continue;
@@ -1367,7 +1375,7 @@ export class LazyWorkflowCli {
               hu,
               ticket: context.ticket.id,
               sessionId: terminalMarkerReceived ? null : result.sessionId,
-            });
+            }, options.workingDirectory);
           } catch (error) {
             if (terminalMarkerReceived) {
               reportOperator(`lazy-workflow: no se pudo persistir el checkpoint sessionless (${errorMessage(error)}); ejecución detenida.`);
@@ -1402,7 +1410,7 @@ export class LazyWorkflowCli {
               reportOperator(`lazy-workflow: la limpieza Git del ticket ${context.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
               return 1;
             }
-            await this.checkpointStore.clear();
+            await this.checkpointStore.clear(options.workingDirectory);
             if (!this.huInfoService.getAutocodeState) {
               console.log(JSON.stringify(result, null, 2));
               return 0;
@@ -1423,7 +1431,7 @@ export class LazyWorkflowCli {
                 hu,
                 ticket: context.ticket.id,
                 sessionId: null,
-              });
+              }, options.workingDirectory);
             } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
             reportOperator(`lazy-workflow: no se pudo cerrar la sesión ${error.sessionId} (${errorMessage(error)}); checkpoint sessionless conservado y ejecución detenida.`);
             return 1;
@@ -1435,7 +1443,7 @@ export class LazyWorkflowCli {
                 hu,
                 ticket: context.ticket.id,
                 sessionId: null,
-              });
+              }, options.workingDirectory);
             } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
             reportOperator(`lazy-workflow: la sesión ${error.sessionId} ya no existe; checkpoint sessionless conservado para reconciliación.`);
             return 1;
