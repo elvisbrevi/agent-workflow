@@ -8,7 +8,7 @@ export interface AutocodeCheckpoint {
   sessionId: string | null;
 }
 
-export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing";
+export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing" | "reconciling";
 
 export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch";
 
@@ -25,6 +25,7 @@ export interface VersionedAutocodeCheckpoint {
   activeDurationMs: number;
   activeSince: string | null;
   sessionId: string | null;
+  intent: { effect: AutocodeEffect; target: string } | null;
   receipts: Partial<Record<AutocodeEffect, { verifiedAt: string }>>;
 }
 
@@ -55,7 +56,7 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
   const checkpoint = value as Partial<VersionedAutocodeCheckpoint>;
   return checkpoint.schemaVersion === 2
     && checkpoint.workflow === "autocode"
-    && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing")
+    && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "reconciling")
     && Number.isInteger(checkpoint.hu)
     && (checkpoint.ticket === null || Number.isInteger(checkpoint.ticket))
     && (checkpoint.integrationBranch === null || typeof checkpoint.integrationBranch === "string")
@@ -69,6 +70,7 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
     && Number.isFinite(checkpoint.activeDurationMs)
     && (checkpoint.activeSince === null || typeof checkpoint.activeSince === "string")
     && (checkpoint.sessionId === null || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.trim().length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
+    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && checkpoint.intent !== null && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string"))
     && typeof checkpoint.receipts === "object"
     && checkpoint.receipts !== null;
 }
@@ -93,7 +95,7 @@ export function migrateAutocodeCheckpoint(value: unknown, now = Date.now()): Ver
   return {
     schemaVersion: 2,
     workflow: "autocode",
-    phase: "implementing",
+    phase: value.sessionId === null ? "reconciling" : "implementing",
     hu: value.hu,
     ticket: value.ticket,
     integrationBranch: null,
@@ -103,6 +105,7 @@ export function migrateAutocodeCheckpoint(value: unknown, now = Date.now()): Ver
     activeDurationMs: 0,
     activeSince: null,
     sessionId: value.sessionId,
+    intent: null,
     receipts: {},
   };
 }
@@ -128,9 +131,11 @@ export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
   async write(checkpoint: StoredAutocodeCheckpoint): Promise<void> {
     const path = await this.path();
     await Bun.$`mkdir -p ${path.substring(0, path.lastIndexOf("/"))}`;
-    const migrated = migrateAutocodeCheckpoint(checkpoint);
-    if (!migrated) throw new Error("Checkpoint autocode invalido");
-    await Bun.write(path, `${JSON.stringify(migrated)}\n`);
+    const normalized = isVersionedAutocodeCheckpoint(checkpoint)
+      ? checkpoint
+      : migrateAutocodeCheckpoint(checkpoint);
+    if (!normalized || !validVersioned(normalized)) throw new Error("Checkpoint autocode invalido");
+    await Bun.write(path, `${JSON.stringify(normalized)}\n`);
   }
 
   async clear(): Promise<void> {

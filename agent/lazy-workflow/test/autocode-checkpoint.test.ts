@@ -26,6 +26,7 @@ test("migra el checkpoint legacy a implementing sin adivinar efectos completados
     activeDurationMs: 0,
     activeSince: null,
     sessionId: "ses-51",
+    intent: null,
     receipts: {},
   });
 });
@@ -44,6 +45,7 @@ test("reconoce solo checkpoints versionados validos", () => {
     activeDurationMs: 250,
     activeSince: null,
     sessionId: null,
+    intent: null,
     receipts: {},
   };
 
@@ -65,9 +67,14 @@ test("contabiliza una operacion interrumpida una sola vez al migrar", () => {
     activeDurationMs: 25,
     activeSince: "1970-01-01T00:00:01.000Z",
     sessionId: null,
+    intent: null,
     receipts: {},
   }, 1_500);
 
   expect(migrated?.activeDurationMs).toBe(525);
   expect(migrated?.activeSince).toBeNull();
+});
+
+test("migra un checkpoint legacy sessionless a reconciliacion", () => {
+  expect(migrateAutocodeCheckpoint({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null })?.phase).toBe("reconciling");
 });

@@ -1899,6 +1899,7 @@ test("code versionado conserva el marcador al reanudar una sesion fijada", async
     activeDurationMs: 0,
     activeSince: null,
     sessionId: "ses-51",
+    intent: null,
     receipts: {
       "ticket-state": { verifiedAt: "now" },
       "ticket-branch": { verifiedAt: "now" },
