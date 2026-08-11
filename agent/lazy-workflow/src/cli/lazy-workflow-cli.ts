@@ -9,6 +9,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
+import type { TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
@@ -18,6 +19,7 @@ type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
   branch: string | null;
   baseBranch: string | null;
+  ticket: number | null;
   numberOfQuestions: number;
   workingDirectory: string;
 };
@@ -31,6 +33,14 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
+  getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
+  getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
+  getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
+  getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
+  getState?(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
+  getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
+  getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
+  getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -94,6 +104,17 @@ const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
+const TICKET_READ_COMMANDS = new Set([
+  "ticket-info",
+  "ticket-description-info",
+  "ticket-state-info",
+  "ticket-effort-info",
+  "ticket-branch-info",
+  "ticket-pr-info",
+  "ticket-attachment-info",
+  "ticket-evidence-info",
+  "ticket-completion-info",
+]);
 
 function isStableIntegrationBranchFailure(error: unknown): boolean {
   return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
@@ -118,6 +139,7 @@ function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> 
 
 function parseOptions(args: string[]): CliOptions {
   const hu = optionValue(args, "--hu");
+  const ticket = optionValue(args, "--ticket");
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
@@ -126,6 +148,7 @@ function parseOptions(args: string[]): CliOptions {
     hu: args.includes("--hu") ? Number(hu) : null,
     branch: optionValue(args, "--branch"),
     baseBranch: optionValue(args, "--base-branch"),
+    ticket: args.includes("--ticket") ? Number(ticket) : null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -142,6 +165,9 @@ function printHelp(): void {
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
     "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
+    "  lazy-workflow ticket-info --hu <id> --ticket <id>",
+    "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
+    "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
@@ -151,6 +177,7 @@ function printHelp(): void {
     "  --prompt <prompt>",
     "  --branch <name>",
     "  --base-branch <name>",
+    "  --ticket <id>",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
@@ -168,7 +195,7 @@ export class LazyWorkflowCli {
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set") {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -179,6 +206,8 @@ export class LazyWorkflowCli {
       reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
       return 1;
     }
+
+    if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
 
     if (command === "hu-info") {
       if (!isValidHu(options.hu)) {
@@ -250,7 +279,7 @@ export class LazyWorkflowCli {
       return this.runDefaultWorkflow(command, options);
     }
 
-    if (options.hu === null) return this.runDefaultWorkflow(command, options);
+    if (options.hu === null) return this.runDefaultWorkflow("plan", options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
 
@@ -313,6 +342,62 @@ export class LazyWorkflowCli {
         reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
         return 0;
       }
+    }
+  }
+
+  private async runTicketRead(command: string, options: CliOptions): Promise<number> {
+    if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+      return 1;
+    }
+    const ticket = options.ticket;
+    const needsHu = command === "ticket-info" || command === "ticket-branch-info"
+      || command === "ticket-pr-info" || command === "ticket-completion-info";
+    if (needsHu && !isValidHu(options.hu)) {
+      reportOperator(`${command} requiere --hu <id>`);
+      return 1;
+    }
+    try {
+      let result: unknown;
+      if (command === "ticket-info") {
+        if (!this.huInfoService.getTicketInfo) throw new Error("El servicio Azure no soporta ticket-info");
+        result = await this.huInfoService.getTicketInfo(options.hu!, ticket);
+      } else if (command === "ticket-description-info") {
+        if (!this.huInfoService.getDescription) throw new Error("El servicio Azure no soporta ticket-description-info");
+        result = await this.huInfoService.getDescription(ticket);
+      } else if (command === "ticket-state-info") {
+        if (!this.huInfoService.getState) throw new Error("El servicio Azure no soporta ticket-state-info");
+        result = await this.huInfoService.getState(ticket);
+      } else if (command === "ticket-effort-info") {
+        if (!this.huInfoService.getEffort) throw new Error("El servicio Azure no soporta ticket-effort-info");
+        result = await this.huInfoService.getEffort(ticket);
+      } else if (command === "ticket-attachment-info") {
+        if (!this.huInfoService.getAttachments) throw new Error("El servicio Azure no soporta ticket-attachment-info");
+        result = await this.huInfoService.getAttachments(ticket);
+      } else if (command === "ticket-evidence-info") {
+        if (!this.huInfoService.getEvidence) throw new Error("El servicio Azure no soporta ticket-evidence-info");
+        result = await this.huInfoService.getEvidence(ticket);
+      } else if (command === "ticket-branch-info") {
+        if (!this.huInfoService.getBranch) throw new Error("El servicio Azure no soporta ticket-branch-info");
+        result = await this.huInfoService.getBranch(options.hu!, ticket);
+      } else {
+        if (!this.huInfoService.getTicketInfo) throw new Error(`El servicio Azure no soporta ${command}`);
+        const info = await this.huInfoService.getTicketInfo(options.hu!, ticket);
+        result = command === "ticket-pr-info"
+            ? {
+              hu: options.hu,
+              ticket,
+              pullRequests: info.pullRequests,
+              canonicalPullRequest: info.canonicalPullRequest,
+              mergeCommit: info.mergeCommit,
+            }
+            : { hu: options.hu, ticket, gates: info.gates };
+      }
+      console.log(JSON.stringify(result, null, 2));
+      return 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo consultar ${command} (${errorMessage(error)})`);
+      return 1;
     }
   }
 

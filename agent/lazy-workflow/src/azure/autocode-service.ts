@@ -1,7 +1,12 @@
-import { $ } from "bun";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import {
+  AzureTicketInfoService,
+  runAzureCommand,
+  type TicketInfo,
+  type TicketAttachment,
+} from "./ticket-info-service.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
@@ -74,6 +79,14 @@ export interface AutocodeAzureService {
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
+  getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
+  getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
+  getTicket(ticket: number): Promise<DeliveryTicket>;
+  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
+  getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
+  getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
+  getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
+  getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
   waitForAccess(hu: number): Promise<void>;
 }
 
@@ -181,10 +194,14 @@ function hasArtifactLink(item: WorkItem, expectedDecodedUri: string): boolean {
 }
 
 export class AzureAutocodeService implements AutocodeAzureService {
+  private readonly ticketInfoService: AzureTicketInfoService;
+
   constructor(
-    private readonly az: AzRunner = runAz,
+    private readonly az: AzRunner = runAzureCommand,
     private readonly git: GitRunner = runGit,
-  ) {}
+  ) {
+    this.ticketInfoService = new AzureTicketInfoService(az);
+  }
 
   async getHuInfo(hu: number): Promise<HuInfo> {
     const item = await show(hu, false, this.az);
@@ -198,6 +215,38 @@ export class AzureAutocodeService implements AutocodeAzureService {
       assignedTo: item.fields?.["System.AssignedTo"],
       desarrollador: field(item, "Custom.Desarrollador1"),
     } satisfies HuInfoData);
+  }
+
+  getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
+    return this.ticketInfoService.getTicketInfo(hu, ticket);
+  }
+
+  getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
+    return this.ticketInfoService.getBranch(hu, ticket);
+  }
+
+  getTicket(ticket: number): Promise<DeliveryTicket> {
+    return this.ticketInfoService.getTicket(ticket);
+  }
+
+  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }> {
+    return this.ticketInfoService.getDescription(ticket);
+  }
+
+  getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }> {
+    return this.ticketInfoService.getState(ticket);
+  }
+
+  getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }> {
+    return this.ticketInfoService.getEffort(ticket);
+  }
+
+  getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }> {
+    return this.ticketInfoService.getAttachments(ticket);
+  }
+
+  getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }> {
+    return this.ticketInfoService.getEvidence(ticket);
   }
 
   async getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo> {
@@ -511,14 +560,6 @@ function commandError(error: unknown): string {
     if (stderr !== undefined && String(stderr).trim()) return String(stderr).trim();
   }
   return error instanceof Error ? error.message : String(error);
-}
-
-async function runAz(args: string[]): Promise<string> {
-  try {
-    return await $`az ${args}`.text();
-  } catch (error) {
-    throw new Error(`Azure command failed: ${commandError(error)}`, { cause: error });
-  }
 }
 
 interface AzureOrigin {
