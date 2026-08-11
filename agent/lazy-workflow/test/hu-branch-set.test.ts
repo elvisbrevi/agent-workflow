@@ -402,6 +402,7 @@ function ticketBranchFixture(options: {
   ticketRelations?: Array<Record<string, unknown>>;
   dirty?: string;
   ticketBranchSha?: string;
+  directChild?: boolean;
 } = {}) {
   const events: string[] = [];
   const baseSha = "a".repeat(40);
@@ -414,10 +415,11 @@ function ticketBranchFixture(options: {
     if (args[0] === "boards" && args.includes(`${hu}`)) return JSON.stringify({
       id: hu,
       fields: { "System.TeamProject": "Team" },
-      relations: [{
-        rel: "System.LinkTypes.Hierarchy-Forward",
-        url: "https://example.test/_apis/wit/workItems/126",
-      }, {
+      relations: [
+        ...(options.directChild === false ? [] : [{
+          rel: "System.LinkTypes.Hierarchy-Forward",
+          url: "https://example.test/_apis/wit/workItems/126",
+        }]), {
         rel: "ArtifactLink",
         url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F125",
         attributes: { name: "Branch" },
@@ -495,7 +497,7 @@ test("ticket-branch-set es idempotente para la misma rama remota y vínculo", as
       url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fticket-126",
       attributes: { name: "Branch" },
     }],
-    ticketBranchSha: "b".repeat(40),
+    ticketBranchSha: "a".repeat(40),
   });
 
   await expect(fixture.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo"))
@@ -516,9 +518,87 @@ test("ticket-branch-set rechaza conflicto, worktree sucio y ticket no hijo antes
   await expect(conflict.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo")).rejects.toThrow("conflicto");
   expect(conflict.events).not.toContain("azure-patch");
 
+  const notChild = ticketBranchFixture({ directChild: false });
+  await expect(notChild.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo")).rejects.toThrow("hijo directo");
+  expect(notChild.events).not.toContain("azure-patch");
+
   const dirty = ticketBranchFixture({ dirty: "!! .env.local\n" });
   await expect(dirty.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo",)).rejects.toThrow("cambios");
   expect(dirty.events).not.toContain("azure-patch");
+});
+
+test("ticket-branch-set conserva el worktree y publica el SHA exacto en Git real", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-ticket-"));
+  const remote = join(root, "remote.git");
+  const seed = join(root, "seed");
+  const worktree = join(root, "worktree");
+  let patched = false;
+  const az = async (args: string[]): Promise<string> => {
+    if (args[0] === "boards" && args.includes(`${hu}`)) return JSON.stringify({
+      id: hu,
+      fields: { "System.TeamProject": "Team" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/126" }, {
+        rel: "ArtifactLink",
+        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F125",
+        attributes: { name: "Branch" },
+      }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 126,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task" },
+      relations: patched ? [{
+        rel: "ArtifactLink",
+        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fticket-126",
+        attributes: { name: "Branch" },
+      }] : [],
+    });
+    if (args[0] === "repos") return JSON.stringify({
+      id: "repository-id",
+      name: "repo",
+      project: { id: "project-id", name: "Team" },
+      remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
+    });
+    if (args[0] === "rest") {
+      patched = true;
+      return "{}";
+    }
+    throw new Error(`Unexpected Azure command: ${args.join(" ")}`);
+  };
+
+  try {
+    await runGit(["init", "--bare", remote], root);
+    await runGit(["init", seed], root);
+    await runGit(["config", "user.email", "test@example.test"], seed);
+    await runGit(["config", "user.name", "Test"], seed);
+    await Bun.write(join(seed, "README.md"), "base\n");
+    await runGit(["add", "README.md"], seed);
+    await runGit(["commit", "-m", "base"], seed);
+    await runGit(["branch", "-M", "main"], seed);
+    await runGit(["switch", "-c", "hu/125"], seed);
+    await runGit(["remote", "add", "origin", remote], seed);
+    await runGit(["push", "origin", "main"], seed);
+    await runGit(["push", "origin", "hu/125"], seed);
+    await runGit(["clone", remote, worktree], root);
+    await runGit(["config", "user.email", "test@example.test"], worktree);
+    await runGit(["config", "user.name", "Test"], worktree);
+    const beforeBranch = (await runGit(["branch", "--show-current"], worktree)).trim();
+    const baseSha = (await runGit(["ls-remote", "origin", "refs/heads/hu/125"], worktree)).split(/\s+/)[0];
+
+    const service = new AzureAutocodeService(
+      az,
+      async (args, directory) => args[0] === "remote" && args[1] === "get-url"
+        ? "https://dev.azure.com/org/Team/_git/repo\n"
+        : runGit(args, directory),
+    );
+    await expect(service.setTicketBranch(hu, 126, "feature/ticket-126", worktree))
+      .resolves.toEqual({ hu, ticket: 126, branch: "refs/heads/feature/ticket-126" });
+
+    expect((await runGit(["ls-remote", "origin", "refs/heads/feature/ticket-126"], worktree)).startsWith(`${baseSha}\t`)).toBe(true);
+    expect((await runGit(["branch", "--show-current"], worktree)).trim()).toBe(beforeBranch);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode", async () => {

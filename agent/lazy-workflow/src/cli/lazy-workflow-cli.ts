@@ -225,6 +225,10 @@ export class LazyWorkflowCli {
         reportOperator("ticket-branch-set requiere --branch <name>");
         return 1;
       }
+      if (!args.includes("--working-directory")) {
+        reportOperator("ticket-branch-set requiere --working-directory <path>");
+        return 1;
+      }
       if (!this.huInfoService.setTicketBranch) {
         reportOperator("El servicio Azure no soporta ticket-branch-set");
         return 1;
