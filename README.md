@@ -7,7 +7,8 @@ skills** and one executable agent,
 [`lazy-workflow`](agent/lazy-workflow/README.md).
 
 Skills describe a process that an AI session follows. The agent is an
-executable workflow that invokes OpenCode and can read Azure DevOps HU data.
+executable workflow that invokes OpenCode for GitHub by default and supports
+explicit Azure DevOps HU runs.
 
 ## Install
 
@@ -27,6 +28,8 @@ With `--all-global` or `--claude-global`, the executable launcher is installed
 at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash
+lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
+lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
@@ -56,15 +59,19 @@ Skills with `disable-model-invocation: true` are explicit-only. See each
 
 | Agent | Purpose | Source |
 |---|---|---|
-| `lazy-workflow` | Plans, delivers, and inspects Azure HUs | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
+| `lazy-workflow` | Runs GitHub workflows by default and explicit Azure HU workflows | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
 
 Install dependencies and run it from its directory:
 
 ```bash
 cd agent/lazy-workflow
 bun install
-bun run main.ts plan --hu 23438 --working-directory /path/to/repository
+bun run main.ts plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
 ```
+
+Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
+tools. Add `--hu <ID>` to select the existing Azure planning or delivery
+workflow.
 
 To drain the HU's direct delivery tickets one at a time:
 

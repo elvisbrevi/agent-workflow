@@ -10,6 +10,21 @@ The Bun-based workflow in `agent/lazy-workflow/` that sends a prompt to
 OpenCode and emits a normalized JSON result.
 _Avoid_: issue runner, queue supervisor
 
+**GitHub repository run**:
+A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
+repository's GitHub conventions and never uses Azure coordination.
+_Avoid_: implicit Azure run, unscoped run
+
+**Azure HU run**:
+A lazy-workflow invocation selected by `--hu`, or recovered from an Azure HU
+checkpoint. It preserves the HU's planning or ticket-delivery lifecycle.
+_Avoid_: GitHub repository run
+
+**Default workflow prompt**:
+The GitHub-only instructions used by a GitHub repository run for its selected
+workflow and operator request.
+_Avoid_: Azure HU prompt
+
 **Azure HU planning run**:
 A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
 User Story, combines that data with the English autoplan prompt, and starts

@@ -10,6 +10,8 @@ When installed globally by `install.sh --all-global` or
 `install.sh --claude-global`, use the `lazy-workflow` command directly:
 
 ```bash
+lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
+lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
@@ -22,6 +24,30 @@ session ID, reasoning summaries, tool status, and sanitized tool input such as
 the shell command reported by OpenCode. The working directory is passed as
 OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
+
+## Default GitHub workflows
+
+Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` and run
+OpenCode once in GitHub-only scope:
+
+```bash
+bun run main.ts plan --prompt "plan the requested change" \
+  --working-directory /path/to/repository
+bun run main.ts code --prompt "deliver GitHub issue 123" \
+  --working-directory /path/to/repository
+```
+
+The default prompt follows the target repository's tracker and delivery
+documentation, uses GitHub and `gh`, and forbids Azure DevOps and `az` tools.
+These runs do not read Azure, inspect the HU checkpoint, prepare integration
+branches, enforce Azure completion gates, or clean Azure ticket branches.
+`--branch` and `--base-branch` are rejected in this GitHub scope.
+
+`plan` remains planning-only. `code` delivers exactly one requested or eligible
+GitHub issue. Both are one-shot prompt-driven workflows; there is no GitHub
+queue, checkpoint, or coordinator adapter.
+
+## Azure HU workflows
 
 Before a fresh `code` run selects a ticket or writes a checkpoint, the
 coordinator queries the HU's native Branch link. It reuses a valid linked
@@ -128,7 +154,8 @@ typed coordinator commands is specified in
 
 The complete command help is available with an unsupported subcommand or no
 subcommand. `--model`, `--variant`, `--prompt`, and `--working-directory` are
-forwarded to OpenCode; `--number-of-questions` applies to `plan`.
+forwarded to OpenCode; `--number-of-questions` applies to `plan`. Supplying an
+invalid `--hu` fails instead of falling back to GitHub.
 
 Autocode stores only its HU, ticket, and opaque OpenCode session in repository
 Git metadata. Failed or incomplete attempts retry the same ticket every ten
