@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import {
   AzureAutocodeService,
@@ -52,6 +53,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
   pushTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
+  checkoutTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -88,6 +90,12 @@ interface Clock { now(): number; }
 interface TicketBranchCleaner {
   deleteTicketBranch(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<void>;
 }
+
+type CompletionEffectRunner = (
+  effect: AutocodeEffect,
+  target: string,
+  action: () => Promise<void>,
+) => Promise<void>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -642,7 +650,7 @@ export class LazyWorkflowCli {
     }
   }
 
-  private async applyTicketCompletion(options: CliOptions): Promise<unknown> {
+  private async applyTicketCompletion(options: CliOptions, runEffect: CompletionEffectRunner = async (_effect, _target, action) => action()): Promise<unknown> {
     if (!this.huInfoService.getTicketInfo || !this.huInfoService.validateDirectTicketContext
       || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
       throw new Error("El servicio Azure no soporta ticket-completion-apply");
@@ -682,12 +690,12 @@ export class LazyWorkflowCli {
       throw new Error(`El ticket ${options.ticket} ya tiene otro PR canónico asociado: ${info.canonicalPullRequest}`);
     }
     if (info.canonicalPullRequest === null) {
-      await this.huInfoService.linkPullRequest(options.hu!, options.ticket!, options.pullRequest!);
+      await runEffect("pr-association", `${options.pullRequest}`, () => this.huInfoService!.linkPullRequest!(options.hu!, options.ticket!, options.pullRequest!).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
     if (info.gates.unmet.includes(COMPLETION_GATE.mergeCommitArtifact)) {
-      await this.huInfoService.linkCommit(options.ticket!, options.pullRequest!);
+      await runEffect("merge-commit", `${options.pullRequest}`, () => this.huInfoService!.linkCommit!(options.ticket!, options.pullRequest!).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
@@ -698,12 +706,12 @@ export class LazyWorkflowCli {
         && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
         && attachment.evidenceKind === evidence.kind
       )) continue;
-      await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
+      await runEffect("attachment", evidence.sha256, () => this.huInfoService!.addAttachment!(options.ticket!, evidence.path, evidence.kind).then(() => undefined));
        info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
     if (textEvidence && completionEvidenceMissing) {
-      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
+      await runEffect("evidence", textEvidence.path, () => this.huInfoService!.setEvidence!(options.ticket!, textEvidence.path).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
@@ -713,7 +721,7 @@ export class LazyWorkflowCli {
     }
 
     if (info.ticket.state !== "Done") {
-      await this.huInfoService.setState(options.ticket!, "Done", info.ticket.state ?? "", true, info.ticket.revision);
+      await runEffect("ticket-done", "Done", () => this.huInfoService!.setState!(options.ticket!, "Done", info.ticket.state ?? "", true, info.ticket.revision).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
     if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {
@@ -849,6 +857,28 @@ export class LazyWorkflowCli {
       return 1;
     }
 
+    if (checkpoint.ticket !== null && checkpoint.sessionId !== null && this.huInfoService.getTicketInfo) {
+      try {
+        const live = await this.huInfoService.getTicketInfo(hu, checkpoint.ticket);
+        if (live.canonicalPullRequest !== null) {
+          checkpoint = {
+            ...checkpoint,
+            phase: "integrating",
+            sessionId: null,
+            pullRequest: live.canonicalPullRequest,
+          };
+          await save();
+          if (!checkpoint.manifestPath) {
+            reportOperator(`lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero falta su manifest; checkpoint sessionless conservado.`);
+            return 1;
+          }
+        }
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo reconciliar el PR canónico del ticket ${checkpoint.ticket} (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
+    }
+
     if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null && !checkpoint.manifestPath) {
       if (!this.huInfoService.getAutocodeContextForTicket) return 1;
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
@@ -864,7 +894,7 @@ export class LazyWorkflowCli {
     }
 
     if (checkpoint.ticket !== null && checkpoint.sessionId === null && checkpoint.manifestPath
-      && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
+      && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
       && this.huInfoService.getAutocodeContextForTicket && checkpoint.ticketBranch) {
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
       if (!context) {
@@ -879,6 +909,7 @@ export class LazyWorkflowCli {
           manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
         };
         await save();
+        await this.huInfoService.checkoutTicketBranch(checkpoint.ticketBranch, options.workingDirectory);
         if (!checkpoint.receipts["ticket-branch-push"]) {
           await this.huInfoService.pushTicketBranch(checkpoint.ticketBranch, options.workingDirectory);
           checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch-push": { verifiedAt: new Date(now()).toISOString() } } };
@@ -902,7 +933,14 @@ export class LazyWorkflowCli {
           await save();
         }
         if (!checkpoint.receipts["ticket-completion"]) {
-          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath });
+          const runEffect: CompletionEffectRunner = async (effect, target, action) => {
+            checkpoint = { ...checkpoint, intent: { effect, target } };
+            await save();
+            await action();
+            checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(now()).toISOString() } } };
+            await save();
+          };
+          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath }, runEffect);
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
         }
@@ -998,6 +1036,13 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch": { verifiedAt: new Date(now()).toISOString() } } };
       await save();
     }
+    if (this.huInfoService.checkoutTicketBranch) {
+      await track(
+        "ticket-branch-checkout",
+        () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
+        ticketBranch,
+      );
+    }
     await markPhase("implementing", { ticketBranch, sessionId: checkpoint.sessionId });
 
     let manifestPath = checkpoint.manifestPath ?? null;
@@ -1013,7 +1058,7 @@ export class LazyWorkflowCli {
       try {
         const execution = await track(null, async () => sessionId
           ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
-          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch, manifestPath }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
+          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch, evidenceDirectory: manifestPath ? dirname(manifestPath) : null, manifestPath }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
         sessionId = execution.result.sessionId;
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
@@ -1024,7 +1069,7 @@ export class LazyWorkflowCli {
           continue;
         }
         if (terminal) {
-          if (manifestPath && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
+          if (manifestPath && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
             try {
               const manifest = await this.validateReadyManifest(hu, ticket, manifestPath, options.workingDirectory);
               checkpoint = {
@@ -1034,6 +1079,13 @@ export class LazyWorkflowCli {
               };
               await save();
               await markPhase("implementation-ready", { manifestPath, sessionId: null });
+              if (!checkpoint.receipts["ticket-branch-checkout"]) {
+                await track(
+                  "ticket-branch-checkout",
+                  () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
+                  ticketBranch,
+                );
+              }
               await track(
                 "ticket-branch-push",
                 () => this.huInfoService!.pushTicketBranch!(ticketBranch!, options.workingDirectory),
@@ -1063,7 +1115,10 @@ export class LazyWorkflowCli {
               await markPhase("completing", { pullRequest: pullRequest.pullRequest });
               await track(
                 "ticket-completion",
-                () => this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath }).then(() => undefined),
+                () => this.applyTicketCompletion(
+                  { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
+                  (effect, target, action) => track(effect, action, target),
+                ).then(() => undefined),
                 `${pullRequest.pullRequest}`,
               );
               await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
