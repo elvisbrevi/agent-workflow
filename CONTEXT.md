@@ -43,12 +43,13 @@ fail with a nonzero status.
 _Avoid_: proposing a branch from the HU number
 
 **HU integration branch assignment**:
-The `hu-branch-set --hu <ID> --branch <name> --working-directory <path>` command
-assigns an already existing remote Azure Git branch to an HU through its native
-Branch ArtifactLink. It validates the selected worktree's Azure `origin`,
-rejects conflicting links, and rereads Azure after the update without invoking
-OpenCode.
-_Avoid_: creating or replacing an integration branch during assignment
+The `hu-branch-set --hu <ID> --branch <name> [--base-branch <name>] --working-directory <path>`
+command assigns an existing remote Azure Git branch to an HU, or creates the
+missing branch from the exact remote commit named by `--base-branch`, through
+its native Branch ArtifactLink. It validates the selected worktree's Azure
+`origin`, preserves unsafe worktrees by failing closed, verifies Git before
+Azure mutation, and rereads Azure after the update without invoking OpenCode.
+_Avoid_: inferring a base branch or replacing an existing integration branch
 
 **OpenCode result**:
 The normalized JSON representation of OpenCode JSONL output, including the

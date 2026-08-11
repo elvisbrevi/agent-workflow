@@ -66,7 +66,7 @@ export type TicketCompletionVerification = VerifiedTicketCompletion | Incomplete
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
-  setIntegrationBranch(hu: number, branch: string, workingDirectory: string): Promise<{ hu: number; branch: string }>;
+  setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -214,6 +214,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     hu: number,
     requestedBranch: string,
     workingDirectory: string,
+    requestedBaseBranch?: string | null,
   ): Promise<{ hu: number; branch: string }> {
     if (!Number.isInteger(hu) || hu <= 0) {
       throw new Error(`La HU debe ser un entero positivo: ${hu}`);
@@ -252,11 +253,6 @@ export class AzureAutocodeService implements AutocodeAzureService {
       throw new Error("El repositorio Azure resuelto no coincide con origin");
     }
 
-    const remote = await this.git(["ls-remote", "--heads", "origin", normalized.ref], workingDirectory);
-    if (!remote.split(/\r?\n/).some((line) => line.trimEnd().endsWith(`\t${normalized.ref}`))) {
-      throw new Error(`La rama ${normalized.ref} no existe remotamente`);
-    }
-
     const linkedBranches = [...new Set(integrationBranchesFrom(parent))];
     if (linkedBranches.length > 1) {
       throw new Error(`La HU ${hu} tiene conflicto por multiples Branch ArtifactLink distintos`);
@@ -264,6 +260,37 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (linkedBranches[0] && linkedBranches[0] !== normalized.ref) {
       throw new Error(`La HU ${hu} ya tiene vinculada la rama ${linkedBranches[0]}; conflicto`);
     }
+
+    const remoteSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+    if (remoteSha) {
+      if (linkedBranches[0] === normalized.ref) return { hu, branch: normalized.ref };
+    } else {
+      if (!requestedBaseBranch?.trim()) {
+        throw new Error(`La rama ${normalized.ref} no existe remotamente; indique --base-branch <name>`);
+      }
+      const base = normalizeBranch(requestedBaseBranch);
+      if (base.ref === normalized.ref) throw new Error("La base remota no puede ser la rama HU");
+      const baseSha = await remoteBranchSha(this.git, base.ref, workingDirectory);
+      if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
+      if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama HU");
+      const localBaseRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+      try {
+        const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", localBaseRef], workingDirectory)).trim();
+        if (existingRef) throw new Error(`El ref temporal local ${localBaseRef} ya existe`);
+        await this.git(["fetch", "--no-tags", "origin", `+${base.ref}:${localBaseRef}`], workingDirectory);
+        const fetchedSha = (await this.git(["rev-parse", `${localBaseRef}^{commit}`], workingDirectory)).trim();
+        if (fetchedSha !== baseSha) throw new Error(`La base remota ${base.ref} cambió durante la preparación`);
+        await this.git(["push", "origin", `${localBaseRef}:${normalized.ref}`], workingDirectory);
+        const publishedSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+        if (publishedSha !== baseSha) {
+          throw new Error(`No se pudo verificar remotamente la rama ${normalized.ref} desde ${base.ref}`);
+        }
+      } finally {
+        await this.git(["update-ref", "-d", localBaseRef], workingDirectory);
+      }
+    }
+
     if (linkedBranches[0] === normalized.ref) return { hu, branch: normalized.ref };
 
     const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
@@ -521,6 +548,25 @@ function parseAzureOrigin(value: string): AzureOrigin {
 
 function decodeSegment(value: string): string {
   try { return decodeURIComponent(value); } catch { throw new Error("origin Azure contiene una ruta malformada"); }
+}
+
+async function remoteBranchSha(
+  git: GitRunner,
+  ref: string,
+  workingDirectory: string,
+): Promise<string | null> {
+  const output = await git(["ls-remote", "--heads", "origin", ref], workingDirectory);
+  const matches = output.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => line.split(/\s+/)[1] === ref);
+  if (matches.length > 1) throw new Error(`La referencia remota ${ref} es ambigua`);
+  if (matches.length === 0) return null;
+  const sha = matches[0]!.split(/\s+/)[0]!;
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(sha)) {
+    throw new Error(`La referencia remota ${ref} no devolvió un commit válido`);
+  }
+  return sha;
 }
 
 function normalizeBranch(value: string): { ref: string; name: string } {
