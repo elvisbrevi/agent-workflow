@@ -1072,6 +1072,114 @@ test("code reporta cuando ya no puede reconstruir el ticket fijado", async () =>
   expect(messages.join("\n")).not.toContain("cierre verificable");
 });
 
+test("code --session reacquire la rama y reanuda el ticket fijado sin consultar la cola", async () => {
+  const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses-51" };
+  const events: string[] = [];
+  const context: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async (hu, directory, base) => {
+        events.push(`branch:${hu}:${directory}:${base}`);
+        return context.integrationBranch;
+      },
+      getAutocodeContextForTicket: async (hu, ticket, branch) => {
+        events.push(`ticket:${hu}:${ticket}:${branch}`);
+        return context;
+      },
+      getAutocodeContext: async () => { throw new Error("must not select another ticket"); },
+      verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
+    },
+    {
+      run: async () => { throw new Error("must not start a session"); },
+      resume: async (sessionId) => {
+        events.push(`resume:${sessionId}`);
+        return result;
+      },
+    },
+    { read: async () => checkpoint, write: async () => undefined, clear: async () => { events.push("clear"); } },
+    { wait: async () => { throw new Error("must not retry"); } },
+    { deleteTicketBranch: async (branch) => { events.push(`cleanup:${branch}`); } },
+  ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(events).toEqual([
+    "branch:23438:/repo:null",
+    "ticket:23438:51:refs/heads/hu/23438",
+    "resume:ses-51",
+    "cleanup:refs/heads/ticket/51",
+    "clear",
+  ]);
+});
+
+test("code sessionless conserva identidad y detiene una sola vez ante un vínculo Branch ausente", async () => {
+  const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: null };
+  let preflightCalls = 0;
+  let sideEffects = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => {
+        preflightCalls += 1;
+        throw new Error("La HU no tiene Branch ArtifactLink; falta la rama de integración");
+      },
+      getAutocodeContext: async () => { sideEffects += 1; return null; },
+      getAutocodeContextForTicket: async () => { sideEffects += 1; return null; },
+      verifyTicketCompletion: async () => { sideEffects += 1; return null; },
+    },
+    {
+      run: async () => { sideEffects += 1; throw new Error("must not run"); },
+      resume: async () => { sideEffects += 1; throw new Error("must not resume"); },
+    },
+    { read: async () => checkpoint, write: async () => { sideEffects += 1; }, clear: async () => { sideEffects += 1; } },
+    { wait: async () => { throw new Error("must not retry stable branch state"); } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(preflightCalls).toBe(1);
+  expect(sideEffects).toBe(0);
+  expect(checkpoint).toEqual({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null });
+});
+
+test("code sessionless reintenta una falla Azure transitoria antes de reconstruir el ticket", async () => {
+  const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: null };
+  let attempts = 0;
+  const waits: number[] = [];
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("Azure command failed: 503 Service Unavailable");
+        return "refs/heads/hu/23438";
+      },
+      getAutocodeContext: async () => null,
+      getAutocodeContextForTicket: async () => ({
+        hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438",
+      }),
+      verifyTicketCompletion: async () => ({ ticketId: 51, unmetGates: [COMPLETION_GATE.completionEvidence] }),
+    },
+    { run: async () => { throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+    { read: async () => checkpoint, write: async () => undefined, clear: async () => undefined },
+    { wait: async (milliseconds) => { waits.push(milliseconds); } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(attempts).toBe(2);
+  expect(waits).toEqual([10_000]);
+});
+
 test("code reintenta el mismo checkpoint tras corregir Azure y limpia una sola vez", async () => {
   const checkpoint: AutocodeCheckpoint = {
     workflow: "autocode",
