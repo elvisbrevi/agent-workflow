@@ -21,6 +21,7 @@ type CliOptions = OpenCodeRunOptions & {
 };
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
+  getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -100,7 +101,7 @@ function parseOptions(args: string[]): CliOptions {
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
-    hu: Number.parseInt(optionValue(args, "--hu") ?? `${DEFAULT_HU}`, 10),
+    hu: Number(optionValue(args, "--hu") ?? `${DEFAULT_HU}`),
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -113,6 +114,7 @@ function printHelp(): void {
     "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow code --session <id> --prompt continue",
     "  lazy-workflow hu-info --hu <id>",
+    "  lazy-workflow hu-branch-info --hu <id>",
     "",
     "Options:",
     "  --hu <id>",
@@ -136,7 +138,7 @@ export class LazyWorkflowCli {
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (command !== "plan" && command !== "code" && command !== "hu-info") {
+    if (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info") {
       printHelp();
       return 1;
     }
@@ -147,6 +149,24 @@ export class LazyWorkflowCli {
       const huInfo = await this.huInfoService.getHuInfo(options.hu);
       console.log(JSON.stringify(huInfo, null, 2));
       return 0;
+    }
+
+    if (command === "hu-branch-info") {
+      if (!Number.isInteger(options.hu) || options.hu <= 0) {
+        reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+        return 1;
+      }
+      if (!this.huInfoService.getIntegrationBranchInfo) {
+        reportOperator("El servicio Azure no soporta hu-branch-info");
+        return 1;
+      }
+      try {
+        console.log(JSON.stringify(await this.huInfoService.getIntegrationBranchInfo(options.hu), null, 2));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo consultar la rama de la HU ${options.hu} (${errorMessage(error)})`);
+        return 1;
+      }
     }
 
     if (options.hu <= 0) {
