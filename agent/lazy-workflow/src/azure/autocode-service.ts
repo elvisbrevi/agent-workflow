@@ -73,6 +73,7 @@ export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
   setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
+  setTicketBranch(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -92,6 +93,7 @@ export interface AutocodeAzureService {
 
 interface WorkItem {
   id: number;
+  rev?: number;
   fields?: Record<string, unknown>;
   relations?: Array<{
     rel?: string;
@@ -139,8 +141,9 @@ async function show(id: number, expandRelations: boolean, az: AzRunner): Promise
     ...(expandRelations ? ["--expand", "relations"] : []),
     "--output", "json",
   ];
-  const output = await az(args);
-  return JSON.parse(output) as WorkItem;
+  const payload = JSON.parse(await az(args)) as WorkItem;
+  if (payload.id !== id) throw new Error(`Respuesta de work item malformada: no coincide con el ID solicitado ${id}`);
+  return payload;
 }
 
 function relationId(url: string | undefined): number | undefined {
@@ -160,7 +163,13 @@ function integrationBranchFrom(item: WorkItem): string | undefined {
   return name ? `refs/heads/${name}` : undefined;
 }
 
-function integrationBranchesFrom(item: WorkItem): string[] {
+interface BranchLink {
+  ref: string;
+  project: string;
+  repository: string;
+}
+
+function branchLinksFrom(item: WorkItem): BranchLink[] {
   return (item.relations ?? [])
     .filter(({ rel, attributes }) => rel === "ArtifactLink" && attributes?.name === "Branch")
     .map((relation) => {
@@ -176,8 +185,22 @@ function integrationBranchesFrom(item: WorkItem): string[] {
       if (!branch || branch.startsWith("/") || branch.endsWith("/") || branch.includes("//")) {
         throw new Error("Branch ArtifactLink con URI de rama Azure Git malformada");
       }
-      return `refs/heads/${branch}`;
+      const parts = decoded.match(/^vstfs:\/\/\/Git\/Ref\/([^/]+)\/([^/]+)\/GB(.+)$/);
+      if (!parts?.[1] || !parts[2] || parts[3] !== branch) {
+        throw new Error("Branch ArtifactLink con URI de rama Azure Git malformada");
+      }
+      return { ref: `refs/heads/${branch}`, project: parts[1], repository: parts[2] };
     });
+}
+
+function integrationBranchesFrom(item: WorkItem): string[] {
+  return branchLinksFrom(item).map(({ ref }) => ref);
+}
+
+function uniqueBranchLinks(item: WorkItem): BranchLink[] {
+  const unique = [...new Map(branchLinksFrom(item).map((link) => [`${link.project}/${link.repository}/${link.ref}`, link])).values()];
+  if (unique.length > 1) throw new Error("existen multiples Branch ArtifactLink distintos");
+  return unique;
 }
 
 function belongsToTicket(source: string | undefined, ticket: number): boolean {
@@ -363,6 +386,124 @@ export class AzureAutocodeService implements AutocodeAzureService {
       throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
     }
     return { hu, branch: normalized.ref };
+  }
+
+  async setTicketBranch(
+    hu: number,
+    ticket: number,
+    requestedBranch: string,
+    workingDirectory: string,
+  ): Promise<{ hu: number; ticket: number; branch: string }> {
+    if (!Number.isInteger(hu) || hu <= 0) throw new Error(`La HU debe ser un entero positivo: ${hu}`);
+    if (!Number.isInteger(ticket) || ticket <= 0) throw new Error(`El ticket debe ser un entero positivo: ${ticket}`);
+    const normalized = normalizeBranch(requestedBranch);
+    const [parent, item] = await Promise.all([show(hu, true, this.az), show(ticket, true, this.az)]);
+    const isDirectChild = (parent.relations ?? []).some((relation) =>
+      relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === ticket
+    );
+    if (!isDirectChild) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    const type = field(item, "System.WorkItemType");
+    if (type !== "Task" && type !== "Bug") throw new Error(`El work item ${ticket} no es un Task o Bug de entrega`);
+    const revision = item.rev;
+    if (typeof revision !== "number" || !Number.isInteger(revision) || revision <= 0) {
+      throw new Error(`El ticket ${ticket} no tiene una revisión Azure válida`);
+    }
+
+    const integration = uniqueBranchLinks(parent)[0];
+    if (!integration) throw new Error(`La HU ${hu} no tiene una rama de integración vinculada`);
+    if (integration.ref === normalized.ref) throw new Error("La rama del ticket no puede ser la rama de integración");
+
+    const linked = uniqueBranchLinks(item)[0];
+    if (linked && (
+      linked.ref !== normalized.ref
+      || linked.project !== integration.project
+      || linked.repository !== integration.repository
+    )) throw new Error(`El ticket ${ticket} ya tiene una rama vinculada; conflicto`);
+
+    const projectName = field(parent, "System.TeamProject");
+    if (!projectName) throw new Error("La HU no tiene proyecto Azure");
+    const origin = parseAzureOrigin(await this.git(["remote", "get-url", "origin"], workingDirectory));
+    if (!same(origin.project, projectName)) {
+      throw new Error(`El origen Azure pertenece al proyecto ${origin.project}, no al proyecto ${projectName}`);
+    }
+    const repositoryOutput = await this.az([
+      "repos", "show", "--organization", ORGANIZATION,
+      "--project", projectName, "--repository", origin.repository, "--output", "json",
+    ]);
+    const repository = JSON.parse(repositoryOutput) as AzureRepository;
+    if (
+      !repository.id || !repository.name || !repository.project?.id || !repository.project.name
+      || !same(repository.name, origin.repository) || !same(repository.project.name, projectName)
+      || repository.project.id !== integration.project || repository.id !== integration.repository
+    ) throw new Error("El repositorio Azure no coincide con la rama de integración de la HU");
+    if (!repository.remoteUrl) throw new Error("Azure no devolvió la URL del repositorio");
+    const resolvedOrigin = parseAzureOrigin(repository.remoteUrl);
+    if (
+      !same(resolvedOrigin.organization, origin.organization)
+      || !same(resolvedOrigin.project, origin.project)
+      || !same(resolvedOrigin.repository, origin.repository)
+    ) throw new Error("El repositorio Azure resuelto no coincide con origin");
+
+    const integrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
+    if (!integrationSha) throw new Error(`La rama de integración ${integration.ref} no existe remotamente`);
+    const ticketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+    if (ticketSha && ticketSha !== integrationSha) {
+      throw new Error(`La rama del ticket ${normalized.ref} no coincide con la rama de integración de la HU`);
+    }
+    if (!ticketSha) {
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
+      if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama del ticket");
+      const temporaryRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+      try {
+        const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", temporaryRef], workingDirectory)).trim();
+        if (existingRef) throw new Error(`El ref temporal local ${temporaryRef} ya existe`);
+        await this.git(["fetch", "--no-tags", "origin", `+${integration.ref}:${temporaryRef}`], workingDirectory);
+        const fetchedSha = (await this.git(["rev-parse", `${temporaryRef}^{commit}`], workingDirectory)).trim();
+        if (fetchedSha !== integrationSha) throw new Error(`La rama de integración ${integration.ref} cambió durante la preparación`);
+        await this.git(["push", "origin", `${temporaryRef}:${normalized.ref}`], workingDirectory);
+        const publishedSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+        if (publishedSha !== integrationSha) throw new Error(`No se pudo verificar remotamente la rama ${normalized.ref}`);
+      } finally {
+        await this.git(["update-ref", "-d", temporaryRef], workingDirectory);
+      }
+    } else {
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
+      if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se vinculará la rama del ticket");
+    }
+
+    const verifyRemoteBranches = async (): Promise<void> => {
+      const currentIntegrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
+      const currentTicketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+      if (currentIntegrationSha !== integrationSha || currentTicketSha !== integrationSha) {
+        throw new Error(`Las ramas remotas cambiaron antes de vincular ${normalized.ref}`);
+      }
+    };
+
+    if (!linked) {
+      await verifyRemoteBranches();
+      const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
+      const patch = [
+        { op: "test", path: "/rev", value: revision },
+        {
+          op: "add",
+          path: "/relations/-",
+          value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
+        },
+      ];
+      await this.az([
+        "rest", "--resource", AZURE_DEVOPS_RESOURCE,
+        "--method", "patch",
+        "--uri", `${ORGANIZATION}/${repository.project.id}/_apis/wit/workitems/${ticket}?api-version=${WORK_ITEM_API_VERSION}`,
+        "--headers", "Content-Type=application/json-patch+json",
+        "--body", JSON.stringify(patch),
+        "--output", "json",
+      ]);
+    }
+
+    await verifyRemoteBranches();
+    const verified = await this.getBranch(hu, ticket);
+    if (verified.branch !== normalized.ref) throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
+    return { hu, ticket, branch: normalized.ref };
   }
 
   async ensureIntegrationBranch(
@@ -621,6 +762,7 @@ function normalizeBranch(value: string): { ref: string; name: string } {
   const prefix = "refs/heads/";
   if (input.startsWith("refs/") && !input.startsWith(prefix)) throw new Error(`Rama no válida: ${value}`);
   const name = input.startsWith(prefix) ? input.slice(prefix.length) : input;
+  const parts = name.split("/");
   if (
     name === "HEAD"
     || !name
@@ -629,6 +771,8 @@ function normalizeBranch(value: string): { ref: string; name: string } {
     || name.includes("//")
     || name.startsWith("/")
     || name.endsWith("/")
+    || name.includes("@{")
+    || parts.some((part) => part === "." || part === ".." || part.startsWith(".") || part.endsWith(".") || part.toLowerCase().endsWith(".lock"))
   ) throw new Error(`Rama no válida: ${value}`);
   return { ref: `${prefix}${name}`, name };
 }
