@@ -5,6 +5,12 @@ const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EVIDENCE_KINDS = ["http-json", "screen", "command-output"] as const;
+const TICKET_FIELDS = {
+  description: "System.Description",
+  state: "System.State",
+  realEffort: "Custom.EsfuerzoReal",
+  realEffortHours: "Custom.EsfuerzoRealHH",
+} as const;
 const SUPPORTED_STATES = new Set([
   "New",
   "Active",
@@ -295,6 +301,10 @@ function validateState(state: string, name: string): void {
   if (!SUPPORTED_STATES.has(state)) throw new Error(`${name} no soportado: ${state}`);
 }
 
+function validateQuarterHour(value: number, name: string): void {
+  if (!Number.isInteger(value * 4)) throw new Error(`${name} debe estar redondeado a incrementos de 0.25 horas: ${value}`);
+}
+
 function validateScreenEvidence(name: string, bytes: Uint8Array): void {
   const lowerName = name.toLowerCase();
   const png = lowerName.endsWith(".png") && bytes.length >= 8 && bytes.slice(0, 8).every((byte, index) => byte === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]);
@@ -471,15 +481,15 @@ export class AzureTicketInfoService {
     const content = await readUtf8File(filePath);
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
-    const existing = item.fields?.["System.Description"];
+    const existing = item.fields?.[TICKET_FIELDS.description];
     const revision = workItemRevision(item);
     if (existing === content) return { ticket, description: content, revision };
 
     const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: revision },
-      { op: "add", path: "/fields/System.Description", value: content },
-    ], (candidate) => candidate.fields?.["System.Description"] === content);
-    const description = verified.fields?.["System.Description"];
+      { op: "add", path: `/fields/${TICKET_FIELDS.description}`, value: content },
+    ], (candidate) => candidate.fields?.[TICKET_FIELDS.description] === content);
+    const description = verified.fields?.[TICKET_FIELDS.description];
     if (description !== content) throw new Error(`No se pudo verificar la descripción del ticket ${ticket}`);
     return { ticket, description: content, revision: workItemRevision(verified) };
   }
@@ -494,7 +504,7 @@ export class AzureTicketInfoService {
     validateState(expectedState, "El estado esperado");
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
-    const currentState = text(item, "System.State");
+    const currentState = text(item, TICKET_FIELDS.state);
     if (currentState !== expectedState) {
       throw new Error(`El estado actual del ticket ${ticket} (${currentState ?? "null"}) no coincide con el estado esperado ${expectedState}`);
     }
@@ -506,9 +516,9 @@ export class AzureTicketInfoService {
 
     const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: revision },
-      { op: "replace", path: "/fields/System.State", value: desiredState },
-    ], (candidate) => text(candidate, "System.State") === desiredState);
-    const state = text(verified, "System.State");
+      { op: "replace", path: `/fields/${TICKET_FIELDS.state}`, value: desiredState },
+    ], (candidate) => text(candidate, TICKET_FIELDS.state) === desiredState);
+    const state = text(verified, TICKET_FIELDS.state);
     if (state !== desiredState) throw new Error(`No se pudo verificar el estado del ticket ${ticket}`);
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
   }
@@ -522,14 +532,16 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     if (!Number.isFinite(realEffort) || realEffort < 0) throw new Error(`Real Effort debe ser un número no negativo: ${realEffort}`);
     if (!Number.isFinite(realEffortHours) || realEffortHours < 0) throw new Error(`Real Effort HH debe ser un número no negativo: ${realEffortHours}`);
+    validateQuarterHour(realEffort, "Real Effort");
+    validateQuarterHour(realEffortHours, "Real Effort HH");
     if (!Number.isInteger(expectedRevision) || expectedRevision <= 0) throw new Error(`La revision esperada debe ser un entero positivo: ${expectedRevision}`);
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
     const revision = workItemRevision(item);
-    const currentReal = number(item, ["Custom.EsfuerzoReal"]);
-    const currentRealHours = number(item, ["Custom.EsfuerzoRealHH"]);
+    const currentReal = number(item, [TICKET_FIELDS.realEffort]);
+    const currentRealHours = number(item, [TICKET_FIELDS.realEffortHours]);
     if (currentReal === realEffort && currentRealHours === realEffortHours) {
-      if (revision !== expectedRevision && revision !== expectedRevision + 1) {
+      if (revision !== expectedRevision) {
         throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
       }
       return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
@@ -543,13 +555,13 @@ export class AzureTicketInfoService {
 
     const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: expectedRevision },
-      { op: "add", path: "/fields/Custom.EsfuerzoReal", value: realEffort },
-      { op: "add", path: "/fields/Custom.EsfuerzoRealHH", value: realEffortHours },
-    ], (candidate) => number(candidate, ["Custom.EsfuerzoReal"]) === realEffort
-      && number(candidate, ["Custom.EsfuerzoRealHH"]) === realEffortHours);
+      { op: "add", path: `/fields/${TICKET_FIELDS.realEffort}`, value: realEffort },
+      { op: "add", path: `/fields/${TICKET_FIELDS.realEffortHours}`, value: realEffortHours },
+    ], (candidate) => number(candidate, [TICKET_FIELDS.realEffort]) === realEffort
+      && number(candidate, [TICKET_FIELDS.realEffortHours]) === realEffortHours);
     if (
-      number(verified, ["Custom.EsfuerzoReal"]) !== realEffort
-      || number(verified, ["Custom.EsfuerzoRealHH"]) !== realEffortHours
+      number(verified, [TICKET_FIELDS.realEffort]) !== realEffort
+      || number(verified, [TICKET_FIELDS.realEffortHours]) !== realEffortHours
     ) throw new Error(`No se pudo verificar el esfuerzo del ticket ${ticket}`);
     return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision: workItemRevision(verified) };
   }
