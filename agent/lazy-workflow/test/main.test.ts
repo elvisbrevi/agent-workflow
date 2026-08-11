@@ -90,7 +90,7 @@ test("Azure obtiene la rama exacta del único PR completado del ticket", async (
           "Custom.URLCommit": "https://example.test/commit/abc123",
         },
         relations: [
-          { rel: "AttachedFile", attributes: { name: "evidencia.json" } },
+          { rel: "AttachedFile", attributes: { name: "evidencia.json", comment: "http-json", digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
           ...(includeCommitLink ? [{
             rel: "ArtifactLink",
             url: "vstfs:///Git/Commit/project-id%2Frepository-id%2Fmerge-commit",
@@ -168,7 +168,7 @@ test("Azure elige el único PR asociado cuando existen PR históricos completado
           "Custom.URLCommit": "https://example.test/commit/new",
         },
         relations: [
-          { rel: "AttachedFile" },
+          { rel: "AttachedFile", attributes: { comment: "http-json", digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
           { rel: "ArtifactLink", url: "vstfs:///Git/Commit/project%2Frepo%2Fnew-merge" },
         ],
       });
