@@ -527,9 +527,22 @@ test("ticket-branch-set rechaza conflicto, worktree sucio y ticket no hijo antes
   await expect(noRevision.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo")).rejects.toThrow("revisión");
   expect(noRevision.events).not.toContain("azure-patch");
 
+  for (const invalidBranch of ["feature/.hidden", "feature/name.", "feature/name.lock", "feature/name@{old}"]) {
+    const invalid = ticketBranchFixture();
+    await expect(invalid.service.setTicketBranch(hu, 126, invalidBranch, "/repo")).rejects.toThrow("Rama no válida");
+    expect(invalid.events).toHaveLength(0);
+  }
+
   const dirty = ticketBranchFixture({ dirty: "!! .env.local\n" });
   await expect(dirty.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo")).rejects.toThrow("cambios");
   expect(dirty.events).not.toContain("azure-patch");
+});
+
+test("ticket-branch-set rechaza respuestas Azure de otro work item", async () => {
+  const service = new AzureAutocodeService(async () => JSON.stringify({ id: 999, relations: [] }));
+
+  await expect(service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo"))
+    .rejects.toThrow("no coincide con el ID solicitado");
 });
 
 test("ticket-branch-set conserva el worktree y publica el SHA exacto en Git real", async () => {
