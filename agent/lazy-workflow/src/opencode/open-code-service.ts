@@ -34,6 +34,13 @@ export class OpenCodeSessionCloseError extends Error {
   }
 }
 
+export class OpenCodeSessionNotFoundError extends Error {
+  constructor(readonly sessionId: string) {
+    super(`La sesión OpenCode ${sessionId} ya no existe`);
+    this.name = "OpenCodeSessionNotFoundError";
+  }
+}
+
 export interface OpenCodeSpawnOptions {
   cwd?: string;
 }
@@ -264,6 +271,11 @@ export class OpenCodeService {
         && (streamed.lines.some(requiresAzureLogin) || loginInstructionPattern.test(stderr));
       const terminalMarkerReceived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
       if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
+        const sessionIndex = command.indexOf("--session");
+        const sessionId = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
+        if (sessionId && absentSessionPattern.test(stderr)) {
+          throw new OpenCodeSessionNotFoundError(sessionId);
+        }
         throw new Error("OpenCode no devolvio eventos");
       }
 
