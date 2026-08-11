@@ -675,7 +675,10 @@ export class LazyWorkflowCli {
 
     for (const evidence of manifest.evidence) {
       if (info.attachments.some((attachment) =>
-        attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase() && attachment.evidenceKind === evidence.kind
+        typeof attachment.url === "string"
+        && attachment.url.trim().length > 0
+        && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
+        && attachment.evidenceKind === evidence.kind
       )) continue;
       await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
        info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);

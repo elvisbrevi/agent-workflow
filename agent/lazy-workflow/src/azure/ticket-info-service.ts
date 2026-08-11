@@ -173,8 +173,10 @@ function evidenceKind(value: string | undefined): EvidenceKind | undefined {
 }
 
 function hasEvidenceCapture(item: WorkItem): boolean {
-  return (item.relations ?? []).some(({ rel, attributes }) =>
+  return (item.relations ?? []).some(({ rel, url, attributes }) =>
     rel === "AttachedFile"
+      && typeof url === "string"
+      && url.trim().length > 0
       && evidenceKind(attributes?.comment) !== undefined
       && /^[0-9a-f]{64}$/i.test(attributes?.digest ?? "")
   );
@@ -378,7 +380,7 @@ export class AzureTicketInfoService {
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
     const parentType = text(parent, "System.WorkItemType");
-    if (parentType && parentType !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    if (parentType !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
     const child = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     );
@@ -459,7 +461,7 @@ export class AzureTicketInfoService {
       return { hu, ticket, gates: info.gates };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!/no es hijo directo|no es un Task o Bug de entrega/i.test(message)) throw error;
+      if (!/no es hijo directo|no es un Task o Bug de entrega|no es una User Story/i.test(message)) throw error;
       return { hu, ticket, gates: { satisfied: [], unmet: Object.values(GATE) } };
     }
   }
