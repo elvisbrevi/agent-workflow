@@ -419,15 +419,19 @@ export class AzureTicketInfoService {
       ticketBranch.ref,
       "active",
     );
-    if (active.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
-    if (active.length === 1) {
+    const exactActive = active.filter((pr) => pr.source === ticketBranch.ref && pr.target === integration.ref);
+    if (active.length !== exactActive.length) {
+      throw new Error(`El ticket ${ticket} tiene un PR activo que no apunta exactamente a la rama de integración`);
+    }
+    if (exactActive.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
+    if (exactActive.length === 1) {
       await this.az([
-        "repos", "pr", "update", "--id", `${active[0]!.id}`,
+        "repos", "pr", "update", "--id", `${exactActive[0]!.id}`,
         "--organization", ORGANIZATION,
         "--status", "completed",
         "--output", "json",
       ]);
-      const verified = await this.readPullRequest(active[0]!.id, integration.project, integration.repository);
+      const verified = await this.readPullRequest(exactActive[0]!.id, integration.project, integration.repository);
       this.validatePullRequest(verified, ticket, integration, ticketBranch);
       return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
     }
@@ -1192,15 +1196,15 @@ export class AzureTicketInfoService {
     const args = [
       "repos", "pr", "list", "--organization", ORGANIZATION, "--project", project,
       ...(repository ? ["--repository", repository] : []),
-       "--status", status, "--output", "json",
+      "--status", status, "--output", "json",
     ];
     let payload: PullRequestPayload[];
     try {
       payload = this.pullRequestList(JSON.parse(await this.az(args)));
     } catch (error) {
       const uri = repository
-         ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
-         : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
+        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
+        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
       try {
         payload = this.pullRequestList(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",

@@ -10,7 +10,7 @@ export interface AutocodeCheckpoint {
 
 export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing" | "implementation-ready" | "integrating" | "evidencing" | "completing" | "cleaning" | "reconciling";
 
-export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "pull-request" | "ticket-effort" | "ticket-completion";
+export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "ticket-branch-push" | "pull-request" | "ticket-effort" | "ticket-completion";
 
 export interface VersionedAutocodeCheckpoint {
   schemaVersion: 2;
@@ -29,6 +29,9 @@ export interface VersionedAutocodeCheckpoint {
   receipts: Partial<Record<AutocodeEffect, { verifiedAt: string }>>;
   manifestPath?: string | null;
   pullRequest?: number | null;
+  localCommit?: string | null;
+  mergeCommit?: string | null;
+  manifestDigests?: string[];
 }
 
 export type StoredAutocodeCheckpoint = AutocodeCheckpoint | VersionedAutocodeCheckpoint;
@@ -40,7 +43,7 @@ export interface AutocodeCheckpointStore {
 }
 
 const FILE_NAME = "lazy-workflow/autocode-checkpoint.json";
-const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch", "pull-request", "ticket-effort", "ticket-completion"];
+const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch", "ticket-branch-push", "pull-request", "ticket-effort", "ticket-completion"];
 
 function validBranch(value: string | null): boolean {
   return value === null || (/^refs\/heads\/[^\s]+$/.test(value) && !value.includes("//"));

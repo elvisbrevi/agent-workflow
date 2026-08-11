@@ -33,6 +33,24 @@ function branchName(ref: string): string {
   return name;
 }
 
+export async function pushGitBranch(
+  git: GitRunner,
+  branchRef: string,
+  workingDirectory: string,
+): Promise<void> {
+  const branch = branchName(branchRef);
+  const current = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+  if (current !== branch) throw new Error(`La rama activa ${current || "detached"} no coincide con ${branch}`);
+  const head = (await git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+  await git(["push", "origin", `HEAD:${branchRef}`], workingDirectory);
+  const remote = (await git(["ls-remote", "--heads", "origin", branchRef], workingDirectory))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.split(/\s+/)[0];
+  if (remote !== head) throw new Error(`La rama remota ${branchRef} no coincide con el commit local`);
+}
+
 export class GitTicketBranchCleaner {
   constructor(private readonly git: GitRunner = runGit) {}
 
