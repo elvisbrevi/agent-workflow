@@ -246,7 +246,9 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -436,7 +438,7 @@ export class AzureTicketInfoService {
       throw new Error(`El PR ${pullRequestId} entra en conflicto con el PR canónico ya asociado al ticket ${ticket}`);
     }
     if (!associatedCandidates[0]) {
-      await this.addPullRequestWorkItem(pullRequestId, ticket, integration.project, integration.repository);
+      await this.addPullRequestWorkItem(pullRequestId, ticket, integration.project, integration.repository, item);
     }
     if (!await this.isPullRequestLinked(pullRequest, ticket)) {
       throw new Error(`No se pudo verificar la asociación nativa del PR ${pullRequestId} con el ticket ${ticket}`);
@@ -452,9 +454,7 @@ export class AzureTicketInfoService {
     positiveId(pullRequestId, "El pull request");
 
     const item = await this.readWorkItemValidated(ticket);
-    const parentId = relationId((item.relations ?? []).find(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")?.url);
-    if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
-    const parent = await this.readWorkItem(parentId);
+    const parent = await this.readDirectParent(ticket, item);
     const integration = uniqueBranch(parent);
     const ticketBranch = uniqueBranch(item);
     if (!integration.ref || !ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene ramas de integración y entrega verificables`);
@@ -505,6 +505,7 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     validateEvidenceKind(kind);
     const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
     const file = Bun.file(filePath);
     const name = filePath.split(/[\\/]/).pop() ?? "";
     if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
@@ -513,8 +514,10 @@ export class AzureTicketInfoService {
       throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const content = new TextDecoder().decode(bytes);
-    validateEvidenceContent(content, kind);
+    if (kind !== "screen") {
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      validateEvidenceContent(content, kind);
+    }
     const digest = await sha256(bytes);
     const existing = (item.relations ?? [])
       .filter(({ rel }) => rel === "AttachedFile")
@@ -552,11 +555,16 @@ export class AzureTicketInfoService {
 
   async setEvidence(ticket: number, filePath: string): Promise<{ ticket: number; completionEvidence: string }> {
     positiveId(ticket, "El ticket");
-    const content = await Bun.file(filePath).text();
+    const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
     validateEvidenceContent(content, "command-output");
     const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
     const fieldName = COMPLETION_FIELDS.find((name) => text(item, name)) ?? COMPLETION_FIELDS[0];
+    const existing = text(item, fieldName);
+    if (existing === content) return { ticket, completionEvidence: existing };
+    if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     await this.patchWorkItem(item, [{
       op: "test", path: "/rev", value: item.rev,
     }, { op: "add", path: `/fields/${fieldName}`, value: content }]);
@@ -570,6 +578,16 @@ export class AzureTicketInfoService {
     const item = await this.readWorkItem(ticket);
     this.toSummary(item);
     return item;
+  }
+
+  private async readDirectParent(ticket: number, item: WorkItem): Promise<WorkItem> {
+    const parentId = relationId((item.relations ?? []).find(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")?.url);
+    if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
+    const parent = await this.readWorkItem(parentId);
+    if (!(parent.relations ?? []).some(({ rel, url }) =>
+      rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
+    )) throw new Error(`El ticket ${ticket} no es hijo directo de su HU`);
+    return parent;
   }
 
   private async readPullRequest(id: number, project?: string, repository?: string): Promise<TicketPullRequest> {
@@ -616,7 +634,13 @@ export class AzureTicketInfoService {
     ) throw new Error(`El PR ${pullRequest.id} pertenece a otro proyecto o repositorio Azure`);
   }
 
-  private async addPullRequestWorkItem(id: number, ticket: number, project?: string, repository?: string): Promise<void> {
+  private async addPullRequestWorkItem(
+    id: number,
+    ticket: number,
+    project: string | undefined,
+    repository: string | undefined,
+    item: WorkItem,
+  ): Promise<void> {
     try {
       await this.az([
         "repos", "pr", "work-item", "add", "--id", `${id}`, "--work-items", `${ticket}`,
@@ -627,11 +651,16 @@ export class AzureTicketInfoService {
       ]);
     } catch (error) {
       if (!repository) throw commandError(error);
-      const uri = `${ORGANIZATION}/_apis/git/repositories/${encodeURIComponent(repository)}/pullRequests/${id}/workitems/${ticket}?api-version=${API_VERSION}`;
+      if (!project) throw commandError(error);
+      const artifactUrl = `vstfs:///Git/PullRequestId/${encodeURIComponent(`${project}/${repository}/${id}`)}`;
       try {
-        await this.az([
-          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post", "--uri", uri,
-          "--output", "json",
+        await this.patchWorkItem(item, [
+          { op: "test", path: "/rev", value: item.rev },
+          {
+            op: "add",
+            path: "/relations/-",
+            value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Pull Request" } },
+          },
         ]);
       } catch (fallbackError) {
         throw new Error(`No se pudo asociar el PR ${id} al ticket ${ticket}: ${sanitizeError(fallbackError)}`, { cause: fallbackError });

@@ -222,7 +222,10 @@ test("commit linking is idempotent and rejects a conflicting native commit", asy
     if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
       id: 23438,
       fields: { "System.WorkItemType": "User Story" },
-      relations: [{ rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } }],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+        { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+      ],
     });
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
@@ -283,15 +286,23 @@ test("attachment validation records a digest and retries by digest", async () =>
   let patchFailures = 1;
   try {
     const service = new AzureTicketInfoService(async (args) => {
+      if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": "User Story" },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+      });
       if (args[0] === "boards") return JSON.stringify({
         id: 51,
         rev: 4,
         fields: { "System.WorkItemType": "Task" },
-        relations: attached ? [{
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+          ...(attached ? [{
           rel: "AttachedFile",
           url: "https://example.test/evidence.json",
           attributes: { name: "evidence.json", comment: "http-json", digest },
-        }] : [],
+          }] : []),
+        ],
       });
       if (args[0] === "rest" && args.some((value) => value.includes("attachments?"))) {
         uploads += 1;
