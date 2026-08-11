@@ -46,7 +46,7 @@ function serviceFixture(options: {
   };
   const git = async (args: string[]): Promise<string> => {
     if (args[0] === "remote") return options.remoteUrl ?? "https://dev.azure.com/org/Team/_git/repo\n";
-    if (args[0] === "ls-remote") return options.remoteBranch === false ? "" : `abc123\t${args.at(-1)}\n`;
+    if (args[0] === "ls-remote") return options.remoteBranch === false ? "" : `${"a".repeat(40)}\t${args.at(-1)}\n`;
     throw new Error(`Unexpected Git command: ${args.join(" ")}`);
   };
   return { service: new AzureAutocodeService(az, git), patchBodies };
@@ -124,6 +124,134 @@ test("hu-branch-set exige verificar el vínculo creado", async () => {
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
+function provisioningFixture(options: {
+  desiredBranch?: string;
+  desiredSha?: string;
+  baseBranch?: string;
+  baseExists?: boolean;
+  baseSha?: string;
+  dirty?: string;
+  publishFails?: boolean;
+  verificationSha?: string;
+} = {}) {
+  const patchBodies: unknown[] = [];
+  const gitCommands: string[][] = [];
+  let patched = false;
+  const desired = options.desiredBranch ?? "refs/heads/feature/hu-126";
+  const base = options.baseBranch ?? "refs/heads/main";
+  const baseSha = options.baseSha ?? "1".repeat(40);
+  let pushed = false;
+  const az = async (args: string[]): Promise<string> => {
+    if (args[0] === "boards") {
+      return JSON.stringify({
+        id: hu,
+        fields: { "System.TeamProject": "Team" },
+        relations: patched ? [{
+          rel: "ArtifactLink",
+          url: `vstfs:///Git/Ref/project-id%2Frepository-id%2FGB${desired.slice("refs/heads/".length)}`,
+          attributes: { name: "Branch" },
+        }] : [],
+      });
+    }
+    if (args[0] === "repos") {
+      return JSON.stringify({
+        id: "repository-id",
+        name: "repo",
+        project: { id: "project-id", name: "Team" },
+        remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
+      });
+    }
+    if (args[0] === "devops") {
+      patchBodies.push(await Bun.file(args[args.indexOf("--in-file") + 1]!).json());
+      patched = true;
+      return "{}";
+    }
+    throw new Error(`Unexpected Azure command: ${args.join(" ")}`);
+  };
+  const git = async (args: string[]): Promise<string> => {
+    gitCommands.push(args);
+    if (args[0] === "remote") return "https://dev.azure.com/org/Team/_git/repo\n";
+    if (args[0] === "status") return options.dirty ?? "";
+    if (args[0] === "ls-remote") {
+      const ref = args.at(-1)!;
+      if (ref === base && options.baseExists !== false) return `${baseSha}\t${base}\n`;
+      if (ref === desired && (pushed ? options.verificationSha : options.desiredSha)) {
+        return `${(pushed ? options.verificationSha : options.desiredSha)!}\t${desired}\n`;
+      }
+      return "";
+    }
+    if (args[0] === "push") {
+      if (options.publishFails) throw new Error("push rechazado");
+      pushed = true;
+      return "";
+    }
+    throw new Error(`Unexpected Git command: ${args.join(" ")}`);
+  };
+  return { service: new AzureAutocodeService(az, git), patchBodies, gitCommands };
+}
+
+test("hu-branch-set crea la rama ausente desde el SHA exacto de la base remota", async () => {
+  const fixture = provisioningFixture({ verificationSha: "1".repeat(40) });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
+  expect(fixture.gitCommands).toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.patchBodies).toHaveLength(1);
+});
+
+test("hu-branch-set exige base explícita y no escribe Azure si falta la base", async () => {
+  const fixture = provisioningFixture();
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo"))
+    .rejects.toThrow("--base-branch");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+});
+
+test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el worktree", async () => {
+  const fixture = provisioningFixture({ desiredSha: "2".repeat(40) });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
+    .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain"]);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.patchBodies).toHaveLength(1);
+});
+
+test("hu-branch-set falla cerrado con worktree sucio antes de publicar", async () => {
+  const fixture = provisioningFixture({ dirty: " M trabajo.ts\n" });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("cambios");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+});
+
+test("hu-branch-set no escribe Azure si la publicación falla", async () => {
+  const fixture = provisioningFixture({ publishFails: true });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("push rechazado");
+  expect(fixture.patchBodies).toHaveLength(0);
+});
+
+test("hu-branch-set falla si la base remota explícita no existe", async () => {
+  const fixture = provisioningFixture({ baseExists: false });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("base refs/heads/main");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain"]);
+});
+
+test("hu-branch-set no escribe Azure si la verificación remota no coincide con la base", async () => {
+  const fixture = provisioningFixture({ verificationSha: "2".repeat(40) });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("verificar");
+  expect(fixture.patchBodies).toHaveLength(0);
+});
+
 test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode", async () => {
   const output: string[] = [];
   const originalLog = console.log;
@@ -141,6 +269,27 @@ test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode
   }
 
   expect(output).toEqual([JSON.stringify({ hu, branch }, null, 2)]);
+});
+
+test("el CLI hu-branch-set reenvía la base explícita al servicio", async () => {
+  let receivedBase: string | null | undefined;
+  const result = await new LazyWorkflowCli({
+    getHuInfo: async () => { throw new Error("no debe consultarse"); },
+    waitForAccess: async () => undefined,
+    setIntegrationBranch: async (_requestedHu, _branch, _workingDirectory, baseBranch) => {
+      receivedBase = baseBranch;
+      return { hu, branch };
+    },
+  }).run([
+    "hu-branch-set",
+    "--hu", `${hu}`,
+    "--branch", "feature/hu-125",
+    "--base-branch", "main",
+    "--working-directory", "/repo",
+  ]);
+
+  expect(result).toBe(0);
+  expect(receivedBase).toBe("main");
 });
 
 test("el CLI hu-branch-set rechaza entrada inválida sin tocar Azure", async () => {

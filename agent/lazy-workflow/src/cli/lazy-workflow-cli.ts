@@ -17,13 +17,14 @@ import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 type CliOptions = OpenCodeRunOptions & {
   hu: number;
   branch: string | null;
+  baseBranch: string | null;
   numberOfQuestions: number;
   workingDirectory: string;
 };
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
-  setIntegrationBranch?(hu: number, branch: string, workingDirectory: string): Promise<{ hu: number; branch: string }>;
+  setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -105,6 +106,7 @@ function parseOptions(args: string[]): CliOptions {
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
     hu: Number(optionValue(args, "--hu") ?? `${DEFAULT_HU}`),
     branch: optionValue(args, "--branch"),
+    baseBranch: optionValue(args, "--base-branch"),
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -118,7 +120,7 @@ function printHelp(): void {
     "  lazy-workflow code --session <id> --prompt continue",
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
-    "  lazy-workflow hu-branch-set --hu <id> --branch <name> --working-directory <path>",
+    "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
     "",
     "Options:",
     "  --hu <id>",
@@ -127,6 +129,7 @@ function printHelp(): void {
     "  --variant <variant>",
     "  --prompt <prompt>",
     "  --branch <name>",
+    "  --base-branch <name>",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
   ].join("\n"));
@@ -189,7 +192,12 @@ export class LazyWorkflowCli {
       }
       try {
         console.log(JSON.stringify(
-          await this.huInfoService.setIntegrationBranch(options.hu, options.branch, options.workingDirectory),
+          await this.huInfoService.setIntegrationBranch(
+            options.hu,
+            options.branch,
+            options.workingDirectory,
+            options.baseBranch,
+          ),
           null,
           2,
         ));

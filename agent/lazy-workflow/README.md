@@ -12,7 +12,8 @@ When installed globally by `install.sh --all-global` or
 ```bash
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-branch-info --hu 23438
-lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 --working-directory /path/to/repository
+lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --base-branch main --working-directory /path/to/repository
 ```
 
 OpenCode events and periodic no-output heartbeats are printed with local
@@ -54,7 +55,7 @@ normalized native Azure Git branch (`refs/heads/...`) or `null` when no Branch
 ArtifactLink exists. Malformed or multiple distinct Branch links fail with a
 nonzero status; the command never proposes `hu/<HU>`.
 
-To assign an already existing remote branch to an HU:
+To assign an already existing remote branch to an HU, omit `--base-branch`:
 
 ```bash
 bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
@@ -67,6 +68,18 @@ Branch ArtifactLink with the resolved project and repository IDs. The same
 link is idempotent; a different or ambiguous link fails without replacing it.
 Azure is reread before success, the result is one indented JSON object, and
 OpenCode is never started.
+
+To create the HU branch on first use, provide an explicit remote base:
+
+```bash
+bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --base-branch main --working-directory /path/to/repository
+```
+
+When the desired branch is absent, the command requires `--base-branch`,
+creates it from that exact remote commit, publishes it, verifies the remote
+ref, and only then creates the Azure link. It does not reset, clean, checkout,
+or discard worktree changes; a dirty worktree fails closed.
 
 To drain the HU's direct Task and Bug delivery tickets one at a time:
 
