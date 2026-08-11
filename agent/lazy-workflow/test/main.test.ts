@@ -1830,3 +1830,51 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
   expect(code).toBe(1);
   expect(calls).toBe(0);
 });
+
+test("code versionado persiste fases y prepara estado y rama antes de OpenCode", async () => {
+  const phases: string[] = [];
+  const events: string[] = [];
+  const checkpoints: Array<{ phase: string; ticket: number | null; activeDurationMs: number; receipts: string[] }> = [];
+  const clockValues = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800];
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-versioned", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  const cli = new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => { events.push("integration-branch"); return "refs/heads/hu/23438"; },
+      getAutocodeState: async () => ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true }),
+      getAutocodeContextForTicket: async () => null,
+      getState: async () => { events.push("read-state"); return { ticket: 51, state: "Active", revision: 7 }; },
+      getEffort: async () => ({ ticket: 51, effort: { real: 2, realHours: 2 } }),
+      setState: async () => { events.push("set-state"); return undefined; },
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => { events.push("set-ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
+      verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
+    },
+    { run: async () => { events.push("opencode"); return { result, azureLoginRequired: false }; }, resume: async () => result },
+    {
+      read: async () => null,
+      write: async (checkpoint) => {
+        if ("schemaVersion" in checkpoint) {
+          phases.push(checkpoint.phase);
+          checkpoints.push({ phase: checkpoint.phase, ticket: checkpoint.ticket, activeDurationMs: checkpoint.activeDurationMs, receipts: Object.keys(checkpoint.receipts) });
+        }
+      },
+      clear: async () => undefined,
+    },
+    undefined,
+    { deleteTicketBranch: async () => events.push("cleanup") },
+    { now: () => clockValues.shift() ?? 1800 },
+  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  expect(await cli).toBe(0);
+  expect(events).toEqual(["integration-branch", "read-state", "set-state", "set-ticket-branch", "opencode", "cleanup"]);
+  expect(phases).toContain("preflight-hu");
+  expect(phases).toContain("selected");
+  expect(phases).toContain("started");
+  expect(phases).toContain("implementing");
+  expect(checkpoints.at(-1)?.receipts).toEqual(["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch"]);
+  expect(checkpoints.at(-1)?.activeDurationMs).toBe(400);
+});
