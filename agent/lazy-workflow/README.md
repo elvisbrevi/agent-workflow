@@ -111,6 +111,14 @@ OpenCode. The HU and ticket are restored from the repository checkpoint, so no
 bun run main.ts code --session <session-id> --prompt continue
 ```
 
+Recovery and sessionless reconciliation first reacquire the HU's native Branch
+link through the deterministic branch service, then rebuild the pinned ticket
+context. A missing, malformed, conflicting, or otherwise stable branch state
+stops once with an actionable error; the checkpoint, OpenCode session, and
+ticket branch remain untouched. Temporary Azure failures receive bounded,
+visible preflight retries. Correct the reported branch state and rerun the same
+command to preserve the checkpoint's ticket identity.
+
 The complete command help is available with an unsupported subcommand or no
 subcommand. `--model`, `--variant`, `--prompt`, and `--working-directory` are
 forwarded to OpenCode; `--number-of-questions` applies to `plan`.
