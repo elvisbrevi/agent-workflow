@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
 import { AzureTicketInfoService } from "../src/azure/ticket-info-service.ts";
+import { HuInfo } from "../src/azure/hu-info.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 
 const branch = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438";
@@ -356,6 +357,30 @@ test("ticket reads reject invalid or non-direct delivery tickets", async () => {
     .rejects.toThrow("Task o Bug");
 });
 
+test("completion-info reports pinned-ticket-context when the HU relationship is invalid", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [],
+    });
+    return JSON.stringify({
+      id: 51,
+      fields: { "System.WorkItemType": "Task" },
+      relations: [],
+    });
+  });
+
+  await expect(service.getCompletionInfo(23438, 51)).resolves.toEqual(expect.objectContaining({
+    hu: 23438,
+    ticket: 51,
+    gates: expect.objectContaining({
+      satisfied: [],
+      unmet: expect.arrayContaining(["pinned-ticket-context"]),
+    }),
+  }));
+});
+
 test("ticket branch reads reject native links that are not valid Git refs", async () => {
   const service = new AzureTicketInfoService(async (args) => {
     if (args.includes("23438")) return JSON.stringify({
@@ -673,13 +698,37 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
   const calls: unknown[][] = [];
   const output: string[] = [];
   const originalLog = console.log;
+  const info = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" as const, state: "Done" },
+    branch: "refs/heads/ticket/51",
+    integrationBranch: "refs/heads/hu/23438",
+    effort: { real: 1, realHours: 1 },
+    pullRequests: [],
+    canonicalPullRequest: 99,
+    mergeCommit: "merge",
+    attachments: [],
+    completionEvidence: "evidence",
+    gates: { satisfied: [], unmet: [] },
+  };
+  const manifest = {
+    ticket: 51,
+    ticketBranch: "refs/heads/ticket/51",
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "pass" }],
+    evidence: [],
+  };
   const service = {
     getHuInfo: async () => { throw new Error("must not use generic HU read"); },
     waitForAccess: async () => undefined,
-    applyCompletion: async (...args: [number, number, number, string, string]) => {
-      calls.push(args);
-      return { hu: args[0], ticket: args[1], pullRequest: args[2], manifest: args[3], workingDirectory: args[4] };
-    },
+    getTicketInfo: async () => info,
+    readCompletionManifest: async (path: string) => { calls.push(["manifest", path]); return manifest; },
+    validateCompletionManifest: async (...args: [unknown, unknown, number, string]) => { calls.push(["validate", ...args.slice(2)]); },
+    linkPullRequest: async () => { throw new Error("must not link an existing PR"); },
+    linkCommit: async () => { throw new Error("must not link an existing commit"); },
+    addAttachment: async () => { throw new Error("must not add an existing attachment"); },
+    setEvidence: async () => { throw new Error("must not set existing evidence"); },
+    setState: async () => { throw new Error("must not set an existing state"); },
   };
 
   try {
@@ -696,13 +745,17 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
     console.log = originalLog;
   }
 
-  expect(calls).toEqual([[23438, 51, 99, "/tmp/completion.json", "/repo"]]);
+  expect(calls).toEqual([
+    ["manifest", "/tmp/completion.json"],
+    ["validate", 51, "/repo"],
+  ]);
   expect(JSON.parse(output[0]!)).toEqual({
     hu: 23438,
     ticket: 51,
     pullRequest: 99,
     manifest: "/tmp/completion.json",
-    workingDirectory: "/repo",
+    state: "Done",
+    gates: { satisfied: [], unmet: [] },
   });
 });
 
@@ -718,7 +771,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
     ticket: 51,
     ticketBranch: "refs/heads/ticket/51",
     commit,
-    validation: [{ command: "bun test", result: "17 passed" }],
+    validation: [{ command: "bun test", result: "18 passed" }],
     evidence: [{ path: evidencePath, kind: "http-json", sha256: digest }],
   }));
 
@@ -729,14 +782,14 @@ test("completion apply reconciles missing effects before moving the ticket to Do
   let hasAttachment = false;
   let completionEvidence: string | null = null;
   try {
-    const service = new class extends AzureTicketInfoService {
+    const base = new class extends AzureTicketInfoService {
       constructor() {
         super(async () => "", async (args) => args[0] === "rev-parse" ? commit : "ticket/51\n");
       }
 
       override async getTicketInfo(): Promise<any> {
         const unmet = state === "Done" ? [] : [
-          ...(state === "Done" ? [] : ["ticket-state"]),
+          "ticket-state",
           ...(completionEvidence ? [] : ["completion-evidence"]),
           ...(hasCommit ? [] : ["merge-commit-artifact-link"]),
         ];
@@ -785,13 +838,23 @@ test("completion apply reconciles missing effects before moving the ticket to Do
         return {};
       }
     }();
+    const service = {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      getTicketInfo: base.getTicketInfo.bind(base),
+      readCompletionManifest: base.readCompletionManifest.bind(base),
+      validateCompletionManifest: base.validateCompletionManifest.bind(base),
+      linkPullRequest: base.linkPullRequest.bind(base),
+      linkCommit: base.linkCommit.bind(base),
+      addAttachment: base.addAttachment.bind(base),
+      setEvidence: base.setEvidence.bind(base),
+      setState: base.setState.bind(base),
+    };
 
-    await expect(service.applyCompletion(23438, 51, 99, manifestPath, "/repo")).resolves.toEqual(expect.objectContaining({
-      hu: 23438,
-      ticket: 51,
-      pullRequest: 99,
-      state: "Done",
-    }));
+    await expect(new LazyWorkflowCli(service).run([
+      "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
+      "--manifest", manifestPath, "--working-directory", "/repo",
+    ])).resolves.toBe(0);
     expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
   } finally {
     await unlink(evidencePath);
