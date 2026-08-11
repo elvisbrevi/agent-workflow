@@ -141,6 +141,8 @@ function provisioningFixture(options: {
   const base = options.baseBranch ?? "refs/heads/main";
   const baseSha = options.baseSha ?? "1".repeat(40);
   let pushed = false;
+  let fetchedSha: string | null = null;
+  let publishedSha: string | null = null;
   const az = async (args: string[]): Promise<string> => {
     if (args[0] === "boards") {
       return JSON.stringify({
@@ -172,18 +174,29 @@ function provisioningFixture(options: {
     gitCommands.push(args);
     if (args[0] === "remote") return "https://dev.azure.com/org/Team/_git/repo\n";
     if (args[0] === "status") return options.dirty ?? "";
-    if (args[0] === "fetch") return "";
-    if (args[0] === "rev-parse") return baseSha;
     if (args[0] === "ls-remote") {
       const ref = args.at(-1)!;
       if (ref === base && options.baseExists !== false) return `${baseSha}\t${base}\n`;
-      if (ref === desired && (pushed ? options.verificationSha : options.desiredSha)) {
-        return `${(pushed ? options.verificationSha : options.desiredSha)!}\t${desired}\n`;
+      if (ref === desired && (pushed ? options.verificationSha ?? publishedSha : options.desiredSha)) {
+        return `${(pushed ? options.verificationSha ?? publishedSha : options.desiredSha)!}\t${desired}\n`;
       }
       return "";
     }
+    if (args[0] === "fetch") {
+      const target = args.at(-1)!.split(":")[1];
+      if (target !== `refs/lazy-workflow/base-${baseSha}`) throw new Error("fetch no usa el ref temporal");
+      fetchedSha = baseSha;
+      return "";
+    }
+    if (args[0] === "rev-parse") {
+      if (args[1] !== `refs/lazy-workflow/base-${baseSha}^{commit}`) throw new Error("rev-parse no verifica el ref temporal");
+      return `${fetchedSha ?? ""}\n`;
+    }
     if (args[0] === "push") {
       if (options.publishFails) throw new Error("push rechazado");
+      const source = args[2]!.split(":")[0];
+      if (source !== `refs/lazy-workflow/base-${baseSha}` || !fetchedSha) throw new Error("push no usa la base remota preparada");
+      publishedSha = fetchedSha;
       pushed = true;
       return "";
     }
@@ -220,7 +233,7 @@ test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el wor
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored=all"]);
   expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
   expect(fixture.patchBodies).toHaveLength(1);
 });
@@ -242,6 +255,17 @@ test("hu-branch-set falla cerrado ante cambios no rastreados", async () => {
   expect(fixture.patchBodies).toHaveLength(0);
 });
 
+test("hu-branch-set falla cerrado ante archivos no rastreados ignorados", async () => {
+  const fixture = provisioningFixture({ dirty: "!! .env.local\n" });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("cambios");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands).toContainEqual([
+    "status", "--porcelain", "--untracked-files=all", "--ignored=all",
+  ]);
+});
+
 test("hu-branch-set no escribe Azure si la publicación falla", async () => {
   const fixture = provisioningFixture({ publishFails: true });
 
@@ -256,7 +280,7 @@ test("hu-branch-set falla si la base remota explícita no existe", async () => {
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("base refs/heads/main");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored=all"]);
 });
 
 test("hu-branch-set no escribe Azure si la verificación remota no coincide con la base", async () => {

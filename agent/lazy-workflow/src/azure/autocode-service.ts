@@ -272,7 +272,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       if (base.ref === normalized.ref) throw new Error("La base remota no puede ser la rama HU");
       const baseSha = await remoteBranchSha(this.git, base.ref, workingDirectory);
       if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored=all"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama HU");
       const localBaseRef = `refs/lazy-workflow/base-${baseSha}`;
       try {
