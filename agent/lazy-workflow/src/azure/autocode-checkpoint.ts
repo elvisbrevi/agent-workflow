@@ -118,6 +118,7 @@ export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
     if (!await file.exists()) return null;
     const value: unknown = await file.json();
     const migrated = migrateAutocodeCheckpoint(value);
+    if (!migrated) throw new Error("Checkpoint autocode invalido; no se sobrescribira");
     if (migrated && (!validVersioned(value) || (value.activeSince && migrated.activeSince === null))) {
       await Bun.write(path, `${JSON.stringify(migrated)}\n`);
     }

@@ -876,6 +876,14 @@ export class LazyWorkflowCli {
       ? await this.huInfoService.getBranch(hu, ticket)
       : null;
     ticketBranch = ticketBranch ?? existingBranch?.branch ?? `refs/heads/ticket/${ticket}`;
+    if (checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
+      reportOperator(`lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      return 1;
+    }
+    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch && existingBranch.branch !== ticketBranch) {
+      reportOperator(`lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      return 1;
+    }
     await markPhase("started", { ticketBranch });
     if (!checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
       if (!this.huInfoService.setState) return 1;
@@ -904,7 +912,7 @@ export class LazyWorkflowCli {
     while (true) {
       try {
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory), azureLoginRequired: false, failed: false }
+          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, TICKET_COMPLETED_MARKER), azureLoginRequired: false, failed: false }
           : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: TICKET_COMPLETED_MARKER }, true));
         sessionId = execution.result.sessionId;
         const terminal = containsMarker(execution.result.text, TICKET_COMPLETED_MARKER);
@@ -915,18 +923,22 @@ export class LazyWorkflowCli {
           resumePrompt = "continue";
           continue;
         }
-        if (execution.failed) throw new Error("OpenCode termino con error");
-        if (!terminal) {
-          await this.retryTimer.wait(10_000);
-          resumePrompt = options.prompt;
-          continue;
+        if (terminal) {
+          if (!this.huInfoService.verifyTicketCompletion) return 1;
+          try {
+            const verification = await this.huInfoService.verifyTicketCompletion(context);
+            if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
+            await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
+            await this.checkpointStore.clear();
+            return 0;
+          } catch (error) {
+            reportOperator(`lazy-workflow: no se pudo verificar o limpiar el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint sessionless conservado.`);
+            return 1;
+          }
         }
-        if (!this.huInfoService.verifyTicketCompletion) return 1;
-        const verification = await this.huInfoService.verifyTicketCompletion(context);
-        if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
-        await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-        await this.checkpointStore.clear();
-        return 0;
+        if (execution.failed) throw new Error("OpenCode termino con error");
+        await this.retryTimer.wait(10_000);
+        resumePrompt = options.prompt;
       } catch (error) {
         reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
         await this.retryTimer.wait(10_000);
