@@ -109,7 +109,10 @@ test("ticket-info does not infer a canonical PR without native association", asy
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       fields: { "System.WorkItemType": "Task", "System.State": "Active" },
-      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+      ],
     });
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([]);
     if (args[0] === "repos") return JSON.stringify([{
@@ -234,7 +237,10 @@ test("PR linking validates the exact ticket branch and verifies native associati
       id: 51,
       rev: 4,
       fields: { "System.WorkItemType": "Task" },
-      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+      ],
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
       pullRequestId: 99,

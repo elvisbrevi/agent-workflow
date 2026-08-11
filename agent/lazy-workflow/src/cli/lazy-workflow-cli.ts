@@ -910,11 +910,24 @@ export class LazyWorkflowCli {
         };
         await save();
         const runRecoveryEffect: CompletionEffectRunner = async (effect, target, action) => {
+          const started = now();
           checkpoint = { ...checkpoint, intent: { effect, target } };
           await save();
-          await action();
-          checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(now()).toISOString() } } };
-          await save();
+          try {
+            await action();
+            const finished = now();
+            checkpoint = {
+              ...checkpoint,
+              activeDurationMs: checkpoint.activeDurationMs + Math.max(0, finished - started),
+              intent: null,
+              receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(finished).toISOString() } },
+            };
+            await save();
+          } catch (error) {
+            checkpoint = { ...checkpoint, activeDurationMs: checkpoint.activeDurationMs + Math.max(0, now() - started) };
+            await save();
+            throw error;
+          }
         };
         if (!checkpoint.receipts["ticket-branch-checkout"]) {
           await runRecoveryEffect("ticket-branch-checkout", checkpoint.ticketBranch, () =>
@@ -953,21 +966,19 @@ export class LazyWorkflowCli {
           checkpoint = { ...checkpoint, phase: "evidencing" };
           await save();
           const runEffect: CompletionEffectRunner = async (effect, target, action) => {
-            checkpoint = { ...checkpoint, intent: { effect, target } };
-            await save();
-            await action();
-            checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(now()).toISOString() } } };
-            await save();
+            if (effect === "ticket-done") {
+              checkpoint = { ...checkpoint, phase: "completing" };
+              await save();
+            }
+            await runRecoveryEffect(effect, target, action);
           };
-          checkpoint = { ...checkpoint, phase: "completing" };
-          await save();
           await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath }, runEffect);
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
         }
         await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch);
         await this.checkpointStore.clear();
-        return 0;
+        return this.runVersionedAzureCode({ ...options, session: null }, null);
       } catch (error) {
         reportOperator(`lazy-workflow: no se pudo reconciliar determinísticamente el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`);
         return 1;
@@ -1100,6 +1111,7 @@ export class LazyWorkflowCli {
               };
               await save();
               await markPhase("implementation-ready", { manifestPath, sessionId: null });
+              await markPhase("integrating", { manifestPath, sessionId: null });
               if (!checkpoint.receipts["ticket-branch-checkout"]) {
                 await track(
                   "ticket-branch-checkout",
@@ -1118,7 +1130,7 @@ export class LazyWorkflowCli {
                 `${ticket}`,
               );
               checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
-              await markPhase("integrating", { pullRequest: pullRequest.pullRequest });
+              await save();
 
               const currentState = await this.huInfoService.getState!(ticket);
               const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
@@ -1133,19 +1145,21 @@ export class LazyWorkflowCli {
               }
 
               await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
-              await markPhase("completing", { pullRequest: pullRequest.pullRequest });
               await track(
                 "ticket-completion",
                 () => this.applyTicketCompletion(
                   { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
-                  (effect, target, action) => track(effect, action, target),
+                  async (effect, target, action) => {
+                    if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
+                    await track(effect, action, target);
+                  },
                 ).then(() => undefined),
                 `${pullRequest.pullRequest}`,
               );
               await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
               await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
               await this.checkpointStore.clear();
-              return 0;
+              return this.runVersionedAzureCode({ ...options, session: null }, null);
             } catch (error) {
               reportOperator(`lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`);
               return 1;
