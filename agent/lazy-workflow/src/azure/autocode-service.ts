@@ -29,6 +29,11 @@ export interface AutocodeState {
   pending: boolean;
 }
 
+export interface IntegrationBranchInfo {
+  hu: number;
+  branch: string | null;
+}
+
 export const COMPLETION_GATE = {
   pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
@@ -58,6 +63,7 @@ export type TicketCompletionVerification = VerifiedTicketCompletion | Incomplete
 
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
+  getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -130,6 +136,26 @@ function integrationBranchFrom(item: WorkItem): string | undefined {
   return name ? `refs/heads/${name}` : undefined;
 }
 
+function integrationBranchesFrom(item: WorkItem): string[] {
+  return (item.relations ?? [])
+    .filter(({ rel, attributes }) => rel === "ArtifactLink" && attributes?.name === "Branch")
+    .map((relation) => {
+      if (!relation.url) throw new Error("Branch ArtifactLink sin URI");
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(relation.url);
+      } catch {
+        throw new Error("Branch ArtifactLink con URI malformada");
+      }
+      const match = decoded.match(/^vstfs:\/\/\/Git\/Ref\/[^/]+\/[^/]+\/GB(.+)$/);
+      const branch = match?.[1];
+      if (!branch || branch.startsWith("/") || branch.endsWith("/") || branch.includes("//")) {
+        throw new Error("Branch ArtifactLink con URI de rama Azure Git malformada");
+      }
+      return `refs/heads/${branch}`;
+    });
+}
+
 function belongsToTicket(source: string | undefined, ticket: number): boolean {
   if (!source?.startsWith("refs/heads/")) return false;
   return new RegExp(`(?:^|[/_.-])${ticket}(?:$|[/_.-])`).test(source.slice("refs/heads/".length));
@@ -158,6 +184,17 @@ export class AzureAutocodeService implements AutocodeAzureService {
       assignedTo: item.fields?.["System.AssignedTo"],
       desarrollador: field(item, "Custom.Desarrollador1"),
     } satisfies HuInfoData);
+  }
+
+  async getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo> {
+    if (!Number.isInteger(hu) || hu <= 0) {
+      throw new Error(`La HU debe ser un entero positivo: ${hu}`);
+    }
+    const branches = [...new Set(integrationBranchesFrom(await show(hu, true, this.az)))];
+    if (branches.length > 1) {
+      throw new Error(`La HU ${hu} tiene multiples Branch ArtifactLink distintos`);
+    }
+    return { hu, branch: branches[0] ?? null };
   }
 
   async ensureIntegrationBranch(hu: number): Promise<string | null> {
