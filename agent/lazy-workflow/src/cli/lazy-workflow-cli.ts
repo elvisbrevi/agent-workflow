@@ -274,7 +274,7 @@ function printHelp(): void {
     "  --kind <http-json|screen|command-output>",
     "  --evidence-file <path>",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
-    "  Azure code: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
+    "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
   ].join("\n"));
