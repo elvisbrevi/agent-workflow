@@ -83,6 +83,27 @@ normalized native Azure Git branch (`refs/heads/...`) or `null` when no Branch
 ArtifactLink exists. Malformed or multiple distinct Branch links fail with a
 nonzero status; the command never proposes `hu/<HU>`.
 
+To inspect one Azure delivery ticket without starting OpenCode:
+
+```bash
+bun run main.ts ticket-info --hu 23438 --ticket 23459
+bun run main.ts ticket-description-info --ticket 23459
+bun run main.ts ticket-state-info --ticket 23459
+bun run main.ts ticket-effort-info --ticket 23459
+bun run main.ts ticket-attachment-info --ticket 23459
+bun run main.ts ticket-evidence-info --ticket 23459
+bun run main.ts ticket-branch-info --hu 23438 --ticket 23459
+bun run main.ts ticket-pr-info --hu 23438 --ticket 23459
+bun run main.ts ticket-completion-info --hu 23438 --ticket 23459
+```
+
+Each command emits one normalized JSON object. The aggregate response includes
+the direct ticket identity, description, state, revision, effort, ticket and
+HU branches, pull-request candidates, canonical association, merge commit,
+attachments, completion evidence, and all satisfied or unmet completion gates.
+Azure CLI reads are attempted first; unsupported or broken read routes use the
+authenticated Azure DevOps REST boundary.
+
 To assign an already existing remote branch to an HU, omit `--base-branch`:
 
 ```bash
