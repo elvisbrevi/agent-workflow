@@ -49,7 +49,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
-  readCompletionManifest?(path: string): Promise<CompletionManifest>;
+  readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
@@ -633,7 +633,7 @@ export class LazyWorkflowCli {
     }
 
     let info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    const manifest = await this.huInfoService.readCompletionManifest(options.manifest!);
+    const manifest = await this.huInfoService.readCompletionManifest(options.manifest!, options.workingDirectory);
     await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
 
     const unreconcilableGates = info.gates.unmet.filter((gate) =>
@@ -643,6 +643,15 @@ export class LazyWorkflowCli {
     );
     if (unreconcilableGates.length > 0) {
       throw new Error(`No se puede completar el ticket ${options.ticket}; faltan datos previos: ${unreconcilableGates.join(", ")}`);
+    }
+
+    const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
+    if (!textEvidence && !info.completionEvidence) {
+      throw new Error("El manifest no contiene evidencia textual para completion-evidence");
+    }
+    if (textEvidence) {
+      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
+      info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
     if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== options.pullRequest) {
@@ -664,14 +673,6 @@ export class LazyWorkflowCli {
       )) continue;
       await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    }
-
-    const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
-    if (textEvidence) {
-      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
-      info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    } else if (!info.completionEvidence) {
-      throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
 
     const unmetBeforeDone = info.gates.unmet.filter((gate) => gate !== COMPLETION_GATE.ticketState);

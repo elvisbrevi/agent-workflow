@@ -809,6 +809,20 @@ test("completion apply reconciles missing effects before moving the ticket to Do
         };
       }
 
+      override async readCompletionManifest(): Promise<any> {
+        return {
+          ticket: 51,
+          ticketBranch: "refs/heads/ticket/51",
+          commit,
+          validation: [{ command: "bun test", result: "18 passed" }],
+          evidence: [{ path: evidencePath, kind: "http-json", sha256: digest }],
+        };
+      }
+
+      override async validateCompletionManifest(manifest: any, info: any, ticket: number, workingDirectory: string): Promise<void> {
+        return super.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+      }
+
       override async linkPullRequest(): Promise<any> {
         calls.push("pr");
         canonicalPullRequest = 99;
@@ -856,7 +870,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
       "--manifest", manifestPath, "--working-directory", "/repo",
     ])).resolves.toBe(0);
-    expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
+    expect(calls).toEqual(["evidence", "pr", "commit", "attachment", "state"]);
   } finally {
     await unlink(evidencePath);
     await unlink(manifestPath);

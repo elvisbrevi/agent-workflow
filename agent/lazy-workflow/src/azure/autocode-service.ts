@@ -83,6 +83,8 @@ export interface AutocodeAzureService {
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
+  readCompletionManifest(path: string, workingDirectory: string): Promise<import("./ticket-info-service.ts").CompletionManifest>;
+  validateCompletionManifest(manifest: import("./ticket-info-service.ts").CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket(ticket: number): Promise<DeliveryTicket>;
   getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -255,6 +257,14 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }> {
     return this.ticketInfoService.getCompletionInfo(hu, ticket);
+  }
+
+  readCompletionManifest(path: string, workingDirectory: string) {
+    return this.ticketInfoService.readCompletionManifest(path, workingDirectory);
+  }
+
+  validateCompletionManifest(manifest: import("./ticket-info-service.ts").CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void> {
+    return this.ticketInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
   }
 
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
