@@ -274,8 +274,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
       if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
       const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama HU");
-      const localBaseRef = `refs/lazy-workflow/base-${baseSha}`;
+      const localBaseRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
       try {
+        const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", localBaseRef], workingDirectory)).trim();
+        if (existingRef) throw new Error(`El ref temporal local ${localBaseRef} ya existe`);
         await this.git(["fetch", "--no-tags", "origin", `+${base.ref}:${localBaseRef}`], workingDirectory);
         const fetchedSha = (await this.git(["rev-parse", `${localBaseRef}^{commit}`], workingDirectory)).trim();
         if (fetchedSha !== baseSha) throw new Error(`La base remota ${base.ref} cambió durante la preparación`);

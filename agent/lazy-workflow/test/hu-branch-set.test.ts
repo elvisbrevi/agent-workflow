@@ -139,6 +139,7 @@ function provisioningFixture(options: {
   publishFails?: boolean;
   verificationSha?: string;
   linked?: boolean;
+  existingTempRef?: boolean;
 } = {}) {
   const patchBodies: unknown[] = [];
   const gitCommands: string[][] = [];
@@ -149,6 +150,7 @@ function provisioningFixture(options: {
   let pushed = false;
   let fetchedSha: string | null = null;
   let publishedSha: string | null = null;
+  let tempRef: string | null = null;
   const az = async (args: string[]): Promise<string> => {
     if (args[0] === "boards") {
       return JSON.stringify({
@@ -188,20 +190,24 @@ function provisioningFixture(options: {
       }
       return "";
     }
+    if (args[0] === "for-each-ref") {
+      return options.existingTempRef ? "refs/lazy-workflow/existing\n" : "";
+    }
     if (args[0] === "fetch") {
       const target = args.at(-1)!.split(":")[1];
-      if (target !== `refs/lazy-workflow/base-${baseSha}`) throw new Error("fetch no usa el ref temporal");
+      if (!target?.startsWith("refs/lazy-workflow/")) throw new Error("fetch no usa el ref temporal");
+      tempRef = target;
       fetchedSha = baseSha;
       return "";
     }
     if (args[0] === "rev-parse") {
-      if (args[1] !== `refs/lazy-workflow/base-${baseSha}^{commit}`) throw new Error("rev-parse no verifica el ref temporal");
+      if (args[1] !== `${tempRef}^{commit}`) throw new Error("rev-parse no verifica el ref temporal");
       return `${fetchedSha ?? ""}\n`;
     }
     if (args[0] === "push") {
       if (options.publishFails) throw new Error("push rechazado");
       const source = args[2]!.split(":")[0];
-      if (source !== `refs/lazy-workflow/base-${baseSha}` || !fetchedSha) throw new Error("push no usa la base remota preparada");
+      if (source !== tempRef || !fetchedSha) throw new Error("push no usa la base remota preparada");
       publishedSha = fetchedSha;
       pushed = true;
       return "";
@@ -217,11 +223,11 @@ test("hu-branch-set crea la rama ausente desde el SHA exacto de la base remota",
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
-  expect(fixture.gitCommands).toContainEqual([
-    "fetch", "--no-tags", "origin",
-    `+refs/heads/main:refs/lazy-workflow/base-${"1".repeat(40)}`,
-  ]);
+  const fetchCommand = fixture.gitCommands.find((args) => args[0] === "fetch")!;
+  const tempRef = fetchCommand.at(-1)!.split(":")[1]!;
+  expect(tempRef).toMatch(/^refs\/lazy-workflow\/[0-9a-f-]+$/);
+  expect(fetchCommand).toEqual(["fetch", "--no-tags", "origin", `+refs/heads/main:${tempRef}`]);
+  expect(fixture.gitCommands).toContainEqual(["push", "origin", `${tempRef}:refs/heads/feature/hu-126`]);
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
@@ -231,7 +237,7 @@ test("hu-branch-set exige base explícita y no escribe Azure si falta la base", 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo"))
     .rejects.toThrow("--base-branch");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands.some((args) => args[0] === "push")).toBe(false);
 });
 
 test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el worktree", async () => {
@@ -240,7 +246,7 @@ test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el wor
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
   expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands.some((args) => args[0] === "push")).toBe(false);
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
@@ -258,7 +264,7 @@ test("hu-branch-set falla cerrado con worktree sucio antes de publicar", async (
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("cambios");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands.some((args) => args[0] === "push")).toBe(false);
 });
 
 test("hu-branch-set falla cerrado ante cambios no rastreados", async () => {
@@ -276,6 +282,15 @@ test("hu-branch-set falla cerrado ante archivos no rastreados ignorados", async 
     .rejects.toThrow("cambios");
   expect(fixture.patchBodies).toHaveLength(0);
   expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
+});
+
+test("hu-branch-set falla si el ref temporal local ya existe", async () => {
+  const fixture = provisioningFixture({ existingTempRef: true });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("ref temporal");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands.some((args) => args[0] === "fetch" || args[0] === "push")).toBe(false);
 });
 
 test("hu-branch-set no escribe Azure si la publicación falla", async () => {
