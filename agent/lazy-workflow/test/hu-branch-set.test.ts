@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { runGit } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const hu = 125;
 const branch = "refs/heads/feature/hu-125";
 const branchUri = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fhu-125";
+const seedPath = (root: string): string => join(root, "seed");
 
 function serviceFixture(options: {
   relations?: Array<Record<string, unknown>>;
@@ -133,6 +138,7 @@ function provisioningFixture(options: {
   dirty?: string;
   publishFails?: boolean;
   verificationSha?: string;
+  linked?: boolean;
 } = {}) {
   const patchBodies: unknown[] = [];
   const gitCommands: string[][] = [];
@@ -148,7 +154,7 @@ function provisioningFixture(options: {
       return JSON.stringify({
         id: hu,
         fields: { "System.TeamProject": "Team" },
-        relations: patched ? [{
+        relations: patched || options.linked ? [{
           rel: "ArtifactLink",
           url: `vstfs:///Git/Ref/project-id%2Frepository-id%2FGB${desired.slice("refs/heads/".length)}`,
           attributes: { name: "Branch" },
@@ -233,9 +239,17 @@ test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el wor
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored=all"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
   expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
   expect(fixture.patchBodies).toHaveLength(1);
+});
+
+test("hu-branch-set no duplica un vínculo existente al reconstruir la rama remota", async () => {
+  const fixture = provisioningFixture({ linked: true, verificationSha: "1".repeat(40) });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
+  expect(fixture.patchBodies).toHaveLength(0);
 });
 
 test("hu-branch-set falla cerrado con worktree sucio antes de publicar", async () => {
@@ -261,9 +275,7 @@ test("hu-branch-set falla cerrado ante archivos no rastreados ignorados", async 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("cambios");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).toContainEqual([
-    "status", "--porcelain", "--untracked-files=all", "--ignored=all",
-  ]);
+  expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
 });
 
 test("hu-branch-set no escribe Azure si la publicación falla", async () => {
@@ -280,7 +292,7 @@ test("hu-branch-set falla si la base remota explícita no existe", async () => {
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("base refs/heads/main");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored=all"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
 });
 
 test("hu-branch-set no escribe Azure si la verificación remota no coincide con la base", async () => {
@@ -289,6 +301,63 @@ test("hu-branch-set no escribe Azure si la verificación remota no coincide con 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("verificar");
   expect(fixture.patchBodies).toHaveLength(0);
+});
+
+test("hu-branch-set publica en un Git real el commit exacto de la base remota", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-"));
+  const remote = join(root, "remote.git");
+  const worktree = join(root, "worktree");
+  let patched = false;
+  const az = async (args: string[]): Promise<string> => {
+    if (args[0] === "boards") return JSON.stringify({
+      id: hu,
+      fields: { "System.TeamProject": "Team" },
+      relations: patched ? [{
+        rel: "ArtifactLink",
+        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fhu-126",
+        attributes: { name: "Branch" },
+      }] : [],
+    });
+    if (args[0] === "repos") return JSON.stringify({
+      id: "repository-id",
+      name: "repo",
+      project: { id: "project-id", name: "Team" },
+      remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
+    });
+    if (args[0] === "devops") {
+      patched = true;
+      return "{}";
+    }
+    throw new Error(`Unexpected Azure command: ${args.join(" ")}`);
+  };
+
+  try {
+    await runGit(["init", "--bare", remote], root);
+    await runGit(["init", seedPath(root)], root);
+    const seed = seedPath(root);
+    await runGit(["config", "user.email", "test@example.test"], seed);
+    await runGit(["config", "user.name", "Test"], seed);
+    await Bun.write(join(seed, "README.md"), "base\n");
+    await runGit(["add", "README.md"], seed);
+    await runGit(["commit", "-m", "base"], seed);
+    await runGit(["branch", "-M", "main"], seed);
+    await runGit(["remote", "add", "origin", remote], seed);
+    await runGit(["push", "origin", "main"], seed);
+    await runGit(["clone", remote, worktree], root);
+    await runGit(["config", "user.email", "test@example.test"], worktree);
+    await runGit(["config", "user.name", "Test"], worktree);
+
+    const baseSha = (await runGit(["rev-parse", "refs/remotes/origin/main"], worktree)).trim();
+    const service = new AzureAutocodeService(async (args) => az(args), async (args, directory) => {
+      if (args[0] === "remote" && args[1] === "get-url") return "https://dev.azure.com/org/Team/_git/repo\n";
+      return runGit(args, directory);
+    });
+    await expect(service.setIntegrationBranch(hu, "feature/hu-126", worktree, "main"))
+      .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
+    expect((await runGit(["ls-remote", "origin", "refs/heads/feature/hu-126"], worktree)).startsWith(`${baseSha}\t`)).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode", async () => {
