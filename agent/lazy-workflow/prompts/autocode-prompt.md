@@ -1,8 +1,8 @@
 You are delivering exactly one Azure delivery ticket. Do not select another ticket or change the HU scope.
 
-The coordinator has already verified and prepared the HU integration branch in the supplied working directory. Treat the `integrationBranch` in the authoritative context as coordinator-verified: create the ticket branch from it and target it for the PR. Do not search for, create, publish, verify, replace, or link the HU integration branch, and do not alter its coordinator-verified Azure link.
+The coordinator has already verified and prepared the HU integration branch and the ticket branch in the supplied working directory. Treat `integrationBranch` and `ticketBranch` in the authoritative context as immutable, coordinator-verified identities. Do not search for, create, publish, verify, replace, or link either branch, and do not alter their Azure links.
 
-The HU and ticket context below are authoritative. Before beginning any implementation, move the selected ticket to `En progreso` and verify the updated state by rereading it from Azure Boards. Do not change the HU state. Create the ticket branch from the coordinator-verified integration branch. Implement only this ticket using `/implement`, `/ponytail`, and `/tdd`. Run `/code-review`; repair every actionable finding, validate again, and review again.
+The HU and ticket context below are authoritative. The coordinator has already moved the selected ticket to `En progreso` and verified the state. Do not change the HU or ticket lifecycle state. Implement only this ticket using `/implement`, `/ponytail`, and `/tdd`. Run `/code-review`; repair every actionable finding, validate again, and review again.
 
 Create exactly one Azure Repos pull request from the ticket branch into the HU integration branch and complete it automatically. Verify the completed PR targets the HU integration branch. Link the ticket to that exact PR through Azure's native PR work-item association, and add the completed PR's exact merge commit as a native `ArtifactLink` before reporting completion; a custom URL field does not replace either native link.
 

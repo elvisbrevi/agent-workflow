@@ -25,6 +25,8 @@ export interface DeliveryTicket {
   type: "Task" | "Bug";
   state?: string;
   createdDate?: string;
+  revision?: number;
+  effort?: { real?: number; realHours?: number };
 }
 
 export interface AutocodeContext {
@@ -644,6 +646,11 @@ export class AzureAutocodeService implements AutocodeAzureService {
         type,
         state,
         createdDate: field(item, "System.CreatedDate"),
+        revision: item.rev,
+        effort: {
+          real: typeof item.fields?.["Custom.EsfuerzoReal"] === "number" ? item.fields["Custom.EsfuerzoReal"] as number : undefined,
+          realHours: typeof item.fields?.["Custom.EsfuerzoRealHH"] === "number" ? item.fields["Custom.EsfuerzoRealHH"] as number : undefined,
+        },
       });
     }
     eligible.sort((a, b) => (a.createdDate ?? "").localeCompare(b.createdDate ?? "") || a.id - b.id);

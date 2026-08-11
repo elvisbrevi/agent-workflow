@@ -186,8 +186,11 @@ subcommand. `--model`, `--variant`, `--prompt`, and `--working-directory` are
 forwarded to OpenCode; `--number-of-questions` applies to `plan`. Supplying an
 invalid `--hu` fails instead of falling back to GitHub.
 
-Autocode stores only its HU, ticket, and opaque OpenCode session in repository
-Git metadata. Failed or incomplete attempts retry the same ticket every ten
+Autocode stores a versioned checkpoint in repository Git metadata. It records
+the phase, immutable HU/ticket/branch identities, Azure revision, effort
+baseline, active duration, opaque OpenCode session, and verified effect
+receipts. Legacy four-field checkpoints migrate conservatively to
+`implementing`. Failed or incomplete attempts retry the same ticket every ten
 seconds; the terminal marker replaces the session with `null`, and the
 checkpoint is removed only after live completion verification.
 

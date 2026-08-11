@@ -10,7 +10,17 @@ import {
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import type { CompletionManifest, EvidenceKind, TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
-import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
+import {
+  GitAutocodeCheckpointStore,
+  isVersionedAutocodeCheckpoint,
+  migrateAutocodeCheckpoint,
+  type AutocodeEffect,
+  type AutocodePhase,
+  type AutocodeCheckpoint,
+  type AutocodeCheckpointStore,
+  type StoredAutocodeCheckpoint,
+  type VersionedAutocodeCheckpoint,
+} from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
@@ -71,6 +81,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
+interface Clock { now(): number; }
 interface TicketBranchCleaner {
   deleteTicketBranch(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<void>;
 }
@@ -265,6 +276,7 @@ export class LazyWorkflowCli {
     private readonly checkpointStore: AutocodeCheckpointStore = new GitAutocodeCheckpointStore(),
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
+    private readonly clock: Clock = { now: Date.now },
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -707,7 +719,262 @@ export class LazyWorkflowCli {
     return { hu: options.hu, ticket: options.ticket, pullRequest: options.pullRequest, manifest: options.manifest, state: "Done", gates: info.gates };
   }
 
+  private supportsVersionedLifecycle(): boolean {
+    return Boolean(
+      this.huInfoService.getState
+      && this.huInfoService.getEffort
+      && this.huInfoService.setState
+      && this.huInfoService.setTicketBranch
+      && this.huInfoService.getBranch,
+    );
+  }
+
   private async runAzureCode(options: CliOptions): Promise<number> {
+    const checkpoint = await this.checkpointStore.read();
+    if (this.supportsVersionedLifecycle() || (checkpoint !== null && isVersionedAutocodeCheckpoint(checkpoint))) {
+      return this.runVersionedAzureCode(options, checkpoint);
+    }
+    return this.runLegacyAzureCode(
+      options,
+      checkpoint && !isVersionedAutocodeCheckpoint(checkpoint) ? checkpoint : null,
+    );
+  }
+
+  private async runVersionedAzureCode(
+    options: CliOptions,
+    initialCheckpoint: StoredAutocodeCheckpoint | null,
+  ): Promise<number> {
+    const now = (): number => this.clock.now();
+    const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
+    let checkpoint: VersionedAutocodeCheckpoint = migrated ?? {
+      schemaVersion: 2,
+      workflow: "autocode",
+      phase: "preflight-hu",
+      hu: options.hu!,
+      ticket: null,
+      integrationBranch: null,
+      ticketBranch: null,
+      azureRevision: null,
+      effortBaseline: { real: 0, realHours: 0 },
+      activeDurationMs: 0,
+      activeSince: null,
+      sessionId: null,
+      intent: null,
+      receipts: {},
+    };
+    const save = async (): Promise<void> => { await this.checkpointStore.write(checkpoint); };
+    const markPhase = async (phase: AutocodePhase, fields: Partial<VersionedAutocodeCheckpoint> = {}): Promise<void> => {
+      checkpoint = { ...checkpoint, ...fields, phase, activeSince: null };
+      await save();
+    };
+    const track = async <T>(effect: AutocodeEffect | null, action: () => Promise<T>, target = effect ?? ""): Promise<T> => {
+      const started = now();
+      checkpoint = {
+        ...checkpoint,
+        activeSince: new Date(started).toISOString(),
+        intent: effect ? { effect, target } : null,
+      };
+      await save();
+      try {
+        const result = await action();
+        const finished = now();
+        checkpoint = {
+          ...checkpoint,
+          activeDurationMs: checkpoint.activeDurationMs + Math.max(0, finished - started),
+          activeSince: null,
+          intent: null,
+          ...(effect ? { receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(finished).toISOString() } } } : {}),
+        };
+        await save();
+        return result;
+      } catch (error) {
+        const finished = now();
+        checkpoint = {
+          ...checkpoint,
+          activeDurationMs: checkpoint.activeDurationMs + Math.max(0, finished - started),
+          activeSince: null,
+        };
+        await save();
+        throw error;
+      }
+    };
+
+    if (options.session !== null && checkpoint.sessionId !== options.session) {
+      reportOperator("lazy-workflow: la sesión no coincide con el checkpoint fijado.");
+      return 1;
+    }
+    if (options.session === null && checkpoint.sessionId !== null) {
+      reportOperator(`lazy-workflow: el ticket ${checkpoint.ticket ?? "fijado"} conserva una sesión activa; reanúdala con --session.`);
+      return 1;
+    }
+    const hu = checkpoint.hu;
+    let integrationBranch = checkpoint.integrationBranch;
+    try {
+      if (!integrationBranch) {
+        await markPhase("preflight-hu");
+        integrationBranch = await track(
+          "hu-integration-branch",
+          async () => this.huInfoService.ensureIntegrationBranch!(hu, options.workingDirectory, options.baseBranch),
+          `refs/heads/hu/${hu}`,
+        );
+        if (!integrationBranch) {
+          reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
+          return 1;
+        }
+      }
+      checkpoint = { ...checkpoint, integrationBranch };
+      if (checkpoint.phase === "preflight-hu") await markPhase("selected", { integrationBranch });
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
+
+    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null) {
+      if (!this.huInfoService.getAutocodeContextForTicket) return 1;
+      const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
+      if (!context || !this.huInfoService.verifyTicketCompletion) {
+        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] });
+        return 1;
+      }
+      const verification = await this.huInfoService.verifyTicketCompletion(context);
+      if (!requireVerifiedCompletion(checkpoint.ticket, verification, `lazy-workflow: el ticket ${checkpoint.ticket} todavía no cumple el cierre verificable.`)) return 1;
+      await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
+      await this.checkpointStore.clear();
+      return 0;
+    }
+
+    let context: AutocodeContext | null = null;
+    if (checkpoint.ticket !== null) {
+      if (!this.huInfoService.getAutocodeContextForTicket) {
+        reportOperator(`lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`);
+        return 1;
+      }
+      context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
+    } else if (this.huInfoService.getAutocodeState) {
+      await markPhase("selected", { integrationBranch });
+      const state = await this.huInfoService.getAutocodeState(hu, integrationBranch);
+      if (!state.context) {
+        if (state.pending) {
+          reportOperator(`lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
+          return 1;
+        }
+        reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
+        await this.checkpointStore.clear();
+        return 0;
+      }
+      context = state.context;
+    }
+    if (!context || context.hu.id !== hu || context.integrationBranch !== integrationBranch || !integrationBranch) {
+      reportOperator(`lazy-workflow: no se pudo reconstruir el ticket fijado de la HU ${hu}.`);
+      return 1;
+    }
+
+    const ticket = context.ticket.id;
+    checkpoint = { ...checkpoint, hu, ticket, integrationBranch };
+    await save();
+    const stateInfo = this.huInfoService.getState ? await this.huInfoService.getState(ticket) : { ticket, state: context.ticket.state ?? null, revision: context.ticket.revision ?? null };
+    const effortInfo = this.huInfoService.getEffort ? await this.huInfoService.getEffort(ticket) : { ticket, effort: context.ticket.effort ?? {} };
+    const azureRevision = checkpoint.azureRevision ?? stateInfo.revision ?? context.ticket.revision ?? null;
+    const effortBaseline = {
+      real: checkpoint.receipts["ticket-selected"] ? checkpoint.effortBaseline.real : effortInfo.effort.real ?? context.ticket.effort?.real ?? 0,
+      realHours: checkpoint.receipts["ticket-selected"] ? checkpoint.effortBaseline.realHours : effortInfo.effort.realHours ?? context.ticket.effort?.realHours ?? 0,
+    };
+    await markPhase(checkpoint.phase === "preflight-hu" ? "selected" : checkpoint.phase, {
+      hu,
+      ticket,
+      integrationBranch,
+      azureRevision,
+      effortBaseline,
+      receipts: { ...checkpoint.receipts, "ticket-selected": { verifiedAt: new Date(now()).toISOString() } },
+    });
+
+    let ticketBranch = checkpoint.ticketBranch;
+    const existingBranch = this.huInfoService.getBranch
+      ? await this.huInfoService.getBranch(hu, ticket)
+      : null;
+    ticketBranch = ticketBranch ?? existingBranch?.branch ?? `refs/heads/ticket/${ticket}`;
+    if (existingBranch?.integrationBranch !== null && existingBranch?.integrationBranch !== undefined && existingBranch.integrationBranch !== integrationBranch) {
+      reportOperator(`lazy-workflow: la rama de integración del ticket ${ticket} no coincide con la HU fijada; ejecución detenida.`);
+      return 1;
+    }
+    if (checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
+      reportOperator(`lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      return 1;
+    }
+    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch !== ticketBranch) {
+      reportOperator(`lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      return 1;
+    }
+    await markPhase("started", { ticketBranch });
+    if (!checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
+      if (!this.huInfoService.setState) return 1;
+      await track("ticket-state", () => this.huInfoService.setState!(
+        ticket,
+        "En progreso",
+        stateInfo.state ?? context!.ticket.state ?? "Active",
+        false,
+        azureRevision ?? undefined,
+      ).then(() => undefined), "En progreso");
+    } else {
+      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-state": { verifiedAt: new Date(now()).toISOString() } } };
+      await save();
+    }
+    if (!this.huInfoService.setTicketBranch) return 1;
+    if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
+      await track("ticket-branch", () => this.huInfoService.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
+    } else {
+      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch": { verifiedAt: new Date(now()).toISOString() } } };
+      await save();
+    }
+    await markPhase("implementing", { ticketBranch, sessionId: checkpoint.sessionId });
+
+    let sessionId = options.session ?? checkpoint.sessionId;
+    let resumePrompt = options.prompt;
+    while (true) {
+      try {
+        const execution = await track(null, async () => sessionId
+          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, TICKET_COMPLETED_MARKER), azureLoginRequired: false, failed: false }
+          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: TICKET_COMPLETED_MARKER }, true));
+        sessionId = execution.result.sessionId;
+        const terminal = containsMarker(execution.result.text, TICKET_COMPLETED_MARKER);
+        checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
+        await save();
+        if (execution.azureLoginRequired) {
+          await this.huInfoService.waitForAccess(hu);
+          resumePrompt = "continue";
+          continue;
+        }
+        if (terminal) {
+          if (!this.huInfoService.verifyTicketCompletion) return 1;
+          try {
+            const verification = await this.huInfoService.verifyTicketCompletion(context);
+            if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
+            await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
+            await this.checkpointStore.clear();
+            return 0;
+          } catch (error) {
+            reportOperator(`lazy-workflow: no se pudo verificar o limpiar el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint sessionless conservado.`);
+            return 1;
+          }
+        }
+        if (execution.failed) throw new Error("OpenCode termino con error");
+        await this.retryTimer.wait(10_000);
+        resumePrompt = options.prompt;
+      } catch (error) {
+        if (error instanceof OpenCodeSessionNotFoundError || error instanceof OpenCodeSessionCloseError) {
+          checkpoint = { ...checkpoint, phase: "reconciling", sessionId: null, activeSince: null, intent: null };
+          await save();
+          reportOperator(`lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`);
+          return 1;
+        }
+        reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
+        await this.retryTimer.wait(10_000);
+        resumePrompt = options.prompt;
+      }
+    }
+  }
+
+  private async runLegacyAzureCode(options: CliOptions, initialCheckpoint?: AutocodeCheckpoint | null): Promise<number> {
     if (!this.huInfoService.getAutocodeContext || !this.huInfoService.verifyTicketCompletion) {
       reportOperator("El servicio Azure no soporta autocode");
       return 1;
@@ -717,7 +984,9 @@ export class LazyWorkflowCli {
       reportOperator("El servicio Azure no soporta autocode");
       return 1;
     }
-    const checkpoint = await this.checkpointStore.read();
+    const storedCheckpoint = initialCheckpoint ?? await this.checkpointStore.read();
+    if (storedCheckpoint && isVersionedAutocodeCheckpoint(storedCheckpoint)) return 1;
+    const checkpoint = storedCheckpoint;
     let recovering = options.session !== null;
     let reconciling = !recovering && checkpoint?.sessionId === null;
     if (recovering && (!checkpoint || checkpoint.sessionId !== options.session)) return 1;
