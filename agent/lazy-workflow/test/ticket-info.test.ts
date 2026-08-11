@@ -416,6 +416,7 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
     getHuInfo: async () => { throw new Error("Azure HU path must not be used"); },
     waitForAccess: async () => undefined,
     getTicketInfo: async () => info,
+    validateDirectTicketContext: async () => undefined,
     getBranch: async (hu: number, ticket: number) => ({ hu, ticket, branch: info.branch, integrationBranch: info.integrationBranch }),
     getDescription: async (ticket: number) => ({ ticket, description: "text" }),
     getState: async (ticket: number) => ({ ticket, state: "Active", revision: 4 }),
@@ -722,6 +723,7 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
     getHuInfo: async () => { throw new Error("must not use generic HU read"); },
     waitForAccess: async () => undefined,
     getTicketInfo: async () => info,
+    validateDirectTicketContext: async () => undefined,
     readCompletionManifest: async (path: string) => { calls.push(["manifest", path]); return manifest; },
     validateCompletionManifest: async (...args: [unknown, unknown, number, string]) => { calls.push(["validate", ...args.slice(2)]); },
     validateEvidenceFile: async () => undefined,
@@ -811,6 +813,8 @@ test("completion apply reconciles missing effects before moving the ticket to Do
         };
       }
 
+      override async validateDirectTicketContext(): Promise<void> {}
+
       override async readCompletionManifest(): Promise<any> {
         return {
           ticket: 51,
@@ -861,6 +865,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       getTicketInfo: base.getTicketInfo.bind(base),
+      validateDirectTicketContext: base.validateDirectTicketContext.bind(base),
       readCompletionManifest: base.readCompletionManifest.bind(base),
       validateCompletionManifest: base.validateCompletionManifest.bind(base),
       validateEvidenceFile: base.validateEvidenceFile.bind(base),

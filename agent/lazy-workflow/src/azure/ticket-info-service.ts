@@ -374,6 +374,24 @@ export class AzureTicketInfoService {
     return this.toSummary(await this.readWorkItem(ticket));
   }
 
+  async validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
+    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    this.toSummary(item);
+    const forward = (parent.relations ?? []).some(({ rel, url }) =>
+      rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
+    );
+    const reverse = (item.relations ?? [])
+      .filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")
+      .map(({ url }) => relationId(url))
+      .filter((id): id is number => id !== undefined);
+    if (!forward || reverse.length !== 1 || reverse[0] !== hu) {
+      throw new Error(`El ticket ${ticket} no tiene una relación directa única con la HU ${hu}`);
+    }
+  }
+
   async getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
@@ -457,11 +475,12 @@ export class AzureTicketInfoService {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
     try {
+      await this.validateDirectTicketContext(hu, ticket);
       const info = await this.getTicketInfo(hu, ticket);
       return { hu, ticket, gates: info.gates };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!/no es hijo directo|no es un Task o Bug de entrega|no es una User Story/i.test(message)) throw error;
+      if (!/no es hijo directo|relación directa única|no es un Task o Bug de entrega|no es una User Story|Branch ArtifactLink|rama .* (malformada|conflicto|no coincide|ambigua)/i.test(message)) throw error;
       return { hu, ticket, gates: { satisfied: [], unmet: Object.values(GATE) } };
     }
   }

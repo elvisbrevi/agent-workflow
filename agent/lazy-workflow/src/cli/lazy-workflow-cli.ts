@@ -48,6 +48,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
+  validateDirectTicketContext?(hu: number, ticket: number): Promise<void>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
@@ -626,7 +627,8 @@ export class LazyWorkflowCli {
   }
 
   private async applyTicketCompletion(options: CliOptions): Promise<unknown> {
-    if (!this.huInfoService.getTicketInfo || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
+    if (!this.huInfoService.getTicketInfo || !this.huInfoService.validateDirectTicketContext
+      || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
       throw new Error("El servicio Azure no soporta ticket-completion-apply");
     }
     if (!this.huInfoService.linkPullRequest || !this.huInfoService.linkCommit || !this.huInfoService.addAttachment
@@ -635,6 +637,7 @@ export class LazyWorkflowCli {
       throw new Error("El servicio Azure no expone todas las primitivas de completion");
     }
 
+    await this.huInfoService.validateDirectTicketContext(options.hu!, options.ticket!);
     let info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     const manifest = await this.huInfoService.readCompletionManifest(options.manifest!, options.workingDirectory);
     await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
