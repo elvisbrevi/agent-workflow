@@ -231,6 +231,20 @@ test("hu-branch-set crea la rama ausente desde el SHA exacto de la base remota",
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
+test("ensureIntegrationBranch prepara hu/HU desde la base estructurada", async () => {
+  const fixture = provisioningFixture({
+    desiredBranch: "refs/heads/hu/125",
+    verificationSha: "1".repeat(40),
+  });
+
+  await expect(fixture.service.ensureIntegrationBranch(hu, "/repo", "main"))
+    .resolves.toEqual("refs/heads/hu/125");
+  expect(fixture.gitCommands).toContainEqual([
+    "push", "origin", expect.stringMatching(/^refs\/lazy-workflow\/[0-9a-f-]+:refs\/heads\/hu\/125$/),
+  ]);
+  expect(fixture.patchBodies).toHaveLength(1);
+});
+
 test("hu-branch-set exige base explícita y no escribe Azure si falta la base", async () => {
   const fixture = provisioningFixture();
 
