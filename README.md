@@ -29,7 +29,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
-lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
+lazy-workflow code --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
@@ -70,8 +70,9 @@ bun run main.ts plan --prompt "plan the requested GitHub work" --working-directo
 ```
 
 Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
-tools. Add `--hu <ID>` to select the existing Azure planning or delivery
-workflow.
+tools. `code` drains all eligible GitHub issues one per fresh OpenCode session
+and stops when the queue is empty. Add `--hu <ID>` to select the existing Azure
+planning or delivery workflow.
 
 To drain the HU's direct delivery tickets one at a time:
 

@@ -91,6 +91,8 @@ const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
+const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
+const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
 
 function isStableIntegrationBranchFailure(error: unknown): boolean {
@@ -280,9 +282,38 @@ export class LazyWorkflowCli {
       "Operator request:",
       options.prompt,
     ].join("\n");
-    const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
-    console.log(JSON.stringify(execution.result, null, 2));
-    return 0;
+    if (command === "plan") {
+      const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
+      console.log(JSON.stringify(execution.result, null, 2));
+      return execution.failed ? 1 : 0;
+    }
+
+    while (true) {
+      const execution = await this.openCodeService.run({
+        ...options,
+        prompt,
+        session: null,
+        terminalMarker: WORKFLOW_STEP_FINISHED_MARKER,
+      }, false);
+      const result = execution.result;
+      console.log(JSON.stringify(result, null, 2));
+      if (execution.failed) return 1;
+
+      if (!containsMarker(result.text, WORKFLOW_STEP_FINISHED_MARKER)) {
+        reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${WORKFLOW_STEP_FINISHED_MARKER}.`);
+        return 1;
+      }
+      const ticketCompleted = containsMarker(result.text, TICKET_COMPLETED_MARKER);
+      const queueEmpty = containsMarker(result.text, QUEUE_EMPTY_MARKER);
+      if (ticketCompleted === queueEmpty) {
+        reportOperator(`lazy-workflow: la sesión GitHub debe terminar con exactamente ${TICKET_COMPLETED_MARKER} o ${QUEUE_EMPTY_MARKER}.`);
+        return 1;
+      }
+      if (queueEmpty) {
+        reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
+        return 0;
+      }
+    }
   }
 
   private async runAzureCode(options: CliOptions): Promise<number> {

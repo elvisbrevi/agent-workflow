@@ -405,7 +405,7 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
-test.each(["plan", "code"] as const)("%s sin HU usa el prompt GitHub sin tocar Azure", async (command) => {
+test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   let azureCalls = 0;
   let checkpointCalls = 0;
   let cleanupCalls = 0;
@@ -415,8 +415,8 @@ test.each(["plan", "code"] as const)("%s sin HU usa el prompt GitHub sin tocar A
   };
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
-    sessionID: `ses_${command}`,
-    part: { type: "text", text: command },
+    sessionID: "ses_plan",
+    part: { type: "text", text: "plan" },
   }));
 
   const code = await new LazyWorkflowCli(
@@ -440,7 +440,7 @@ test.each(["plan", "code"] as const)("%s sin HU usa el prompt GitHub sin tocar A
     undefined,
     { deleteTicketBranch: async () => { cleanupCalls += 1; } },
   ).run([
-    command,
+    "plan",
     "--number-of-questions",
     "3",
     "--working-directory",
@@ -456,10 +456,95 @@ test.each(["plan", "code"] as const)("%s sin HU usa el prompt GitHub sin tocar A
   expect(received.detectAzureLogin).toBeFalse();
   expect(received.options?.workingDirectory).toBe("/repo");
   expect(received.options?.prompt).toContain("default GitHub repository workflow");
-  expect(received.options?.prompt).toContain(`Selected workflow: ${command}`);
+  expect(received.options?.prompt).toContain("Selected workflow: plan");
   expect(received.options?.prompt).toContain("Do not use Azure DevOps");
   expect(received.options?.prompt).toContain("trabaja sobre GitHub");
-  if (command === "plan") expect(received.options?.prompt).toContain("3");
+  expect(received.options?.prompt).toContain("3");
+});
+
+test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY", async () => {
+  let azureCalls = 0;
+  let checkpointCalls = 0;
+  let cleanupCalls = 0;
+  const calls: Array<{ options: OpenCodeRunOptions; detectAzure: boolean | undefined }> = [];
+  const results = [
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_issue_1",
+      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+    })),
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_issue_2",
+      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+    })),
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_empty",
+      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
+    })),
+  ];
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
+      waitForAccess: async () => { azureCalls += 1; },
+    },
+    {
+      run: async (options, detectAzure) => {
+        calls.push({ options, detectAzure });
+        return { result: results.shift()!, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    {
+      read: async () => { checkpointCalls += 1; return null; },
+      write: async () => { checkpointCalls += 1; },
+      clear: async () => { checkpointCalls += 1; },
+    },
+    undefined,
+    { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(calls).toHaveLength(3);
+  expect(calls.map(({ options }) => options.session)).toEqual([null, null, null]);
+  expect(calls.map(({ options }) => options.terminalMarker)).toEqual([
+    "WORKFLOW_STEP_FINISHED",
+    "WORKFLOW_STEP_FINISHED",
+    "WORKFLOW_STEP_FINISHED",
+  ]);
+  expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
+  expect(calls[0]?.options.prompt).toContain("TICKET_COMPLETED");
+  expect(calls[0]?.options.prompt).toContain("QUEUE_EMPTY");
+  expect(azureCalls).toBe(0);
+  expect(checkpointCalls).toBe(0);
+  expect(cleanupCalls).toBe(0);
+});
+
+test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async () => {
+  let calls = 0;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_incomplete",
+    part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    {
+      run: async () => {
+        calls += 1;
+        return { result, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(1);
 });
 
 test.each([
