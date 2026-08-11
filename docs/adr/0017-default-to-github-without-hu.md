@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0018
+---
+
 # Default to GitHub without an HU
 
 The absence of `--hu` selects a one-shot GitHub repository run driven by the

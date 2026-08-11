@@ -5,9 +5,10 @@ description: Run GitHub workflows by default or plan, deliver, and query an Azur
 
 # Lazy Workflow
 
-Use the Bun entrypoint in this directory. `plan` and `code` without `--hu`
-run the default GitHub-only prompt once and do not use Azure tools. For an
-Azure HU planning run, use
+Use the Bun entrypoint in this directory. Without `--hu`, `plan` runs the
+default GitHub-only prompt once, while `code` drains eligible GitHub issues one
+per fresh OpenCode session until the queue is empty. Neither uses Azure tools.
+For an Azure HU planning run, use
 `plan --hu <ID>` and `--working-directory <path>`. Use `code --hu <ID> [--base-branch <name>]` to
 deliver eligible tickets sequentially; a fresh run preflights the HU branch before
 selecting a ticket. Use `hu-info --hu <ID>` to inspect HU data,

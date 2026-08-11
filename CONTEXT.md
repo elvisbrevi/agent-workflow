@@ -12,7 +12,8 @@ _Avoid_: issue runner, queue supervisor
 
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
-repository's GitHub conventions and never uses Azure coordination.
+repository's GitHub conventions and never uses Azure coordination; `plan` runs
+once, while `code` drains eligible issues one per fresh OpenCode session.
 _Avoid_: implicit Azure run, unscoped run
 
 **Azure HU run**:

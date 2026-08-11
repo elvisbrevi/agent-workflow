@@ -27,14 +27,13 @@ retry messages are printed when a transient failure causes a retry.
 
 ## Default GitHub workflows
 
-Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` and run
-OpenCode once in GitHub-only scope:
+Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` in
+GitHub-only scope:
 
 ```bash
 bun run main.ts plan --prompt "plan the requested change" \
   --working-directory /path/to/repository
-bun run main.ts code --prompt "deliver GitHub issue 123" \
-  --working-directory /path/to/repository
+bun run main.ts code --working-directory /path/to/repository
 ```
 
 The default prompt follows the target repository's tracker and delivery
@@ -43,9 +42,11 @@ These runs do not read Azure, inspect the HU checkpoint, prepare integration
 branches, enforce Azure completion gates, or clean Azure ticket branches.
 `--branch` and `--base-branch` are rejected in this GitHub scope.
 
-`plan` remains planning-only. `code` delivers exactly one requested or eligible
-GitHub issue. Both are one-shot prompt-driven workflows; there is no GitHub
-queue, checkpoint, or coordinator adapter.
+`plan` remains a one-shot planning-only workflow. `code` refreshes GitHub,
+delivers exactly one eligible issue in a fresh OpenCode session, closes that
+session after `TICKET_COMPLETED`, and repeats. A final fresh session returns
+`QUEUE_EMPTY` and stops the command. `WORKFLOW_STEP_FINISHED` closes every
+provider session. There is no GitHub checkpoint or coordinator adapter.
 
 ## Azure HU workflows
 
