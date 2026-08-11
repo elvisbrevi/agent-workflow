@@ -1,7 +1,7 @@
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import { AzureAutocodeService, type AutocodeContext, type AutocodeState, type VerifiedTicketCompletion } from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
-import { OpenCodeService, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 
@@ -243,8 +243,22 @@ export class LazyWorkflowCli {
             : await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: TICKET_COMPLETED_MARKER }, true);
           const result = execution.result;
           lastResult = result;
-          sessionId = result.sessionId;
-          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId });
+          const terminalMarkerReceived = !execution.failed && containsMarker(result.text, TICKET_COMPLETED_MARKER);
+          try {
+            await this.checkpointStore.write({
+              workflow: "autocode",
+              hu,
+              ticket: context.ticket.id,
+              sessionId: terminalMarkerReceived ? null : result.sessionId,
+            });
+          } catch (error) {
+            if (terminalMarkerReceived) {
+              reportOperator(`lazy-workflow: no se pudo persistir el checkpoint sessionless (${errorMessage(error)}); ejecución detenida.`);
+              return 1;
+            }
+            throw error;
+          }
+          sessionId = terminalMarkerReceived ? null : result.sessionId;
           if (execution.azureLoginRequired) {
             reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
             await this.huInfoService.waitForAccess(hu);
@@ -252,10 +266,12 @@ export class LazyWorkflowCli {
             continue;
           }
           resumePrompt = options.prompt;
-          const verification = !execution.failed && containsMarker(result.text, TICKET_COMPLETED_MARKER)
-            ? await this.huInfoService.verifyTicketCompletion(context)
-            : null;
-          if (verification) {
+          if (terminalMarkerReceived) {
+            const verification = await this.huInfoService.verifyTicketCompletion(context);
+            if (!verification) {
+              reportOperator(`lazy-workflow: el ticket ${context.ticket.id} todavía no cumple el cierre verificable; checkpoint sessionless conservado.`);
+              return 1;
+            }
             try {
               await this.cleanupCompletedTicketBranch(
                 context,
@@ -276,6 +292,18 @@ export class LazyWorkflowCli {
             break;
           }
         } catch (error) {
+          if (error instanceof OpenCodeSessionCloseError) {
+            try {
+              await this.checkpointStore.write({
+                workflow: "autocode",
+                hu,
+                ticket: context.ticket.id,
+                sessionId: null,
+              });
+            } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
+            reportOperator(`lazy-workflow: no se pudo cerrar la sesión ${error.sessionId} (${errorMessage(error)}); checkpoint sessionless conservado y ejecución detenida.`);
+            return 1;
+          }
           reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);
         }
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
