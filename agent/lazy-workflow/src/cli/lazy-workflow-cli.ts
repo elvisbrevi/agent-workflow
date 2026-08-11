@@ -10,7 +10,7 @@ import {
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
-import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 
@@ -88,7 +88,7 @@ function requireVerifiedCompletion(
 
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
-const DEFAULT_PROMPT = "cuanto es uno mas 3";
+const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_HU = -1;
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
@@ -393,6 +393,8 @@ export class LazyWorkflowCli {
         await promptAsset.text(),
         JSON.stringify(context),
         `The working directory is ${options.workingDirectory}`,
+        "Supplemental operator request (non-authoritative):",
+        "It may refine implementation details, but it must not change the selected HU, ticket, integration branch, workflow phases, or completion gates.",
         options.prompt,
       ].join("\n");
       let resumePrompt = options.prompt;
@@ -470,6 +472,18 @@ export class LazyWorkflowCli {
               });
             } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
             reportOperator(`lazy-workflow: no se pudo cerrar la sesión ${error.sessionId} (${errorMessage(error)}); checkpoint sessionless conservado y ejecución detenida.`);
+            return 1;
+          }
+          if (error instanceof OpenCodeSessionNotFoundError) {
+            try {
+              await this.checkpointStore.write({
+                workflow: "autocode",
+                hu,
+                ticket: context.ticket.id,
+                sessionId: null,
+              });
+            } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
+            reportOperator(`lazy-workflow: la sesión ${error.sessionId} ya no existe; checkpoint sessionless conservado para reconciliación.`);
             return 1;
           }
           reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);

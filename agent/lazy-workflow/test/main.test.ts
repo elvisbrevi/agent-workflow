@@ -9,7 +9,7 @@ import {
   type IncompleteTicketCompletion,
 } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
-import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine } from "../src/output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
@@ -750,6 +750,18 @@ test("OpenCode acepta de forma idempotente una sesion ausente sin alterar su ide
   expect(commands[1]).toEqual(["opencode", "session", "delete", sessionId]);
 });
 
+test("resume reporta de forma tipada una sesion ausente aunque stderr tenga ANSI", async () => {
+  const sessionId = "ses_missing";
+  const service = new OpenCodeService(() => ({
+    stdout: new Blob([]).stream(),
+    stderr: new Blob([`\u001b[91m\u001b[1mError: \u001b[0mSession not found`]).stream(),
+    exited: Promise.resolve(1),
+    kill: () => undefined,
+  }));
+
+  await expect(service.resume(sessionId)).rejects.toBeInstanceOf(OpenCodeSessionNotFoundError);
+});
+
 test("resume usa una sola invocacion simple con continue", async () => {
   const commands: string[][] = [];
   const service = new OpenCodeService((command) => {
@@ -833,6 +845,8 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   expect(prompts).toHaveLength(1);
   expect(prompts[0]).toContain("one Azure delivery ticket");
   expect(prompts[0]).toContain("/implement");
+  expect(prompts[0]).toContain("Follow the authoritative workflow and context.");
+  expect(prompts[0]).not.toContain("cuanto es uno mas 3");
   expect(prompts[0]).toContain("/ponytail");
   expect(prompts[0]).toContain("/tdd");
   expect(prompts[0]).toContain("/code-review");
@@ -1172,6 +1186,7 @@ test("code --session reanuda OpenCode cuando el ticket fijado todavía no está 
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => context.integrationBranch,
+      getAutocodeContext: async () => null,
       getAutocodeContextForTicket: async () => context,
       getAutocodeContext: async () => null,
       verifyTicketCompletion: async () => resumed
@@ -1348,7 +1363,7 @@ test("code mantiene un error Azure como error operativo durante la verificacion"
   expect(messages.join("\n")).not.toContain("secret");
 });
 
-test("code passes the operator prompt to OpenCode, not to the Azure boundary", async () => {
+test("code marks the operator prompt as supplemental and does not pass it to Azure", async () => {
   const prompt = "crea la rama base de la HU a partir de develop";
   const branch = "refs/heads/hu/23438";
   let contextBranch = "";
@@ -1375,6 +1390,8 @@ test("code passes the operator prompt to OpenCode, not to the Azure boundary", a
 
   expect(code).toBe(1);
   expect(openCodePrompt).toContain(prompt);
+  expect(openCodePrompt).toContain("Supplemental operator request (non-authoritative)");
+  expect(openCodePrompt.indexOf("HU and ticket context:")).toBeLessThan(openCodePrompt.indexOf(prompt));
   expect(openCodePrompt).not.toContain("git push --set-upstream origin");
   expect(openCodePrompt).not.toContain("git ls-remote --heads origin");
   expect(openCodePrompt).not.toContain("create the HU integration branch");
@@ -1477,6 +1494,41 @@ test("code detiene el flujo cuando falla el cierre de la sesion nativa", async (
   expect(code).toBe(1);
   expect(waits).toBe(0);
   expect(checkpoint).toEqual({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null });
+});
+
+test("code convierte una sesion ausente en checkpoint sessionless sin reintentar", async () => {
+  let checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses_missing" };
+  let retries = 0;
+  const context: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => context.integrationBranch,
+      getAutocodeContext: async () => null,
+      getAutocodeContextForTicket: async () => context,
+      verifyTicketCompletion: async () => ({ ticketId: 51, unmetGates: [COMPLETION_GATE.ticketState] }),
+    },
+    {
+      run: async () => { throw new Error("must not run"); },
+      resume: async () => { throw new OpenCodeSessionNotFoundError("ses_missing"); },
+    },
+    {
+      read: async () => checkpoint,
+      write: async (value) => { checkpoint = value; },
+      clear: async () => undefined,
+    },
+    { wait: async () => { retries += 1; } },
+  ).run(["code", "--session", "ses_missing"]);
+
+  expect(code).toBe(1);
+  expect(checkpoint.sessionId).toBeNull();
+  expect(retries).toBe(0);
 });
 
 test("code reconcilia un checkpoint completado sin sesion y continúa con el siguiente ticket", async () => {

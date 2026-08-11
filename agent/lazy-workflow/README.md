@@ -113,11 +113,18 @@ bun run main.ts code --session <session-id> --prompt continue
 
 Recovery and sessionless reconciliation first reacquire the HU's native Branch
 link through the deterministic branch service, then rebuild the pinned ticket
-context. A missing, malformed, conflicting, or otherwise stable branch state
+context. A recovered ticket already in `Done` is verified and reconciled before
+OpenCode can be resumed. If the recorded provider session no longer exists,
+the checkpoint becomes sessionless and stops without an infinite retry loop.
+A missing, malformed, conflicting, or otherwise stable branch state
 stops once with an actionable error; the checkpoint, OpenCode session, and
 ticket branch remain untouched. Temporary Azure failures receive bounded,
 visible preflight retries. Correct the reported branch state and rerun the same
 command to preserve the checkpoint's ticket identity.
+
+The planned migration of Azure/Git ticket effects from the OpenCode prompt to
+typed coordinator commands is specified in
+[`docs/agents/deterministic-ticket-operations.md`](../../docs/agents/deterministic-ticket-operations.md).
 
 The complete command help is available with an unsupported subcommand or no
 subcommand. `--model`, `--variant`, `--prompt`, and `--working-directory` are
