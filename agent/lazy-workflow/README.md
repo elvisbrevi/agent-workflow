@@ -75,7 +75,7 @@ checkpoint is removed only after live completion verification.
 
 If sessionless reconciliation finds incomplete Azure completion gates, it
 prints the pinned ticket followed by stable reasons such as
-`ticket-state`, `completion-evidence`, `real-effort`, `real-effort-hours`,
+`pinned-ticket-context`, `ticket-state`, `completion-evidence`, `real-effort`, `real-effort-hours`,
 `commit-url`, `attached-capture`, `hu-integration-branch`,
 `completed-hu-targeted-pr`, `native-pr-association`, or
 `merge-commit-artifact-link`. The checkpoint remains intact: no OpenCode
