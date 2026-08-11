@@ -179,8 +179,7 @@ ticket branch remain untouched. Temporary Azure failures receive bounded,
 visible preflight retries. Correct the reported branch state and rerun the same
 command to preserve the checkpoint's ticket identity.
 
-The planned migration of Azure/Git ticket effects from the OpenCode prompt to
-typed coordinator commands is specified in
+The deterministic ownership contract for Azure/Git ticket effects is specified in
 [`docs/agents/deterministic-ticket-operations.md`](../../docs/agents/deterministic-ticket-operations.md).
 
 The complete command help is available with an unsupported subcommand or no
