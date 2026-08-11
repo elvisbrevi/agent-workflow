@@ -10,6 +10,8 @@ function serviceFixture(options: {
   relations?: Array<Record<string, unknown>>;
   remoteBranch?: boolean;
   remoteUrl?: string;
+  resolvedRepositoryName?: string;
+  resolvedRemoteUrl?: string;
   verifiedRelations?: Array<Record<string, unknown>>;
 } = {}) {
   const patchBodies: unknown[] = [];
@@ -29,9 +31,9 @@ function serviceFixture(options: {
     if (args[0] === "repos") {
       return JSON.stringify({
         id: "repository-id",
-        name: "repo",
+        name: options.resolvedRepositoryName ?? "repo",
         project: { id: "project-id", name: "Team" },
-        remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
+        remoteUrl: options.resolvedRemoteUrl ?? "https://dev.azure.com/org/Team/_git/repo",
       });
     }
     if (args[0] === "devops") {
@@ -105,6 +107,13 @@ test("hu-branch-set rechaza un origen que no es Azure", async () => {
   const fixture = serviceFixture({ remoteUrl: "https://github.com/org/repo.git" });
 
   await expect(fixture.service.setIntegrationBranch(hu, branch, "/repo")).rejects.toThrow("Azure");
+  expect(fixture.patchBodies).toHaveLength(0);
+});
+
+test("hu-branch-set rechaza un repositorio Azure distinto al de origin", async () => {
+  const fixture = serviceFixture({ resolvedRepositoryName: "other-repo" });
+
+  await expect(fixture.service.setIntegrationBranch(hu, branch, "/repo")).rejects.toThrow("repositorio Azure");
   expect(fixture.patchBodies).toHaveLength(0);
 });
 
