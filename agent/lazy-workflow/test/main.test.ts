@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
-import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "../src/azure/autocode-service.ts";
+import {
+  AzureAutocodeService,
+  COMPLETION_GATE,
+  type AutocodeContext,
+  type AutocodeState,
+  type IncompleteTicketCompletion,
+} from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
@@ -59,6 +65,7 @@ test("Azure propone la rama HU sin escribir un campo personalizado cuando aún n
 
 test("Azure obtiene la rama exacta del único PR completado del ticket", async () => {
   let includeCommitLink = true;
+  let includePrLink = true;
   const service = new AzureAutocodeService(async (args) => {
     if (args[0] === "boards" && args.includes("51")) {
       return JSON.stringify({
@@ -91,7 +98,7 @@ test("Azure obtiene la rama exacta del único PR completado del ticket", async (
       });
     }
     if (args[0] === "repos") {
-      if (args.includes("work-item")) return JSON.stringify([51]);
+      if (args.includes("work-item")) return JSON.stringify(includePrLink ? [51] : []);
       return JSON.stringify([
         {
           status: "completed",
@@ -124,7 +131,49 @@ test("Azure obtiene la rama exacta del único PR completado del ticket", async (
   });
   expect(await service.getCompletedTicketBranch(context)).toBe("refs/heads/ticket/51-programas");
   includeCommitLink = false;
-  expect(await service.verifyTicketCompletion(context)).toBeNull();
+  expect(await service.verifyTicketCompletion(context)).toEqual({
+    ticketId: 51,
+    unmetGates: [COMPLETION_GATE.mergeCommitArtifact],
+  });
+  includeCommitLink = true;
+  includePrLink = false;
+  expect(await service.verifyTicketCompletion(context)).toEqual({
+    ticketId: 51,
+    unmetGates: [COMPLETION_GATE.nativePullRequestAssociation],
+  });
+});
+
+test("Azure acumula todos los gates determinables de una verificacion incompleta", async () => {
+  const service = new AzureAutocodeService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) {
+      return JSON.stringify({ id: 51, fields: { "System.State": "Active" }, relations: [] });
+    }
+    if (args[0] === "boards" && args.includes("23438")) {
+      return JSON.stringify({ id: 23438, relations: [] });
+    }
+    if (args[0] === "repos") return JSON.stringify([]);
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  const result = await service.verifyTicketCompletion({
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  });
+
+  expect(result).toEqual({
+    ticketId: 51,
+    unmetGates: [
+      COMPLETION_GATE.ticketState,
+      COMPLETION_GATE.completionEvidence,
+      COMPLETION_GATE.realEffort,
+      COMPLETION_GATE.realEffortHours,
+      COMPLETION_GATE.commitUrl,
+      COMPLETION_GATE.attachedCapture,
+      COMPLETION_GATE.huIntegrationBranch,
+      COMPLETION_GATE.completedHuPullRequest,
+    ],
+  });
 });
 
 test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y remota", async () => {
@@ -818,6 +867,106 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
   expect(verificationCalls).toBe(1);
   expect(waits).toBe(0);
   expect(checkpointSessionId).toBeNull();
+});
+
+test("code reconcilia y reporta todos los gates incumplidos sin avanzar", async () => {
+  const checkpoint: AutocodeCheckpoint = {
+    workflow: "autocode",
+    hu: 23438,
+    ticket: 51,
+    sessionId: null,
+  };
+  const incomplete: IncompleteTicketCompletion = {
+    ticketId: 51,
+    unmetGates: [
+      COMPLETION_GATE.ticketState,
+      COMPLETION_GATE.completionEvidence,
+      COMPLETION_GATE.nativePullRequestAssociation,
+    ],
+  };
+  const messages: string[] = [];
+  let openCodeCalls = 0;
+  let cleanupCalls = 0;
+  let clearCalls = 0;
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => messages.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => new HuInfo({ id: 23438 }),
+        waitForAccess: async () => undefined,
+        ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+        getAutocodeContext: async () => null,
+        getAutocodeContextForTicket: async () => ({
+          hu: { id: 23438 },
+          ticket: { id: 51, type: "Task" },
+          integrationBranch: "refs/heads/hu/23438",
+        }),
+        verifyTicketCompletion: async () => incomplete,
+      },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
+      },
+      {
+        read: async () => checkpoint,
+        write: async () => undefined,
+        clear: async () => { clearCalls += 1; },
+      },
+      undefined,
+      { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+    ).run(["code", "--hu", "23438"]);
+
+    expect(code).toBe(1);
+  } finally {
+    console.error = originalError;
+  }
+
+  expect(messages.join("\n")).toContain("ticket 51");
+  expect(messages.join("\n")).toContain("ticket-state");
+  expect(messages.join("\n")).toContain("completion-evidence");
+  expect(messages.join("\n")).toContain("native-pr-association");
+  expect(openCodeCalls).toBe(0);
+  expect(cleanupCalls).toBe(0);
+  expect(clearCalls).toBe(0);
+  expect(checkpoint).toEqual({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null });
+});
+
+test("code mantiene un error Azure como error operativo durante la verificacion", async () => {
+  const messages: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => messages.push(values.join(" "));
+
+  try {
+    const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_code",
+      part: { type: "text", text: "TICKET_COMPLETED" },
+    }));
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => new HuInfo({ id: 23438 }),
+        waitForAccess: async () => undefined,
+        ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+        getAutocodeContext: async () => ({
+          hu: { id: 23438 },
+          ticket: { id: 51, type: "Task" },
+          integrationBranch: "refs/heads/hu/23438",
+        }),
+        verifyTicketCompletion: async () => { throw new Error("az boards fallo"); },
+      },
+      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      emptyCheckpointStore(),
+    ).run(["code", "--hu", "23438"]);
+
+    expect(code).toBe(1);
+  } finally {
+    console.error = originalError;
+  }
+
+  expect(messages.join("\n")).toContain("Azure no respondió durante la verificación");
+  expect(messages.join("\n")).not.toContain("no cumple los gates");
 });
 
 test("code passes the operator prompt to OpenCode, not to the Azure boundary", async () => {
