@@ -103,7 +103,7 @@ interface WorkItem {
   relations?: Array<{
     rel?: string;
     url?: string;
-    attributes?: { name?: string };
+    attributes?: { name?: string; comment?: string; digest?: string };
   }>;
 }
 
@@ -627,7 +627,11 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (!positiveNumberField(item, "Custom.EsfuerzoReal")) unmetGates.push(COMPLETION_GATE.realEffort);
     if (!positiveNumberField(item, "Custom.EsfuerzoRealHH")) unmetGates.push(COMPLETION_GATE.realEffortHours);
     if (!field(item, "Custom.URLCommit")?.trim()) unmetGates.push(COMPLETION_GATE.commitUrl);
-    if (!(item.relations ?? []).some((relation) => relation.rel === "AttachedFile")) {
+    if (!(item.relations ?? []).some((relation) =>
+      relation.rel === "AttachedFile"
+      && ["http-json", "screen", "command-output"].includes(relation.attributes?.comment ?? "")
+      && /^[0-9a-f]{64}$/i.test(relation.attributes?.digest ?? "")
+    )) {
       unmetGates.push(COMPLETION_GATE.attachedCapture);
     }
     if (integrationBranchFrom(parent) !== context.integrationBranch) {

@@ -124,6 +124,14 @@ function evidenceKind(value: string | undefined): EvidenceKind | undefined {
   return EVIDENCE_KINDS.includes(value as EvidenceKind) ? value as EvidenceKind : undefined;
 }
 
+function hasEvidenceCapture(item: WorkItem): boolean {
+  return (item.relations ?? []).some(({ rel, attributes }) =>
+    rel === "AttachedFile"
+      && evidenceKind(attributes?.comment) !== undefined
+      && /^[0-9a-f]{64}$/i.test(attributes?.digest ?? "")
+  );
+}
+
 function number(item: WorkItem, names: readonly string[]): number | undefined {
   for (const name of names) {
     const value = item.fields?.[name];
@@ -229,8 +237,11 @@ function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
 }
 
 function validateEvidenceContent(content: string, kind: EvidenceKind): void {
-  if (/(?:["']?(?:authorization|access[_-]?token|token|api[_-]?key|secret|password|cookie|set-cookie)["']?\s*[:=]|--(?:token|api-key|password)\s+\S+|bearer\s+[a-z0-9._~-]+)/i.test(content)) {
+  if (/(?:["']?(?:authorization|access[_-]?token|token|api[_-]?key|secret|password|cookie|set-cookie)["']?\s*[:=]|--(?:token|api-key|password)\s+\S+|(?:AZURE_DEVOPS_EXT_PAT|(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD))\s*=|bearer\s+[a-z0-9._~-]+)/i.test(content)) {
     throw new Error("La evidencia contiene credenciales o secretos");
+  }
+  if (/<script\b|javascript\s*:|\bon[a-z]+\s*=/i.test(content)) {
+    throw new Error("La evidencia contiene contenido ejecutable no permitido");
   }
   if (kind === "http-json") {
     let parsed: unknown;
@@ -292,6 +303,7 @@ export class AzureTicketInfoService {
       integrationBranch.ref,
       integrationBranch.project,
       integrationBranch.repository,
+      ticketBranch.ref,
     )).filter((pullRequest) =>
       pullRequest.status === "completed"
       && pullRequest.mergeStatus === "succeeded"
@@ -429,7 +441,7 @@ export class AzureTicketInfoService {
 
     const pullRequest = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
-    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository);
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository, ticketBranch.ref);
     const validCandidates = candidates.filter((candidate) =>
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
@@ -463,7 +475,7 @@ export class AzureTicketInfoService {
     }
     const pullRequest = await this.readPullRequest(pullRequestId);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
-    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository);
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository, ticketBranch.ref);
     const validCandidates = candidates.filter((candidate) =>
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
@@ -625,7 +637,7 @@ export class AzureTicketInfoService {
       || pullRequest.target !== integration.ref
       || !pullRequest.mergeCommit
     ) throw new Error(`El PR ${pullRequest.id} no cumple el target o estado de merge requerido`);
-    if (!hasTicketNumber(pullRequest.source, ticket) || pullRequest.source !== ticketBranch.ref) {
+    if (pullRequest.source !== ticketBranch.ref) {
       throw new Error(`El PR ${pullRequest.id} no pertenece a la rama del ticket ${ticket}`);
     }
     if (
@@ -727,6 +739,7 @@ export class AzureTicketInfoService {
     integrationBranch: string | null,
     expectedProject?: string,
     repository?: string,
+    expectedSource?: string | null,
   ): Promise<TicketPullRequest[]> {
     if (!project) return [];
     const args = [
@@ -751,7 +764,7 @@ export class AzureTicketInfoService {
     }
     const matching = payload
       .map((pr) => this.toPullRequest(pr))
-      .filter((pr) => hasTicketNumber(pr.source, ticket));
+      .filter((pr) => pr.source === expectedSource || hasTicketNumber(pr.source, ticket));
     if (repository && matching.some((pr) => pr.repositoryId !== repository)) {
       throw new Error(`El pull request del ticket ${ticket} pertenece a otro repositorio Azure`);
     }
@@ -863,7 +876,7 @@ export class AzureTicketInfoService {
     if (!number(item, ["Custom.EsfuerzoReal"])) unmet.push(GATE.realEffort);
     if (!number(item, ["Custom.EsfuerzoRealHH"])) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
-    if (!(item.relations ?? []).some(({ rel }) => rel === "AttachedFile")) unmet.push(GATE.attachedCapture);
+    if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
     const validPrs = pullRequests.filter((pr) =>
       pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === integrationBranch
