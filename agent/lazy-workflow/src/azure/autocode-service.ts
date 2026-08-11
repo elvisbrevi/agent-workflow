@@ -8,6 +8,7 @@ import {
   type EvidenceKind,
   type TicketInfo,
   type TicketAttachment,
+  type IntegratedPullRequest,
 } from "./ticket-info-service.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
@@ -85,6 +86,8 @@ export interface AutocodeAzureService {
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
+  getCompletionManifestPath(workingDirectory: string): Promise<string>;
+  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest>;
   validateDirectTicketContext(hu: number, ticket: number): Promise<void>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
@@ -259,6 +262,14 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
     return this.ticketInfoService.getTicketInfo(hu, ticket);
+  }
+
+  getCompletionManifestPath(workingDirectory: string): Promise<string> {
+    return this.ticketInfoService.getCompletionManifestPath(workingDirectory);
+  }
+
+  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
+    return this.ticketInfoService.createOrReusePullRequest(hu, ticket);
   }
 
   validateDirectTicketContext(hu: number, ticket: number): Promise<void> {

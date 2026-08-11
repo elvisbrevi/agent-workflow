@@ -79,6 +79,11 @@ export interface TicketPullRequest {
   associated: boolean;
 }
 
+export interface IntegratedPullRequest {
+  pullRequest: number;
+  mergeCommit: string;
+}
+
 export interface TicketAttachment {
   name?: string;
   url?: string;
@@ -373,6 +378,79 @@ export class AzureTicketInfoService {
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
     return this.toSummary(await this.readWorkItem(ticket));
+  }
+
+  async getCompletionManifestPath(workingDirectory: string): Promise<string> {
+    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
+    return resolve(commonDirectory, "lazy-workflow/completion-manifest.json");
+  }
+
+  async createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    const info = await this.getTicketInfo(hu, ticket);
+    const valid = info.pullRequests.filter((pr) =>
+      pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === info.integrationBranch,
+    );
+    if (info.canonicalPullRequest !== null) {
+      const pr = valid.find(({ id }) => id === info.canonicalPullRequest);
+      if (!pr?.mergeCommit) throw new Error(`El PR canónico ${info.canonicalPullRequest} no tiene commit de merge verificable`);
+      return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
+    }
+    if (valid.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR completados sin asociación canónica`);
+    if (valid.length === 1) {
+      const pr = valid[0]!;
+      if (!pr.mergeCommit) throw new Error(`El PR ${pr.id} no tiene commit de merge verificable`);
+      return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
+    }
+    if (!info.branch || !info.integrationBranch) throw new Error(`El ticket ${ticket} no tiene ramas verificables para crear el PR`);
+    const parent = await this.readDirectParent(ticket, await this.readWorkItemValidated(ticket));
+    const integration = uniqueBranch(parent);
+    const ticketBranch = uniqueBranch(await this.readWorkItem(ticket));
+    if (!integration.project || !integration.repository || !integration.ref || !ticketBranch.ref) {
+      throw new Error(`El ticket ${ticket} no tiene identidad Azure Git completa`);
+    }
+    const active = await this.readPullRequests(
+      ticket,
+      integration.project,
+      integration.ref,
+      integration.project,
+      integration.repository,
+      ticketBranch.ref,
+      "active",
+    );
+    if (active.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
+    if (active.length === 1) {
+      await this.az([
+        "repos", "pr", "update", "--id", `${active[0]!.id}`,
+        "--organization", ORGANIZATION,
+        "--status", "completed",
+        "--output", "json",
+      ]);
+      const verified = await this.readPullRequest(active[0]!.id, integration.project, integration.repository);
+      this.validatePullRequest(verified, ticket, integration, ticketBranch);
+      return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
+    }
+    const created = this.toPullRequest(JSON.parse(await this.az([
+      "repos", "pr", "create",
+      "--organization", ORGANIZATION,
+      "--project", integration.project,
+      "--repository", integration.repository,
+      "--source-branch", ticketBranch.ref,
+      "--target-branch", integration.ref,
+      "--title", `Deliver ticket ${ticket}`,
+      "--description", `Coordinator-owned delivery for ticket ${ticket} in HU ${hu}`,
+      "--output", "json",
+    ])));
+    await this.az([
+      "repos", "pr", "update", "--id", `${created.id}`,
+      "--organization", ORGANIZATION,
+      "--status", "completed",
+      "--output", "json",
+    ]);
+    const verified = await this.readPullRequest(created.id, integration.project, integration.repository);
+    this.validatePullRequest(verified, ticket, integration, ticketBranch);
+    return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
   }
 
   async validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
@@ -801,6 +879,12 @@ export class AzureTicketInfoService {
           path: "/relations/-",
           value: { rel: "ArtifactLink", url: artifactLink, attributes: { name: "Fixed in Commit" } },
         },
+        { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
+      ]);
+    } else if (!text(item, "Custom.URLCommit")) {
+      await this.patchWorkItem(item, [
+        { op: "test", path: "/rev", value: item.rev },
+        { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
       ]);
     }
 
@@ -1102,20 +1186,21 @@ export class AzureTicketInfoService {
     expectedProject?: string,
     repository?: string,
     expectedSource?: string | null,
+    status = "completed",
   ): Promise<TicketPullRequest[]> {
     if (!project) return [];
     const args = [
       "repos", "pr", "list", "--organization", ORGANIZATION, "--project", project,
       ...(repository ? ["--repository", repository] : []),
-      "--status", "completed", "--output", "json",
+       "--status", status, "--output", "json",
     ];
     let payload: PullRequestPayload[];
     try {
       payload = this.pullRequestList(JSON.parse(await this.az(args)));
     } catch (error) {
       const uri = repository
-        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`
-        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`;
+         ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
+         : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
       try {
         payload = this.pullRequestList(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
