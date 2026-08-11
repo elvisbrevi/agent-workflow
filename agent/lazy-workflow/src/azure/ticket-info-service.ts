@@ -10,6 +10,7 @@ const COMPLETION_FIELDS = [
 ] as const;
 
 const GATE = {
+  pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
   completionEvidence: "completion-evidence",
   realEffort: "real-effort",
@@ -57,6 +58,7 @@ export interface TicketInfo {
   hu: { id: number; title?: string };
   ticket: TicketSummary;
   branch: string | null;
+  integrationBranch: string | null;
   effort: { estimated?: number; real?: number; realHours?: number };
   pullRequests: TicketPullRequest[];
   canonicalPullRequest: number | null;
@@ -93,6 +95,12 @@ interface PullRequestPayload {
   repository?: { id?: string; project?: { id?: string } };
   repositoryId?: string;
   projectId?: string;
+}
+
+interface FixedCommitLink {
+  project: string;
+  repository: string;
+  commit: string;
 }
 
 export type AzRunner = (args: string[]) => Promise<string>;
@@ -156,7 +164,7 @@ function branchLinks(item: WorkItem): Array<{ ref: string; project: string; repo
 
 function uniqueBranch(item: WorkItem): { ref: string | null; project?: string; repository?: string } {
   const links = branchLinks(item);
-  const unique = [...new Map(links.map((link) => [link.ref, link])).values()];
+  const unique = [...new Map(links.map((link) => [`${link.project}/${link.repository}/${link.ref}`, link])).values()];
   if (unique.length > 1) throw new Error("existen multiples Branch ArtifactLink distintos");
   return unique[0] ?? { ref: null };
 }
@@ -166,14 +174,26 @@ function hasTicketNumber(ref: string | undefined, ticket: number): boolean {
   return new RegExp(`(?:^|[/_.-])${ticket}(?:$|[/_.-])`).test(ref.slice("refs/heads/".length));
 }
 
-function fixedCommit(item: WorkItem): string | null {
-  const relation = (item.relations ?? []).find(({ rel, attributes, url }) =>
-    rel === "ArtifactLink" && attributes?.name === "Fixed in Commit" && typeof url === "string"
-  );
-  if (!relation?.url) return null;
-  const decoded = decodeURIComponent(relation.url);
-  const match = decoded.match(/\/([^/]+)$/);
-  return match?.[1] ?? null;
+function fixedCommit(item: WorkItem): FixedCommitLink | null {
+  const links = (item.relations ?? [])
+    .filter(({ rel, attributes, url }) => rel === "ArtifactLink" && (
+      attributes?.name === "Fixed in Commit" || url?.includes("vstfs:///Git/Commit/")
+    ));
+  const commits = links.map(({ url }) => {
+    if (!url) throw new Error("Fixed in Commit ArtifactLink sin URI");
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(url);
+    } catch {
+      throw new Error("Fixed in Commit ArtifactLink con URI malformada");
+    }
+    const match = decoded.match(/^vstfs:\/\/\/Git\/Commit\/([^/]+)\/([^/]+)\/([^/]+)$/);
+    if (!match) throw new Error("Fixed in Commit ArtifactLink con URI malformada");
+    return { project: match[1]!, repository: match[2]!, commit: match[3]! };
+  });
+  const unique = [...new Map(commits.map((commit) => [`${commit.project}/${commit.repository}/${commit.commit}`, commit])).values()];
+  if (unique.length > 1) throw new Error("existen multiples Fixed in Commit ArtifactLink distintos");
+  return unique[0] ?? null;
 }
 
 function sanitizeError(error: unknown): string {
@@ -187,7 +207,7 @@ function commandError(error: unknown): Error {
   return new Error(`Azure command failed: ${sanitizeError(error)}`, { cause: error });
 }
 
-async function runAz(args: string[]): Promise<string> {
+export async function runAzureCommand(args: string[]): Promise<string> {
   try {
     return await $`az ${args}`.text();
   } catch (error) {
@@ -196,7 +216,7 @@ async function runAz(args: string[]): Promise<string> {
 }
 
 export class AzureTicketInfoService {
-  constructor(private readonly az: AzRunner = runAz) {}
+  constructor(private readonly az: AzRunner = runAzureCommand) {}
 
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
@@ -213,20 +233,49 @@ export class AzureTicketInfoService {
     );
     if (!child) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
 
-    const branch = uniqueBranch(parent);
-    const pullRequests = await this.readPullRequests(ticket, text(parent, "System.TeamProject"), branch.ref);
-    const associated = pullRequests.filter((pullRequest) => pullRequest.associated);
-    const canonical = pullRequests.length === 1
-      ? pullRequests[0]!.id
+    const integrationBranch = uniqueBranch(parent);
+    const ticketBranch = uniqueBranch(item);
+    if (ticketBranch.ref && (
+      ticketBranch.project !== integrationBranch.project
+      || ticketBranch.repository !== integrationBranch.repository
+    )) {
+      throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
+    }
+    const pullRequests = await this.readPullRequests(
+      ticket,
+      integrationBranch.project ?? text(parent, "System.TeamProject"),
+      integrationBranch.ref,
+      integrationBranch.project,
+      integrationBranch.repository,
+    );
+    const validPullRequests = pullRequests.filter((pullRequest) =>
+      pullRequest.status === "completed"
+      && pullRequest.mergeStatus === "succeeded"
+      && pullRequest.target === integrationBranch.ref
+    );
+    const associated = validPullRequests.filter((pullRequest) => pullRequest.associated);
+    const canonical = validPullRequests.length === 1
+      ? validPullRequests[0]!.id
       : associated.length === 1 ? associated[0]!.id : null;
     const completionEvidence = COMPLETION_FIELDS.map((fieldName) => text(item, fieldName)).find(Boolean) ?? null;
-    const mergeCommit = pullRequests.find(({ id }) => id === canonical)?.mergeCommit ?? fixedCommit(item);
-    const unmet = this.unmetGates(summary, item, branch.ref, pullRequests, canonical, completionEvidence, mergeCommit);
+    const linkedCommit = fixedCommit(item);
+    const mergeCommit = pullRequests.find(({ id }) => id === canonical)?.mergeCommit ?? linkedCommit?.commit ?? null;
+    const unmet = this.unmetGates(
+      summary,
+      item,
+      integrationBranch.ref,
+      pullRequests,
+      canonical,
+      completionEvidence,
+      mergeCommit,
+      linkedCommit,
+    );
 
     return {
       hu: { id: hu, title: text(parent, "System.Title") },
       ticket: summary,
-      branch: branch.ref,
+      branch: ticketBranch.ref,
+      integrationBranch: integrationBranch.ref,
       effort: {
         estimated: number(item, ["Microsoft.VSTS.Scheduling.OriginalEstimate", "Custom.Estimacion"]),
         real: number(item, ["Custom.EsfuerzoReal"]),
@@ -244,6 +293,23 @@ export class AzureTicketInfoService {
         unmet,
       },
     };
+  }
+
+  async getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
+    this.toSummary(item);
+    if (!(parent.relations ?? []).some(({ rel, url }) =>
+      rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
+    )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    const integrationBranch = uniqueBranch(parent);
+    const ticketBranch = uniqueBranch(item);
+    if (ticketBranch.ref && (
+      ticketBranch.project !== integrationBranch.project
+      || ticketBranch.repository !== integrationBranch.repository
+    )) throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
+    return { hu, ticket, branch: ticketBranch.ref, integrationBranch: integrationBranch.ref };
   }
 
   async getDescription(ticket: number): Promise<{ ticket: number; description: string | null }> {
@@ -293,13 +359,13 @@ export class AzureTicketInfoService {
   private async readWorkItem(id: number): Promise<WorkItem> {
     const args = ["boards", "work-item", "show", "--id", `${id}`, "--organization", ORGANIZATION, "--expand", "relations", "--output", "json"];
     try {
-      return JSON.parse(await this.az(args)) as WorkItem;
+      return this.validWorkItem(JSON.parse(await this.az(args)), id);
     } catch (error) {
       const uri = `${ORGANIZATION}/_apis/wit/workitems/${id}?$expand=relations&api-version=${API_VERSION}`;
       try {
-        return JSON.parse(await this.az([
+        return this.validWorkItem(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
-        ])) as WorkItem;
+        ])), id);
       } catch (fallbackError) {
         throw new Error(`No se pudo leer el work item ${id}: ${sanitizeError(fallbackError)}`, { cause: error });
       }
@@ -321,64 +387,141 @@ export class AzureTicketInfoService {
     };
   }
 
-  private async readPullRequests(ticket: number, project: string | undefined, branch: string | null): Promise<TicketPullRequest[]> {
+  private async readPullRequests(
+    ticket: number,
+    project: string | undefined,
+    integrationBranch: string | null,
+    expectedProject?: string,
+    repository?: string,
+  ): Promise<TicketPullRequest[]> {
     if (!project) return [];
-    const args = ["repos", "pr", "list", "--organization", ORGANIZATION, "--project", project, "--status", "completed", "--output", "json"];
+    const args = [
+      "repos", "pr", "list", "--organization", ORGANIZATION, "--project", project,
+      ...(repository ? ["--repository", repository] : []),
+      "--status", "completed", "--output", "json",
+    ];
     let payload: PullRequestPayload[];
     try {
-      payload = JSON.parse(await this.az(args)) as PullRequestPayload[];
+      payload = this.pullRequestList(JSON.parse(await this.az(args)));
     } catch (error) {
-      const branchLink = branch ? branchLinks({ relations: [] }) : [];
-      if (branchLink.length > 0) throw commandError(error);
-      return [];
+      const uri = repository
+        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`
+        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`;
+      try {
+        payload = this.pullRequestList(JSON.parse(await this.az([
+          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
+        ])));
+      } catch (fallbackError) {
+        throw new Error(`No se pudieron leer los pull requests del ticket ${ticket}: ${sanitizeError(fallbackError)}`, { cause: error });
+      }
     }
-    const candidates = payload
+    const matching = payload
       .map((pr) => this.toPullRequest(pr))
-      .filter((pr): pr is TicketPullRequest => pr !== null)
-      .filter((pr) => hasTicketNumber(pr.source, ticket))
-      .filter((pr) => !branch || pr.target === branch);
-    return Promise.all(candidates.map(async (pr) => ({
+      .filter((pr) => hasTicketNumber(pr.source, ticket));
+    if (repository && matching.some((pr) => pr.repositoryId !== repository)) {
+      throw new Error(`El pull request del ticket ${ticket} pertenece a otro repositorio Azure`);
+    }
+    if (expectedProject && matching.some((pr) => pr.projectId !== expectedProject)) {
+      throw new Error(`El pull request del ticket ${ticket} pertenece a otro proyecto Azure`);
+    }
+    return Promise.all(matching.map(async (pr) => ({
       ...pr,
-      associated: await this.isPullRequestLinked(pr.id, ticket),
+      associated: await this.isPullRequestLinked(pr, ticket),
     })));
   }
 
-  private toPullRequest(payload: PullRequestPayload): TicketPullRequest | null {
+  private validWorkItem(payload: unknown, id: number): WorkItem {
+    if (typeof payload !== "object" || payload === null || !("id" in payload) || payload.id !== id) {
+      throw new Error(`Respuesta de work item malformada: no coincide con el ID solicitado ${id}`);
+    }
+    return payload as WorkItem;
+  }
+
+  private toPullRequest(payload: PullRequestPayload): TicketPullRequest {
     const id = payload.pullRequestId ?? payload.id;
-    if (!Number.isInteger(id)) return null;
+    const source = payload.sourceRefName ?? payload.source;
+    const target = payload.targetRefName ?? payload.target;
+    const repositoryId = payload.repository?.id ?? payload.repositoryId;
+    const projectId = payload.repository?.project?.id ?? payload.projectId;
+    if (
+      typeof id !== "number" || !Number.isInteger(id)
+      || typeof payload.status !== "string"
+      || typeof payload.mergeStatus !== "string"
+      || typeof source !== "string"
+      || typeof target !== "string"
+      || typeof repositoryId !== "string"
+      || typeof projectId !== "string"
+    ) throw new Error("Respuesta de pull request malformada: faltan campos de identidad");
     return {
       id,
       status: payload.status,
       mergeStatus: payload.mergeStatus,
-      source: payload.sourceRefName ?? payload.source,
-      target: payload.targetRefName ?? payload.target,
+      source,
+      target,
       mergeCommit: payload.lastMergeCommit?.commitId ?? payload.mergeCommit,
-      repositoryId: payload.repository?.id ?? payload.repositoryId,
-      projectId: payload.repository?.project?.id ?? payload.projectId,
+      repositoryId,
+      projectId,
       associated: false,
     };
   }
 
-  private async isPullRequestLinked(pullRequest: number, ticket: number): Promise<boolean> {
+  private pullRequestList(payload: unknown): PullRequestPayload[] {
+    if (Array.isArray(payload)) return payload as PullRequestPayload[];
+    if (typeof payload === "object" && payload !== null && "value" in payload && Array.isArray(payload.value)) {
+      return payload.value as PullRequestPayload[];
+    }
+    throw new Error("Respuesta de pull requests malformada: se esperaba una lista");
+  }
+
+  private async isPullRequestLinked(pullRequest: TicketPullRequest, ticket: number): Promise<boolean> {
     try {
       const output = await this.az([
-        "repos", "pr", "work-item", "list", "--id", `${pullRequest}`, "--organization", ORGANIZATION, "--query", "[].id", "--output", "json",
+        "repos", "pr", "work-item", "list", "--id", `${pullRequest.id}`, "--organization", ORGANIZATION, "--query", "[].id", "--output", "json",
+        ...(pullRequest.projectId ? ["--project", pullRequest.projectId] : []),
+        ...(pullRequest.repositoryId ? ["--repository", pullRequest.repositoryId] : []),
       ]);
-      const workItems = JSON.parse(output) as Array<number | string | { id?: number | string }>;
-      return workItems.some((item) => Number(typeof item === "object" ? item.id : item) === ticket);
-    } catch {
-      return false;
+      return this.workItemIds(JSON.parse(output)).includes(ticket);
+    } catch (error) {
+      if (!pullRequest.repositoryId) throw commandError(error);
+      try {
+        const uri = `${ORGANIZATION}/_apis/git/repositories/${encodeURIComponent(pullRequest.repositoryId)}/pullRequests/${pullRequest.id}/workitems?api-version=${API_VERSION}`;
+        const payload = JSON.parse(await this.az([
+          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
+        ]));
+        return this.workItemIds(payload).includes(ticket);
+      } catch (fallbackError) {
+        throw new Error(`No se pudo leer la asociacion nativa del PR ${pullRequest.id}: ${sanitizeError(fallbackError)}`, { cause: error });
+      }
     }
+  }
+
+  private workItemIds(payload: unknown): number[] {
+    const values = Array.isArray(payload)
+      ? payload
+      : typeof payload === "object" && payload !== null && "value" in payload && Array.isArray(payload.value)
+        ? payload.value
+        : null;
+    const ids = values?.map((item) => {
+      const id = typeof item === "object" && item !== null && "id" in item ? item.id : item;
+      if (typeof id === "number" && Number.isInteger(id) && id > 0) return id;
+      if (typeof id === "string" && /^\d+$/.test(id) && Number(id) > 0) return Number(id);
+      return null;
+    });
+    if (!ids || ids.some((id) => id === null)) {
+      throw new Error("Respuesta de asociacion de work items malformada");
+    }
+    return ids as number[];
   }
 
   private unmetGates(
     summary: TicketSummary,
     item: WorkItem,
-    branch: string | null,
+    integrationBranch: string | null,
     pullRequests: TicketPullRequest[],
     canonical: number | null,
     evidence: string | null,
     mergeCommit: string | null,
+    artifactCommit: FixedCommitLink | null,
   ): CompletionGate[] {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
@@ -387,11 +530,15 @@ export class AzureTicketInfoService {
     if (!number(item, ["Custom.EsfuerzoRealHH"])) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
     if (!(item.relations ?? []).some(({ rel }) => rel === "AttachedFile")) unmet.push(GATE.attachedCapture);
-    if (!branch) unmet.push(GATE.huIntegrationBranch);
+    if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
     const validPr = pullRequests.find((pr) => pr.id === canonical && pr.status === "completed" && pr.mergeStatus === "succeeded");
-    if (!validPr) unmet.push(GATE.completedHuTargetedPr);
+    if (!validPr) unmet.push(GATE.completedHuPullRequest);
     if (validPr && !validPr.associated) unmet.push(GATE.nativePullRequestAssociation);
-    if (!mergeCommit) unmet.push(GATE.mergeCommitArtifact);
+    const exactArtifact = validPr?.mergeCommit && artifactCommit
+      && artifactCommit.project === validPr.projectId
+      && artifactCommit.repository === validPr.repositoryId
+      && artifactCommit.commit === validPr.mergeCommit;
+    if (!exactArtifact) unmet.push(GATE.mergeCommitArtifact);
     return unmet;
   }
 }
