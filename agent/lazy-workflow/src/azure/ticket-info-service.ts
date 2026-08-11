@@ -305,6 +305,11 @@ function validateQuarterHour(value: number, name: string): void {
   if (!Number.isInteger(value * 4)) throw new Error(`${name} debe estar redondeado a incrementos de 0.25 horas: ${value}`);
 }
 
+function isRevisionConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b409\b|revision|precondition|conflict|condition.*(?:failed|not met)/i.test(message);
+}
+
 function validateScreenEvidence(name: string, bytes: Uint8Array): void {
   const lowerName = name.toLowerCase();
   const png = lowerName.endsWith(".png") && bytes.length >= 8 && bytes.slice(0, 8).every((byte, index) => byte === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]);
@@ -883,6 +888,7 @@ export class AzureTicketInfoService {
     try {
       await this.patchWorkItem(item, patch);
     } catch (error) {
+      if (isRevisionConflict(error)) throw error;
       const recovered = await this.readWorkItem(item.id).catch(() => null);
       if (!recovered || workItemRevision(recovered) !== workItemRevision(item) + 1 || !matches(recovered)) throw error;
       return recovered;

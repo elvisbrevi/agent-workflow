@@ -633,6 +633,9 @@ test("ticket field mutation commands validate their explicit contracts", async (
     expect(await new LazyWorkflowCli(service).run([
       "ticket-effort-set", "--ticket", "51", "--real-effort", "2.25", "--real-effort-hh", "2.5", "--expected-rev", "7",
     ])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-effort-set", "--ticket", "51", "--real-effort-hh", "2.5", "--expected-rev", "7",
+    ])).toBe(1);
   } finally {
     console.log = originalLog;
   }
