@@ -503,6 +503,7 @@ export class AzureTicketInfoService {
     ticket: number,
     desiredState: string,
     expectedState: string,
+    allowCompletion = false,
   ): Promise<{ ticket: number; state: string; revision: number }> {
     positiveId(ticket, "El ticket");
     validateState(desiredState, "El estado deseado");
@@ -515,6 +516,9 @@ export class AzureTicketInfoService {
     }
     const revision = workItemRevision(item);
     if (currentState === desiredState) return { ticket, state: desiredState, revision };
+    if (desiredState === "Done" && !allowCompletion) {
+      throw new Error("El estado Done solo puede aplicarse después de verificar los gates de cierre");
+    }
     if (!STATE_TRANSITIONS[currentState]?.includes(desiredState)) {
       throw new Error(`Transición de estado no soportada: ${currentState} -> ${desiredState}`);
     }

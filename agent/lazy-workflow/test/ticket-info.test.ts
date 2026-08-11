@@ -498,6 +498,8 @@ test("ticket field setters use revision guards, reread their results, and retry 
   const descriptionPath = `/tmp/lazy-workflow-description-${crypto.randomUUID()}.html`;
 
   try {
+    await Bun.write(descriptionPath, new Uint8Array([0xff]));
+    await expect(service.setDescription(51, descriptionPath)).rejects.toThrow("UTF-8");
     await Bun.write(descriptionPath, "<p>new\nvalue</p>");
     await expect(service.setDescription(51, descriptionPath)).resolves.toEqual({
       ticket: 51,
@@ -562,6 +564,7 @@ test("ticket state setter rejects stale and unsupported transitions before Azure
 
   await expect(service.setState(51, "Done", "New")).rejects.toThrow("estado actual");
   await expect(service.setState(51, "Unknown", "Active")).rejects.toThrow("no soportado");
+  await expect(service.setState(51, "Done", "Active")).rejects.toThrow("gates");
 });
 
 test("ticket state setter reconciles a patch that applied before its response was lost", async () => {
@@ -609,6 +612,21 @@ test("ticket mutations reject a non-HU or ambiguous direct parent", async () => 
   });
 
   await expect(service.setState(51, "En progreso", "Active")).rejects.toThrow("única HU");
+
+  const nonHu = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "Task" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+  });
+  await expect(nonHu.setState(51, "En progreso", "Active")).rejects.toThrow("no es una HU");
 });
 
 test("ticket field mutation commands validate their explicit contracts", async () => {
