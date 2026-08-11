@@ -550,7 +550,7 @@ export class AzureTicketInfoService {
     const currentReal = number(item, [TICKET_FIELDS.realEffort]);
     const currentRealHours = number(item, [TICKET_FIELDS.realEffortHours]);
     if (currentReal === realEffort && currentRealHours === realEffortHours) {
-      if (revision !== expectedRevision) {
+      if (revision !== expectedRevision && revision !== expectedRevision + 1) {
         throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
       }
       return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };

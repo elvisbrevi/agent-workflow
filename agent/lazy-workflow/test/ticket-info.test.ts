@@ -526,7 +526,11 @@ test("ticket field setters use revision guards, reread their results, and retry 
       effort: { real: 2.25, realHours: 2.5 },
       revision: 7,
     });
-    await expect(service.setEffort(51, 2.25, 2.5, 5)).rejects.toThrow("revision");
+    await expect(service.setEffort(51, 2.25, 2.5, 6)).resolves.toEqual({
+      ticket: 51,
+      effort: { real: 2.25, realHours: 2.5 },
+      revision: 7,
+    });
     await expect(service.setEffort(51, 3, 3, 4)).rejects.toThrow("revision");
     await expect(service.setEffort(51, 2, 2, 7)).rejects.toThrow("no puede disminuir");
     await expect(service.setEffort(51, 2.1, 2.25, 7)).rejects.toThrow("0.25");
