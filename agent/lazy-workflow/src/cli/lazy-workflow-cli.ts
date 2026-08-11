@@ -55,7 +55,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
   setDescription?(ticket: number, filePath: string): Promise<unknown>;
-  setState?(ticket: number, desiredState: string, expectedState: string): Promise<unknown>;
+  setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean): Promise<unknown>;
   setEffort?(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
@@ -170,6 +170,10 @@ function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> 
 function parseOptions(args: string[]): CliOptions {
   const hu = optionValue(args, "--hu");
   const ticket = optionValue(args, "--ticket");
+  const realEffort = optionValue(args, "--real-effort");
+  const realEffortHours = optionValue(args, "--real-effort-hh");
+  const expectedRevision = optionValue(args, "--expected-rev");
+  const presentValue = (value: string | null): boolean => value !== null && value.trim() !== "" && !value.startsWith("--");
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
@@ -184,12 +188,12 @@ function parseOptions(args: string[]): CliOptions {
     descriptionFile: optionValue(args, "--description-file"),
     state: optionValue(args, "--state"),
     expectedState: optionValue(args, "--expected-state"),
-    realEffort: Number(optionValue(args, "--real-effort")),
-    realEffortHours: Number(optionValue(args, "--real-effort-hh")),
-    expectedRevision: Number(optionValue(args, "--expected-rev")),
-    hasRealEffort: args.includes("--real-effort"),
-    hasRealEffortHours: args.includes("--real-effort-hh"),
-    hasExpectedRevision: args.includes("--expected-rev"),
+    realEffort: Number(realEffort),
+    realEffortHours: Number(realEffortHours),
+    expectedRevision: Number(expectedRevision),
+    hasRealEffort: presentValue(realEffort),
+    hasRealEffortHours: presentValue(realEffortHours),
+    hasExpectedRevision: presentValue(expectedRevision),
     evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
