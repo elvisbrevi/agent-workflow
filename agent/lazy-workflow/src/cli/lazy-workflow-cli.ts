@@ -22,6 +22,15 @@ type CliOptions = OpenCodeRunOptions & {
   ticket: number | null;
   pullRequest: number | null;
   file: string | null;
+  descriptionFile: string | null;
+  state: string | null;
+  expectedState: string | null;
+  realEffort: number;
+  realEffortHours: number;
+  expectedRevision: number;
+  hasRealEffort: boolean;
+  hasRealEffortHours: boolean;
+  hasExpectedRevision: boolean;
   evidenceKind: EvidenceKind | null;
   numberOfQuestions: number;
   workingDirectory: string;
@@ -45,6 +54,9 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
+  setDescription?(ticket: number, filePath: string): Promise<unknown>;
+  setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean): Promise<unknown>;
+  setEffort?(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -124,6 +136,9 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-completion-info",
 ]);
 const TICKET_MUTATION_COMMANDS = new Set([
+  "ticket-description-set",
+  "ticket-state-set",
+  "ticket-effort-set",
   "ticket-branch-set",
   "ticket-pr-link",
   "ticket-commit-link",
@@ -155,6 +170,10 @@ function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> 
 function parseOptions(args: string[]): CliOptions {
   const hu = optionValue(args, "--hu");
   const ticket = optionValue(args, "--ticket");
+  const realEffort = optionValue(args, "--real-effort");
+  const realEffortHours = optionValue(args, "--real-effort-hh");
+  const expectedRevision = optionValue(args, "--expected-rev");
+  const presentValue = (value: string | null): boolean => value !== null && value.trim() !== "" && !value.startsWith("--");
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
@@ -166,6 +185,15 @@ function parseOptions(args: string[]): CliOptions {
     ticket: args.includes("--ticket") ? Number(ticket) : null,
     pullRequest: args.includes("--pr") ? Number(optionValue(args, "--pr")) : null,
     file: optionValue(args, "--evidence-file") ?? optionValue(args, "--file"),
+    descriptionFile: optionValue(args, "--description-file"),
+    state: optionValue(args, "--state"),
+    expectedState: optionValue(args, "--expected-state"),
+    realEffort: Number(realEffort),
+    realEffortHours: Number(realEffortHours),
+    expectedRevision: Number(expectedRevision),
+    hasRealEffort: presentValue(realEffort),
+    hasRealEffortHours: presentValue(realEffortHours),
+    hasExpectedRevision: presentValue(expectedRevision),
     evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
@@ -189,6 +217,9 @@ function printHelp(): void {
     "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
     "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
     "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
+    "  lazy-workflow ticket-description-set --ticket <id> --description-file <path>",
+    "  lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>",
+    "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
     "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
     "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
     "",
@@ -202,6 +233,12 @@ function printHelp(): void {
     "  --base-branch <name>",
     "  --ticket <id>",
     "  --pr <id>",
+    "  --description-file <path>",
+    "  --state <state>",
+    "  --expected-state <state>",
+    "  --real-effort <hours>",
+    "  --real-effort-hh <hours>",
+    "  --expected-rev <rev>",
     "  --file <path>",
     "  --kind <http-json|screen|command-output>",
     "  --evidence-file <path>",
@@ -235,6 +272,49 @@ export class LazyWorkflowCli {
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
+
+    if (command === "ticket-description-set" || command === "ticket-state-set" || command === "ticket-effort-set") {
+      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+        reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+        return 1;
+      }
+      if (command === "ticket-description-set" && !options.descriptionFile?.trim()) {
+        reportOperator("ticket-description-set requiere --description-file <path>");
+        return 1;
+      }
+      if (command === "ticket-state-set" && (!options.state?.trim() || !options.expectedState?.trim())) {
+        reportOperator("ticket-state-set requiere --state <state> y --expected-state <state>");
+        return 1;
+      }
+      if (command === "ticket-effort-set" && (
+        !options.hasRealEffort || !options.hasRealEffortHours || !options.hasExpectedRevision
+        ||
+        !Number.isFinite(options.realEffort) || options.realEffort < 0
+        || !Number.isFinite(options.realEffortHours) || options.realEffortHours < 0
+        || !Number.isInteger(options.expectedRevision) || options.expectedRevision <= 0
+      )) {
+        reportOperator("ticket-effort-set requiere --real-effort <hours>, --real-effort-hh <hours> y --expected-rev <rev> válidos");
+        return 1;
+      }
+      try {
+        let result: unknown;
+        if (command === "ticket-description-set") {
+          if (!this.huInfoService.setDescription) throw new Error("El servicio Azure no soporta ticket-description-set");
+          result = await this.huInfoService.setDescription(options.ticket, options.descriptionFile!);
+        } else if (command === "ticket-state-set") {
+          if (!this.huInfoService.setState) throw new Error("El servicio Azure no soporta ticket-state-set");
+          result = await this.huInfoService.setState(options.ticket, options.state!, options.expectedState!);
+        } else {
+          if (!this.huInfoService.setEffort) throw new Error("El servicio Azure no soporta ticket-effort-set");
+          result = await this.huInfoService.setEffort(options.ticket, options.realEffort, options.realEffortHours, options.expectedRevision);
+        }
+        console.log(JSON.stringify(result, null, 2));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        return 1;
+      }
+    }
 
     if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
       if (command === "ticket-pr-link" && !isValidHu(options.hu)) {
