@@ -11,6 +11,7 @@ When installed globally by `install.sh --all-global` or
 
 ```bash
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+lazy-workflow hu-branch-info --hu 23438
 ```
 
 OpenCode events and periodic no-output heartbeats are printed with local
@@ -39,6 +40,18 @@ To obtain the information of a HU:
 ```bash
 bun run main.ts hu-info --hu 23438
 ```
+
+To query the HU integration branch without starting OpenCode or changing Git
+or Azure:
+
+```bash
+bun run main.ts hu-branch-info --hu 23438
+```
+
+The command prints one indented JSON object with the HU number and either the
+normalized native Azure Git branch (`refs/heads/...`) or `null` when no Branch
+ArtifactLink exists. Malformed or multiple distinct Branch links fail with a
+nonzero status; the command never proposes `hu/<HU>`.
 
 To drain the HU's direct Task and Bug delivery tickets one at a time:
 
