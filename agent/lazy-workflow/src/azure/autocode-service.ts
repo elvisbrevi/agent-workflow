@@ -451,18 +451,23 @@ export class AzureAutocodeService implements AutocodeAzureService {
       "--output", "json",
     ]);
     const prs = (JSON.parse(output) as CompletedPullRequest[])
-      .filter((pr) => belongsToTicket(pr.source, context.ticket.id));
-    const pr = prs.length === 1 ? prs[0] : undefined;
-    return pr?.status === "completed"
+      .filter((pr) => belongsToTicket(pr.source, context.ticket.id))
+      .filter((pr) => pr.status === "completed"
       && pr.mergeStatus === "succeeded"
       && pr.target === context.integrationBranch
       && pr.source?.startsWith("refs/heads/")
       && Number.isInteger(pr.id)
       && typeof pr.projectId === "string"
       && typeof pr.repositoryId === "string"
-      && typeof pr.mergeCommit === "string"
-      ? pr
-      : null;
+      && typeof pr.mergeCommit === "string");
+    if (prs.length === 1) return prs[0]!;
+    if (prs.length === 0) return null;
+
+    const associated = (await Promise.all(prs.map(async (pr) => ({
+      pr,
+      linked: await this.isPullRequestLinkedToTicket(pr.id!, context.ticket.id),
+    })))).filter(({ linked }) => linked);
+    return associated.length === 1 ? associated[0]!.pr : null;
   }
 
   private async isPullRequestLinkedToTicket(

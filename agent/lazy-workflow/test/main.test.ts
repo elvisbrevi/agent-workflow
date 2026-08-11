@@ -155,6 +155,47 @@ test("Azure obtiene la rama exacta del único PR completado del ticket", async (
   });
 });
 
+test("Azure elige el único PR asociado cuando existen PR históricos completados", async () => {
+  const service = new AzureAutocodeService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) {
+      return JSON.stringify({
+        id: 51,
+        fields: {
+          "System.State": "Done",
+          "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71": "evidencia",
+          "Custom.EsfuerzoReal": 5,
+          "Custom.EsfuerzoRealHH": 5,
+          "Custom.URLCommit": "https://example.test/commit/new",
+        },
+        relations: [
+          { rel: "AttachedFile" },
+          { rel: "ArtifactLink", url: "vstfs:///Git/Commit/project%2Frepo%2Fnew-merge" },
+        ],
+      });
+    }
+    if (args[0] === "boards") {
+      return JSON.stringify({
+        id: 23438,
+        relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project%2Frepo%2FGBhu%2F23438", attributes: { name: "Branch" } }],
+      });
+    }
+    if (args.includes("work-item")) {
+      const id = Number(args[args.indexOf("--id") + 1]);
+      return JSON.stringify(id === 4504 ? [51] : []);
+    }
+    return JSON.stringify([
+      { status: "completed", mergeStatus: "succeeded", target: "refs/heads/hu/23438", source: "refs/heads/ticket/51-old", id: 4501, projectId: "project", repositoryId: "repo", mergeCommit: "old-merge" },
+      { status: "completed", mergeStatus: "succeeded", target: "refs/heads/hu/23438", source: "refs/heads/ticket/51", id: 4504, projectId: "project", repositoryId: "repo", mergeCommit: "new-merge" },
+    ]);
+  });
+
+  expect(await service.verifyTicketCompletion({
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  })).toEqual({ ticketBranch: "refs/heads/ticket/51" });
+});
+
 test("Azure acumula todos los gates determinables de una verificacion incompleta", async () => {
   const service = new AzureAutocodeService(async (args) => {
     if (args[0] === "boards" && args.includes("51")) {
@@ -1072,7 +1113,7 @@ test("code reporta cuando ya no puede reconstruir el ticket fijado", async () =>
   expect(messages.join("\n")).not.toContain("cierre verificable");
 });
 
-test("code --session reacquire la rama y reanuda el ticket fijado sin consultar la cola", async () => {
+test("code --session reconcilia un ticket ya completado sin reanudar OpenCode", async () => {
   const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses-51" };
   const events: string[] = [];
   const context: AutocodeContext = {
@@ -1080,10 +1121,6 @@ test("code --session reacquire la rama y reanuda el ticket fijado sin consultar 
     ticket: { id: 51, type: "Task" },
     integrationBranch: "refs/heads/hu/23438",
   };
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
-  }));
-
   const code = await new LazyWorkflowCli(
     {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
@@ -1096,15 +1133,13 @@ test("code --session reacquire la rama y reanuda el ticket fijado sin consultar 
         events.push(`ticket:${hu}:${ticket}:${branch}`);
         return context;
       },
+      getAutocodeState: async () => ({ context: null, pending: false }),
       getAutocodeContext: async () => { throw new Error("must not select another ticket"); },
       verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
     },
     {
       run: async () => { throw new Error("must not start a session"); },
-      resume: async (sessionId) => {
-        events.push(`resume:${sessionId}`);
-        return result;
-      },
+      resume: async () => { throw new Error("must not resume a completed ticket"); },
     },
     { read: async () => checkpoint, write: async () => undefined, clear: async () => { events.push("clear"); } },
     { wait: async () => { throw new Error("must not retry"); } },
@@ -1115,10 +1150,45 @@ test("code --session reacquire la rama y reanuda el ticket fijado sin consultar 
   expect(events).toEqual([
     "branch:23438:/repo:null",
     "ticket:23438:51:refs/heads/hu/23438",
-    "resume:ses-51",
     "cleanup:refs/heads/ticket/51",
     "clear",
   ]);
+});
+
+test("code --session reanuda OpenCode cuando el ticket fijado todavía no está Done", async () => {
+  const checkpoint: AutocodeCheckpoint = { workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses-51" };
+  const context: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+  let resumed = false;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => context.integrationBranch,
+      getAutocodeContextForTicket: async () => context,
+      getAutocodeContext: async () => null,
+      verifyTicketCompletion: async () => resumed
+        ? ({ ticketBranch: "refs/heads/ticket/51" })
+        : ({ ticketId: 51, unmetGates: [COMPLETION_GATE.ticketState] }),
+    },
+    {
+      run: async () => { throw new Error("must not start a session"); },
+      resume: async () => { resumed = true; return result; },
+    },
+    { read: async () => checkpoint, write: async () => undefined, clear: async () => undefined },
+    { wait: async () => { throw new Error("must not retry"); } },
+    { deleteTicketBranch: async () => undefined },
+  ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(resumed).toBe(true);
 });
 
 test("code sessionless conserva identidad y detiene una sola vez ante un vínculo Branch ausente", async () => {

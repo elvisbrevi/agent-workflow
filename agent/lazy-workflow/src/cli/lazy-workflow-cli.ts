@@ -300,6 +300,39 @@ export class LazyWorkflowCli {
             });
             return 1;
           }
+          if (recovering) {
+            const verification = await this.huInfoService.verifyTicketCompletion(pinnedContext);
+            const ticketIsDone = verification !== null
+              && (!isIncompleteCompletion(verification)
+                || !verification.unmetGates.includes(COMPLETION_GATE.ticketState));
+            if (ticketIsDone) {
+              await this.checkpointStore.write({
+                workflow: "autocode",
+                hu,
+                ticket: pinnedContext.ticket.id,
+                sessionId: null,
+              });
+              recovering = false;
+              sessionId = null;
+              if (!requireVerifiedCompletion(
+                pinnedContext.ticket.id,
+                verification,
+                `lazy-workflow: el ticket ${pinnedContext.ticket.id} todavía no cumple el cierre verificable.`,
+              )) return 1;
+              try {
+                await this.cleanupCompletedTicketBranch(
+                  pinnedContext,
+                  options.workingDirectory,
+                  verification.ticketBranch,
+                );
+              } catch (error) {
+                reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
+                return 1;
+              }
+              await this.checkpointStore.clear();
+              continue;
+            }
+          }
           if (reconciling) {
             const verification = await this.huInfoService.verifyTicketCompletion(pinnedContext);
             if (!requireVerifiedCompletion(
