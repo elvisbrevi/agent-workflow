@@ -27,6 +27,7 @@ type CliOptions = OpenCodeRunOptions & {
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
+  setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -115,6 +116,7 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-evidence-info",
   "ticket-completion-info",
 ]);
+const TICKET_MUTATION_COMMANDS = new Set(["ticket-branch-set"]);
 
 function isStableIntegrationBranchFailure(error: unknown): boolean {
   return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
@@ -168,6 +170,7 @@ function printHelp(): void {
     "  lazy-workflow ticket-info --hu <id> --ticket <id>",
     "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
     "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
+    "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
@@ -195,7 +198,7 @@ export class LazyWorkflowCli {
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command))) {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -208,6 +211,36 @@ export class LazyWorkflowCli {
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
+
+    if (command === "ticket-branch-set") {
+      if (!isValidHu(options.hu)) {
+        reportOperator("ticket-branch-set requiere --hu <id>");
+        return 1;
+      }
+      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+        reportOperator("ticket-branch-set requiere --ticket <id> con un entero positivo");
+        return 1;
+      }
+      if (!options.branch?.trim()) {
+        reportOperator("ticket-branch-set requiere --branch <name>");
+        return 1;
+      }
+      if (!this.huInfoService.setTicketBranch) {
+        reportOperator("El servicio Azure no soporta ticket-branch-set");
+        return 1;
+      }
+      try {
+        console.log(JSON.stringify(
+          await this.huInfoService.setTicketBranch(options.hu, options.ticket, options.branch, options.workingDirectory),
+          null,
+          2,
+        ));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo vincular la rama del ticket ${options.ticket} (${errorMessage(error)})`);
+        return 1;
+      }
+    }
 
     if (command === "hu-info") {
       if (!isValidHu(options.hu)) {
