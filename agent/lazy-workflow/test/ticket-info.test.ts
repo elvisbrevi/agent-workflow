@@ -45,8 +45,8 @@ function fixture() {
         },
         relations: [{
           rel: "AttachedFile",
-          url: "https://example.test/evidence.json",
-          attributes: { name: "evidence.json" },
+           url: "https://example.test/evidence.json",
+           attributes: { name: "evidence.json", comment: "http-json", digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
         }],
       });
     }
