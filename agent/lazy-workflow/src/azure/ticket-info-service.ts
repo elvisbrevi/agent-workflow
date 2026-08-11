@@ -528,11 +528,17 @@ export class AzureTicketInfoService {
     const revision = workItemRevision(item);
     const currentReal = number(item, ["Custom.EsfuerzoReal"]);
     const currentRealHours = number(item, ["Custom.EsfuerzoRealHH"]);
+    if (currentReal === realEffort && currentRealHours === realEffortHours) {
+      if (revision !== expectedRevision && revision !== expectedRevision + 1) {
+        throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
+      }
+      return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
+    }
     if (revision !== expectedRevision) {
       throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
     }
-    if (currentReal === realEffort && currentRealHours === realEffortHours) {
-      return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
+    if ((currentReal !== undefined && realEffort < currentReal) || (currentRealHours !== undefined && realEffortHours < currentRealHours)) {
+      throw new Error(`El esfuerzo acumulado del ticket ${ticket} no puede disminuir`);
     }
 
     const verified = await this.patchAndRead(item, [
@@ -732,12 +738,12 @@ export class AzureTicketInfoService {
   }
 
   private async readDirectParent(ticket: number, item: WorkItem): Promise<WorkItem> {
-    const parentIds = (item.relations ?? [])
-      .filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")
-      .map(({ url }) => relationId(url))
-      .filter((id): id is number => id !== undefined);
+    const parentRelations = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
+    const parentIds = parentRelations.map(({ url }) => relationId(url));
     const uniqueParentIds = [...new Set(parentIds)];
-    if (uniqueParentIds.length !== 1) throw new Error(`El ticket ${ticket} no tiene una única HU padre directa`);
+    if (uniqueParentIds.length !== 1 || uniqueParentIds[0] === undefined) {
+      throw new Error(`El ticket ${ticket} no tiene una única HU padre directa`);
+    }
     const parentId = uniqueParentIds[0];
     if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
     const parent = await this.readWorkItem(parentId);
@@ -866,7 +872,7 @@ export class AzureTicketInfoService {
       await this.patchWorkItem(item, patch);
     } catch (error) {
       const recovered = await this.readWorkItem(item.id).catch(() => null);
-      if (!recovered || !matches(recovered)) throw error;
+      if (!recovered || workItemRevision(recovered) !== workItemRevision(item) + 1 || !matches(recovered)) throw error;
       return recovered;
     }
     const verified = await this.readWorkItem(item.id);
