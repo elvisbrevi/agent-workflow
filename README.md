@@ -91,11 +91,19 @@ Git or Azure:
 bun run main.ts hu-branch-info --hu 23438
 ```
 
-To assign an existing remote Azure branch to the HU without starting OpenCode:
+To assign an existing remote Azure branch to the HU without starting OpenCode
+(omit `--base-branch` when it already exists):
 
 ```bash
 bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
   --working-directory /path/to/repository
+```
+
+For first use, create and publish the HU branch from an explicit remote base:
+
+```bash
+bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --base-branch main --working-directory /path/to/repository
 ```
 
 See [the agent README](agent/lazy-workflow/README.md) for behavior and
