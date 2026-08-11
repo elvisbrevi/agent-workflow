@@ -127,6 +127,56 @@ test("ticket-info does not infer a canonical PR without native association", asy
   expect(result.gates.unmet).not.toContain("completed-hu-targeted-pr");
 });
 
+test("coordinator creates and verifies one exact HU-targeted pull request", async () => {
+  const commands: string[][] = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    commands.push(args);
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Team" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }, {
+        rel: "ArtifactLink", url: branch, attributes: { name: "Branch" },
+      }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "En progreso" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51" , attributes: { name: "Branch" } },
+      ],
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+      pullRequestId: 99,
+      status: "active",
+      mergeStatus: "notSet",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 99,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "merge-commit" },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.createOrReusePullRequest(23438, 51)).resolves.toEqual({
+    pullRequest: 99,
+    mergeCommit: "merge-commit",
+  });
+  expect(commands.some((args) => args[2] === "create")).toBeTrue();
+  expect(commands.some((args) => args[2] === "update" && args.includes("completed"))).toBeTrue();
+});
+
 test("ticket-info falls back for PR listing and native association without crossing repositories", async () => {
   const commands: string[][] = [];
   const service = new AzureTicketInfoService(async (args) => {

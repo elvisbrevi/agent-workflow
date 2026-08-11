@@ -148,15 +148,17 @@ Omit `--base-branch` when the HU is already linked or the expected remote
 `hu/23438` branch already exists. A branch preflight failure stops once,
 without selecting a ticket, writing a checkpoint, or starting OpenCode.
 
-After `TICKET_COMPLETED`, the coordinator stops OpenCode even if its output
-stream remains open and closes the native provider session with the exact
-opaque session identifier. An already absent session is safe; any other
-closure failure stops the run with the pinned ticket in a sessionless
-checkpoint. A later invocation verifies that ticket without invoking OpenCode,
-switches to the updated HU integration branch, deletes the completed ticket
-branch locally and remotely, clears the checkpoint, and refreshes Azure before
-starting the next eligible ticket. Branch cleanup stops safely when the
-working tree contains uncommitted or untracked changes.
+After `IMPLEMENTATION_READY`, the coordinator closes OpenCode, validates the
+manifest from Git common metadata, creates or reuses exactly one HU-targeted
+pull request, publishes effort and evidence through typed idempotent commands,
+verifies every completion gate, and only then moves the ticket to `Done`.
+An already absent session is safe; any other closure failure stops the run with
+the pinned ticket in a sessionless checkpoint. A later invocation resumes the
+coordinator phase without asking OpenCode to repair Azure metadata, switches to
+the updated HU integration branch, deletes the completed ticket branch locally
+and remotely, clears the checkpoint, and refreshes Azure before starting the
+next eligible ticket. Branch cleanup stops safely when the working tree
+contains uncommitted or untracked changes.
 
 To recover an interrupted ticket, use the opaque session identifier printed by
 OpenCode. The HU and ticket are restored from the repository checkpoint, so no
@@ -188,11 +190,11 @@ invalid `--hu` fails instead of falling back to GitHub.
 
 Autocode stores a versioned checkpoint in repository Git metadata. It records
 the phase, immutable HU/ticket/branch identities, Azure revision, effort
-baseline, active duration, opaque OpenCode session, and verified effect
-receipts. Legacy four-field checkpoints migrate conservatively to
-`implementing`. Failed or incomplete attempts retry the same ticket every ten
-seconds; the terminal marker replaces the session with `null`, and the
-checkpoint is removed only after live completion verification.
+baseline, active duration, opaque OpenCode session, manifest path, pull request,
+and verified effect receipts. Legacy four-field checkpoints migrate
+conservatively to `implementing`. Failed or incomplete attempts retry the same
+ticket every ten seconds; `IMPLEMENTATION_READY` replaces the session with
+`null`, and the checkpoint is removed only after live completion verification.
 
 If sessionless reconciliation finds incomplete Azure completion gates, it
 prints the pinned ticket followed by stable reasons such as
