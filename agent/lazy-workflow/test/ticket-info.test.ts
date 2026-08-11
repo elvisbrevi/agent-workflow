@@ -519,11 +519,12 @@ test("ticket field setters use revision guards, reread their results, and retry 
       effort: { real: 2.25, realHours: 2.5 },
       revision: 7,
     });
-    await expect(service.setEffort(51, 2.25, 2.5, 6)).resolves.toEqual({
+    await expect(service.setEffort(51, 2.25, 2.5, 7)).resolves.toEqual({
       ticket: 51,
       effort: { real: 2.25, realHours: 2.5 },
       revision: 7,
     });
+    await expect(service.setEffort(51, 2.25, 2.5, 6)).rejects.toThrow("revision");
     await expect(service.setEffort(51, 3, 3, 4)).rejects.toThrow("revision");
   } finally {
     await unlink(descriptionPath);
@@ -559,6 +560,53 @@ test("ticket state setter rejects stale and unsupported transitions before Azure
 
   await expect(service.setState(51, "Done", "New")).rejects.toThrow("estado actual");
   await expect(service.setState(51, "Unknown", "Active")).rejects.toThrow("no soportado");
+});
+
+test("ticket state setter reconciles a patch that applied before its response was lost", async () => {
+  let state = "Active";
+  let revision = 4;
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: revision,
+      fields: { "System.WorkItemType": "Task", "System.State": state },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    if (args[0] === "rest" && args.includes("patch")) {
+      state = "En progreso";
+      revision = 5;
+      throw new Error("response lost after Azure applied patch");
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.setState(51, "En progreso", "Active")).resolves.toEqual({
+    ticket: 51,
+    state: "En progreso",
+    revision: 5,
+  });
+});
+
+test("ticket mutations reject a non-HU or ambiguous direct parent", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23439" },
+      ],
+    });
+    return JSON.stringify({ id: 23438, fields: { "System.WorkItemType": "User Story" }, relations: [] });
+  });
+
+  await expect(service.setState(51, "En progreso", "Active")).rejects.toThrow("única HU");
 });
 
 test("ticket field mutation commands validate their explicit contracts", async () => {
