@@ -141,8 +141,9 @@ async function show(id: number, expandRelations: boolean, az: AzRunner): Promise
     ...(expandRelations ? ["--expand", "relations"] : []),
     "--output", "json",
   ];
-  const output = await az(args);
-  return JSON.parse(output) as WorkItem;
+  const payload = JSON.parse(await az(args)) as WorkItem;
+  if (payload.id !== id) throw new Error(`Respuesta de work item malformada: no coincide con el ID solicitado ${id}`);
+  return payload;
 }
 
 function relationId(url: string | undefined): number | undefined {
@@ -470,12 +471,16 @@ export class AzureAutocodeService implements AutocodeAzureService {
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se vinculará la rama del ticket");
     }
 
-    if (!linked) {
+    const verifyRemoteBranches = async (): Promise<void> => {
       const currentIntegrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
       const currentTicketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
       if (currentIntegrationSha !== integrationSha || currentTicketSha !== integrationSha) {
         throw new Error(`Las ramas remotas cambiaron antes de vincular ${normalized.ref}`);
       }
+    };
+
+    if (!linked) {
+      await verifyRemoteBranches();
       const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
       const patch = [
         { op: "test", path: "/rev", value: revision },
@@ -495,6 +500,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       ]);
     }
 
+    await verifyRemoteBranches();
     const verified = await this.getBranch(hu, ticket);
     if (verified.branch !== normalized.ref) throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
     return { hu, ticket, branch: normalized.ref };
@@ -756,6 +762,7 @@ function normalizeBranch(value: string): { ref: string; name: string } {
   const prefix = "refs/heads/";
   if (input.startsWith("refs/") && !input.startsWith(prefix)) throw new Error(`Rama no válida: ${value}`);
   const name = input.startsWith(prefix) ? input.slice(prefix.length) : input;
+  const parts = name.split("/");
   if (
     name === "HEAD"
     || !name
@@ -764,6 +771,8 @@ function normalizeBranch(value: string): { ref: string; name: string } {
     || name.includes("//")
     || name.startsWith("/")
     || name.endsWith("/")
+    || name.includes("@{")
+    || parts.some((part) => part === "." || part === ".." || part.startsWith(".") || part.endsWith(".") || part.toLowerCase().endsWith(".lock"))
   ) throw new Error(`Rama no válida: ${value}`);
   return { ref: `${prefix}${name}`, name };
 }
