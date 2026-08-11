@@ -1878,3 +1878,87 @@ test("code versionado persiste fases y prepara estado y rama antes de OpenCode",
   expect(checkpoints.at(-1)?.receipts).toEqual(["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch"]);
   expect(checkpoints.at(-1)?.activeDurationMs).toBe(400);
 });
+
+test("code versionado conserva el marcador al reanudar una sesion fijada", async () => {
+  const context: AutocodeContext = {
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" },
+    integrationBranch: "refs/heads/hu/23438",
+  };
+  const markers: string[] = [];
+  const checkpoint = {
+    schemaVersion: 2 as const,
+    workflow: "autocode" as const,
+    phase: "implementing" as const,
+    hu: 23438,
+    ticket: 51,
+    integrationBranch: context.integrationBranch,
+    ticketBranch: "refs/heads/ticket/51",
+    azureRevision: 7,
+    effortBaseline: { real: 1, realHours: 1 },
+    activeDurationMs: 0,
+    activeSince: null,
+    sessionId: "ses-51",
+    receipts: {
+      "ticket-state": { verifiedAt: "now" },
+      "ticket-branch": { verifiedAt: "now" },
+    },
+  };
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => context.integrationBranch,
+      getAutocodeContextForTicket: async () => context,
+      getState: async () => ({ ticket: 51, state: "En progreso", revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async () => undefined,
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: checkpoint.ticketBranch, integrationBranch: context.integrationBranch }),
+      setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: checkpoint.ticketBranch }),
+      verifyTicketCompletion: async () => ({ ticketBranch: checkpoint.ticketBranch }),
+    },
+    {
+      run: async () => { throw new Error("must resume"); },
+      resume: async (_session, _prompt, _directory, marker) => { markers.push(marker ?? ""); return result; },
+    },
+    { read: async () => checkpoint, write: async () => undefined, clear: async () => undefined },
+    undefined,
+    { deleteTicketBranch: async () => undefined },
+  ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(markers).toEqual(["TICKET_COMPLETED"]);
+});
+
+test("code versionado no reintenta OpenCode si falla la limpieza tras el marcador", async () => {
+  let runs = 0;
+  let waits = 0;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+  }));
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true }),
+      getState: async () => ({ ticket: 51, state: "Active", revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async () => undefined,
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
+      verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
+    },
+    { run: async () => { runs += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
+    { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    { wait: async () => { waits += 1; } },
+    { deleteTicketBranch: async () => { throw new Error("worktree sucio"); } },
+  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(runs).toBe(1);
+  expect(waits).toBe(0);
+});
