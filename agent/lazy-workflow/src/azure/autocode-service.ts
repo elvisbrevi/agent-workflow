@@ -1,6 +1,6 @@
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
-import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   AzureTicketInfoService,
   runAzureCommand,
@@ -79,6 +79,7 @@ export interface AutocodeAzureService {
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
   setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
+  pushTicketBranch(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -584,6 +585,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const verified = await this.getBranch(hu, ticket);
     if (verified.branch !== normalized.ref) throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
     return { hu, ticket, branch: normalized.ref };
+  }
+
+  pushTicketBranch(branch: string, workingDirectory: string): Promise<void> {
+    return pushGitBranch(this.git, branch, workingDirectory);
   }
 
   async ensureIntegrationBranch(

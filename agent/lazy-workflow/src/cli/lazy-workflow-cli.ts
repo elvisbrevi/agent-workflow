@@ -51,6 +51,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
+  pushTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -721,6 +722,23 @@ export class LazyWorkflowCli {
     return { hu: options.hu, ticket: options.ticket, pullRequest: options.pullRequest, manifest: options.manifest, state: "Done", gates: info.gates };
   }
 
+  private async validateReadyManifest(
+    hu: number,
+    ticket: number,
+    manifestPath: string,
+    workingDirectory: string,
+  ): Promise<CompletionManifest> {
+    if (!this.huInfoService.validateDirectTicketContext || !this.huInfoService.getTicketInfo
+      || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
+      throw new Error("El servicio Azure no soporta la validación del manifest de implementación");
+    }
+    await this.huInfoService.validateDirectTicketContext(hu, ticket);
+    const info = await this.huInfoService.getTicketInfo(hu, ticket);
+    const manifest = await this.huInfoService.readCompletionManifest(manifestPath, workingDirectory);
+    await this.huInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+    return manifest;
+  }
+
   private supportsVersionedLifecycle(): boolean {
     return Boolean(
       this.huInfoService.getState
@@ -846,7 +864,7 @@ export class LazyWorkflowCli {
     }
 
     if (checkpoint.ticket !== null && checkpoint.sessionId === null && checkpoint.manifestPath
-      && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
+      && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
       && this.huInfoService.getAutocodeContextForTicket && checkpoint.ticketBranch) {
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
       if (!context) {
@@ -854,10 +872,22 @@ export class LazyWorkflowCli {
         return 1;
       }
       try {
+        const manifest = await this.validateReadyManifest(hu, checkpoint.ticket, checkpoint.manifestPath, options.workingDirectory);
+        checkpoint = {
+          ...checkpoint,
+          localCommit: manifest.commit,
+          manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
+        };
+        await save();
+        if (!checkpoint.receipts["ticket-branch-push"]) {
+          await this.huInfoService.pushTicketBranch(checkpoint.ticketBranch, options.workingDirectory);
+          checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch-push": { verifiedAt: new Date(now()).toISOString() } } };
+          await save();
+        }
         const pullRequest = checkpoint.pullRequest
           ? { pullRequest: checkpoint.pullRequest, mergeCommit: null }
           : await this.huInfoService.createOrReusePullRequest(hu, checkpoint.ticket);
-        checkpoint = { ...checkpoint, phase: "integrating", pullRequest: pullRequest.pullRequest };
+        checkpoint = { ...checkpoint, phase: "integrating", pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
         await save();
         if (!checkpoint.receipts["ticket-effort"]) {
           const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket) : { revision: checkpoint.azureRevision };
@@ -994,15 +1024,27 @@ export class LazyWorkflowCli {
           continue;
         }
         if (terminal) {
-          if (manifestPath && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
+          if (manifestPath && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
             try {
+              const manifest = await this.validateReadyManifest(hu, ticket, manifestPath, options.workingDirectory);
+              checkpoint = {
+                ...checkpoint,
+                localCommit: manifest.commit,
+                manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
+              };
+              await save();
               await markPhase("implementation-ready", { manifestPath, sessionId: null });
+              await track(
+                "ticket-branch-push",
+                () => this.huInfoService!.pushTicketBranch!(ticketBranch!, options.workingDirectory),
+                ticketBranch,
+              );
               const pullRequest = await track(
                 "pull-request",
                 () => this.huInfoService!.createOrReusePullRequest!(hu, ticket),
                 `${ticket}`,
               );
-              checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest };
+              checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
               await markPhase("integrating", { pullRequest: pullRequest.pullRequest });
 
               const currentState = await this.huInfoService.getState!(ticket);
@@ -1018,6 +1060,7 @@ export class LazyWorkflowCli {
               }
 
               await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
+              await markPhase("completing", { pullRequest: pullRequest.pullRequest });
               await track(
                 "ticket-completion",
                 () => this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath }).then(() => undefined),

@@ -1933,6 +1933,7 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       setState: async (_ticket, desiredState) => { events.push("state"); state = desiredState; },
       getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
       setTicketBranch: async () => { events.push("ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
+      pushTicketBranch: async () => { events.push("push"); },
       getCompletionManifestPath: async () => "/tmp/completion.json",
       createOrReusePullRequest: async () => { events.push("pr"); return { pullRequest: 99, mergeCommit: "merge" }; },
       setEffort: async () => { events.push("effort"); return undefined; },
@@ -1954,7 +1955,7 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
   await expect(code).resolves.toBe(0);
-  expect(events).toEqual(["ticket-branch", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear"]);
+  expect(events).toEqual(["ticket-branch", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear"]);
   expect(infoReads).toBeGreaterThan(1);
 });
 
