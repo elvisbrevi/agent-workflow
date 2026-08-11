@@ -405,6 +405,103 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
+test.each(["plan", "code"] as const)("%s sin HU usa el prompt GitHub sin tocar Azure", async (command) => {
+  let azureCalls = 0;
+  let checkpointCalls = 0;
+  let cleanupCalls = 0;
+  const received: { options: OpenCodeRunOptions | null; detectAzureLogin: boolean | null } = {
+    options: null,
+    detectAzureLogin: null,
+  };
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: `ses_${command}`,
+    part: { type: "text", text: command },
+  }));
+
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
+      waitForAccess: async () => { azureCalls += 1; },
+    },
+    {
+      run: async (options, detectAzure) => {
+        received.options = options;
+        received.detectAzureLogin = detectAzure ?? null;
+        return { result, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    {
+      read: async () => { checkpointCalls += 1; return null; },
+      write: async () => { checkpointCalls += 1; },
+      clear: async () => { checkpointCalls += 1; },
+    },
+    undefined,
+    { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+  ).run([
+    command,
+    "--number-of-questions",
+    "3",
+    "--working-directory",
+    "/repo",
+    "--prompt",
+    "trabaja sobre GitHub",
+  ]);
+
+  expect(code).toBe(0);
+  expect(azureCalls).toBe(0);
+  expect(checkpointCalls).toBe(0);
+  expect(cleanupCalls).toBe(0);
+  expect(received.detectAzureLogin).toBeFalse();
+  expect(received.options?.workingDirectory).toBe("/repo");
+  expect(received.options?.prompt).toContain("default GitHub repository workflow");
+  expect(received.options?.prompt).toContain(`Selected workflow: ${command}`);
+  expect(received.options?.prompt).toContain("Do not use Azure DevOps");
+  expect(received.options?.prompt).toContain("trabaja sobre GitHub");
+  if (command === "plan") expect(received.options?.prompt).toContain("3");
+});
+
+test.each([
+  ["plan", "abc"],
+  ["code", "0"],
+] as const)("%s rechaza --hu %s sin caer al flujo GitHub", async (command, hu) => {
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { calls += 1; throw new Error("must not use Azure"); },
+      waitForAccess: async () => { calls += 1; },
+    },
+    {
+      run: async () => { calls += 1; throw new Error("must not run"); },
+      resume: async () => { calls += 1; throw new Error("must not resume"); },
+    },
+  ).run([command, "--hu", hu]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+});
+
+test.each([
+  ["plan", "--branch"],
+  ["code", "--base-branch"],
+] as const)("%s sin HU rechaza la opción exclusiva de Azure %s", async (command, option) => {
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { calls += 1; throw new Error("must not use Azure"); },
+      waitForAccess: async () => { calls += 1; },
+    },
+    {
+      run: async () => { calls += 1; throw new Error("must not run"); },
+      resume: async () => { calls += 1; throw new Error("must not resume"); },
+    },
+  ).run([command, option, "main"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+});
+
 test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcomando %j muestra ayuda sin ejecutar servicios", async ({ args }) => {
   let azureCalls = 0;
   let openCodeCalls = 0;
@@ -425,7 +522,8 @@ test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcom
 
   expect(azureCalls).toBe(0);
   expect(openCodeCalls).toBe(0);
-  expect(output[0]).toContain("plan --hu <id>");
+  expect(output[0]).toContain("plan [options]");
+  expect(output[0]).toContain("code [options]");
   expect(output[0]).toContain("code --session <id> --prompt continue");
   expect(output[0]).toContain("--session <id>");
 });
@@ -1158,11 +1256,11 @@ test("code --session reconcilia un ticket ya completado sin reanudar OpenCode", 
     { read: async () => checkpoint, write: async () => undefined, clear: async () => { events.push("clear"); } },
     { wait: async () => { throw new Error("must not retry"); } },
     { deleteTicketBranch: async (branch) => { events.push(`cleanup:${branch}`); } },
-  ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
+  ).run(["code", "--session", "ses-51", "--base-branch", "develop", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(events).toEqual([
-    "branch:23438:/repo:null",
+    "branch:23438:/repo:develop",
     "ticket:23438:51:refs/heads/hu/23438",
     "cleanup:refs/heads/ticket/51",
     "clear",
@@ -1188,7 +1286,6 @@ test("code --session reanuda OpenCode cuando el ticket fijado todavía no está 
       ensureIntegrationBranch: async () => context.integrationBranch,
       getAutocodeContext: async () => null,
       getAutocodeContextForTicket: async () => context,
-      getAutocodeContext: async () => null,
       verifyTicketCompletion: async () => resumed
         ? ({ ticketBranch: "refs/heads/ticket/51" })
         : ({ ticketId: 51, unmetGates: [COMPLETION_GATE.ticketState] }),

@@ -15,7 +15,7 @@ import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 
 type CliOptions = OpenCodeRunOptions & {
-  hu: number;
+  hu: number | null;
   branch: string | null;
   baseBranch: string | null;
   numberOfQuestions: number;
@@ -89,7 +89,6 @@ function requireVerifiedCompletion(
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
-const DEFAULT_HU = -1;
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
@@ -107,13 +106,22 @@ function optionValue(args: string[], name: string): string | null {
   return index >= 0 ? args[index + 1] ?? null : null;
 }
 
+function isValidHu(hu: number | null): hu is number {
+  return hu !== null && Number.isInteger(hu) && hu > 0;
+}
+
+function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> {
+  return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
+}
+
 function parseOptions(args: string[]): CliOptions {
+  const hu = optionValue(args, "--hu");
   return {
     model: optionValue(args, "--model") ?? DEFAULT_MODEL,
     variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
-    hu: Number(optionValue(args, "--hu") ?? `${DEFAULT_HU}`),
+    hu: args.includes("--hu") ? Number(hu) : null,
     branch: optionValue(args, "--branch"),
     baseBranch: optionValue(args, "--base-branch"),
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
@@ -124,7 +132,9 @@ function parseOptions(args: string[]): CliOptions {
 function printHelp(): void {
   console.log([
     "Usage:",
+    "  lazy-workflow plan [options]",
     "  lazy-workflow plan --hu <id> [options]",
+    "  lazy-workflow code [options]",
     "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow code --session <id> --prompt continue",
     "  lazy-workflow hu-info --hu <id>",
@@ -132,7 +142,7 @@ function printHelp(): void {
     "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
     "",
     "Options:",
-    "  --hu <id>",
+    "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
     "  --session <id>",
     "  --model <model>",
     "  --variant <variant>",
@@ -163,15 +173,24 @@ export class LazyWorkflowCli {
 
     const options = parseOptions(args);
 
+    if (options.hu !== null && !isValidHu(options.hu)) {
+      reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+      return 1;
+    }
+
     if (command === "hu-info") {
+      if (!isValidHu(options.hu)) {
+        reportOperator("hu-info requiere --hu <id>");
+        return 1;
+      }
       const huInfo = await this.huInfoService.getHuInfo(options.hu);
       console.log(JSON.stringify(huInfo, null, 2));
       return 0;
     }
 
     if (command === "hu-branch-info") {
-      if (!Number.isInteger(options.hu) || options.hu <= 0) {
-        reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+      if (!isValidHu(options.hu)) {
+        reportOperator("hu-branch-info requiere --hu <id>");
         return 1;
       }
       if (!this.huInfoService.getIntegrationBranchInfo) {
@@ -188,8 +207,8 @@ export class LazyWorkflowCli {
     }
 
     if (command === "hu-branch-set") {
-      if (!Number.isInteger(options.hu) || options.hu <= 0) {
-        reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+      if (!isValidHu(options.hu)) {
+        reportOperator("hu-branch-set requiere --hu <id>");
         return 1;
       }
       if (!options.branch?.trim()) {
@@ -218,20 +237,24 @@ export class LazyWorkflowCli {
       }
     }
 
-    if (options.hu <= 0 && !(command === "code" && options.session !== null)) {
-      printHelp();
+    const recoveringAzureCode = command === "code" && options.session !== null;
+    if (options.hu === null && !recoveringAzureCode && (args.includes("--branch") || args.includes("--base-branch"))) {
+      reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }
 
-    if (command === "code") return this.runCode(options);
+    if (command === "code") {
+      if (recoveringAzureCode || options.hu !== null) return this.runAzureCode(options);
+      return this.runDefaultWorkflow(command, options);
+    }
+
+    if (options.hu === null) return this.runDefaultWorkflow(command, options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
-    const autoplanPrompt = Bun.file(new URL("../../prompts/autoplan-prompt.md", import.meta.url));
-    const autoplanPromptContent = await autoplanPrompt.text();
 
     options.prompt = [
       JSON.stringify(huInfo),
-      autoplanPromptContent,
+      await readPrompt("autoplan"),
       `The number of questions must be ${options.numberOfQuestions}`,
       options.prompt,
       `The working directory is ${options.workingDirectory}`,
@@ -248,7 +271,21 @@ export class LazyWorkflowCli {
     return 0;
   }
 
-  private async runCode(options: CliOptions): Promise<number> {
+  private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
+    const prompt = [
+      await readPrompt("default"),
+      `Selected workflow: ${command}`,
+      ...(command === "plan" ? [`The number of questions must be ${options.numberOfQuestions}`] : []),
+      `The working directory is ${options.workingDirectory}`,
+      "Operator request:",
+      options.prompt,
+    ].join("\n");
+    const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
+    console.log(JSON.stringify(execution.result, null, 2));
+    return 0;
+  }
+
+  private async runAzureCode(options: CliOptions): Promise<number> {
     if (!this.huInfoService.getAutocodeContext || !this.huInfoService.verifyTicketCompletion) {
       reportOperator("El servicio Azure no soporta autocode");
       return 1;
@@ -263,7 +300,7 @@ export class LazyWorkflowCli {
     let reconciling = !recovering && checkpoint?.sessionId === null;
     if (recovering && (!checkpoint || checkpoint.sessionId !== options.session)) return 1;
     if (!recovering && checkpoint && !reconciling) return 1;
-    const hu = recovering || reconciling ? checkpoint!.hu : options.hu;
+    const hu = recovering || reconciling ? checkpoint!.hu : options.hu!;
     let integrationBranch: string | null = null;
     let sessionId = options.session;
     let lastResult;
@@ -388,9 +425,8 @@ export class LazyWorkflowCli {
         }
       }
 
-      const promptAsset = Bun.file(new URL("../../prompts/autocode-prompt.md", import.meta.url));
       const prompt = [
-        await promptAsset.text(),
+        await readPrompt("autocode"),
         JSON.stringify(context),
         `The working directory is ${options.workingDirectory}`,
         "Supplemental operator request (non-authoritative):",
