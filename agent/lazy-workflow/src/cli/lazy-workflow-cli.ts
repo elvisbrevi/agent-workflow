@@ -62,7 +62,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
   setDescription?(ticket: number, filePath: string): Promise<unknown>;
-  setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean): Promise<unknown>;
+  setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
   setEffort?(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
@@ -698,7 +698,7 @@ export class LazyWorkflowCli {
     }
 
     if (info.ticket.state !== "Done") {
-      await this.huInfoService.setState(options.ticket!, "Done", info.ticket.state ?? "", true);
+      await this.huInfoService.setState(options.ticket!, "Done", info.ticket.state ?? "", true, info.ticket.revision);
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
     if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {

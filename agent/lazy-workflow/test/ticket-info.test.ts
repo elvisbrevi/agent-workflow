@@ -879,7 +879,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
 
     await expect(new LazyWorkflowCli(service).run([
       "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
-      "--manifest", manifestPath, "--working-directory", "/repo",
+      "--manifest", manifestPath, "--working-directory", process.cwd(),
     ])).resolves.toBe(0);
     expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
   } finally {

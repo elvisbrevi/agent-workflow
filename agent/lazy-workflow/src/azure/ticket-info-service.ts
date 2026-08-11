@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import { relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
@@ -383,11 +384,9 @@ export class AzureTicketInfoService {
     const forward = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     );
-    const reverse = (item.relations ?? [])
-      .filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")
-      .map(({ url }) => relationId(url))
-      .filter((id): id is number => id !== undefined);
-    if (!forward || reverse.length !== 1 || reverse[0] !== hu) {
+    const reverseRelations = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
+    const reverse = reverseRelations.map(({ url }) => relationId(url));
+    if (reverse.some((id) => id === undefined) || !forward || reverse.length !== 1 || reverse[0] !== hu) {
       throw new Error(`El ticket ${ticket} no tiene una relación directa única con la HU ${hu}`);
     }
   }
@@ -568,6 +567,7 @@ export class AzureTicketInfoService {
     desiredState: string,
     expectedState: string,
     allowCompletion = false,
+    expectedRevision?: number,
   ): Promise<{ ticket: number; state: string; revision: number }> {
     positiveId(ticket, "El ticket");
     validateState(desiredState, "El estado deseado");
@@ -579,6 +579,9 @@ export class AzureTicketInfoService {
       throw new Error(`El estado actual del ticket ${ticket} (${currentState ?? "null"}) no coincide con el estado esperado ${expectedState}`);
     }
     const revision = workItemRevision(item);
+    if (expectedRevision !== undefined && revision !== expectedRevision) {
+      throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
+    }
     if (currentState === desiredState) return { ticket, state: desiredState, revision };
     if (desiredState === "Done" && !allowCompletion) {
       throw new Error("El estado Done solo puede aplicarse después de verificar los gates de cierre");
@@ -597,8 +600,8 @@ export class AzureTicketInfoService {
   }
 
   async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
-    const commonDirectory = resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim());
-    const manifestPath = resolve(path);
+    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
+    const manifestPath = await realpath(resolve(path));
     const manifestRelativePath = relative(commonDirectory, manifestPath);
     if (!manifestRelativePath || (manifestRelativePath !== ".." && manifestRelativePath.startsWith(`..${sep}`))) {
       throw new Error("El manifest de completion debe estar bajo el directorio Git común");
@@ -653,10 +656,10 @@ export class AzureTicketInfoService {
       throw new Error("La rama activa no coincide con la rama del manifest");
     }
 
-    const root = resolve(workingDirectory);
+    const root = await realpath(workingDirectory);
     const seen = new Set<string>();
     for (const evidence of manifest.evidence) {
-      const path = resolve(evidence.path);
+      const path = await realpath(resolve(evidence.path));
       const relativePath = relative(root, path);
       if (!relativePath || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`))) {
         throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
