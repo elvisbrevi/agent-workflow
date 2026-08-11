@@ -527,6 +527,7 @@ test("ticket field setters use revision guards, reread their results, and retry 
     await expect(service.setEffort(51, 2.25, 2.5, 5)).rejects.toThrow("revision");
     await expect(service.setEffort(51, 3, 3, 4)).rejects.toThrow("revision");
     await expect(service.setEffort(51, 2, 2, 7)).rejects.toThrow("no puede disminuir");
+    await expect(service.setEffort(51, 2.1, 2.25, 7)).rejects.toThrow("0.25");
   } finally {
     await unlink(descriptionPath);
   }
