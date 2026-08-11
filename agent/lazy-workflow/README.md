@@ -93,6 +93,8 @@ bun run main.ts ticket-effort-info --ticket 23459
 bun run main.ts ticket-attachment-info --ticket 23459
 bun run main.ts ticket-evidence-info --ticket 23459
 bun run main.ts ticket-branch-info --hu 23438 --ticket 23459
+bun run main.ts ticket-branch-set --hu 23438 --ticket 23459 \
+  --branch ticket/23459 --working-directory /path/to/repository
 bun run main.ts ticket-pr-info --hu 23438 --ticket 23459
 bun run main.ts ticket-completion-info --hu 23438 --ticket 23459
 ```
