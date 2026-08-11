@@ -784,7 +784,8 @@ test("completion apply reconciles missing effects before moving the ticket to Do
   try {
     const base = new class extends AzureTicketInfoService {
       constructor() {
-        super(async () => "", async (args) => args[0] === "rev-parse" ? commit : "ticket/51\n");
+        super(async () => "", async (args) =>
+          args[0] === "rev-parse" ? commit : args[0] === "status" ? "" : "ticket/51\n");
       }
 
       override async getTicketInfo(): Promise<any> {

@@ -636,6 +636,15 @@ export class LazyWorkflowCli {
     const manifest = await this.huInfoService.readCompletionManifest(options.manifest!);
     await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
 
+    const unreconcilableGates = info.gates.unmet.filter((gate) =>
+      gate === COMPLETION_GATE.realEffort
+      || gate === COMPLETION_GATE.realEffortHours
+      || gate === COMPLETION_GATE.commitUrl
+    );
+    if (unreconcilableGates.length > 0) {
+      throw new Error(`No se puede completar el ticket ${options.ticket}; faltan datos previos: ${unreconcilableGates.join(", ")}`);
+    }
+
     if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== options.pullRequest) {
       throw new Error(`El ticket ${options.ticket} ya tiene otro PR canónico asociado: ${info.canonicalPullRequest}`);
     }
@@ -657,11 +666,12 @@ export class LazyWorkflowCli {
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
-    if (!info.completionEvidence) {
-      const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
-      if (!textEvidence) throw new Error("El manifest no contiene evidencia textual para completion-evidence");
+    const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
+    if (textEvidence) {
       await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
+    } else if (!info.completionEvidence) {
+      throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
 
     const unmetBeforeDone = info.gates.unmet.filter((gate) => gate !== COMPLETION_GATE.ticketState);
