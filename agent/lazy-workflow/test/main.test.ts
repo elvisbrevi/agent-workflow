@@ -990,6 +990,9 @@ test("code reintenta el mismo checkpoint tras corregir Azure y limpia una sola v
     write: async () => undefined,
     clear: async () => { checkpointCleared = true; },
   };
+  const messages: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => messages.push(values.join(" "));
   const services = {
     getHuInfo: async () => new HuInfo({ id: 23438 }),
     waitForAccess: async () => undefined,
@@ -1013,12 +1016,17 @@ test("code reintenta el mismo checkpoint tras corregir Azure y limpia una sola v
     { deleteTicketBranch: async () => { cleanupCalls += 1; } },
   );
 
-  expect(await cli.run(["code", "--hu", "23438"])).toBe(1);
-  expect(checkpointCleared).toBeFalse();
-  expect(await cli.run(["code", "--hu", "23438"])).toBe(0);
-  expect(checkpointCleared).toBeTrue();
-  expect(openCodeCalls).toBe(0);
-  expect(cleanupCalls).toBe(1);
+  try {
+    expect(await cli.run(["code", "--hu", "23438"])).toBe(1);
+    expect(checkpointCleared).toBeFalse();
+    expect(await cli.run(["code", "--hu", "23438"])).toBe(0);
+    expect(checkpointCleared).toBeTrue();
+    expect(openCodeCalls).toBe(0);
+    expect(cleanupCalls).toBe(1);
+  } finally {
+    console.error = originalError;
+  }
+  expect(messages.join("\n")).toContain("completion-evidence");
 });
 
 test("code mantiene un error Azure como error operativo durante la verificacion", async () => {
@@ -1042,7 +1050,7 @@ test("code mantiene un error Azure como error operativo durante la verificacion"
           ticket: { id: 51, type: "Task" },
           integrationBranch: "refs/heads/hu/23438",
         }),
-        verifyTicketCompletion: async () => { throw new Error("az boards fallo"); },
+        verifyTicketCompletion: async () => { throw new Error('{"accessToken":"secret"}'); },
       },
       { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
       emptyCheckpointStore(),
@@ -1055,6 +1063,7 @@ test("code mantiene un error Azure como error operativo durante la verificacion"
 
   expect(messages.join("\n")).toContain("Azure no respondió durante la verificación");
   expect(messages.join("\n")).not.toContain("no cumple los gates");
+  expect(messages.join("\n")).not.toContain("secret");
 });
 
 test("code passes the operator prompt to OpenCode, not to the Azure boundary", async () => {

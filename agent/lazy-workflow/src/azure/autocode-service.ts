@@ -349,6 +349,6 @@ async function runAz(args: string[]): Promise<string> {
   try {
     return await $`az ${args}`.text();
   } catch (error) {
-    throw new Error(`az ${args.join(" ")} fallo: ${commandError(error)}`, { cause: error });
+    throw new Error("Azure command failed", { cause: error });
   }
 }

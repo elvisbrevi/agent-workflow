@@ -352,7 +352,7 @@ export class LazyWorkflowCli {
           }
         } catch (error) {
           if (verifyingCompletion) {
-            reportOperator(`lazy-workflow: Azure no respondió durante la verificación (${errorMessage(error)}); checkpoint sessionless conservado.`);
+            reportOperator("lazy-workflow: Azure no respondió durante la verificación; checkpoint sessionless conservado.");
             return 1;
           }
           if (error instanceof OpenCodeSessionCloseError) {
