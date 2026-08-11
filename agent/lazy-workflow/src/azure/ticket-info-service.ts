@@ -256,6 +256,17 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
   }
 }
 
+function validateScreenEvidence(name: string, bytes: Uint8Array): void {
+  const lowerName = name.toLowerCase();
+  const png = lowerName.endsWith(".png") && bytes.length >= 8 && bytes.slice(0, 8).every((byte, index) => byte === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]);
+  const jpeg = (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg"))
+    && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const webp = lowerName.endsWith(".webp")
+    && new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF"
+    && new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP";
+  if (!png && !jpeg && !webp) throw new Error("La evidencia screen debe ser una captura PNG, JPEG o WebP válida");
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
@@ -473,7 +484,7 @@ export class AzureTicketInfoService {
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integración de su HU`);
     }
-    const pullRequest = await this.readPullRequest(pullRequestId);
+    const pullRequest = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
     const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository, ticketBranch.ref);
     const validCandidates = candidates.filter((candidate) =>
@@ -526,7 +537,9 @@ export class AzureTicketInfoService {
       throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (kind !== "screen") {
+    if (kind === "screen") {
+      validateScreenEvidence(name, bytes);
+    } else {
       const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       validateEvidenceContent(content, kind);
     }
@@ -534,7 +547,12 @@ export class AzureTicketInfoService {
     const existing = (item.relations ?? [])
       .filter(({ rel }) => rel === "AttachedFile")
       .find(({ attributes }) => attributes?.digest === digest);
-    if (existing?.url) return { ticket, name: existing.attributes?.name ?? name, kind, digest, url: existing.url };
+    if (existing?.url) {
+      if (existing.attributes?.comment && existing.attributes.comment !== kind) {
+        throw new Error(`El digest ${digest} ya está asociado a otra clase de evidencia`);
+      }
+      return { ticket, name: existing.attributes?.name ?? name, kind, digest, url: existing.url };
+    }
 
     const upload = await this.uploadAttachment(name, filePath);
     const current = await this.readWorkItem(ticket);
@@ -664,6 +682,13 @@ export class AzureTicketInfoService {
     } catch (error) {
       if (!repository) throw commandError(error);
       if (!project) throw commandError(error);
+      const alreadyLinked = await this.isPullRequestLinked({
+        id,
+        projectId: project,
+        repositoryId: repository,
+        associated: false,
+      }, ticket).catch(() => false);
+      if (alreadyLinked) return;
       const artifactUrl = `vstfs:///Git/PullRequestId/${encodeURIComponent(`${project}/${repository}/${id}`)}`;
       try {
         await this.patchWorkItem(item, [
