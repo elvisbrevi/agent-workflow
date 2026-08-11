@@ -35,6 +35,8 @@ lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/re
 lazy-workflow hu-info --hu 23438
 lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 --working-directory /path/to/repository
+lazy-workflow ticket-info --hu 23438 --ticket 23459
+lazy-workflow ticket-state-info --ticket 23459
 ```
 
 ## Skills
@@ -73,6 +75,12 @@ Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
 tools. `code` drains all eligible GitHub issues one per fresh OpenCode session
 and stops when the queue is empty. Add `--hu <ID>` to select the existing Azure
 planning or delivery workflow.
+
+Azure delivery tickets can be inspected without starting OpenCode. Use
+`ticket-info --hu <HU> --ticket <ticket>` for the aggregate normalized record,
+or focused description, state, effort, attachment, and evidence commands with
+`--ticket`. Branch, pull-request, and completion reads also require `--hu` so
+the direct delivery relationship and integration branch are validated.
 
 To drain the HU's direct delivery tickets one at a time:
 
