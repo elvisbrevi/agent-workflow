@@ -237,7 +237,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     private readonly az: AzRunner = runAzureCommand,
     private readonly git: GitRunner = runGit,
   ) {
-    this.ticketInfoService = new AzureTicketInfoService(az);
+    this.ticketInfoService = new AzureTicketInfoService(az, git);
   }
 
   async getHuInfo(hu: number): Promise<HuInfo> {
