@@ -16,6 +16,11 @@ User Story, combines that data with the English autoplan prompt, and starts
 OpenCode in the selected working directory.
 _Avoid_: Azure ticket delivery run
 
+A fresh **Azure ticket delivery run** first queries the HU's native integration
+branch and verifies or provisions `hu/<HU>` through structured
+`--base-branch <name>` input before selecting a ticket, writing a checkpoint, or
+starting OpenCode. The operator prompt is not a branch-management interface.
+
 **Azure ticket delivery run**:
 A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
 direct Task or Bug per fresh OpenCode session, verifies completion, removes the

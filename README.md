@@ -28,7 +28,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
-lazy-workflow code --hu 23438 --working-directory /path/to/repository
+lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
 lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 --working-directory /path/to/repository
@@ -69,7 +69,7 @@ bun run main.ts plan --hu 23438 --working-directory /path/to/repository
 To drain the HU's direct delivery tickets one at a time:
 
 ```bash
-bun run main.ts code --hu 23438 --working-directory /path/to/repository
+bun run main.ts code --hu 23438 --base-branch main --working-directory /path/to/repository
 ```
 
 To recover the exact interrupted ticket from its repository checkpoint:
