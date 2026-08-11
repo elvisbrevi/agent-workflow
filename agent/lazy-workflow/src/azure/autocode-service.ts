@@ -67,7 +67,7 @@ export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
   setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
-  ensureIntegrationBranch(hu: number): Promise<string | null>;
+  ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -322,9 +322,16 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return { hu, branch: normalized.ref };
   }
 
-  async ensureIntegrationBranch(hu: number): Promise<string | null> {
-    const parent = await show(hu, true, this.az);
-    return integrationBranchFrom(parent) ?? `refs/heads/hu/${hu}`;
+  async ensureIntegrationBranch(
+    hu: number,
+    workingDirectory: string,
+    baseBranch?: string | null,
+  ): Promise<string | null> {
+    const linked = await this.getIntegrationBranchInfo(hu);
+    if (linked.branch) {
+      return (await this.setIntegrationBranch(hu, linked.branch, workingDirectory)).branch;
+    }
+    return (await this.setIntegrationBranch(hu, `refs/heads/hu/${hu}`, workingDirectory, baseBranch)).branch;
   }
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {

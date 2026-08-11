@@ -30,27 +30,6 @@ test("las salidas operativas incluyen fecha y hora local con segundos", () => {
   ].join("\n"));
 });
 
-test("Azure usa el vínculo Branch nativo de la HU como rama de integración", async () => {
-  const commands: string[][] = [];
-  const service = new AzureAutocodeService(async (args) => {
-    commands.push(args);
-    return JSON.stringify({
-      id: 23438,
-      relations: [{
-        rel: "ArtifactLink",
-        url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438",
-        attributes: { name: "Branch" },
-      }],
-    });
-  });
-
-  expect(await service.ensureIntegrationBranch(23438)).toBe("refs/heads/hu/23438");
-  expect(commands).toHaveLength(1);
-  expect(commands[0]).toContain("--expand");
-  expect(commands[0]).not.toContain("update");
-  expect(commands[0]).not.toContain("Custom.IntegrationBranch");
-});
-
 test("Azure consulta la rama nativa de la HU y normaliza su ref", async () => {
   const commands: string[][] = [];
   const service = new AzureAutocodeService(async (args) => {
@@ -94,18 +73,6 @@ test("Azure rechaza URI de rama malformada y ramas nativas ambiguas", async () =
     ],
   }));
   await expect(ambiguous.getIntegrationBranchInfo(23438)).rejects.toThrow("multiples");
-});
-
-test("Azure propone la rama HU sin escribir un campo personalizado cuando aún no está vinculada", async () => {
-  const commands: string[][] = [];
-  const service = new AzureAutocodeService(async (args) => {
-    commands.push(args);
-    return JSON.stringify({ id: 23438, relations: [] });
-  });
-
-  expect(await service.ensureIntegrationBranch(23438)).toBe("refs/heads/hu/23438");
-  expect(commands).toHaveLength(1);
-  expect(commands[0]).not.toContain("update");
 });
 
 test("Azure obtiene la rama exacta del único PR completado del ticket", async () => {
@@ -829,11 +796,63 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   expect(prompts[0]).toContain("/tdd");
   expect(prompts[0]).toContain("/code-review");
   expect(prompts[0]).toContain("refs/heads/hu/23438");
-  expect(prompts[0]).toContain("operator's instruction");
-  expect(prompts[0]).toContain("If the operator did not specify a base branch");
+  expect(prompts[0]).toContain("coordinator-verified");
+  expect(prompts[0]).not.toContain("operator's instruction");
+  expect(prompts[0]).not.toContain("If the operator did not specify a base branch");
   expect(prompts[0]).toContain("native PR work-item association");
   expect(prompts[0]).toContain("exact merge commit as a native `ArtifactLink`");
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
+});
+
+test("code prepara la rama antes de seleccionar ticket o escribir checkpoint", async () => {
+  const events: string[] = [];
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async (hu, workingDirectory, baseBranch) => {
+        events.push(`preflight:${hu}:${workingDirectory}:${baseBranch}`);
+        return "refs/heads/hu/23438";
+      },
+      getAutocodeContext: async () => {
+        events.push("select-ticket");
+        return null;
+      },
+      verifyTicketCompletion: async () => null,
+    },
+    { run: async () => { events.push("opencode"); throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+    {
+      read: async () => null,
+      write: async () => { events.push("checkpoint"); },
+      clear: async () => undefined,
+    },
+  ).run(["code", "--hu", "23438", "--base-branch", "develop", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(events).toEqual(["preflight:23438:/repo:develop", "select-ticket"]);
+});
+
+test("code falla una sola vez si el preflight requiere base explícita y no toca ticket, checkpoint ni OpenCode", async () => {
+  const events: string[] = [];
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => { events.push("preflight"); throw new Error("indique --base-branch <name>"); },
+      getAutocodeContext: async () => { events.push("select-ticket"); throw new Error("must not select"); },
+      verifyTicketCompletion: async () => null,
+    },
+    { run: async () => { events.push("opencode"); throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+    {
+      read: async () => null,
+      write: async () => { events.push("checkpoint"); },
+      clear: async () => undefined,
+    },
+    { wait: async () => { events.push("retry"); throw new Error("must not retry"); } },
+  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(events).toEqual(["preflight"]);
 });
 
 test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", async () => {
@@ -1178,8 +1197,9 @@ test("code passes the operator prompt to OpenCode, not to the Azure boundary", a
 
   expect(code).toBe(1);
   expect(openCodePrompt).toContain(prompt);
-  expect(openCodePrompt).toContain("git push --set-upstream origin");
-  expect(openCodePrompt).toContain("git ls-remote --heads origin");
+  expect(openCodePrompt).not.toContain("git push --set-upstream origin");
+  expect(openCodePrompt).not.toContain("git ls-remote --heads origin");
+  expect(openCodePrompt).not.toContain("create the HU integration branch");
   expect(contextBranch).toBe(branch);
   expect(openCodeCalls).toBe(1);
 });

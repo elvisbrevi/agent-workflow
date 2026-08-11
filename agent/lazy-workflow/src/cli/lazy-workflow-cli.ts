@@ -25,7 +25,7 @@ type CliOptions = OpenCodeRunOptions & {
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
-  ensureIntegrationBranch(hu: number): Promise<string | null>;
+  ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -130,6 +130,7 @@ function printHelp(): void {
     "  --prompt <prompt>",
     "  --branch <name>",
     "  --base-branch <name>",
+    "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
   ].join("\n"));
@@ -257,6 +258,22 @@ export class LazyWorkflowCli {
     let integrationBranch: string | null = null;
     let sessionId = options.session;
     let lastResult;
+    if (!recovering) {
+      try {
+        integrationBranch = await this.huInfoService.ensureIntegrationBranch(
+          hu,
+          options.workingDirectory,
+          options.baseBranch,
+        );
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
+      if (!integrationBranch) {
+        reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
+        return 1;
+      }
+    }
     reportOperator(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
     while (true) {
       let state: AutocodeState;
@@ -266,13 +283,10 @@ export class LazyWorkflowCli {
             ? await this.huInfoService.getAutocodeState(hu)
             : { context: await this.huInfoService.getAutocodeContext(hu), pending: false };
           integrationBranch = state.context?.integrationBranch ?? null;
-        } else {
-          integrationBranch = integrationBranch ?? await this.huInfoService.ensureIntegrationBranch(hu);
         }
         if (!integrationBranch) {
-          reportOperator(`lazy-workflow: no se encontró todavía la rama base para la HU ${hu}; reintentando en 10s.`);
-          await this.retryTimer.wait(10_000);
-          continue;
+          reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
+          return 1;
         }
         if (reconciling) {
           if (!this.huInfoService.getAutocodeContextForTicket) {
