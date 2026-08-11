@@ -93,6 +93,7 @@ export interface AutocodeAzureService {
 
 interface WorkItem {
   id: number;
+  rev?: number;
   fields?: Record<string, unknown>;
   relations?: Array<{
     rel?: string;
@@ -441,6 +442,9 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const integrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
     if (!integrationSha) throw new Error(`La rama de integración ${integration.ref} no existe remotamente`);
     const ticketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+    if (ticketSha && ticketSha !== integrationSha) {
+      throw new Error(`La rama del ticket ${normalized.ref} no coincide con la rama de integración de la HU`);
+    }
     if (!ticketSha) {
       const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama del ticket");
@@ -464,16 +468,20 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
     if (!linked) {
       const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
+      const patch = [
+        ...(typeof item.rev === "number" ? [{ op: "test", path: "/rev", value: item.rev }] : []),
+        {
+          op: "add",
+          path: "/relations/-",
+          value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
+        },
+      ];
       await this.az([
         "rest", "--resource", AZURE_DEVOPS_RESOURCE,
         "--method", "patch",
         "--uri", `${ORGANIZATION}/${repository.project.id}/_apis/wit/workitems/${ticket}?api-version=${WORK_ITEM_API_VERSION}`,
         "--headers", "Content-Type=application/json-patch+json",
-        "--body", JSON.stringify([{
-          op: "add",
-          path: "/relations/-",
-          value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
-        }]),
+        "--body", JSON.stringify(patch),
         "--output", "json",
       ]);
     }
