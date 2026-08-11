@@ -23,6 +23,17 @@ export interface OpenCodeProcess {
   kill(signal: "SIGTERM" | "SIGKILL"): void;
 }
 
+export class OpenCodeSessionCloseError extends Error {
+  constructor(
+    readonly sessionId: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "OpenCodeSessionCloseError";
+  }
+}
+
 export interface OpenCodeSpawnOptions {
   cwd?: string;
 }
@@ -41,6 +52,7 @@ const spawnOpenCode: OpenCodeSpawner = (command, options) => {
 
 const loginInstructionPattern = /(?:please\s+run|run|ejecuta|execute).{0,40}\baz\s+login\b/i;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not exist|no existe)|(?:not found|does not exist|no existe).*(?:session|sesion|sesión)/i;
 
 function renderEvent(line: string): string {
   try {
@@ -255,13 +267,37 @@ export class OpenCodeService {
         throw new Error("OpenCode no devolvio eventos");
       }
 
+      const result = OpenCodeResult.fromJsonLines(streamed.lines.join("\n"));
+      if (terminalMarkerReceived) await this.closeSession(result.sessionId, workingDirectory);
+
       return {
-        result: OpenCodeResult.fromJsonLines(streamed.lines.join("\n")),
+        result,
         azureLoginRequired,
         failed: exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived,
       };
     } finally {
       clearInterval(heartbeat);
+    }
+  }
+
+  private async closeSession(sessionId: string, workingDirectory?: string): Promise<void> {
+    try {
+      const process = this.spawn(["opencode", "session", "delete", sessionId], { cwd: workingDirectory });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        process.exited,
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+      ]);
+      const output = `${stdout}\n${stderr}`.trim();
+      if (exitCode === 0 || absentSessionPattern.test(output)) return;
+      throw new Error(output || `opencode session delete terminó con código ${exitCode}`);
+    } catch (error) {
+      if (error instanceof OpenCodeSessionCloseError) throw error;
+      throw new OpenCodeSessionCloseError(
+        sessionId,
+        `No se pudo cerrar la sesión OpenCode ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
 

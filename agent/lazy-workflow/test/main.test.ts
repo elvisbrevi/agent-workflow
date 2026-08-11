@@ -3,7 +3,7 @@ import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { AzureAutocodeService, type AutocodeContext, type AutocodeState } from "../src/azure/autocode-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
-import { OpenCodeService, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpoint, AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine } from "../src/output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
@@ -509,15 +509,22 @@ test("OpenCode termina al recibir el marcador aunque stdout permanezca abierto",
   let resolveExit: (code: number) => void = () => undefined;
   const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
   const signals: string[] = [];
-  const service = new OpenCodeService(() => ({
-    stdout,
-    stderr,
-    exited,
-    kill: (signal) => {
-      signals.push(signal);
-      if (signal === "SIGKILL") resolveExit(137);
-    },
-  }), undefined, 5);
+  const service = new OpenCodeService((command) => command[1] === "session"
+    ? {
+      stdout: new Blob([]).stream(),
+      stderr: new Blob([]).stream(),
+      exited: Promise.resolve(0),
+      kill: () => undefined,
+    }
+    : {
+      stdout,
+      stderr,
+      exited,
+      kill: (signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") resolveExit(137);
+      },
+    }, undefined, 5);
 
   const execution = service.run({
     model: "provider/model",
@@ -540,6 +547,65 @@ test("OpenCode termina al recibir el marcador aunque stdout permanezca abierto",
   expect(outcome).toBe("completed");
   expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
   expect((await execution).failed).toBeFalse();
+});
+
+test("OpenCode cierra la sesion nativa al recibir el marcador", async () => {
+  const commands: string[][] = [];
+  const service = new OpenCodeService((command) => {
+    commands.push(command);
+    const output = command[1] === "session"
+      ? ""
+      : JSON.stringify({
+        type: "text",
+        sessionID: "ses_closed",
+        part: { type: "text", text: "TICKET_COMPLETED" },
+      });
+    return {
+      stdout: new Blob([output]).stream(),
+      stderr: new Blob([]).stream(),
+      exited: Promise.resolve(0),
+      kill: () => undefined,
+    };
+  });
+
+  await service.run({
+    model: "provider/model",
+    variant: "medium",
+    session: null,
+    prompt: "trabaja",
+    terminalMarker: "TICKET_COMPLETED",
+  }, true);
+
+  expect(commands[1]).toEqual(["opencode", "session", "delete", "ses_closed"]);
+});
+
+test("OpenCode acepta de forma idempotente una sesion ausente sin alterar su identificador", async () => {
+  const sessionId = "ses;opaque";
+  const commands: string[][] = [];
+  const service = new OpenCodeService((command) => {
+    commands.push(command);
+    const deleting = command[1] === "session";
+    return {
+      stdout: new Blob([deleting ? "" : JSON.stringify({
+        type: "text",
+        sessionID: sessionId,
+        part: { type: "text", text: "TICKET_COMPLETED" },
+      })]).stream(),
+      stderr: new Blob([deleting ? `Session ${sessionId} not found` : ""]).stream(),
+      exited: Promise.resolve(deleting ? 1 : 0),
+      kill: () => undefined,
+    };
+  });
+
+  await service.run({
+    model: "provider/model",
+    variant: "medium",
+    session: null,
+    prompt: "trabaja",
+    terminalMarker: "TICKET_COMPLETED",
+  }, true);
+
+  expect(commands[1]).toEqual(["opencode", "session", "delete", sessionId]);
 });
 
 test("resume usa una sola invocacion simple con continue", async () => {
@@ -729,6 +795,8 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
     type: "text", sessionID: "ses_code", part: { type: "text", text: "TICKET_COMPLETED" },
   }));
   let verificationCalls = 0;
+  let checkpointSessionId: string | null | undefined;
+  let waits = 0;
   const code = await new LazyWorkflowCli(
     {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
@@ -737,13 +805,19 @@ test("code no avanza con un marcador sin evidencia Azure completa", async () => 
       getAutocodeContext: async () => ({ hu: { id: 23438 }, ticket: { id: 51, title: "T", type: "Bug" }, integrationBranch: "refs/heads/hu/23438" }),
       verifyTicketCompletion: async () => { verificationCalls += 1; return null; },
     },
-    { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
-    emptyCheckpointStore(),
-    { wait: async () => { throw new Error("stop retry"); } },
+    { run: async () => ({ result, azureLoginRequired: false }), resume: async () => { throw new Error("must not resume"); } },
+    {
+      read: async () => null,
+      write: async (value) => { checkpointSessionId = value.sessionId; },
+      clear: async () => { throw new Error("must preserve checkpoint"); },
+    },
+    { wait: async () => { waits += 1; } },
   ).run(["code", "--hu", "23438"]);
 
   expect(code).toBe(1);
   expect(verificationCalls).toBe(1);
+  expect(waits).toBe(0);
+  expect(checkpointSessionId).toBeNull();
 });
 
 test("code passes the operator prompt to OpenCode, not to the Azure boundary", async () => {
@@ -837,6 +911,43 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
   expect(waits).toEqual([10_000]);
   expect(resumed).toEqual([["ses_retry", "continua con la rama corregida", "/repo/objetivo"]]);
   expect(checkpoint.sessionId).toBeNull();
+});
+
+test("code detiene el flujo cuando falla el cierre de la sesion nativa", async () => {
+  const checkpoint: AutocodeCheckpoint = {
+    workflow: "autocode",
+    hu: 23438,
+    ticket: 51,
+    sessionId: null,
+  };
+  let waits = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => ({
+        context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task" }, integrationBranch: "refs/heads/hu/23438" },
+        pending: true,
+      }),
+      getAutocodeContext: async () => null,
+      verifyTicketCompletion: async () => null,
+    },
+    {
+      run: async () => { throw new OpenCodeSessionCloseError("ses_failed", "provider unavailable"); },
+      resume: async () => { throw new Error("must not resume after closure failure"); },
+    },
+    {
+      read: async () => null,
+      write: async (value) => { Object.assign(checkpoint, value); },
+      clear: async () => { throw new Error("must preserve checkpoint"); },
+    },
+    { wait: async () => { waits += 1; } },
+  ).run(["code", "--hu", "23438"]);
+
+  expect(code).toBe(1);
+  expect(waits).toBe(0);
+  expect(checkpoint).toEqual({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null });
 });
 
 test("code reconcilia un checkpoint completado sin sesion y continúa con el siguiente ticket", async () => {
