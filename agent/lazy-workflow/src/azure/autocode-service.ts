@@ -4,6 +4,7 @@ import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   AzureTicketInfoService,
   runAzureCommand,
+  type EvidenceKind,
   type TicketInfo,
   type TicketAttachment,
 } from "./ticket-info-service.ts";
@@ -88,6 +89,10 @@ export interface AutocodeAzureService {
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
+  linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
+  linkCommit(ticket: number, pullRequest: number): Promise<unknown>;
+  addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
+  setEvidence(ticket: number, filePath: string): Promise<unknown>;
   waitForAccess(hu: number): Promise<void>;
 }
 
@@ -270,6 +275,22 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }> {
     return this.ticketInfoService.getEvidence(ticket);
+  }
+
+  linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown> {
+    return this.ticketInfoService.linkPullRequest(hu, ticket, pullRequest);
+  }
+
+  linkCommit(ticket: number, pullRequest: number): Promise<unknown> {
+    return this.ticketInfoService.linkCommit(ticket, pullRequest);
+  }
+
+  addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown> {
+    return this.ticketInfoService.addAttachment(ticket, filePath, kind);
+  }
+
+  setEvidence(ticket: number, filePath: string): Promise<unknown> {
+    return this.ticketInfoService.setEvidence(ticket, filePath);
   }
 
   async getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo> {
