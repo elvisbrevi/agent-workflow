@@ -79,6 +79,11 @@ export interface TicketPullRequest {
   associated: boolean;
 }
 
+export interface IntegratedPullRequest {
+  pullRequest: number;
+  mergeCommit: string;
+}
+
 export interface TicketAttachment {
   name?: string;
   url?: string;
@@ -375,6 +380,71 @@ export class AzureTicketInfoService {
     return this.toSummary(await this.readWorkItem(ticket));
   }
 
+  async getCompletionManifestPath(workingDirectory: string): Promise<string> {
+    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
+    return resolve(commonDirectory, "lazy-workflow/completion-manifest.json");
+  }
+
+  async createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    const info = await this.getTicketInfo(hu, ticket);
+    const valid = info.pullRequests.filter((pr) =>
+      pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === info.integrationBranch
+      && pr.source === info.branch,
+    );
+    if (info.canonicalPullRequest !== null) {
+      const pr = valid.find(({ id }) => id === info.canonicalPullRequest);
+      if (!pr?.mergeCommit) throw new Error(`El PR canónico ${info.canonicalPullRequest} no tiene commit de merge verificable`);
+      return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
+    }
+    if (valid.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR completados sin asociación canónica`);
+    if (valid.length === 1) {
+      const pr = valid[0]!;
+      if (!pr.mergeCommit) throw new Error(`El PR ${pr.id} no tiene commit de merge verificable`);
+      return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
+    }
+    if (!info.branch || !info.integrationBranch) throw new Error(`El ticket ${ticket} no tiene ramas verificables para crear el PR`);
+    const parent = await this.readDirectParent(ticket, await this.readWorkItemValidated(ticket));
+    const integration = uniqueBranch(parent);
+    const ticketBranch = uniqueBranch(await this.readWorkItem(ticket));
+    if (!integration.project || !integration.repository || !integration.ref || !ticketBranch.ref) {
+      throw new Error(`El ticket ${ticket} no tiene identidad Azure Git completa`);
+    }
+    const active = await this.readPullRequests(
+      ticket,
+      integration.project,
+      integration.ref,
+      integration.project,
+      integration.repository,
+      ticketBranch.ref,
+      "active",
+    );
+    const exactActive = active.filter((pr) => pr.source === ticketBranch.ref && pr.target === integration.ref);
+    if (active.length !== exactActive.length) {
+      throw new Error(`El ticket ${ticket} tiene un PR activo que no apunta exactamente a la rama de integración`);
+    }
+    if (exactActive.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
+    if (exactActive.length === 1) {
+      await this.completePullRequest(exactActive[0]!.id, integration.project, integration.repository);
+      const verified = await this.readPullRequest(exactActive[0]!.id, integration.project, integration.repository);
+      this.validatePullRequest(verified, ticket, integration, ticketBranch);
+      return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
+    }
+    const created = await this.createPullRequest(
+      integration.project,
+      integration.repository,
+      ticketBranch.ref,
+      integration.ref,
+      ticket,
+      hu,
+    );
+    await this.completePullRequest(created.id, integration.project, integration.repository);
+    const verified = await this.readPullRequest(created.id, integration.project, integration.repository);
+    this.validatePullRequest(verified, ticket, integration, ticketBranch);
+    return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
+  }
+
   async validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
@@ -411,19 +481,20 @@ export class AzureTicketInfoService {
     )) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
     }
-    const pullRequests = (await this.readPullRequests(
+    const pullRequests = await this.readPullRequests(
       ticket,
       integrationBranch.project ?? text(parent, "System.TeamProject"),
       integrationBranch.ref,
       integrationBranch.project,
       integrationBranch.repository,
       ticketBranch.ref,
-    )).filter((pullRequest) =>
+    );
+    const validPullRequests = pullRequests.filter((pullRequest) =>
       pullRequest.status === "completed"
       && pullRequest.mergeStatus === "succeeded"
       && pullRequest.target === integrationBranch.ref
+      && pullRequest.source === ticketBranch.ref
     );
-    const validPullRequests = pullRequests;
     const associated = validPullRequests.filter((pullRequest) => pullRequest.associated);
     const canonical = associated.length === 1 ? associated[0]!.id : null;
     const completionEvidence = COMPLETION_FIELDS.map((fieldName) => text(item, fieldName)).find(Boolean) ?? null;
@@ -438,6 +509,7 @@ export class AzureTicketInfoService {
       completionEvidence,
       mergeCommit,
       linkedCommit,
+      ticketBranch.ref,
     );
 
     return {
@@ -732,6 +804,7 @@ export class AzureTicketInfoService {
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    await this.readDirectParent(ticket, item);
 
     const integration = uniqueBranch(parent);
     const ticketBranch = uniqueBranch(item);
@@ -748,6 +821,9 @@ export class AzureTicketInfoService {
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
     const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.some((candidate) => candidate.source !== ticketBranch.ref)) {
+      throw new Error(`El ticket ${ticket} tiene una asociación nativa a un PR de otra rama`);
+    }
     if (associatedCandidates.length > 1 || (associatedCandidates[0] && associatedCandidates[0].id !== pullRequestId)) {
       throw new Error(`El PR ${pullRequestId} entra en conflicto con el PR canónico ya asociado al ticket ${ticket}`);
     }
@@ -782,6 +858,9 @@ export class AzureTicketInfoService {
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
     const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.some((candidate) => candidate.source !== ticketBranch.ref)) {
+      throw new Error(`El ticket ${ticket} tiene una asociación nativa a un PR de otra rama`);
+    }
     if (associatedCandidates.length !== 1 || associatedCandidates[0]!.id !== pullRequestId) {
       throw new Error(`El PR ${pullRequestId} no es el único PR canónico asociado al ticket ${ticket}`);
     }
@@ -792,6 +871,10 @@ export class AzureTicketInfoService {
     if (existing && (
       existing.project !== project || existing.repository !== repository || existing.commit !== pullRequest.mergeCommit
     )) throw new Error(`El ticket ${ticket} ya tiene un Fixed in Commit distinto; conflicto`);
+    const existingCommitUrl = text(item, "Custom.URLCommit");
+    if (existingCommitUrl && existingCommitUrl !== artifactLink) {
+      throw new Error(`El ticket ${ticket} ya tiene una URL de commit distinta; conflicto`);
+    }
 
     if (!existing) {
       await this.patchWorkItem(item, [
@@ -801,6 +884,12 @@ export class AzureTicketInfoService {
           path: "/relations/-",
           value: { rel: "ArtifactLink", url: artifactLink, attributes: { name: "Fixed in Commit" } },
         },
+        { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
+      ]);
+    } else if (!text(item, "Custom.URLCommit")) {
+      await this.patchWorkItem(item, [
+        { op: "test", path: "/rev", value: item.rev },
+        { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
       ]);
     }
 
@@ -962,6 +1051,61 @@ export class AzureTicketInfoService {
     }
   }
 
+  private async createPullRequest(
+    project: string,
+    repository: string,
+    source: string,
+    target: string,
+    ticket: number,
+    hu: number,
+  ): Promise<TicketPullRequest> {
+    try {
+      return this.toPullRequest(JSON.parse(await this.az([
+        "repos", "pr", "create", "--organization", ORGANIZATION,
+        "--project", project, "--repository", repository,
+        "--source-branch", source, "--target-branch", target,
+        "--title", `Deliver ticket ${ticket}`,
+        "--description", `Coordinator-owned delivery for ticket ${ticket} in HU ${hu}`,
+        "--output", "json",
+      ])));
+    } catch (error) {
+      const existing = (await this.readPullRequests(ticket, project, target, project, repository, source, "active"))
+        .filter((pr) => pr.source === source && pr.target === target);
+      if (existing.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
+      if (existing.length === 1) return existing[0]!;
+      try {
+        return this.toPullRequest(JSON.parse(await this.az([
+          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post",
+          "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?api-version=${API_VERSION}`,
+          "--headers", "Content-Type=application/json",
+          "--body", JSON.stringify({ sourceRefName: source, targetRefName: target, title: `Deliver ticket ${ticket}`, description: `Coordinator-owned delivery for ticket ${ticket} in HU ${hu}` }),
+          "--output", "json",
+        ])));
+      } catch (fallbackError) {
+        throw new Error(`No se pudo crear el PR del ticket ${ticket}: ${sanitizeError(fallbackError)}`, { cause: error });
+      }
+    }
+  }
+
+  private async completePullRequest(id: number, project: string, repository: string): Promise<void> {
+    try {
+      await this.az([
+        "repos", "pr", "update", "--id", `${id}`, "--organization", ORGANIZATION,
+        "--project", project, "--repository", repository, "--status", "completed", "--output", "json",
+      ]);
+    } catch (error) {
+      try {
+        await this.az([
+          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
+          "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
+          "--headers", "Content-Type=application/json", "--body", JSON.stringify({ status: "completed" }), "--output", "json",
+        ]);
+      } catch (fallbackError) {
+        throw new Error(`No se pudo completar el PR ${id}: ${sanitizeError(fallbackError)}`, { cause: error });
+      }
+    }
+  }
+
   private validatePullRequest(
     pullRequest: TicketPullRequest,
     ticket: number,
@@ -1102,20 +1246,21 @@ export class AzureTicketInfoService {
     expectedProject?: string,
     repository?: string,
     expectedSource?: string | null,
+    status = "completed",
   ): Promise<TicketPullRequest[]> {
     if (!project) return [];
     const args = [
       "repos", "pr", "list", "--organization", ORGANIZATION, "--project", project,
       ...(repository ? ["--repository", repository] : []),
-      "--status", "completed", "--output", "json",
+      "--status", status, "--output", "json",
     ];
     let payload: PullRequestPayload[];
     try {
       payload = this.pullRequestList(JSON.parse(await this.az(args)));
     } catch (error) {
       const uri = repository
-        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`
-        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=completed&api-version=${API_VERSION}`;
+        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
+        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
       try {
         payload = this.pullRequestList(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
@@ -1231,6 +1376,7 @@ export class AzureTicketInfoService {
     evidence: string | null,
     mergeCommit: string | null,
     artifactCommit: FixedCommitLink | null,
+    ticketBranch: string | null,
   ): CompletionGate[] {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
@@ -1244,6 +1390,7 @@ export class AzureTicketInfoService {
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
     const validPrs = pullRequests.filter((pr) =>
       pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === integrationBranch
+      && pr.source === ticketBranch
     );
     const validPr = validPrs.find((pr) => pr.id === canonical);
     if (validPrs.length === 0) unmet.push(GATE.completedHuPullRequest);

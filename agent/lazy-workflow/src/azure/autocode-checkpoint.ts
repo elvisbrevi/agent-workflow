@@ -8,9 +8,9 @@ export interface AutocodeCheckpoint {
   sessionId: string | null;
 }
 
-export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing" | "reconciling";
+export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing" | "implementation-ready" | "integrating" | "evidencing" | "completing" | "cleaning" | "reconciling";
 
-export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch";
+export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "ticket-branch-checkout" | "ticket-branch-push" | "pull-request" | "pr-association" | "merge-commit" | "attachment" | "evidence" | "ticket-effort" | "ticket-done" | "ticket-completion";
 
 export interface VersionedAutocodeCheckpoint {
   schemaVersion: 2;
@@ -27,6 +27,11 @@ export interface VersionedAutocodeCheckpoint {
   sessionId: string | null;
   intent: { effect: AutocodeEffect; target: string } | null;
   receipts: Partial<Record<AutocodeEffect, { verifiedAt: string }>>;
+  manifestPath?: string | null;
+  pullRequest?: number | null;
+  localCommit?: string | null;
+  mergeCommit?: string | null;
+  manifestDigests?: string[];
 }
 
 export type StoredAutocodeCheckpoint = AutocodeCheckpoint | VersionedAutocodeCheckpoint;
@@ -38,7 +43,7 @@ export interface AutocodeCheckpointStore {
 }
 
 const FILE_NAME = "lazy-workflow/autocode-checkpoint.json";
-const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch"];
+const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch", "ticket-branch-checkout", "ticket-branch-push", "pull-request", "pr-association", "merge-commit", "attachment", "evidence", "ticket-effort", "ticket-done", "ticket-completion"];
 
 function validBranch(value: string | null): boolean {
   return value === null || (/^refs\/heads\/[^\s]+$/.test(value) && !value.includes("//"));
@@ -61,7 +66,7 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
   const checkpoint = value as Partial<VersionedAutocodeCheckpoint>;
   return checkpoint.schemaVersion === 2
     && checkpoint.workflow === "autocode"
-    && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "reconciling")
+     && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "implementation-ready" || checkpoint.phase === "integrating" || checkpoint.phase === "evidencing" || checkpoint.phase === "completing" || checkpoint.phase === "cleaning" || checkpoint.phase === "reconciling")
     && Number.isInteger(checkpoint.hu)
     && (checkpoint.ticket === null || Number.isInteger(checkpoint.ticket))
     && (checkpoint.integrationBranch === null || (typeof checkpoint.integrationBranch === "string" && validBranch(checkpoint.integrationBranch)))

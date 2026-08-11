@@ -19,3 +19,8 @@ without calling Azure or OpenCode.
 
 The detailed setup, commands, and login-continuation behavior are documented
 in `README.md`.
+
+Azure delivery keeps OpenCode semantic: it implements, validates, reviews,
+commits, and writes the completion manifest. The coordinator owns branches,
+pull requests, Azure fields, evidence, effort, completion gates, recovery, and
+cleanup. `IMPLEMENTATION_READY` is the only Azure model-completion marker.

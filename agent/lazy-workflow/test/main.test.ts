@@ -234,7 +234,7 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
   const cleaner = new GitTicketBranchCleaner(async (args) => {
     commands.push(args);
     if (args[0] === "status") return "";
-    if (args[0] === "branch" && args[1] === "--list") return "  ticket/51-programas\n";
+    if (args[0] === "branch" && args[1] === "--list" && args[2] === "ticket/51-programas") return "  ticket/51-programas\n";
     if (args[0] === "ls-remote") return "abc123\trefs/heads/ticket/51-programas\n";
     return "";
   });
@@ -248,7 +248,8 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
   expect(commands).toEqual([
     ["status", "--porcelain"],
     ["fetch", "origin", "+refs/heads/hu/23438:refs/remotes/origin/hu/23438"],
-    ["switch", "hu/23438"],
+    ["branch", "--list", "hu/23438"],
+    ["switch", "--create", "hu/23438", "--track", "refs/remotes/origin/hu/23438"],
     ["merge", "--ff-only", "origin/hu/23438"],
     ["branch", "--list", "ticket/51-programas"],
     ["branch", "-D", "ticket/51-programas"],
@@ -991,7 +992,7 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_code",
-    part: { type: "text", text: "Resumen final\n\nTICKET_COMPLETED" },
+    part: { type: "text", text: "Resumen final\n\nIMPLEMENTATION_READY" },
   }));
   const output: string[] = [];
   const originalLog = console.log;
@@ -1034,11 +1035,13 @@ test("code entrega un ticket y solo avanza después de la verificación Azure", 
   expect(prompts[0]).toContain("/tdd");
   expect(prompts[0]).toContain("/code-review");
   expect(prompts[0]).toContain("refs/heads/hu/23438");
-  expect(prompts[0]).toContain("coordinator-verified");
+  expect(prompts[0]).toContain("authoritative HU, ticket, integration branch, ticket branch");
   expect(prompts[0]).not.toContain("operator's instruction");
   expect(prompts[0]).not.toContain("If the operator did not specify a base branch");
-  expect(prompts[0]).toContain("native PR work-item association");
-  expect(prompts[0]).toContain("exact merge commit as a native `ArtifactLink`");
+  expect(prompts[0]).toContain("completion manifest");
+  expect(prompts[0]).toContain("IMPLEMENTATION_READY");
+  expect(prompts[0]).not.toContain("Create exactly one Azure Repos pull request");
+  expect(prompts[0]).not.toContain("Move the ticket to `Done`");
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
@@ -1108,7 +1111,7 @@ test("code drena tickets con sesiones nuevas y refresca Azure entre tickets", as
     clear: async () => { checkpoints.push("clear"); },
   };
   const result = (sessionId: string) => OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: sessionId, part: { type: "text", text: "TICKET_COMPLETED" },
+      type: "text", sessionID: sessionId, part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
 
   const code = await new LazyWorkflowCli(
@@ -1168,7 +1171,7 @@ test("code espera y refresca cuando quedan tickets bloqueados", async () => {
     },
     {
       run: async () => ({ result: OpenCodeResult.fromJsonLines(JSON.stringify({
-        type: "text", sessionID: "ses-1", part: { type: "text", text: "TICKET_COMPLETED" },
+       type: "text", sessionID: "ses-1", part: { type: "text", text: "IMPLEMENTATION_READY" },
       })), azureLoginRequired: false }),
       resume: async () => { throw new Error("must not resume"); },
     },
@@ -1183,7 +1186,7 @@ test("code espera y refresca cuando quedan tickets bloqueados", async () => {
 
 test("code no avanza con un marcador sin evidencia Azure completa", async () => {
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses_code", part: { type: "text", text: "TICKET_COMPLETED" },
+    type: "text", sessionID: "ses_code", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   let verificationCalls = 0;
   let checkpointSessionId: string | null | undefined;
@@ -1361,7 +1364,7 @@ test("code --session reanuda OpenCode cuando el ticket fijado todavía no está 
   };
   let resumed = false;
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
 
   const code = await new LazyWorkflowCli(
@@ -1517,7 +1520,7 @@ test("code mantiene un error Azure como error operativo durante la verificacion"
     const result = OpenCodeResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_code",
-      part: { type: "text", text: "TICKET_COMPLETED" },
+      part: { type: "text", text: "IMPLEMENTATION_READY" },
     }));
     const code = await new LazyWorkflowCli(
       {
@@ -1626,7 +1629,7 @@ test("code conserva el ticket, espera diez segundos y reanuda la misma sesion co
       run: async () => { attempts += 1; return { result: result("not-complete"), azureLoginRequired: false, failed: true }; },
       resume: async (sessionId: string, prompt?: string, workingDirectory?: string) => {
         resumed.push([sessionId, prompt ?? "", workingDirectory]);
-        return result("TICKET_COMPLETED");
+        return result("IMPLEMENTATION_READY");
       },
     },
     store,
@@ -1743,7 +1746,7 @@ test("code reconcilia un checkpoint completado sin sesion y continúa con el sig
   const completedResult = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-52",
-    part: { type: "text", text: "TICKET_COMPLETED" },
+    part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
 
   const code = await new LazyWorkflowCli(
@@ -1837,7 +1840,7 @@ test("code versionado persiste fases y prepara estado y rama antes de OpenCode",
   const checkpoints: Array<{ phase: string; ticket: number | null; activeDurationMs: number; receipts: string[] }> = [];
   const clockValues = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800];
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-versioned", part: { type: "text", text: "TICKET_COMPLETED" },
+    type: "text", sessionID: "ses-versioned", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const cli = new LazyWorkflowCli(
     {
@@ -1879,6 +1882,88 @@ test("code versionado persiste fases y prepara estado y rama antes de OpenCode",
   expect(checkpoints.at(-1)?.activeDurationMs).toBe(400);
 });
 
+test("code versionado completa el ticket después de IMPLEMENTATION_READY", async () => {
+  const events: string[] = [];
+  let state = "En progreso";
+  let canonical: number | null = null;
+  let attached = false;
+  let evidence = false;
+  let commit = false;
+  let queueHasTicket = true;
+  let infoReads = 0;
+  const manifest = {
+    ticket: 51,
+    ticketBranch: "refs/heads/ticket/51",
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "pass" }],
+    evidence: [{ path: "/tmp/evidence.json", kind: "http-json" as const, sha256: "b".repeat(64) }],
+  };
+  const info = async () => {
+    infoReads += 1;
+    const unmet = state === "Done" ? [] : [
+      "ticket-state",
+      ...(evidence ? [] : ["completion-evidence"]),
+      ...(attached ? [] : ["attached-capture"]),
+      ...(canonical === null ? ["completed-hu-targeted-pr", "native-pr-association"] : []),
+      ...(commit ? [] : ["commit-url", "merge-commit-artifact-link"]),
+    ];
+    return {
+      hu: { id: 23438 },
+      ticket: { id: 51, type: "Task" as const, state },
+      branch: "refs/heads/ticket/51",
+      integrationBranch: "refs/heads/hu/23438",
+      effort: { real: 1, realHours: 1 },
+      pullRequests: [],
+      canonicalPullRequest: canonical,
+      mergeCommit: commit ? "merge" : null,
+      attachments: attached ? [{ kind: "AttachedFile" as const, evidenceKind: "http-json" as const, digest: manifest.evidence[0]!.sha256 }] : [],
+      completionEvidence: evidence ? "evidence" : null,
+      gates: { satisfied: [], unmet },
+    };
+  };
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
+  }));
+  const code = new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => queueHasTicket
+        ? ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true })
+        : ({ context: null, pending: false }),
+      getState: async () => ({ ticket: 51, state, revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async (_ticket, desiredState) => { events.push("state"); state = desiredState; },
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => { events.push("ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
+      checkoutTicketBranch: async () => { events.push("checkout"); },
+      pushTicketBranch: async () => { events.push("push"); },
+      getCompletionManifestPath: async () => "/tmp/completion.json",
+      createOrReusePullRequest: async () => { events.push("pr"); return { pullRequest: 99, mergeCommit: "merge" }; },
+      setEffort: async () => { events.push("effort"); return undefined; },
+      getTicketInfo: info,
+      validateDirectTicketContext: async () => undefined,
+      readCompletionManifest: async () => manifest,
+      validateCompletionManifest: async () => undefined,
+      validateEvidenceFile: async () => undefined,
+      validateEvidence: async () => undefined,
+      linkPullRequest: async () => { events.push("link-pr"); canonical = 99; },
+      linkCommit: async () => { events.push("link-commit"); commit = true; },
+      addAttachment: async () => { events.push("attachment"); attached = true; },
+      setEvidence: async () => { events.push("evidence"); evidence = true; },
+    },
+    { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+    { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
+    undefined,
+      { deleteTicketBranch: async () => { events.push("cleanup"); queueHasTicket = false; } },
+  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  await expect(code).resolves.toBe(0);
+  expect(events).toEqual(["ticket-branch", "checkout", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear", "clear"]);
+  expect(infoReads).toBeGreaterThan(1);
+});
+
 test("code versionado conserva el marcador al reanudar una sesion fijada", async () => {
   const context: AutocodeContext = {
     hu: { id: 23438 },
@@ -1906,7 +1991,7 @@ test("code versionado conserva el marcador al reanudar una sesion fijada", async
     },
   };
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const code = await new LazyWorkflowCli(
     {
@@ -1931,14 +2016,14 @@ test("code versionado conserva el marcador al reanudar una sesion fijada", async
   ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(markers).toEqual(["TICKET_COMPLETED"]);
+  expect(markers).toEqual(["IMPLEMENTATION_READY"]);
 });
 
 test("code versionado no reintenta OpenCode si falla la limpieza tras el marcador", async () => {
   let runs = 0;
   let waits = 0;
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-51", part: { type: "text", text: "TICKET_COMPLETED" },
+    type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const code = await new LazyWorkflowCli(
     {
