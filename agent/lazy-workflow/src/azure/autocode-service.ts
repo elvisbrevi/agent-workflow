@@ -89,6 +89,9 @@ export interface AutocodeAzureService {
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
+  setDescription(ticket: number, filePath: string): Promise<unknown>;
+  setState(ticket: number, desiredState: string, expectedState: string): Promise<unknown>;
+  setEffort(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
   linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -275,6 +278,18 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }> {
     return this.ticketInfoService.getEvidence(ticket);
+  }
+
+  setDescription(ticket: number, filePath: string): Promise<unknown> {
+    return this.ticketInfoService.setDescription(ticket, filePath);
+  }
+
+  setState(ticket: number, desiredState: string, expectedState: string): Promise<unknown> {
+    return this.ticketInfoService.setState(ticket, desiredState, expectedState);
+  }
+
+  setEffort(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown> {
+    return this.ticketInfoService.setEffort(ticket, realEffort, realEffortHours, expectedRevision);
   }
 
   linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown> {

@@ -454,3 +454,142 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
   ]);
   expect(output).toHaveLength(4);
 });
+
+test("ticket field setters use revision guards, reread their results, and retry idempotently", async () => {
+  const items = new Map<number, { id: number; rev: number; fields: Record<string, unknown>; relations: unknown[] }>([
+    [23438, {
+      id: 23438,
+      rev: 7,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    }],
+    [51, {
+      id: 51,
+      rev: 4,
+      fields: {
+        "System.WorkItemType": "Task",
+        "System.Description": "old",
+        "System.State": "Active",
+        "Custom.EsfuerzoReal": 1,
+        "Custom.EsfuerzoRealHH": 1,
+      },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    }],
+  ]);
+  const patches: unknown[][] = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards") {
+      const id = Number(args[args.indexOf("--id") + 1]);
+      return JSON.stringify(items.get(id));
+    }
+    if (args[0] === "rest" && args.includes("patch")) {
+      const id = Number(args[args.findIndex((value) => value.includes("workitems/"))]?.match(/workitems\/(\d+)/)?.[1]);
+      const item = items.get(id)!;
+      const patch = JSON.parse(args[args.indexOf("--body") + 1]!) as Array<{ op: string; path: string; value?: unknown }>;
+      patches.push(patch);
+      for (const operation of patch) {
+        if (operation.path.startsWith("/fields/")) item.fields[operation.path.slice("/fields/".length)] = operation.value;
+      }
+      item.rev += 1;
+      return JSON.stringify(item);
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+  const descriptionPath = `/tmp/lazy-workflow-description-${crypto.randomUUID()}.html`;
+
+  try {
+    await Bun.write(descriptionPath, "<p>new\nvalue</p>");
+    await expect(service.setDescription(51, descriptionPath)).resolves.toEqual({
+      ticket: 51,
+      description: "<p>new\nvalue</p>",
+      revision: 5,
+    });
+    await expect(service.setState(51, "Active", "Active")).resolves.toEqual({
+      ticket: 51,
+      state: "Active",
+      revision: 5,
+    });
+    await expect(service.setState(51, "En progreso", "Active")).resolves.toEqual({
+      ticket: 51,
+      state: "En progreso",
+      revision: 6,
+    });
+    await expect(service.setEffort(51, 2.25, 2.5, 6)).resolves.toEqual({
+      ticket: 51,
+      effort: { real: 2.25, realHours: 2.5 },
+      revision: 7,
+    });
+    await expect(service.setEffort(51, 2.25, 2.5, 6)).resolves.toEqual({
+      ticket: 51,
+      effort: { real: 2.25, realHours: 2.5 },
+      revision: 7,
+    });
+    await expect(service.setEffort(51, 3, 3, 4)).rejects.toThrow("revision");
+  } finally {
+    await unlink(descriptionPath);
+  }
+
+  expect(patches).toHaveLength(3);
+  expect(patches[0]).toEqual(expect.arrayContaining([
+    { op: "test", path: "/rev", value: 4 },
+    { op: "add", path: "/fields/System.Description", value: "<p>new\nvalue</p>" },
+  ]));
+  expect(patches[2]).toEqual(expect.arrayContaining([
+    { op: "test", path: "/rev", value: 6 },
+    { op: "add", path: "/fields/Custom.EsfuerzoReal", value: 2.25 },
+    { op: "add", path: "/fields/Custom.EsfuerzoRealHH", value: 2.5 },
+  ]));
+});
+
+test("ticket state setter rejects stale and unsupported transitions before Azure mutation", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.setState(51, "Done", "New")).rejects.toThrow("estado actual");
+  await expect(service.setState(51, "Unknown", "Active")).rejects.toThrow("no soportado");
+});
+
+test("ticket field mutation commands validate their explicit contracts", async () => {
+  const calls: unknown[][] = [];
+  const service = {
+    getHuInfo: async () => { throw new Error("must not use generic HU read"); },
+    waitForAccess: async () => undefined,
+    setDescription: async (...args: [number, string]) => { calls.push(args); return { ticket: args[0] }; },
+    setState: async (...args: [number, string, string]) => { calls.push(args); return { ticket: args[0] }; },
+    setEffort: async (...args: [number, number, number, number]) => { calls.push(args); return { ticket: args[0] }; },
+  };
+  const output: string[] = [];
+  const originalLog = console.log;
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-description-set", "--ticket", "51", "--description-file", "/tmp/description.html",
+    ])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-state-set", "--ticket", "51", "--state", "En progreso", "--expected-state", "Active",
+    ])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-effort-set", "--ticket", "51", "--real-effort", "2.25", "--real-effort-hh", "2.5", "--expected-rev", "7",
+    ])).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+  expect(calls).toEqual([
+    [51, "/tmp/description.html"],
+    [51, "En progreso", "Active"],
+    [51, 2.25, 2.5, 7],
+  ]);
+  expect(output).toHaveLength(3);
+});
