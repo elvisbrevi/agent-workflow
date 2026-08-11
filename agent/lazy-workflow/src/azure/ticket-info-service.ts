@@ -1,4 +1,7 @@
 import { $ } from "bun";
+import { relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
@@ -100,6 +103,20 @@ export interface TicketInfo {
   gates: { satisfied: CompletionGate[]; unmet: CompletionGate[] };
 }
 
+export interface CompletionManifestEvidence {
+  path: string;
+  kind: EvidenceKind;
+  sha256: string;
+}
+
+export interface CompletionManifest {
+  ticket: number;
+  ticketBranch: string;
+  commit: string;
+  validation: Array<{ command: string; result: string }>;
+  evidence: CompletionManifestEvidence[];
+}
+
 interface Relation {
   rel?: string;
   url?: string;
@@ -135,6 +152,12 @@ interface FixedCommitLink {
   commit: string;
 }
 
+interface ValidatedEvidenceFile {
+  name: string;
+  bytes: Uint8Array;
+  digest: string;
+}
+
 export type AzRunner = (args: string[]) => Promise<string>;
 
 function positiveId(value: number, name: string): void {
@@ -151,8 +174,10 @@ function evidenceKind(value: string | undefined): EvidenceKind | undefined {
 }
 
 function hasEvidenceCapture(item: WorkItem): boolean {
-  return (item.relations ?? []).some(({ rel, attributes }) =>
+  return (item.relations ?? []).some(({ rel, url, attributes }) =>
     rel === "AttachedFile"
+      && typeof url === "string"
+      && url.trim().length > 0
       && evidenceKind(attributes?.comment) !== undefined
       && /^[0-9a-f]{64}$/i.test(attributes?.digest ?? "")
   );
@@ -293,8 +318,11 @@ async function readUtf8File(filePath: string): Promise<string> {
 }
 
 function workItemRevision(item: WorkItem): number {
-  if (!Number.isInteger(item.rev) || item.rev <= 0) throw new Error(`El work item ${item.id} no tiene una revision Azure válida`);
-  return item.rev;
+  const revision = item.rev;
+  if (typeof revision !== "number" || !Number.isInteger(revision) || revision <= 0) {
+    throw new Error(`El work item ${item.id} no tiene una revision Azure válida`);
+  }
+  return revision;
 }
 
 function validateState(state: string, name: string): void {
@@ -337,11 +365,30 @@ export async function runAzureCommand(args: string[]): Promise<string> {
 }
 
 export class AzureTicketInfoService {
-  constructor(private readonly az: AzRunner = runAzureCommand) {}
+  constructor(
+    private readonly az: AzRunner = runAzureCommand,
+    private readonly git: GitRunner = runGit,
+  ) {}
 
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
     return this.toSummary(await this.readWorkItem(ticket));
+  }
+
+  async validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
+    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    this.toSummary(item);
+    const forward = (parent.relations ?? []).some(({ rel, url }) =>
+      rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
+    );
+    const reverseRelations = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
+    const reverse = reverseRelations.map(({ url }) => relationId(url));
+    if (reverse.some((id) => id === undefined) || !forward || reverse.length !== 1 || reverse[0] !== hu) {
+      throw new Error(`El ticket ${ticket} no tiene una relación directa única con la HU ${hu}`);
+    }
   }
 
   async getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
@@ -349,6 +396,8 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
+    const parentType = text(parent, "System.WorkItemType");
+    if (parentType !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
     const child = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     );
@@ -419,6 +468,20 @@ export class AzureTicketInfoService {
         unmet,
       },
     };
+  }
+
+  async getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }> {
+    positiveId(hu, "La HU");
+    positiveId(ticket, "El ticket");
+    try {
+      await this.validateDirectTicketContext(hu, ticket);
+      const info = await this.getTicketInfo(hu, ticket);
+      return { hu, ticket, gates: info.gates };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/no es hijo directo|relación directa única|no es un Task o Bug de entrega|no es una User Story|Branch ArtifactLink|rama .* (malformada|conflicto|no coincide|ambigua)/i.test(message)) throw error;
+      return { hu, ticket, gates: { satisfied: [], unmet: Object.values(GATE) } };
+    }
   }
 
   async getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
@@ -504,6 +567,7 @@ export class AzureTicketInfoService {
     desiredState: string,
     expectedState: string,
     allowCompletion = false,
+    expectedRevision?: number,
   ): Promise<{ ticket: number; state: string; revision: number }> {
     positiveId(ticket, "El ticket");
     validateState(desiredState, "El estado deseado");
@@ -515,6 +579,9 @@ export class AzureTicketInfoService {
       throw new Error(`El estado actual del ticket ${ticket} (${currentState ?? "null"}) no coincide con el estado esperado ${expectedState}`);
     }
     const revision = workItemRevision(item);
+    if (expectedRevision !== undefined && revision !== expectedRevision) {
+      throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
+    }
     if (currentState === desiredState) return { ticket, state: desiredState, revision };
     if (desiredState === "Done" && !allowCompletion) {
       throw new Error("El estado Done solo puede aplicarse después de verificar los gates de cierre");
@@ -530,6 +597,81 @@ export class AzureTicketInfoService {
     const state = text(verified, TICKET_FIELDS.state);
     if (state !== desiredState) throw new Error(`No se pudo verificar el estado del ticket ${ticket}`);
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
+  }
+
+  async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
+    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
+    const manifestPath = await realpath(resolve(path));
+    const manifestRelativePath = relative(commonDirectory, manifestPath);
+    if (!manifestRelativePath || (manifestRelativePath !== ".." && manifestRelativePath.startsWith(`..${sep}`))) {
+      throw new Error("El manifest de completion debe estar bajo el directorio Git común");
+    }
+    const content = await readUtf8File(manifestPath);
+    let value: unknown;
+    try {
+      value = JSON.parse(content);
+    } catch (error) {
+      throw new Error(`El manifest de completion no es JSON válido: ${path}`, { cause: error });
+    }
+    if (typeof value !== "object" || value === null) throw new Error("El manifest de completion debe ser un objeto");
+    const manifest = value as Partial<CompletionManifest>;
+    const manifestTicket = manifest.ticket;
+    if (
+      typeof manifestTicket !== "number" || !Number.isInteger(manifestTicket) || manifestTicket <= 0
+      || typeof manifest.ticketBranch !== "string" || !manifest.ticketBranch.trim()
+      || typeof manifest.commit !== "string" || !/^[0-9a-f]{40,64}$/i.test(manifest.commit)
+      || !Array.isArray(manifest.validation) || manifest.validation.length === 0
+      || !Array.isArray(manifest.evidence)
+    ) throw new Error("El manifest de completion carece de campos requeridos");
+    if (manifest.validation.some((entry) =>
+      typeof entry !== "object" || entry === null
+      || typeof entry.command !== "string" || !entry.command.trim()
+      || typeof entry.result !== "string" || !entry.result.trim()
+    )) throw new Error("Las validaciones del manifest de completion son inválidas");
+    if (manifest.evidence.some((entry) =>
+      typeof entry !== "object" || entry === null
+      || typeof entry.path !== "string" || !entry.path.trim()
+      || typeof entry.kind !== "string" || !EVIDENCE_KINDS.includes(entry.kind as EvidenceKind)
+      || typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(entry.sha256)
+    )) throw new Error("La evidencia del manifest de completion es inválida");
+    return manifest as CompletionManifest;
+  }
+
+  async validateCompletionManifest(
+    manifest: CompletionManifest,
+    info: TicketInfo,
+    ticket: number,
+    workingDirectory: string,
+  ): Promise<void> {
+    const manifestTicket = manifest.ticket as number;
+    if (manifestTicket !== ticket) throw new Error(`El manifest pertenece al ticket ${manifestTicket}, no al ticket ${ticket}`);
+    if (info.branch !== manifest.ticketBranch) throw new Error("La rama del manifest no coincide con la rama del ticket");
+    const head = (await this.git(["rev-parse", "HEAD"], workingDirectory)).trim();
+    if (head !== manifest.commit) throw new Error("El commit del manifest no coincide con HEAD");
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se aplicará el completion manifest");
+    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);
+    if (!manifest.ticketBranch.startsWith("refs/heads/") || branch !== expectedBranch) {
+      throw new Error("La rama activa no coincide con la rama del manifest");
+    }
+
+    const root = await realpath(workingDirectory);
+    const seen = new Set<string>();
+    for (const evidence of manifest.evidence) {
+      const path = await realpath(resolve(evidence.path));
+      const relativePath = relative(root, path);
+      if (!relativePath || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`))) {
+        throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
+      }
+      const expectedDigest = evidence.sha256.toLowerCase();
+      if (seen.has(expectedDigest)) throw new Error(`El digest de evidencia está duplicado: ${evidence.sha256}`);
+      seen.add(expectedDigest);
+      const file = Bun.file(path);
+      if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${evidence.path}`);
+      const digest = await sha256(new Uint8Array(await file.arrayBuffer()));
+      if (digest !== expectedDigest) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
+    }
   }
 
   async setEffort(
@@ -586,6 +728,7 @@ export class AzureTicketInfoService {
 
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
+    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
@@ -674,24 +817,9 @@ export class AzureTicketInfoService {
     kind: EvidenceKind,
   ): Promise<{ ticket: number; name: string; kind: EvidenceKind; digest: string; url: string }> {
     positiveId(ticket, "El ticket");
-    validateEvidenceKind(kind);
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
-    const file = Bun.file(filePath);
-    const name = filePath.split(/[\\/]/).pop() ?? "";
-    if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
-    if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${filePath}`);
-    if (file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (kind === "screen") {
-      validateScreenEvidence(name, bytes);
-    } else {
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      validateEvidenceContent(content, kind);
-    }
-    const digest = await sha256(bytes);
+    const { name, digest } = await this.readEvidenceFile(filePath, kind);
     const existing = (item.relations ?? [])
       .filter(({ rel }) => rel === "AttachedFile")
       .find(({ attributes }) => attributes?.digest === digest);
@@ -731,6 +859,21 @@ export class AzureTicketInfoService {
     return { ticket, name, kind, digest, url: verified.url };
   }
 
+  async validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void> {
+    await this.readEvidenceFile(filePath, kind);
+  }
+
+  async validateEvidence(ticket: number, filePath: string): Promise<void> {
+    positiveId(ticket, "El ticket");
+    const content = await readUtf8File(filePath);
+    if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
+    validateEvidenceContent(content, "command-output");
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
+    if (existing && existing !== content) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+  }
+
   async setEvidence(ticket: number, filePath: string): Promise<{ ticket: number; completionEvidence: string }> {
     positiveId(ticket, "El ticket");
     const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
@@ -749,6 +892,25 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  private async readEvidenceFile(filePath: string, kind: EvidenceKind): Promise<ValidatedEvidenceFile> {
+    validateEvidenceKind(kind);
+    const file = Bun.file(filePath);
+    const name = filePath.split(/[\\/]/).pop() ?? "";
+    if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
+    if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${filePath}`);
+    if (file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (kind === "screen") {
+      validateScreenEvidence(name, bytes);
+    } else {
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      validateEvidenceContent(content, kind);
+    }
+    return { name, bytes, digest: await sha256(bytes) };
   }
 
   private async readWorkItemValidated(ticket: number): Promise<WorkItem> {
@@ -1073,8 +1235,10 @@ export class AzureTicketInfoService {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
     if (!evidence) unmet.push(GATE.completionEvidence);
-    if (!number(item, ["Custom.EsfuerzoReal"])) unmet.push(GATE.realEffort);
-    if (!number(item, ["Custom.EsfuerzoRealHH"])) unmet.push(GATE.realEffortHours);
+    const realEffort = number(item, ["Custom.EsfuerzoReal"]);
+    const realEffortHours = number(item, ["Custom.EsfuerzoRealHH"]);
+    if (realEffort === undefined || realEffort <= 0) unmet.push(GATE.realEffort);
+    if (realEffortHours === undefined || realEffortHours <= 0) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
     if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
