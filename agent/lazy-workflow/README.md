@@ -73,6 +73,17 @@ Git metadata. Failed or incomplete attempts retry the same ticket every ten
 seconds; the terminal marker replaces the session with `null`, and the
 checkpoint is removed only after live completion verification.
 
+If sessionless reconciliation finds incomplete Azure completion gates, it
+prints the pinned ticket followed by stable reasons such as
+`ticket-state`, `completion-evidence`, `real-effort`, `real-effort-hours`,
+`commit-url`, `attached-capture`, `hu-integration-branch`,
+`completed-hu-targeted-pr`, `native-pr-association`, or
+`merge-commit-artifact-link`. The checkpoint remains intact: no OpenCode
+session, branch cleanup, or later ticket is selected. Correct the reported
+Azure data and rerun the same `code` command to reconcile safely; Azure
+command or authentication failures remain operational errors and are not
+reported as completion gates.
+
 If OpenCode requests `az login`, lazy-workflow keeps the OpenCode session,
 prints `az login --use-device-code`, waits until the HU is accessible again,
 and resumes that session once with `continue`.

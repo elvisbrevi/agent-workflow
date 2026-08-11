@@ -1,5 +1,12 @@
 import { HuInfoService } from "../azure/hu-info-service.ts";
-import { AzureAutocodeService, type AutocodeContext, type AutocodeState, type VerifiedTicketCompletion } from "../azure/autocode-service.ts";
+import {
+  AzureAutocodeService,
+  type AutocodeContext,
+  type AutocodeState,
+  type CompletionGate,
+  type IncompleteTicketCompletion,
+  type TicketCompletionVerification,
+} from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
@@ -16,7 +23,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
-  verifyTicketCompletion(context: AutocodeContext): Promise<VerifiedTicketCompletion | null>;
+  verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
 }>;
 
@@ -31,6 +38,32 @@ function errorMessage(error: unknown): string {
 
 function containsMarker(text: string, marker: string): boolean {
   return text.split(/\r?\n/).some((line) => line.trim() === marker);
+}
+
+const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
+  "ticket-state": "el estado del ticket no es Done",
+  "completion-evidence": "falta la evidencia de completion",
+  "real-effort": "falta el valor requerido de Real Effort",
+  "real-effort-hours": "falta el valor requerido de Real Effort HH",
+  "commit-url": "falta la URL del commit",
+  "attached-capture": "falta una captura adjunta",
+  "hu-integration-branch": "falta la rama de integracion de la HU o no coincide",
+  "completed-hu-targeted-pr": "falta un PR completado dirigido a la rama de integracion de la HU",
+  "native-pr-association": "falta la asociacion nativa del PR con el ticket",
+  "merge-commit-artifact-link": "falta el ArtifactLink nativo del commit exacto de merge",
+};
+
+function isIncompleteCompletion(
+  verification: TicketCompletionVerification | null,
+): verification is IncompleteTicketCompletion {
+  return verification !== null && "unmetGates" in verification;
+}
+
+function reportUnmetCompletion(ticket: number, verification: IncompleteTicketCompletion): void {
+  reportOperator([
+    `lazy-workflow: el ticket ${ticket} no cumple los gates de cierre; checkpoint sessionless conservado.`,
+    ...verification.unmetGates.map((gate) => `- ${gate}: ${COMPLETION_GATE_MESSAGES[gate]}`),
+  ].join("\n"));
 }
 
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
@@ -179,6 +212,10 @@ export class LazyWorkflowCli {
           const verification = completedContext
             ? await this.huInfoService.verifyTicketCompletion(completedContext)
             : null;
+          if (isIncompleteCompletion(verification)) {
+            reportUnmetCompletion(checkpoint!.ticket, verification);
+            return 1;
+          }
           if (!completedContext || !verification) {
             reportOperator(`lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`);
             return 1;
@@ -237,6 +274,7 @@ export class LazyWorkflowCli {
       ].join("\n");
       let resumePrompt = options.prompt;
       while (true) {
+        let verifyingCompletion = false;
         try {
           const execution = sessionId
             ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, TICKET_COMPLETED_MARKER), azureLoginRequired: false }
@@ -267,7 +305,13 @@ export class LazyWorkflowCli {
           }
           resumePrompt = options.prompt;
           if (terminalMarkerReceived) {
+            verifyingCompletion = true;
             const verification = await this.huInfoService.verifyTicketCompletion(context);
+            verifyingCompletion = false;
+            if (isIncompleteCompletion(verification)) {
+              reportUnmetCompletion(context.ticket.id, verification);
+              return 1;
+            }
             if (!verification) {
               reportOperator(`lazy-workflow: el ticket ${context.ticket.id} todavía no cumple el cierre verificable; checkpoint sessionless conservado.`);
               return 1;
@@ -292,6 +336,10 @@ export class LazyWorkflowCli {
             break;
           }
         } catch (error) {
+          if (verifyingCompletion) {
+            reportOperator(`lazy-workflow: Azure no respondió durante la verificación (${errorMessage(error)}); checkpoint sessionless conservado.`);
+            return 1;
+          }
           if (error instanceof OpenCodeSessionCloseError) {
             try {
               await this.checkpointStore.write({
