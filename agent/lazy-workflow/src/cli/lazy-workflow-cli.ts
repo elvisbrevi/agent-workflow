@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import {
   AzureAutocodeService,
@@ -51,6 +52,8 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
+  pushTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
+  checkoutTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -58,6 +61,8 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
+  getCompletionManifestPath?(workingDirectory: string): Promise<string>;
+  createOrReusePullRequest?(hu: number, ticket: number): Promise<{ pullRequest: number; mergeCommit: string }>;
   validateDirectTicketContext?(hu: number, ticket: number): Promise<void>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
@@ -85,6 +90,12 @@ interface Clock { now(): number; }
 interface TicketBranchCleaner {
   deleteTicketBranch(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<void>;
 }
+
+type CompletionEffectRunner = (
+  effect: AutocodeEffect,
+  target: string,
+  action: () => Promise<void>,
+) => Promise<void>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -139,6 +150,7 @@ const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
+const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
@@ -638,7 +650,7 @@ export class LazyWorkflowCli {
     }
   }
 
-  private async applyTicketCompletion(options: CliOptions): Promise<unknown> {
+  private async applyTicketCompletion(options: CliOptions, runEffect: CompletionEffectRunner = async (_effect, _target, action) => action()): Promise<unknown> {
     if (!this.huInfoService.getTicketInfo || !this.huInfoService.validateDirectTicketContext
       || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
       throw new Error("El servicio Azure no soporta ticket-completion-apply");
@@ -657,7 +669,6 @@ export class LazyWorkflowCli {
     const unreconcilableGates = info.gates.unmet.filter((gate) =>
       gate === COMPLETION_GATE.realEffort
       || gate === COMPLETION_GATE.realEffortHours
-      || gate === COMPLETION_GATE.commitUrl
     );
     if (unreconcilableGates.length > 0) {
       throw new Error(`No se puede completar el ticket ${options.ticket}; faltan datos previos: ${unreconcilableGates.join(", ")}`);
@@ -679,12 +690,12 @@ export class LazyWorkflowCli {
       throw new Error(`El ticket ${options.ticket} ya tiene otro PR canónico asociado: ${info.canonicalPullRequest}`);
     }
     if (info.canonicalPullRequest === null) {
-      await this.huInfoService.linkPullRequest(options.hu!, options.ticket!, options.pullRequest!);
+      await runEffect("pr-association", `${options.pullRequest}`, () => this.huInfoService!.linkPullRequest!(options.hu!, options.ticket!, options.pullRequest!).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
     if (info.gates.unmet.includes(COMPLETION_GATE.mergeCommitArtifact)) {
-      await this.huInfoService.linkCommit(options.ticket!, options.pullRequest!);
+      await runEffect("merge-commit", `${options.pullRequest}`, () => this.huInfoService!.linkCommit!(options.ticket!, options.pullRequest!).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
@@ -695,12 +706,12 @@ export class LazyWorkflowCli {
         && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
         && attachment.evidenceKind === evidence.kind
       )) continue;
-      await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
+      await runEffect("attachment", evidence.sha256, () => this.huInfoService!.addAttachment!(options.ticket!, evidence.path, evidence.kind).then(() => undefined));
        info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
     if (textEvidence && completionEvidenceMissing) {
-      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
+      await runEffect("evidence", textEvidence.path, () => this.huInfoService!.setEvidence!(options.ticket!, textEvidence.path).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
@@ -710,13 +721,30 @@ export class LazyWorkflowCli {
     }
 
     if (info.ticket.state !== "Done") {
-      await this.huInfoService.setState(options.ticket!, "Done", info.ticket.state ?? "", true, info.ticket.revision);
+      await runEffect("ticket-done", "Done", () => this.huInfoService!.setState!(options.ticket!, "Done", info.ticket.state ?? "", true, info.ticket.revision).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
     if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {
       throw new Error(`No se pudo verificar la finalización del ticket ${options.ticket}`);
     }
     return { hu: options.hu, ticket: options.ticket, pullRequest: options.pullRequest, manifest: options.manifest, state: "Done", gates: info.gates };
+  }
+
+  private async validateReadyManifest(
+    hu: number,
+    ticket: number,
+    manifestPath: string,
+    workingDirectory: string,
+  ): Promise<CompletionManifest> {
+    if (!this.huInfoService.validateDirectTicketContext || !this.huInfoService.getTicketInfo
+      || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
+      throw new Error("El servicio Azure no soporta la validación del manifest de implementación");
+    }
+    await this.huInfoService.validateDirectTicketContext(hu, ticket);
+    const info = await this.huInfoService.getTicketInfo(hu, ticket);
+    const manifest = await this.huInfoService.readCompletionManifest(manifestPath, workingDirectory);
+    await this.huInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+    return manifest;
   }
 
   private supportsVersionedLifecycle(): boolean {
@@ -829,7 +857,29 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null) {
+    if (checkpoint.ticket !== null && checkpoint.sessionId !== null && this.huInfoService.getTicketInfo) {
+      try {
+        const live = await this.huInfoService.getTicketInfo(hu, checkpoint.ticket);
+        if (live.canonicalPullRequest !== null) {
+          checkpoint = {
+            ...checkpoint,
+            phase: "integrating",
+            sessionId: null,
+            pullRequest: live.canonicalPullRequest,
+          };
+          await save();
+          if (!checkpoint.manifestPath) {
+            reportOperator(`lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero falta su manifest; checkpoint sessionless conservado.`);
+            return 1;
+          }
+        }
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo reconciliar el PR canónico del ticket ${checkpoint.ticket} (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
+    }
+
+    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null && !checkpoint.manifestPath) {
       if (!this.huInfoService.getAutocodeContextForTicket) return 1;
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
       if (!context || !this.huInfoService.verifyTicketCompletion) {
@@ -841,6 +891,98 @@ export class LazyWorkflowCli {
       await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
       await this.checkpointStore.clear();
       return 0;
+    }
+
+    if (checkpoint.ticket !== null && checkpoint.sessionId === null && checkpoint.manifestPath
+      && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
+      && this.huInfoService.getAutocodeContextForTicket && checkpoint.ticketBranch) {
+      const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
+      if (!context) {
+        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] });
+        return 1;
+      }
+      try {
+        const manifest = await this.validateReadyManifest(hu, checkpoint.ticket, checkpoint.manifestPath, options.workingDirectory);
+        checkpoint = {
+          ...checkpoint,
+          localCommit: manifest.commit,
+          manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
+        };
+        await save();
+        const runRecoveryEffect: CompletionEffectRunner = async (effect, target, action) => {
+          const started = now();
+          checkpoint = { ...checkpoint, intent: { effect, target } };
+          await save();
+          try {
+            await action();
+            const finished = now();
+            checkpoint = {
+              ...checkpoint,
+              activeDurationMs: checkpoint.activeDurationMs + Math.max(0, finished - started),
+              intent: null,
+              receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(finished).toISOString() } },
+            };
+            await save();
+          } catch (error) {
+            checkpoint = { ...checkpoint, activeDurationMs: checkpoint.activeDurationMs + Math.max(0, now() - started) };
+            await save();
+            throw error;
+          }
+        };
+        if (!checkpoint.receipts["ticket-branch-checkout"]) {
+          await runRecoveryEffect("ticket-branch-checkout", checkpoint.ticketBranch, () =>
+            this.huInfoService!.checkoutTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
+        }
+        if (!checkpoint.receipts["ticket-branch-push"]) {
+          await runRecoveryEffect("ticket-branch-push", checkpoint.ticketBranch, () =>
+            this.huInfoService!.pushTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
+        }
+        let pullRequest = checkpoint.pullRequest
+          ? { pullRequest: checkpoint.pullRequest, mergeCommit: checkpoint.mergeCommit ?? null }
+          : null;
+        if (!pullRequest) {
+          await runRecoveryEffect("pull-request", `${checkpoint.ticket}`, async () => {
+            pullRequest = await this.huInfoService!.createOrReusePullRequest!(hu, checkpoint.ticket!);
+          });
+        }
+        if (!pullRequest) throw new Error("No se pudo resolver el PR de integración");
+        checkpoint = { ...checkpoint, phase: "integrating", pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
+        await save();
+        if (!checkpoint.receipts["ticket-effort"]) {
+          const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket) : { revision: checkpoint.azureRevision };
+          const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+          await runRecoveryEffect(
+            "ticket-effort",
+            `${checkpoint.effortBaseline.real + activeHours}/${checkpoint.effortBaseline.realHours + activeHours}`,
+            () => this.huInfoService!.setEffort!(
+              checkpoint.ticket!,
+              checkpoint.effortBaseline.real + activeHours,
+              checkpoint.effortBaseline.realHours + activeHours,
+              state.revision ?? 0,
+            ).then(() => undefined),
+          );
+        }
+        if (!checkpoint.receipts["ticket-completion"]) {
+          checkpoint = { ...checkpoint, phase: "evidencing" };
+          await save();
+          const runEffect: CompletionEffectRunner = async (effect, target, action) => {
+            if (effect === "ticket-done") {
+              checkpoint = { ...checkpoint, phase: "completing" };
+              await save();
+            }
+            await runRecoveryEffect(effect, target, action);
+          };
+          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath }, runEffect);
+          checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
+          await save();
+        }
+        await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch);
+        await this.checkpointStore.clear();
+        return this.runVersionedAzureCode({ ...options, session: null }, null);
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo reconciliar determinísticamente el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`);
+        return 1;
+      }
     }
 
     let context: AutocodeContext | null = null;
@@ -920,23 +1062,46 @@ export class LazyWorkflowCli {
       await save();
     }
     if (!this.huInfoService.setTicketBranch) return 1;
-    if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
+    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch === ticketBranch) {
+      await track("ticket-branch", () => this.huInfoService!.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
+    } else if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
       await track("ticket-branch", () => this.huInfoService.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
     } else {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch": { verifiedAt: new Date(now()).toISOString() } } };
       await save();
     }
+    if (this.huInfoService.checkoutTicketBranch) {
+      await track(
+        "ticket-branch-checkout",
+        () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
+        ticketBranch,
+      );
+    }
     await markPhase("implementing", { ticketBranch, sessionId: checkpoint.sessionId });
+
+    let manifestPath = checkpoint.manifestPath ?? null;
+    if (!manifestPath && this.huInfoService.getCompletionManifestPath) {
+      manifestPath = await this.huInfoService.getCompletionManifestPath(options.workingDirectory);
+      checkpoint = { ...checkpoint, manifestPath };
+      await save();
+    }
 
     let sessionId = options.session ?? checkpoint.sessionId;
     let resumePrompt = options.prompt;
     while (true) {
       try {
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, TICKET_COMPLETED_MARKER), azureLoginRequired: false, failed: false }
-          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: TICKET_COMPLETED_MARKER }, true));
+          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
+          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({
+            ...context,
+            ticketBranch,
+            evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
+            manifestPath,
+            workflowPhase: checkpoint.phase,
+            completionGates: Object.values(COMPLETION_GATE),
+          }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
         sessionId = execution.result.sessionId;
-        const terminal = containsMarker(execution.result.text, TICKET_COMPLETED_MARKER);
+        const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
         await save();
         if (execution.azureLoginRequired) {
@@ -945,6 +1110,68 @@ export class LazyWorkflowCli {
           continue;
         }
         if (terminal) {
+          if (manifestPath && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
+            try {
+              const manifest = await this.validateReadyManifest(hu, ticket, manifestPath, options.workingDirectory);
+              checkpoint = {
+                ...checkpoint,
+                localCommit: manifest.commit,
+                manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
+              };
+              await save();
+              await markPhase("implementation-ready", { manifestPath, sessionId: null });
+              await markPhase("integrating", { manifestPath, sessionId: null });
+              if (!checkpoint.receipts["ticket-branch-checkout"]) {
+                await track(
+                  "ticket-branch-checkout",
+                  () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
+                  ticketBranch,
+                );
+              }
+              await track(
+                "ticket-branch-push",
+                () => this.huInfoService!.pushTicketBranch!(ticketBranch!, options.workingDirectory),
+                ticketBranch,
+              );
+              const pullRequest = await track(
+                "pull-request",
+                () => this.huInfoService!.createOrReusePullRequest!(hu, ticket),
+                `${ticket}`,
+              );
+              checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
+              await save();
+
+              const currentState = await this.huInfoService.getState!(ticket);
+              const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+              const targetReal = effortBaseline.real + activeHours;
+              const targetRealHours = effortBaseline.realHours + activeHours;
+              if (!checkpoint.receipts["ticket-effort"]) {
+                await track(
+                  "ticket-effort",
+                  () => this.huInfoService!.setEffort!(ticket, targetReal, targetRealHours, currentState.revision ?? azureRevision ?? 0).then(() => undefined),
+                  `${targetReal}/${targetRealHours}`,
+                );
+              }
+
+              await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
+              await this.applyTicketCompletion(
+                { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
+                async (effect, target, action) => {
+                  if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
+                  await track(effect, action, target);
+                },
+              );
+              checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
+              await save();
+              await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
+              await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
+              await this.checkpointStore.clear();
+              return this.runVersionedAzureCode({ ...options, session: null }, null);
+            } catch (error) {
+              reportOperator(`lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`);
+              return 1;
+            }
+          }
           if (!this.huInfoService.verifyTicketCompletion) return 1;
           try {
             const verification = await this.huInfoService.verifyTicketCompletion(context);
@@ -1129,11 +1356,11 @@ export class LazyWorkflowCli {
         let verifyingCompletion = false;
         try {
           const execution = sessionId
-            ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, TICKET_COMPLETED_MARKER), azureLoginRequired: false }
-            : await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: TICKET_COMPLETED_MARKER }, true);
+            ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false }
+            : await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true);
           const result = execution.result;
           lastResult = result;
-          const terminalMarkerReceived = !execution.failed && containsMarker(result.text, TICKET_COMPLETED_MARKER);
+          const terminalMarkerReceived = !execution.failed && containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
           try {
             await this.checkpointStore.write({
               workflow: "autocode",

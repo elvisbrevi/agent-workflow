@@ -412,6 +412,10 @@ function ticketBranchFixture(options: {
   let published = false;
   let patched = false;
   let fetchedSha = "";
+  const ticketRelations = [
+    { rel: "System.LinkTypes.Hierarchy-Reverse", url: `https://example.test/_apis/wit/workItems/${hu}` },
+    ...(options.ticketRelations ?? []),
+  ];
   const az = async (args: string[]): Promise<string> => {
     events.push(`az:${args[0]}`);
     if (args[0] === "boards" && args.includes(`${hu}`)) return JSON.stringify({
@@ -437,7 +441,7 @@ function ticketBranchFixture(options: {
           url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fticket-126",
           attributes: { name: "Branch" },
         }]
-        : options.ticketRelations ?? [],
+         : ticketRelations,
     });
     if (args[0] === "repos") return JSON.stringify({
       id: "repository-id",
@@ -566,11 +570,11 @@ test("ticket-branch-set conserva el worktree y publica el SHA exacto en Git real
       id: 126,
       rev: 4,
       fields: { "System.WorkItemType": "Task" },
-      relations: patched ? [{
-        rel: "ArtifactLink",
+       relations: patched ? [{
+         rel: "ArtifactLink",
         url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBfeature%2Fticket-126",
         attributes: { name: "Branch" },
-      }] : [],
+       }] : [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: `https://example.test/_apis/wit/workItems/${hu}` }],
     });
     if (args[0] === "repos") return JSON.stringify({
       id: "repository-id",

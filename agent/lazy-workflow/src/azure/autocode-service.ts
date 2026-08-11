@@ -1,6 +1,6 @@
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
-import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   AzureTicketInfoService,
   runAzureCommand,
@@ -8,6 +8,7 @@ import {
   type EvidenceKind,
   type TicketInfo,
   type TicketAttachment,
+  type IntegratedPullRequest,
 } from "./ticket-info-service.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
@@ -78,6 +79,8 @@ export interface AutocodeAzureService {
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
   setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
+  pushTicketBranch(branch: string, workingDirectory: string): Promise<void>;
+  checkoutTicketBranch(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -85,6 +88,8 @@ export interface AutocodeAzureService {
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
+  getCompletionManifestPath(workingDirectory: string): Promise<string>;
+  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest>;
   validateDirectTicketContext(hu: number, ticket: number): Promise<void>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
@@ -259,6 +264,14 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
     return this.ticketInfoService.getTicketInfo(hu, ticket);
+  }
+
+  getCompletionManifestPath(workingDirectory: string): Promise<string> {
+    return this.ticketInfoService.getCompletionManifestPath(workingDirectory);
+  }
+
+  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
+    return this.ticketInfoService.createOrReusePullRequest(hu, ticket);
   }
 
   validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
@@ -470,7 +483,12 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const isDirectChild = (parent.relations ?? []).some((relation) =>
       relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === ticket
     );
-    if (!isDirectChild) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    const reverseParents = (item.relations ?? [])
+      .filter((relation) => relation.rel === "System.LinkTypes.Hierarchy-Reverse")
+      .map((relation) => relationId(relation.url));
+    if (!isDirectChild || reverseParents.length !== 1 || reverseParents[0] !== hu) {
+      throw new Error(`El ticket ${ticket} no es hijo directo único de la HU ${hu}`);
+    }
     const type = field(item, "System.WorkItemType");
     if (type !== "Task" && type !== "Bug") throw new Error(`El work item ${ticket} no es un Task o Bug de entrega`);
     const revision = item.rev;
@@ -573,6 +591,14 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const verified = await this.getBranch(hu, ticket);
     if (verified.branch !== normalized.ref) throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
     return { hu, ticket, branch: normalized.ref };
+  }
+
+  pushTicketBranch(branch: string, workingDirectory: string): Promise<void> {
+    return pushGitBranch(this.git, branch, workingDirectory);
+  }
+
+  checkoutTicketBranch(branch: string, workingDirectory: string): Promise<void> {
+    return checkoutGitBranch(this.git, branch, workingDirectory);
   }
 
   async ensureIntegrationBranch(

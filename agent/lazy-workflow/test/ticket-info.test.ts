@@ -48,6 +48,10 @@ function fixture() {
           rel: "AttachedFile",
            url: "https://example.test/evidence.json",
            attributes: { name: "evidence.json", comment: "http-json", digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        }, {
+          rel: "ArtifactLink",
+          url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read",
+          attributes: { name: "Branch" },
         }],
       });
     }
@@ -81,7 +85,7 @@ test("ticket-info returns normalized delivery context and validates its direct p
       state: "Active",
       revision: 4,
     }),
-    branch: null,
+    branch: "refs/heads/ticket/51-read",
     integrationBranch: "refs/heads/hu/23438",
     effort: { estimated: 3, real: 1.25, realHours: 1.25 },
     completionEvidence: "evidence",
@@ -105,7 +109,10 @@ test("ticket-info does not infer a canonical PR without native association", asy
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       fields: { "System.WorkItemType": "Task", "System.State": "Active" },
-      relations: [],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+      ],
     });
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([]);
     if (args[0] === "repos") return JSON.stringify([{
@@ -127,6 +134,56 @@ test("ticket-info does not infer a canonical PR without native association", asy
   expect(result.gates.unmet).not.toContain("completed-hu-targeted-pr");
 });
 
+test("coordinator creates and verifies one exact HU-targeted pull request", async () => {
+  const commands: string[][] = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    commands.push(args);
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Team" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }, {
+        rel: "ArtifactLink", url: branch, attributes: { name: "Branch" },
+      }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "En progreso" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51" , attributes: { name: "Branch" } },
+      ],
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+      pullRequestId: 99,
+      status: "active",
+      mergeStatus: "notSet",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 99,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "merge-commit" },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.createOrReusePullRequest(23438, 51)).resolves.toEqual({
+    pullRequest: 99,
+    mergeCommit: "merge-commit",
+  });
+  expect(commands.some((args) => args[2] === "create")).toBeTrue();
+  expect(commands.some((args) => args[2] === "update" && args.includes("completed"))).toBeTrue();
+});
+
 test("ticket-info falls back for PR listing and native association without crossing repositories", async () => {
   const commands: string[][] = [];
   const service = new AzureTicketInfoService(async (args) => {
@@ -141,7 +198,7 @@ test("ticket-info falls back for PR listing and native association without cross
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       fields: { "System.WorkItemType": "Task", "System.State": "Active" },
-      relations: [],
+      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
     });
     if (args[0] === "repos" && args.includes("work-item")) throw new Error("route unavailable");
     if (args[0] === "repos") throw new Error("route unavailable");
@@ -180,7 +237,10 @@ test("PR linking validates the exact ticket branch and verifies native associati
       id: 51,
       rev: 4,
       fields: { "System.WorkItemType": "Task" },
-      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+      ],
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
       pullRequestId: 99,
