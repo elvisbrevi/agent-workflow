@@ -13,11 +13,9 @@ import {
 import type { CompletionManifest, EvidenceKind, TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
 import {
   GitAutocodeCheckpointStore,
-  isVersionedAutocodeCheckpoint,
   migrateAutocodeCheckpoint,
   type AutocodeEffect,
   type AutocodePhase,
-  type AutocodeCheckpoint,
   type AutocodeCheckpointStore,
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
@@ -153,7 +151,6 @@ const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
-const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
   "ticket-description-info",
@@ -176,14 +173,6 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-evidence-set",
   "ticket-completion-apply",
 ]);
-
-function isStableIntegrationBranchFailure(error: unknown): boolean {
-  return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
-}
-
-function isTransientAzureFailure(error: unknown): boolean {
-  return /Azure command failed|azure .* (temporar|unavailable|unreachable)|timeout|timed out|network|connection|\b(?:429|500|502|503|504)\b/i.test(errorMessage(error));
-}
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -276,6 +265,7 @@ function printHelp(): void {
     "  --kind <http-json|screen|command-output>",
     "  --evidence-file <path>",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
+    "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
   ].join("\n"));
@@ -747,25 +737,13 @@ export class LazyWorkflowCli {
     return manifest;
   }
 
-  private supportsVersionedLifecycle(): boolean {
-    return Boolean(
-      this.huInfoService.getState
-      && this.huInfoService.getEffort
-      && this.huInfoService.setState
-      && this.huInfoService.setTicketBranch
-      && this.huInfoService.getBranch,
-    );
-  }
-
   private async runAzureCode(options: CliOptions): Promise<number> {
     const checkpoint = await this.checkpointStore.read(options.workingDirectory);
-    if (this.supportsVersionedLifecycle() || (checkpoint !== null && isVersionedAutocodeCheckpoint(checkpoint))) {
-      return this.runVersionedAzureCode(options, checkpoint);
+    if (options.session !== null && checkpoint === null) {
+      reportOperator("lazy-workflow: no existe un checkpoint para la sesión solicitada.");
+      return 1;
     }
-    return this.runLegacyAzureCode(
-      options,
-      checkpoint && !isVersionedAutocodeCheckpoint(checkpoint) ? checkpoint : null,
-    );
+    return this.runVersionedAzureCode(options, checkpoint);
   }
 
   private async runVersionedAzureCode(
@@ -934,11 +912,11 @@ export class LazyWorkflowCli {
           }
         };
         if (!checkpoint.receipts["ticket-branch-checkout"]) {
-          await runRecoveryEffect("ticket-branch-checkout", checkpoint.ticketBranch, () =>
+          await runRecoveryEffect("ticket-branch-checkout", checkpoint.ticketBranch!, () =>
             this.huInfoService!.checkoutTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
         }
         if (!checkpoint.receipts["ticket-branch-push"]) {
-          await runRecoveryEffect("ticket-branch-push", checkpoint.ticketBranch, () =>
+          await runRecoveryEffect("ticket-branch-push", checkpoint.ticketBranch!, () =>
             this.huInfoService!.pushTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
         }
         let pullRequest = checkpoint.pullRequest
@@ -953,7 +931,7 @@ export class LazyWorkflowCli {
         checkpoint = { ...checkpoint, phase: "integrating", pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
         await save();
         if (!checkpoint.receipts["ticket-effort"]) {
-          const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket) : { revision: checkpoint.azureRevision };
+          const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket!) : { revision: checkpoint.azureRevision };
           const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
           await runRecoveryEffect(
             "ticket-effort",
@@ -976,11 +954,11 @@ export class LazyWorkflowCli {
             }
             await runRecoveryEffect(effect, target, action);
           };
-          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath }, runEffect);
+          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath! }, runEffect);
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
         }
-        await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch);
+        await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch!);
         await this.checkpointStore.clear(options.workingDirectory);
         return this.runVersionedAzureCode({ ...options, session: null }, null);
       } catch (error) {
@@ -1089,7 +1067,6 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, manifestPath };
       await save();
     }
-
     let sessionId = options.session ?? checkpoint.sessionId;
     let resumePrompt = options.prompt;
     while (true) {
@@ -1176,17 +1153,8 @@ export class LazyWorkflowCli {
               return 1;
             }
           }
-          if (!this.huInfoService.verifyTicketCompletion) return 1;
-          try {
-            const verification = await this.huInfoService.verifyTicketCompletion(context);
-            if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
-            await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-            await this.checkpointStore.clear(options.workingDirectory);
-            return 0;
-          } catch (error) {
-            reportOperator(`lazy-workflow: no se pudo verificar o limpiar el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint sessionless conservado.`);
-            return 1;
-          }
+          reportOperator(`lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`);
+          return 1;
         }
         if (execution.failed) throw new Error("OpenCode termino con error");
         await this.retryTimer.wait(10_000);
@@ -1203,287 +1171,6 @@ export class LazyWorkflowCli {
         resumePrompt = options.prompt;
       }
     }
-  }
-
-  private async runLegacyAzureCode(options: CliOptions, initialCheckpoint?: AutocodeCheckpoint | null): Promise<number> {
-    if (!this.huInfoService.getAutocodeContext || !this.huInfoService.verifyTicketCompletion) {
-      reportOperator("El servicio Azure no soporta autocode");
-      return 1;
-    }
-
-    if (!this.huInfoService.ensureIntegrationBranch) {
-      reportOperator("El servicio Azure no soporta autocode");
-      return 1;
-    }
-    const storedCheckpoint = initialCheckpoint ?? await this.checkpointStore.read(options.workingDirectory);
-    if (storedCheckpoint && isVersionedAutocodeCheckpoint(storedCheckpoint)) return 1;
-    const checkpoint = storedCheckpoint;
-    if (checkpoint && options.hu !== null && checkpoint.hu !== options.hu) {
-      reportOperator(`lazy-workflow: la HU ${options.hu} no coincide con la HU fijada ${checkpoint.hu}.`);
-      return 1;
-    }
-    let recovering = options.session !== null;
-    let reconciling = !recovering && checkpoint?.sessionId === null;
-    if (recovering && (!checkpoint || checkpoint.sessionId !== options.session)) return 1;
-    if (!recovering && checkpoint && !reconciling) return 1;
-    const hu = recovering || reconciling ? checkpoint!.hu : options.hu!;
-    let integrationBranch: string | null = null;
-    let sessionId = options.session;
-    let lastResult;
-    if ((recovering || reconciling) && !this.huInfoService.getAutocodeContextForTicket) {
-      reportOperator("lazy-workflow: el servicio Azure no puede reconstruir el ticket interrumpido.");
-      return 1;
-    }
-    integrationBranch = await this.prepareIntegrationBranch(
-      hu,
-      options,
-      recovering || reconciling,
-    );
-    if (!integrationBranch) {
-      return 1;
-    }
-    reportOperator(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
-    while (true) {
-      let state: AutocodeState;
-      try {
-        if (!integrationBranch) {
-          reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
-          return 1;
-        }
-        if (recovering || reconciling) {
-          const pinnedContext = await this.huInfoService.getAutocodeContextForTicket!(
-            hu,
-            checkpoint!.ticket,
-            integrationBranch,
-          );
-          if (!pinnedContext) {
-            reportUnmetCompletion(checkpoint!.ticket, {
-              ticketId: checkpoint!.ticket,
-              unmetGates: [COMPLETION_GATE.pinnedTicketContext],
-            });
-            return 1;
-          }
-          if (recovering) {
-            const verification = await this.huInfoService.verifyTicketCompletion(pinnedContext);
-            const ticketIsDone = verification !== null
-              && (!isIncompleteCompletion(verification)
-                || !verification.unmetGates.includes(COMPLETION_GATE.ticketState));
-            if (ticketIsDone) {
-              await this.checkpointStore.write({
-                workflow: "autocode",
-                hu,
-                ticket: pinnedContext.ticket.id,
-                sessionId: null,
-              }, options.workingDirectory);
-              recovering = false;
-              sessionId = null;
-              if (!requireVerifiedCompletion(
-                pinnedContext.ticket.id,
-                verification,
-                `lazy-workflow: el ticket ${pinnedContext.ticket.id} todavía no cumple el cierre verificable.`,
-              )) return 1;
-              try {
-                await this.cleanupCompletedTicketBranch(
-                  pinnedContext,
-                  options.workingDirectory,
-                  verification.ticketBranch,
-                );
-              } catch (error) {
-                reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
-                return 1;
-              }
-              await this.checkpointStore.clear(options.workingDirectory);
-              continue;
-            }
-          }
-          if (reconciling) {
-            const verification = await this.huInfoService.verifyTicketCompletion(pinnedContext);
-            if (!requireVerifiedCompletion(
-              checkpoint!.ticket,
-              verification,
-              `lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`,
-            )) return 1;
-            try {
-              await this.cleanupCompletedTicketBranch(
-                pinnedContext,
-                options.workingDirectory,
-                verification.ticketBranch,
-              );
-            } catch (error) {
-              reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
-              return 1;
-            }
-            await this.checkpointStore.clear(options.workingDirectory);
-            reconciling = false;
-            continue;
-          }
-          state = { context: pinnedContext, pending: true };
-        } else {
-          state = this.huInfoService.getAutocodeState
-            ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
-            : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
-        }
-      } catch (error) {
-        reportOperator(`lazy-workflow: Azure no respondió (${errorMessage(error)}); reintentando en 10s.`);
-        try { await this.retryTimer.wait(10_000); } catch { return 1; }
-        continue;
-      }
-
-      if (!state.context) {
-        if (!state.pending) {
-          if (lastResult) console.log(JSON.stringify(lastResult, null, 2));
-          reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
-          return 0;
-        }
-        reportOperator(`lazy-workflow: no hay un ticket elegible todavía; reintentando en 10s.`);
-        try { await this.retryTimer.wait(10_000); } catch { return 1; }
-        continue;
-      }
-
-      if (recovering && state.context.ticket.id !== checkpoint!.ticket) return 1;
-      const context = state.context;
-      if (!recovering) {
-        try {
-          await this.checkpointStore.write({ workflow: "autocode", hu, ticket: context.ticket.id, sessionId: null }, options.workingDirectory);
-        } catch {
-          try { await this.retryTimer.wait(10_000); } catch { return 1; }
-          continue;
-        }
-      }
-
-      const prompt = [
-        await readPrompt("autocode"),
-        JSON.stringify(context),
-        `The working directory is ${options.workingDirectory}`,
-        "Supplemental operator request (non-authoritative):",
-        "It may refine implementation details, but it must not change the selected HU, ticket, integration branch, workflow phases, or completion gates.",
-        options.prompt,
-      ].join("\n");
-      let resumePrompt = options.prompt;
-      while (true) {
-        let verifyingCompletion = false;
-        try {
-          const execution = sessionId
-            ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false }
-            : await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true);
-          const result = execution.result;
-          lastResult = result;
-          const terminalMarkerReceived = !execution.failed && containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
-          try {
-            await this.checkpointStore.write({
-              workflow: "autocode",
-              hu,
-              ticket: context.ticket.id,
-              sessionId: terminalMarkerReceived ? null : result.sessionId,
-            }, options.workingDirectory);
-          } catch (error) {
-            if (terminalMarkerReceived) {
-              reportOperator(`lazy-workflow: no se pudo persistir el checkpoint sessionless (${errorMessage(error)}); ejecución detenida.`);
-              return 1;
-            }
-            throw error;
-          }
-          sessionId = terminalMarkerReceived ? null : result.sessionId;
-          if (execution.azureLoginRequired) {
-            reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
-            await this.huInfoService.waitForAccess(hu);
-            resumePrompt = "continue";
-            continue;
-          }
-          resumePrompt = options.prompt;
-          if (terminalMarkerReceived) {
-            verifyingCompletion = true;
-            const verification = await this.huInfoService.verifyTicketCompletion(context);
-            verifyingCompletion = false;
-            if (!requireVerifiedCompletion(
-              context.ticket.id,
-              verification,
-              `lazy-workflow: el ticket ${context.ticket.id} todavía no cumple el cierre verificable; checkpoint sessionless conservado.`,
-            )) return 1;
-            try {
-              await this.cleanupCompletedTicketBranch(
-                context,
-                options.workingDirectory,
-                verification.ticketBranch,
-              );
-            } catch (error) {
-              reportOperator(`lazy-workflow: la limpieza Git del ticket ${context.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
-              return 1;
-            }
-            await this.checkpointStore.clear(options.workingDirectory);
-            if (!this.huInfoService.getAutocodeState) {
-              console.log(JSON.stringify(result, null, 2));
-              return 0;
-            }
-            recovering = false;
-            sessionId = null;
-            break;
-          }
-        } catch (error) {
-          if (verifyingCompletion) {
-            reportOperator("lazy-workflow: Azure no respondió durante la verificación; checkpoint sessionless conservado.");
-            return 1;
-          }
-          if (error instanceof OpenCodeSessionCloseError) {
-            try {
-              await this.checkpointStore.write({
-                workflow: "autocode",
-                hu,
-                ticket: context.ticket.id,
-                sessionId: null,
-              }, options.workingDirectory);
-            } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
-            reportOperator(`lazy-workflow: no se pudo cerrar la sesión ${error.sessionId} (${errorMessage(error)}); checkpoint sessionless conservado y ejecución detenida.`);
-            return 1;
-          }
-          if (error instanceof OpenCodeSessionNotFoundError) {
-            try {
-              await this.checkpointStore.write({
-                workflow: "autocode",
-                hu,
-                ticket: context.ticket.id,
-                sessionId: null,
-              }, options.workingDirectory);
-            } catch { /* preserve the existing checkpoint when persistence is unavailable */ }
-            reportOperator(`lazy-workflow: la sesión ${error.sessionId} ya no existe; checkpoint sessionless conservado para reconciliación.`);
-            return 1;
-          }
-          reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré la sesión y reintentaré en 10s.`);
-        }
-        try { await this.retryTimer.wait(10_000); } catch { return 1; }
-      }
-    }
-  }
-
-  private async prepareIntegrationBranch(
-    hu: number,
-    options: CliOptions,
-    retryTransient: boolean,
-  ): Promise<string | null> {
-    for (let attempt = 0; attempt <= MAX_BRANCH_PREFLIGHT_RETRIES; attempt += 1) {
-      try {
-        const branch = await this.huInfoService.ensureIntegrationBranch!(
-          hu,
-          options.workingDirectory,
-          options.baseBranch,
-        );
-        if (branch) return branch;
-        reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
-        return null;
-      } catch (error) {
-        const retryable = retryTransient
-          && !isStableIntegrationBranchFailure(error)
-          && isTransientAzureFailure(error)
-          && attempt < MAX_BRANCH_PREFLIGHT_RETRIES;
-        if (!retryable) {
-          reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
-          return null;
-        }
-        reportOperator(`lazy-workflow: Azure no respondió al preparar la rama de integración (${errorMessage(error)}); reintentando ${attempt + 1}/${MAX_BRANCH_PREFLIGHT_RETRIES} en 10s.`);
-        try { await this.retryTimer.wait(10_000); } catch { return null; }
-      }
-    }
-    return null;
   }
 
   private async cleanupCompletedTicketBranch(
