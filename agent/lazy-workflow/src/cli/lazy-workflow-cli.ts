@@ -28,6 +28,9 @@ type CliOptions = OpenCodeRunOptions & {
   realEffort: number;
   realEffortHours: number;
   expectedRevision: number;
+  hasRealEffort: boolean;
+  hasRealEffortHours: boolean;
+  hasExpectedRevision: boolean;
   evidenceKind: EvidenceKind | null;
   numberOfQuestions: number;
   workingDirectory: string;
@@ -184,6 +187,9 @@ function parseOptions(args: string[]): CliOptions {
     realEffort: Number(optionValue(args, "--real-effort")),
     realEffortHours: Number(optionValue(args, "--real-effort-hh")),
     expectedRevision: Number(optionValue(args, "--expected-rev")),
+    hasRealEffort: args.includes("--real-effort"),
+    hasRealEffortHours: args.includes("--real-effort-hh"),
+    hasExpectedRevision: args.includes("--expected-rev"),
     evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
@@ -277,6 +283,8 @@ export class LazyWorkflowCli {
         return 1;
       }
       if (command === "ticket-effort-set" && (
+        !options.hasRealEffort || !options.hasRealEffortHours || !options.hasExpectedRevision
+        ||
         !Number.isFinite(options.realEffort) || options.realEffort < 0
         || !Number.isFinite(options.realEffortHours) || options.realEffortHours < 0
         || !Number.isInteger(options.expectedRevision) || options.expectedRevision <= 0
