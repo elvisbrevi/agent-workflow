@@ -909,30 +909,49 @@ export class LazyWorkflowCli {
           manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
         };
         await save();
-        await this.huInfoService.checkoutTicketBranch(checkpoint.ticketBranch, options.workingDirectory);
-        if (!checkpoint.receipts["ticket-branch-push"]) {
-          await this.huInfoService.pushTicketBranch(checkpoint.ticketBranch, options.workingDirectory);
-          checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch-push": { verifiedAt: new Date(now()).toISOString() } } };
+        const runRecoveryEffect: CompletionEffectRunner = async (effect, target, action) => {
+          checkpoint = { ...checkpoint, intent: { effect, target } };
           await save();
+          await action();
+          checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(now()).toISOString() } } };
+          await save();
+        };
+        if (!checkpoint.receipts["ticket-branch-checkout"]) {
+          await runRecoveryEffect("ticket-branch-checkout", checkpoint.ticketBranch, () =>
+            this.huInfoService!.checkoutTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
         }
-        const pullRequest = checkpoint.pullRequest
-          ? { pullRequest: checkpoint.pullRequest, mergeCommit: null }
-          : await this.huInfoService.createOrReusePullRequest(hu, checkpoint.ticket);
+        if (!checkpoint.receipts["ticket-branch-push"]) {
+          await runRecoveryEffect("ticket-branch-push", checkpoint.ticketBranch, () =>
+            this.huInfoService!.pushTicketBranch!(checkpoint.ticketBranch!, options.workingDirectory));
+        }
+        let pullRequest = checkpoint.pullRequest
+          ? { pullRequest: checkpoint.pullRequest, mergeCommit: checkpoint.mergeCommit ?? null }
+          : null;
+        if (!pullRequest) {
+          await runRecoveryEffect("pull-request", `${checkpoint.ticket}`, async () => {
+            pullRequest = await this.huInfoService!.createOrReusePullRequest!(hu, checkpoint.ticket!);
+          });
+        }
+        if (!pullRequest) throw new Error("No se pudo resolver el PR de integración");
         checkpoint = { ...checkpoint, phase: "integrating", pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
         await save();
         if (!checkpoint.receipts["ticket-effort"]) {
           const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket) : { revision: checkpoint.azureRevision };
           const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
-          await this.huInfoService.setEffort(
-            checkpoint.ticket,
-            checkpoint.effortBaseline.real + activeHours,
-            checkpoint.effortBaseline.realHours + activeHours,
-            state.revision ?? 0,
+          await runRecoveryEffect(
+            "ticket-effort",
+            `${checkpoint.effortBaseline.real + activeHours}/${checkpoint.effortBaseline.realHours + activeHours}`,
+            () => this.huInfoService!.setEffort!(
+              checkpoint.ticket!,
+              checkpoint.effortBaseline.real + activeHours,
+              checkpoint.effortBaseline.realHours + activeHours,
+              state.revision ?? 0,
+            ).then(() => undefined),
           );
-          checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-effort": { verifiedAt: new Date(now()).toISOString() } } };
-          await save();
         }
         if (!checkpoint.receipts["ticket-completion"]) {
+          checkpoint = { ...checkpoint, phase: "evidencing" };
+          await save();
           const runEffect: CompletionEffectRunner = async (effect, target, action) => {
             checkpoint = { ...checkpoint, intent: { effect, target } };
             await save();
@@ -940,6 +959,8 @@ export class LazyWorkflowCli {
             checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, [effect]: { verifiedAt: new Date(now()).toISOString() } } };
             await save();
           };
+          checkpoint = { ...checkpoint, phase: "completing" };
+          await save();
           await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath }, runEffect);
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();

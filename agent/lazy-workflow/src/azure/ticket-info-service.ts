@@ -390,7 +390,8 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     const info = await this.getTicketInfo(hu, ticket);
     const valid = info.pullRequests.filter((pr) =>
-      pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === info.integrationBranch,
+      pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === info.integrationBranch
+      && pr.source === info.branch,
     );
     if (info.canonicalPullRequest !== null) {
       const pr = valid.find(({ id }) => id === info.canonicalPullRequest);
@@ -492,6 +493,7 @@ export class AzureTicketInfoService {
       pullRequest.status === "completed"
       && pullRequest.mergeStatus === "succeeded"
       && pullRequest.target === integrationBranch.ref
+      && pullRequest.source === ticketBranch.ref
     );
     const associated = validPullRequests.filter((pullRequest) => pullRequest.associated);
     const canonical = associated.length === 1 ? associated[0]!.id : null;
@@ -507,6 +509,7 @@ export class AzureTicketInfoService {
       completionEvidence,
       mergeCommit,
       linkedCommit,
+      ticketBranch.ref,
     );
 
     return {
@@ -817,6 +820,9 @@ export class AzureTicketInfoService {
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
     const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.some((candidate) => candidate.source !== ticketBranch.ref)) {
+      throw new Error(`El ticket ${ticket} tiene una asociación nativa a un PR de otra rama`);
+    }
     if (associatedCandidates.length > 1 || (associatedCandidates[0] && associatedCandidates[0].id !== pullRequestId)) {
       throw new Error(`El PR ${pullRequestId} entra en conflicto con el PR canónico ya asociado al ticket ${ticket}`);
     }
@@ -851,6 +857,9 @@ export class AzureTicketInfoService {
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
     const associatedCandidates = validCandidates.filter((candidate) => candidate.associated);
+    if (associatedCandidates.some((candidate) => candidate.source !== ticketBranch.ref)) {
+      throw new Error(`El ticket ${ticket} tiene una asociación nativa a un PR de otra rama`);
+    }
     if (associatedCandidates.length !== 1 || associatedCandidates[0]!.id !== pullRequestId) {
       throw new Error(`El PR ${pullRequestId} no es el único PR canónico asociado al ticket ${ticket}`);
     }
@@ -1358,6 +1367,7 @@ export class AzureTicketInfoService {
     evidence: string | null,
     mergeCommit: string | null,
     artifactCommit: FixedCommitLink | null,
+    ticketBranch: string | null,
   ): CompletionGate[] {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
@@ -1371,6 +1381,7 @@ export class AzureTicketInfoService {
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
     const validPrs = pullRequests.filter((pr) =>
       pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === integrationBranch
+      && pr.source === ticketBranch
     );
     const validPr = validPrs.find((pr) => pr.id === canonical);
     if (validPrs.length === 0) unmet.push(GATE.completedHuPullRequest);
