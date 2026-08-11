@@ -47,9 +47,12 @@ bun run main.ts code --hu 23438 --working-directory /path/to/repository
 ```
 
 After `TICKET_COMPLETED`, the coordinator stops OpenCode even if its output
-stream remains open. It verifies the completed PR and Azure evidence, switches
-to the updated HU integration branch, deletes the completed ticket branch
-locally and remotely, clears the checkpoint, and refreshes Azure before
+stream remains open and closes the native provider session with the exact
+opaque session identifier. An already absent session is safe; any other
+closure failure stops the run with the pinned ticket in a sessionless
+checkpoint. A later invocation verifies that ticket without invoking OpenCode,
+switches to the updated HU integration branch, deletes the completed ticket
+branch locally and remotely, clears the checkpoint, and refreshes Azure before
 starting the next eligible ticket. Branch cleanup stops safely when the
 working tree contains uncommitted or untracked changes.
 
@@ -67,7 +70,8 @@ forwarded to OpenCode; `--number-of-questions` applies to `plan`.
 
 Autocode stores only its HU, ticket, and opaque OpenCode session in repository
 Git metadata. Failed or incomplete attempts retry the same ticket every ten
-seconds; the checkpoint is removed only after live completion verification.
+seconds; the terminal marker replaces the session with `null`, and the
+checkpoint is removed only after live completion verification.
 
 If OpenCode requests `az login`, lazy-workflow keeps the OpenCode session,
 prints `az login --use-device-code`, waits until the HU is accessible again,
