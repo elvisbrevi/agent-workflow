@@ -23,10 +23,11 @@ the shell command reported by OpenCode. The working directory is passed as
 OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
 
-The coordinator does not parse the operator prompt to choose a base branch.
-OpenCode interprets that instruction and creates the HU integration branch in
-the selected repository; when no base branch is specified, it uses remote
-`main`, or remote `master` when `main` is unavailable.
+Before a fresh `code` run selects a ticket or writes a checkpoint, the
+coordinator queries the HU's native Branch link. It reuses a valid linked
+branch, or verifies/creates `hu/<HU>` in the selected repository. Creating a
+missing branch requires the structured `--base-branch <name>` option; the
+operator prompt is never parsed for branch selection.
 
 To plan an Azure HU:
 
@@ -84,8 +85,13 @@ or discard worktree changes; a dirty worktree fails closed.
 To drain the HU's direct Task and Bug delivery tickets one at a time:
 
 ```bash
-bun run main.ts code --hu 23438 --working-directory /path/to/repository
+bun run main.ts code --hu 23438 --base-branch main \
+  --working-directory /path/to/repository
 ```
+
+Omit `--base-branch` when the HU is already linked or the expected remote
+`hu/23438` branch already exists. A branch preflight failure stops once,
+without selecting a ticket, writing a checkpoint, or starting OpenCode.
 
 After `TICKET_COMPLETED`, the coordinator stops OpenCode even if its output
 stream remains open and closes the native provider session with the exact
