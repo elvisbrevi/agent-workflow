@@ -668,3 +668,133 @@ test("ticket field mutation commands validate their explicit contracts", async (
   ]);
   expect(output).toHaveLength(3);
 });
+
+test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and working directory", async () => {
+  const calls: unknown[][] = [];
+  const output: string[] = [];
+  const originalLog = console.log;
+  const service = {
+    getHuInfo: async () => { throw new Error("must not use generic HU read"); },
+    waitForAccess: async () => undefined,
+    applyCompletion: async (...args: [number, number, number, string, string]) => {
+      calls.push(args);
+      return { hu: args[0], ticket: args[1], pullRequest: args[2], manifest: args[3], workingDirectory: args[4] };
+    },
+  };
+
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-completion-apply",
+      "--hu", "23438",
+      "--ticket", "51",
+      "--pr", "99",
+      "--manifest", "/tmp/completion.json",
+      "--working-directory", "/repo",
+    ])).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(calls).toEqual([[23438, 51, 99, "/tmp/completion.json", "/repo"]]);
+  expect(JSON.parse(output[0]!)).toEqual({
+    hu: 23438,
+    ticket: 51,
+    pullRequest: 99,
+    manifest: "/tmp/completion.json",
+    workingDirectory: "/repo",
+  });
+});
+
+test("completion apply reconciles missing effects before moving the ticket to Done", async () => {
+  const evidencePath = `/tmp/lazy-workflow-completion-${crypto.randomUUID()}.json`;
+  const manifestPath = `/tmp/lazy-workflow-manifest-${crypto.randomUUID()}.json`;
+  const commit = "a".repeat(40);
+  const evidence = '{\n  "ok": true\n}\n';
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(evidence)))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  await Bun.write(evidencePath, evidence);
+  await Bun.write(manifestPath, JSON.stringify({
+    ticket: 51,
+    ticketBranch: "refs/heads/ticket/51",
+    commit,
+    validation: [{ command: "bun test", result: "17 passed" }],
+    evidence: [{ path: evidencePath, kind: "http-json", sha256: digest }],
+  }));
+
+  const calls: string[] = [];
+  let state = "Active";
+  let canonicalPullRequest: number | null = null;
+  let hasCommit = false;
+  let hasAttachment = false;
+  let completionEvidence: string | null = null;
+  try {
+    const service = new class extends AzureTicketInfoService {
+      constructor() {
+        super(async () => "", async (args) => args[0] === "rev-parse" ? commit : "ticket/51\n");
+      }
+
+      override async getTicketInfo(): Promise<any> {
+        const unmet = state === "Done" ? [] : [
+          ...(state === "Done" ? [] : ["ticket-state"]),
+          ...(completionEvidence ? [] : ["completion-evidence"]),
+          ...(hasCommit ? [] : ["merge-commit-artifact-link"]),
+        ];
+        return {
+          hu: { id: 23438 },
+          ticket: { id: 51, type: "Task", state },
+          branch: "refs/heads/ticket/51",
+          integrationBranch: "refs/heads/hu/23438",
+          effort: { real: 1, realHours: 1 },
+          pullRequests: [],
+          canonicalPullRequest,
+          mergeCommit: hasCommit ? "merge" : null,
+          attachments: hasAttachment ? [{ kind: "AttachedFile", evidenceKind: "http-json", digest }] : [],
+          completionEvidence,
+          gates: { satisfied: [], unmet },
+        };
+      }
+
+      override async linkPullRequest(): Promise<any> {
+        calls.push("pr");
+        canonicalPullRequest = 99;
+        return {};
+      }
+
+      override async linkCommit(): Promise<any> {
+        calls.push("commit");
+        hasCommit = true;
+        return {};
+      }
+
+      override async addAttachment(): Promise<any> {
+        calls.push("attachment");
+        hasAttachment = true;
+        return {};
+      }
+
+      override async setEvidence(): Promise<any> {
+        calls.push("evidence");
+        completionEvidence = evidence;
+        return {};
+      }
+
+      override async setState(): Promise<any> {
+        calls.push("state");
+        state = "Done";
+        return {};
+      }
+    }();
+
+    await expect(service.applyCompletion(23438, 51, 99, manifestPath, "/repo")).resolves.toEqual(expect.objectContaining({
+      hu: 23438,
+      ticket: 51,
+      pullRequest: 99,
+      state: "Done",
+    }));
+    expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
+  } finally {
+    await unlink(evidencePath);
+    await unlink(manifestPath);
+  }
+});
