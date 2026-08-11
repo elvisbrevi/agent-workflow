@@ -29,9 +29,32 @@ export interface AutocodeState {
   pending: boolean;
 }
 
+export const COMPLETION_GATE = {
+  pinnedTicketContext: "pinned-ticket-context",
+  ticketState: "ticket-state",
+  completionEvidence: "completion-evidence",
+  realEffort: "real-effort",
+  realEffortHours: "real-effort-hours",
+  commitUrl: "commit-url",
+  attachedCapture: "attached-capture",
+  huIntegrationBranch: "hu-integration-branch",
+  completedHuPullRequest: "completed-hu-targeted-pr",
+  nativePullRequestAssociation: "native-pr-association",
+  mergeCommitArtifact: "merge-commit-artifact-link",
+} as const;
+
+export type CompletionGate = typeof COMPLETION_GATE[keyof typeof COMPLETION_GATE];
+
 export interface VerifiedTicketCompletion {
   ticketBranch: string;
 }
+
+export interface IncompleteTicketCompletion {
+  ticketId: number;
+  unmetGates: CompletionGate[];
+}
+
+export type TicketCompletionVerification = VerifiedTicketCompletion | IncompleteTicketCompletion;
 
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
@@ -39,7 +62,7 @@ export interface AutocodeAzureService {
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
   getAutocodeContextForTicket(hu: number, ticket: number, integrationBranch?: string): Promise<AutocodeContext | null>;
-  verifyTicketCompletion(context: AutocodeContext): Promise<VerifiedTicketCompletion | null>;
+  verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   waitForAccess(hu: number): Promise<void>;
 }
@@ -217,24 +240,38 @@ export class AzureAutocodeService implements AutocodeAzureService {
     };
   }
 
-  async verifyTicketCompletion(context: AutocodeContext): Promise<VerifiedTicketCompletion | null> {
+  async verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification> {
     const [item, parent] = await Promise.all([
       show(context.ticket.id, true, this.az),
       show(context.hu.id, true, this.az),
     ]);
-    if (field(item, "System.State") !== "Done") return null;
+
+    const unmetGates: CompletionGate[] = [];
+    if (field(item, "System.State") !== "Done") unmetGates.push(COMPLETION_GATE.ticketState);
     const evidence = firstField(item, COMPLETION_EVIDENCE_FIELDS);
-    if (!evidence?.trim()) return null;
-    if (!positiveNumberField(item, "Custom.EsfuerzoReal")) return null;
-    if (!positiveNumberField(item, "Custom.EsfuerzoRealHH")) return null;
-    if (!field(item, "Custom.URLCommit")?.trim()) return null;
-    if (!(item.relations ?? []).some((relation) => relation.rel === "AttachedFile")) return null;
-    if (integrationBranchFrom(parent) !== context.integrationBranch) return null;
+    if (!evidence?.trim()) unmetGates.push(COMPLETION_GATE.completionEvidence);
+    if (!positiveNumberField(item, "Custom.EsfuerzoReal")) unmetGates.push(COMPLETION_GATE.realEffort);
+    if (!positiveNumberField(item, "Custom.EsfuerzoRealHH")) unmetGates.push(COMPLETION_GATE.realEffortHours);
+    if (!field(item, "Custom.URLCommit")?.trim()) unmetGates.push(COMPLETION_GATE.commitUrl);
+    if (!(item.relations ?? []).some((relation) => relation.rel === "AttachedFile")) {
+      unmetGates.push(COMPLETION_GATE.attachedCapture);
+    }
+    if (integrationBranchFrom(parent) !== context.integrationBranch) {
+      unmetGates.push(COMPLETION_GATE.huIntegrationBranch);
+    }
     const pr = await this.getCompletedPullRequest(context);
-    if (!pr) return null;
+    if (!pr) {
+      unmetGates.push(COMPLETION_GATE.completedHuPullRequest);
+      return { ticketId: context.ticket.id, unmetGates };
+    }
     const artifactPrefix = `${pr.projectId}/${pr.repositoryId}`;
-    if (!await this.isPullRequestLinkedToTicket(pr.id!, context.ticket.id)) return null;
-    if (!hasArtifactLink(item, `vstfs:///Git/Commit/${artifactPrefix}/${pr.mergeCommit}`)) return null;
+    if (!await this.isPullRequestLinkedToTicket(pr.id!, context.ticket.id)) {
+      unmetGates.push(COMPLETION_GATE.nativePullRequestAssociation);
+    }
+    if (!hasArtifactLink(item, `vstfs:///Git/Commit/${artifactPrefix}/${pr.mergeCommit}`)) {
+      unmetGates.push(COMPLETION_GATE.mergeCommitArtifact);
+    }
+    if (unmetGates.length > 0) return { ticketId: context.ticket.id, unmetGates };
     return { ticketBranch: pr.source! };
   }
 
@@ -312,6 +349,6 @@ async function runAz(args: string[]): Promise<string> {
   try {
     return await $`az ${args}`.text();
   } catch (error) {
-    throw new Error(`az ${args.join(" ")} fallo: ${commandError(error)}`, { cause: error });
+    throw new Error("Azure command failed", { cause: error });
   }
 }
