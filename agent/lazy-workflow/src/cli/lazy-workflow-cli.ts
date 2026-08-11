@@ -51,6 +51,8 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
+  validateEvidenceFile?(filePath: string, kind: EvidenceKind): Promise<void>;
+  validateEvidence?(ticket: number, filePath: string): Promise<void>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -628,7 +630,8 @@ export class LazyWorkflowCli {
       throw new Error("El servicio Azure no soporta ticket-completion-apply");
     }
     if (!this.huInfoService.linkPullRequest || !this.huInfoService.linkCommit || !this.huInfoService.addAttachment
-      || !this.huInfoService.setEvidence || !this.huInfoService.setState) {
+      || !this.huInfoService.setEvidence || !this.huInfoService.setState
+      || !this.huInfoService.validateEvidenceFile || !this.huInfoService.validateEvidence) {
       throw new Error("El servicio Azure no expone todas las primitivas de completion");
     }
 
@@ -645,13 +648,15 @@ export class LazyWorkflowCli {
       throw new Error(`No se puede completar el ticket ${options.ticket}; faltan datos previos: ${unreconcilableGates.join(", ")}`);
     }
 
+    for (const evidence of manifest.evidence) {
+      await this.huInfoService.validateEvidenceFile(evidence.path, evidence.kind);
+    }
     const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
     if (!textEvidence && !info.completionEvidence) {
       throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
     if (textEvidence) {
-      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
-      info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
+      await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path);
     }
 
     if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== options.pullRequest) {
@@ -672,6 +677,11 @@ export class LazyWorkflowCli {
         attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase() && attachment.evidenceKind === evidence.kind
       )) continue;
       await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
+      info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
+    }
+
+    if (textEvidence) {
+      await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
