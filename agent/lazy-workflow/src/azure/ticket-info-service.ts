@@ -377,6 +377,8 @@ export class AzureTicketInfoService {
     positiveId(ticket, "El ticket");
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
+    const parentType = text(parent, "System.WorkItemType");
+    if (parentType && parentType !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
     const child = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     );
@@ -702,6 +704,7 @@ export class AzureTicketInfoService {
 
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
+    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);

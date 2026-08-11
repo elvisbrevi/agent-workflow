@@ -652,7 +652,8 @@ export class LazyWorkflowCli {
       await this.huInfoService.validateEvidenceFile(evidence.path, evidence.kind);
     }
     const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
-    if (!textEvidence && !info.completionEvidence) {
+    const completionEvidenceMissing = !info.completionEvidence;
+    if (!textEvidence && completionEvidenceMissing) {
       throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
     if (textEvidence) {
@@ -677,10 +678,10 @@ export class LazyWorkflowCli {
         attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase() && attachment.evidenceKind === evidence.kind
       )) continue;
       await this.huInfoService.addAttachment(options.ticket!, evidence.path, evidence.kind);
-      info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
+       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
-    if (textEvidence) {
+    if (textEvidence && completionEvidenceMissing) {
       await this.huInfoService.setEvidence(options.ticket!, textEvidence.path);
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
