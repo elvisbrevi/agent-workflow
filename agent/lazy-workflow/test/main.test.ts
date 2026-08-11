@@ -234,7 +234,7 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
   const cleaner = new GitTicketBranchCleaner(async (args) => {
     commands.push(args);
     if (args[0] === "status") return "";
-    if (args[0] === "branch" && args[1] === "--list") return "  ticket/51-programas\n";
+    if (args[0] === "branch" && args[1] === "--list" && args[2] === "ticket/51-programas") return "  ticket/51-programas\n";
     if (args[0] === "ls-remote") return "abc123\trefs/heads/ticket/51-programas\n";
     return "";
   });
@@ -248,7 +248,8 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
   expect(commands).toEqual([
     ["status", "--porcelain"],
     ["fetch", "origin", "+refs/heads/hu/23438:refs/remotes/origin/hu/23438"],
-    ["switch", "hu/23438"],
+    ["branch", "--list", "hu/23438"],
+    ["switch", "--create", "hu/23438", "--track", "refs/remotes/origin/hu/23438"],
     ["merge", "--ff-only", "origin/hu/23438"],
     ["branch", "--list", "ticket/51-programas"],
     ["branch", "-D", "ticket/51-programas"],

@@ -1062,7 +1062,9 @@ export class LazyWorkflowCli {
       await save();
     }
     if (!this.huInfoService.setTicketBranch) return 1;
-    if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
+    if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch === ticketBranch) {
+      await track("ticket-branch", () => this.huInfoService!.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
+    } else if (!checkpoint.receipts["ticket-branch"] && (!existingBranch?.branch || existingBranch.branch !== ticketBranch)) {
       await track("ticket-branch", () => this.huInfoService.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
     } else {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-branch": { verifiedAt: new Date(now()).toISOString() } } };
@@ -1090,7 +1092,14 @@ export class LazyWorkflowCli {
       try {
         const execution = await track(null, async () => sessionId
           ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
-          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({ ...context, ticketBranch, evidenceDirectory: manifestPath ? dirname(manifestPath) : null, manifestPath }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
+          : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({
+            ...context,
+            ticketBranch,
+            evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
+            manifestPath,
+            workflowPhase: checkpoint.phase,
+            completionGates: Object.values(COMPLETION_GATE),
+          }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
         sessionId = execution.result.sessionId;
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
@@ -1145,17 +1154,15 @@ export class LazyWorkflowCli {
               }
 
               await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
-              await track(
-                "ticket-completion",
-                () => this.applyTicketCompletion(
-                  { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
-                  async (effect, target, action) => {
-                    if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
-                    await track(effect, action, target);
-                  },
-                ).then(() => undefined),
-                `${pullRequest.pullRequest}`,
+              await this.applyTicketCompletion(
+                { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
+                async (effect, target, action) => {
+                  if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
+                  await track(effect, action, target);
+                },
               );
+              checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
+              await save();
               await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
               await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
               await this.checkpointStore.clear();
