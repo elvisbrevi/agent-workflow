@@ -1072,7 +1072,6 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, manifestPath };
       await save();
     }
-
     let sessionId = options.session ?? checkpoint.sessionId;
     let resumePrompt = options.prompt;
     while (true) {
@@ -1159,17 +1158,8 @@ export class LazyWorkflowCli {
               return 1;
             }
           }
-          if (!this.huInfoService.verifyTicketCompletion) return 1;
-          try {
-            const verification = await this.huInfoService.verifyTicketCompletion(context);
-            if (!requireVerifiedCompletion(ticket, verification, `lazy-workflow: el ticket ${ticket} todavía no cumple el cierre verificable.`)) return 1;
-            await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-            await this.checkpointStore.clear(options.workingDirectory);
-            return 0;
-          } catch (error) {
-            reportOperator(`lazy-workflow: no se pudo verificar o limpiar el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint sessionless conservado.`);
-            return 1;
-          }
+          reportOperator(`lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`);
+          return 1;
         }
         if (execution.failed) throw new Error("OpenCode termino con error");
         await this.retryTimer.wait(10_000);
