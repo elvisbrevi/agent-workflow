@@ -1,11 +1,13 @@
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import {
   AzureAutocodeService,
+  COMPLETION_GATE,
   type AutocodeContext,
   type AutocodeState,
   type CompletionGate,
   type IncompleteTicketCompletion,
   type TicketCompletionVerification,
+  type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import { GitAutocodeCheckpointStore, type AutocodeCheckpointStore } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
@@ -41,6 +43,7 @@ function containsMarker(text: string, marker: string): boolean {
 }
 
 const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
+  "pinned-ticket-context": "no se pudo reconstruir el ticket fijado como hijo directo de la HU",
   "ticket-state": "el estado del ticket no es Done",
   "completion-evidence": "falta la evidencia de completion",
   "real-effort": "falta el valor requerido de Real Effort",
@@ -64,6 +67,19 @@ function reportUnmetCompletion(ticket: number, verification: IncompleteTicketCom
     `lazy-workflow: el ticket ${ticket} no cumple los gates de cierre; checkpoint sessionless conservado.`,
     ...verification.unmetGates.map((gate) => `- ${gate}: ${COMPLETION_GATE_MESSAGES[gate]}`),
   ].join("\n"));
+}
+
+function requireVerifiedCompletion(
+  ticket: number,
+  verification: TicketCompletionVerification | null,
+  fallbackMessage: string,
+): verification is VerifiedTicketCompletion {
+  if (isIncompleteCompletion(verification)) {
+    reportUnmetCompletion(ticket, verification);
+  } else if (!verification) {
+    reportOperator(fallbackMessage);
+  }
+  return verification !== null && !isIncompleteCompletion(verification);
 }
 
 const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
@@ -209,17 +225,19 @@ export class LazyWorkflowCli {
             checkpoint!.ticket,
             integrationBranch,
           );
-          const verification = completedContext
-            ? await this.huInfoService.verifyTicketCompletion(completedContext)
-            : null;
-          if (isIncompleteCompletion(verification)) {
-            reportUnmetCompletion(checkpoint!.ticket, verification);
+          if (!completedContext) {
+            reportUnmetCompletion(checkpoint!.ticket, {
+              ticketId: checkpoint!.ticket,
+              unmetGates: [COMPLETION_GATE.pinnedTicketContext],
+            });
             return 1;
           }
-          if (!completedContext || !verification) {
-            reportOperator(`lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`);
-            return 1;
-          }
+          const verification = await this.huInfoService.verifyTicketCompletion(completedContext);
+          if (!requireVerifiedCompletion(
+            checkpoint!.ticket,
+            verification,
+            `lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`,
+          )) return 1;
           try {
             await this.cleanupCompletedTicketBranch(
               completedContext,
@@ -308,14 +326,11 @@ export class LazyWorkflowCli {
             verifyingCompletion = true;
             const verification = await this.huInfoService.verifyTicketCompletion(context);
             verifyingCompletion = false;
-            if (isIncompleteCompletion(verification)) {
-              reportUnmetCompletion(context.ticket.id, verification);
-              return 1;
-            }
-            if (!verification) {
-              reportOperator(`lazy-workflow: el ticket ${context.ticket.id} todavía no cumple el cierre verificable; checkpoint sessionless conservado.`);
-              return 1;
-            }
+            if (!requireVerifiedCompletion(
+              context.ticket.id,
+              verification,
+              `lazy-workflow: el ticket ${context.ticket.id} todavía no cumple el cierre verificable; checkpoint sessionless conservado.`,
+            )) return 1;
             try {
               await this.cleanupCompletedTicketBranch(
                 context,

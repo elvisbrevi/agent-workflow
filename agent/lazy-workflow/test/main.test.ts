@@ -933,6 +933,94 @@ test("code reconcilia y reporta todos los gates incumplidos sin avanzar", async 
   expect(checkpoint).toEqual({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null });
 });
 
+test("code reporta cuando ya no puede reconstruir el ticket fijado", async () => {
+  const messages: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => messages.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => new HuInfo({ id: 23438 }),
+        waitForAccess: async () => undefined,
+        ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+        getAutocodeContext: async () => null,
+        getAutocodeContextForTicket: async () => null,
+        verifyTicketCompletion: async () => { throw new Error("must not verify"); },
+      },
+      {
+        run: async () => { throw new Error("must not run"); },
+        resume: async () => { throw new Error("must not resume"); },
+      },
+      {
+        read: async () => ({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null }),
+        write: async () => undefined,
+        clear: async () => { throw new Error("must preserve checkpoint"); },
+      },
+    ).run(["code", "--hu", "23438"]);
+
+    expect(code).toBe(1);
+  } finally {
+    console.error = originalError;
+  }
+
+  expect(messages.join("\n")).toContain("pinned-ticket-context");
+  expect(messages.join("\n")).not.toContain("cierre verificable");
+});
+
+test("code reintenta el mismo checkpoint tras corregir Azure y limpia una sola vez", async () => {
+  const checkpoint: AutocodeCheckpoint = {
+    workflow: "autocode",
+    hu: 23438,
+    ticket: 51,
+    sessionId: null,
+  };
+  const verifications = [
+    {
+      ticketId: 51,
+      unmetGates: [COMPLETION_GATE.completionEvidence],
+    },
+    { ticketBranch: "refs/heads/ticket/51" },
+  ];
+  let checkpointCleared = false;
+  let openCodeCalls = 0;
+  let cleanupCalls = 0;
+  const store: AutocodeCheckpointStore = {
+    read: async () => checkpointCleared ? null : checkpoint,
+    write: async () => undefined,
+    clear: async () => { checkpointCleared = true; },
+  };
+  const services = {
+    getHuInfo: async () => new HuInfo({ id: 23438 }),
+    waitForAccess: async () => undefined,
+    ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+    getAutocodeContextForTicket: async () => ({
+      hu: { id: 23438 },
+      ticket: { id: 51, type: "Task" as const },
+      integrationBranch: "refs/heads/hu/23438",
+    }),
+    getAutocodeContext: async () => null,
+    verifyTicketCompletion: async () => verifications.shift()!,
+  };
+  const cli = new LazyWorkflowCli(
+    services,
+    {
+      run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+      resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
+    },
+    store,
+    undefined,
+    { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+  );
+
+  expect(await cli.run(["code", "--hu", "23438"])).toBe(1);
+  expect(checkpointCleared).toBeFalse();
+  expect(await cli.run(["code", "--hu", "23438"])).toBe(0);
+  expect(checkpointCleared).toBeTrue();
+  expect(openCodeCalls).toBe(0);
+  expect(cleanupCalls).toBe(1);
+});
+
 test("code mantiene un error Azure como error operativo durante la verificacion", async () => {
   const messages: string[] = [];
   const originalError = console.error;

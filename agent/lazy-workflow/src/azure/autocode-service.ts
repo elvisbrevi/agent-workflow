@@ -30,6 +30,7 @@ export interface AutocodeState {
 }
 
 export const COMPLETION_GATE = {
+  pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
   completionEvidence: "completion-evidence",
   realEffort: "real-effort",
