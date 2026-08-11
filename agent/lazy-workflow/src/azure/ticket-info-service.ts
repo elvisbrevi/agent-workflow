@@ -475,11 +475,10 @@ export class AzureTicketInfoService {
     const revision = workItemRevision(item);
     if (existing === content) return { ticket, description: content, revision };
 
-    await this.patchWorkItem(item, [
+    const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: revision },
       { op: "add", path: "/fields/System.Description", value: content },
-    ]);
-    const verified = await this.readWorkItemValidated(ticket);
+    ], (candidate) => candidate.fields?.["System.Description"] === content);
     const description = verified.fields?.["System.Description"];
     if (description !== content) throw new Error(`No se pudo verificar la descripción del ticket ${ticket}`);
     return { ticket, description: content, revision: workItemRevision(verified) };
@@ -505,11 +504,10 @@ export class AzureTicketInfoService {
       throw new Error(`Transición de estado no soportada: ${currentState} -> ${desiredState}`);
     }
 
-    await this.patchWorkItem(item, [
+    const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: revision },
       { op: "replace", path: "/fields/System.State", value: desiredState },
-    ]);
-    const verified = await this.readWorkItemValidated(ticket);
+    ], (candidate) => text(candidate, "System.State") === desiredState);
     const state = text(verified, "System.State");
     if (state !== desiredState) throw new Error(`No se pudo verificar el estado del ticket ${ticket}`);
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
@@ -530,19 +528,19 @@ export class AzureTicketInfoService {
     const revision = workItemRevision(item);
     const currentReal = number(item, ["Custom.EsfuerzoReal"]);
     const currentRealHours = number(item, ["Custom.EsfuerzoRealHH"]);
-    if (currentReal === realEffort && currentRealHours === realEffortHours) {
-      return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
-    }
     if (revision !== expectedRevision) {
       throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
     }
+    if (currentReal === realEffort && currentRealHours === realEffortHours) {
+      return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
+    }
 
-    await this.patchWorkItem(item, [
+    const verified = await this.patchAndRead(item, [
       { op: "test", path: "/rev", value: expectedRevision },
       { op: "add", path: "/fields/Custom.EsfuerzoReal", value: realEffort },
       { op: "add", path: "/fields/Custom.EsfuerzoRealHH", value: realEffortHours },
-    ]);
-    const verified = await this.readWorkItemValidated(ticket);
+    ], (candidate) => number(candidate, ["Custom.EsfuerzoReal"]) === realEffort
+      && number(candidate, ["Custom.EsfuerzoRealHH"]) === realEffortHours);
     if (
       number(verified, ["Custom.EsfuerzoReal"]) !== realEffort
       || number(verified, ["Custom.EsfuerzoRealHH"]) !== realEffortHours
@@ -734,9 +732,18 @@ export class AzureTicketInfoService {
   }
 
   private async readDirectParent(ticket: number, item: WorkItem): Promise<WorkItem> {
-    const parentId = relationId((item.relations ?? []).find(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")?.url);
+    const parentIds = (item.relations ?? [])
+      .filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")
+      .map(({ url }) => relationId(url))
+      .filter((id): id is number => id !== undefined);
+    const uniqueParentIds = [...new Set(parentIds)];
+    if (uniqueParentIds.length !== 1) throw new Error(`El ticket ${ticket} no tiene una única HU padre directa`);
+    const parentId = uniqueParentIds[0];
     if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
     const parent = await this.readWorkItem(parentId);
+    if (text(parent, "System.WorkItemType") !== "User Story") {
+      throw new Error(`El padre directo del ticket ${ticket} no es una HU User Story`);
+    }
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de su HU`);
@@ -848,6 +855,23 @@ export class AzureTicketInfoService {
       "--uri", `${ORGANIZATION}/_apis/wit/workitems/${item.id}?api-version=${API_VERSION}`,
       "--headers", "Content-Type=application/json-patch+json", "--body", JSON.stringify(patch), "--output", "json",
     ]);
+  }
+
+  private async patchAndRead(
+    item: WorkItem,
+    patch: unknown[],
+    matches: (candidate: WorkItem) => boolean,
+  ): Promise<WorkItem> {
+    try {
+      await this.patchWorkItem(item, patch);
+    } catch (error) {
+      const recovered = await this.readWorkItem(item.id).catch(() => null);
+      if (!recovered || !matches(recovered)) throw error;
+      return recovered;
+    }
+    const verified = await this.readWorkItem(item.id);
+    if (!matches(verified)) throw new Error(`No se pudo verificar la mutación del work item ${item.id}`);
+    return verified;
   }
 
   private async readWorkItem(id: number): Promise<WorkItem> {
