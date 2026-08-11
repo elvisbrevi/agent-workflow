@@ -151,6 +151,12 @@ interface FixedCommitLink {
   commit: string;
 }
 
+interface ValidatedEvidenceFile {
+  name: string;
+  bytes: Uint8Array;
+  digest: string;
+}
+
 export type AzRunner = (args: string[]) => Promise<string>;
 
 function positiveId(value: number, name: string): void {
@@ -784,24 +790,9 @@ export class AzureTicketInfoService {
     kind: EvidenceKind,
   ): Promise<{ ticket: number; name: string; kind: EvidenceKind; digest: string; url: string }> {
     positiveId(ticket, "El ticket");
-    validateEvidenceKind(kind);
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
-    const file = Bun.file(filePath);
-    const name = filePath.split(/[\\/]/).pop() ?? "";
-    if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
-    if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${filePath}`);
-    if (file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (kind === "screen") {
-      validateScreenEvidence(name, bytes);
-    } else {
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      validateEvidenceContent(content, kind);
-    }
-    const digest = await sha256(bytes);
+    const { name, digest } = await this.readEvidenceFile(filePath, kind);
     const existing = (item.relations ?? [])
       .filter(({ rel }) => rel === "AttachedFile")
       .find(({ attributes }) => attributes?.digest === digest);
@@ -841,6 +832,21 @@ export class AzureTicketInfoService {
     return { ticket, name, kind, digest, url: verified.url };
   }
 
+  async validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void> {
+    await this.readEvidenceFile(filePath, kind);
+  }
+
+  async validateEvidence(ticket: number, filePath: string): Promise<void> {
+    positiveId(ticket, "El ticket");
+    const content = await readUtf8File(filePath);
+    if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
+    validateEvidenceContent(content, "command-output");
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
+    if (existing && existing !== content) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+  }
+
   async setEvidence(ticket: number, filePath: string): Promise<{ ticket: number; completionEvidence: string }> {
     positiveId(ticket, "El ticket");
     const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
@@ -859,6 +865,25 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  private async readEvidenceFile(filePath: string, kind: EvidenceKind): Promise<ValidatedEvidenceFile> {
+    validateEvidenceKind(kind);
+    const file = Bun.file(filePath);
+    const name = filePath.split(/[\\/]/).pop() ?? "";
+    if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
+    if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${filePath}`);
+    if (file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (kind === "screen") {
+      validateScreenEvidence(name, bytes);
+    } else {
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      validateEvidenceContent(content, kind);
+    }
+    return { name, bytes, digest: await sha256(bytes) };
   }
 
   private async readWorkItemValidated(ticket: number): Promise<WorkItem> {
@@ -1183,8 +1208,10 @@ export class AzureTicketInfoService {
     const unmet: CompletionGate[] = [];
     if (summary.state !== "Done") unmet.push(GATE.ticketState);
     if (!evidence) unmet.push(GATE.completionEvidence);
-    if (number(item, ["Custom.EsfuerzoReal"]) === undefined) unmet.push(GATE.realEffort);
-    if (number(item, ["Custom.EsfuerzoRealHH"]) === undefined) unmet.push(GATE.realEffortHours);
+    const realEffort = number(item, ["Custom.EsfuerzoReal"]);
+    const realEffortHours = number(item, ["Custom.EsfuerzoRealHH"]);
+    if (realEffort === undefined || realEffort <= 0) unmet.push(GATE.realEffort);
+    if (realEffortHours === undefined || realEffortHours <= 0) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
     if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);

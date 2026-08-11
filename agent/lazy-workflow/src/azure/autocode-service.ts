@@ -4,6 +4,7 @@ import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   AzureTicketInfoService,
   runAzureCommand,
+  type CompletionManifest,
   type EvidenceKind,
   type TicketInfo,
   type TicketAttachment,
@@ -83,8 +84,10 @@ export interface AutocodeAzureService {
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
-  readCompletionManifest(path: string, workingDirectory: string): Promise<import("./ticket-info-service.ts").CompletionManifest>;
-  validateCompletionManifest(manifest: import("./ticket-info-service.ts").CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
+  readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
+  validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
+  validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void>;
+  validateEvidence(ticket: number, filePath: string): Promise<void>;
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket(ticket: number): Promise<DeliveryTicket>;
   getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -263,8 +266,16 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.readCompletionManifest(path, workingDirectory);
   }
 
-  validateCompletionManifest(manifest: import("./ticket-info-service.ts").CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void> {
+  validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void> {
     return this.ticketInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+  }
+
+  validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void> {
+    return this.ticketInfoService.validateEvidenceFile(filePath, kind);
+  }
+
+  validateEvidence(ticket: number, filePath: string): Promise<void> {
+    return this.ticketInfoService.validateEvidence(ticket, filePath);
   }
 
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {

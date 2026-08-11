@@ -724,6 +724,8 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
     getTicketInfo: async () => info,
     readCompletionManifest: async (path: string) => { calls.push(["manifest", path]); return manifest; },
     validateCompletionManifest: async (...args: [unknown, unknown, number, string]) => { calls.push(["validate", ...args.slice(2)]); },
+    validateEvidenceFile: async () => undefined,
+    validateEvidence: async () => undefined,
     linkPullRequest: async () => { throw new Error("must not link an existing PR"); },
     linkCommit: async () => { throw new Error("must not link an existing commit"); },
     addAttachment: async () => { throw new Error("must not add an existing attachment"); },
@@ -823,6 +825,8 @@ test("completion apply reconciles missing effects before moving the ticket to Do
         return super.validateCompletionManifest(manifest, info, ticket, workingDirectory);
       }
 
+      override async validateEvidence(): Promise<void> {}
+
       override async linkPullRequest(): Promise<any> {
         calls.push("pr");
         canonicalPullRequest = 99;
@@ -859,6 +863,8 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       getTicketInfo: base.getTicketInfo.bind(base),
       readCompletionManifest: base.readCompletionManifest.bind(base),
       validateCompletionManifest: base.validateCompletionManifest.bind(base),
+      validateEvidenceFile: base.validateEvidenceFile.bind(base),
+      validateEvidence: base.validateEvidence.bind(base),
       linkPullRequest: base.linkPullRequest.bind(base),
       linkCommit: base.linkCommit.bind(base),
       addAttachment: base.addAttachment.bind(base),
@@ -870,7 +876,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
       "--manifest", manifestPath, "--working-directory", "/repo",
     ])).resolves.toBe(0);
-    expect(calls).toEqual(["evidence", "pr", "commit", "attachment", "state"]);
+    expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
   } finally {
     await unlink(evidencePath);
     await unlink(manifestPath);
