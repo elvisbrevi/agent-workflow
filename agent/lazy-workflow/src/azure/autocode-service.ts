@@ -1,6 +1,8 @@
 import { $ } from "bun";
+import { unlink } from "node:fs/promises";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
+import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
@@ -64,6 +66,7 @@ export type TicketCompletionVerification = VerifiedTicketCompletion | Incomplete
 export interface AutocodeAzureService {
   getHuInfo(hu: number): Promise<HuInfo>;
   getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo>;
+  setIntegrationBranch(hu: number, branch: string, workingDirectory: string): Promise<{ hu: number; branch: string }>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -81,6 +84,13 @@ interface WorkItem {
     url?: string;
     attributes?: { name?: string };
   }>;
+}
+
+interface AzureRepository {
+  id?: string;
+  name?: string;
+  remoteUrl?: string;
+  project?: { id?: string; name?: string };
 }
 
 interface CompletedPullRequest {
@@ -170,7 +180,10 @@ function hasArtifactLink(item: WorkItem, expectedDecodedUri: string): boolean {
 }
 
 export class AzureAutocodeService implements AutocodeAzureService {
-  constructor(private readonly az: AzRunner = runAz) {}
+  constructor(
+    private readonly az: AzRunner = runAz,
+    private readonly git: GitRunner = runGit,
+  ) {}
 
   async getHuInfo(hu: number): Promise<HuInfo> {
     const item = await show(hu, false, this.az);
@@ -195,6 +208,91 @@ export class AzureAutocodeService implements AutocodeAzureService {
       throw new Error(`La HU ${hu} tiene multiples Branch ArtifactLink distintos`);
     }
     return { hu, branch: branches[0] ?? null };
+  }
+
+  async setIntegrationBranch(
+    hu: number,
+    requestedBranch: string,
+    workingDirectory: string,
+  ): Promise<{ hu: number; branch: string }> {
+    if (!Number.isInteger(hu) || hu <= 0) {
+      throw new Error(`La HU debe ser un entero positivo: ${hu}`);
+    }
+    const normalized = normalizeBranch(requestedBranch);
+    const parent = await show(hu, true, this.az);
+    const projectName = field(parent, "System.TeamProject");
+    if (!projectName) throw new Error("La HU no tiene proyecto Azure");
+
+    const origin = parseAzureOrigin(await this.git(["remote", "get-url", "origin"], workingDirectory));
+    if (!same(origin.project, projectName)) {
+      throw new Error(`El origen Azure pertenece al proyecto ${origin.project}, no al proyecto ${projectName}`);
+    }
+    const repositoryOutput = await this.az([
+      "repos", "show", "--organization", ORGANIZATION,
+      "--project", projectName, "--repository", origin.repository, "--output", "json",
+    ]);
+    const repository = JSON.parse(repositoryOutput) as AzureRepository;
+    if (
+      !repository.id
+      || !repository.name
+      || !repository.project?.id
+      || !repository.project.name
+      || !same(repository.name, origin.repository)
+      || !same(repository.project.name, projectName)
+    ) {
+      throw new Error("El repositorio Azure del origen no coincide con la HU");
+    }
+    if (!repository.remoteUrl) throw new Error("Azure no devolvió la URL del repositorio");
+    const resolvedOrigin = parseAzureOrigin(repository.remoteUrl);
+    if (
+      !same(resolvedOrigin.organization, origin.organization)
+      || !same(resolvedOrigin.project, origin.project)
+      || !same(resolvedOrigin.repository, origin.repository)
+    ) {
+      throw new Error("El repositorio Azure resuelto no coincide con origin");
+    }
+
+    const remote = await this.git(["ls-remote", "--heads", "origin", normalized.ref], workingDirectory);
+    if (!remote.split(/\r?\n/).some((line) => line.trimEnd().endsWith(`\t${normalized.ref}`))) {
+      throw new Error(`La rama ${normalized.ref} no existe remotamente`);
+    }
+
+    const linkedBranches = [...new Set(integrationBranchesFrom(parent))];
+    if (linkedBranches.length > 1) {
+      throw new Error(`La HU ${hu} tiene conflicto por multiples Branch ArtifactLink distintos`);
+    }
+    if (linkedBranches[0] && linkedBranches[0] !== normalized.ref) {
+      throw new Error(`La HU ${hu} ya tiene vinculada la rama ${linkedBranches[0]}; conflicto`);
+    }
+    if (linkedBranches[0] === normalized.ref) return { hu, branch: normalized.ref };
+
+    const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
+    const patchPath = `/tmp/lazy-workflow-branch-${crypto.randomUUID()}.json`;
+    await Bun.write(patchPath, JSON.stringify([{
+      op: "add",
+      path: "/relations/-",
+      value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
+    }]));
+    try {
+      await this.az([
+        "devops", "invoke", "--organization", ORGANIZATION,
+        "--area", "wit", "--resource", "workitems",
+        "--route-parameters", `project=${repository.project.id}`, `workItemId=${hu}`,
+        "--http-method", "PATCH", "--api-version", "7.1",
+        "--media-type", "application/json-patch+json", "--in-file", patchPath,
+        "--output", "json",
+      ]);
+    } finally {
+      try { await unlink(patchPath); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+
+    const verified = await this.getIntegrationBranchInfo(hu);
+    if (verified.branch !== normalized.ref) {
+      throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
+    }
+    return { hu, branch: normalized.ref };
   }
 
   async ensureIntegrationBranch(hu: number): Promise<string | null> {
@@ -388,4 +486,56 @@ async function runAz(args: string[]): Promise<string> {
   } catch (error) {
     throw new Error("Azure command failed", { cause: error });
   }
+}
+
+interface AzureOrigin {
+  organization: string;
+  project: string;
+  repository: string;
+}
+
+function same(left: string, right: string): boolean {
+  return left.toLocaleLowerCase() === right.toLocaleLowerCase();
+}
+
+function parseAzureOrigin(value: string): AzureOrigin {
+  const raw = value.trim();
+  const ssh = raw.match(/^git@ssh\.dev\.azure\.com:v3\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  if (ssh) return { organization: ssh[1]!, project: decodeSegment(ssh[2]!), repository: decodeSegment(ssh[3]!) };
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error("origin no es un repositorio Azure válido"); }
+  const hostname = url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean).map(decodeSegment);
+  const gitIndex = segments.indexOf("_git");
+  if (gitIndex < 1 || !["dev.azure.com", "visualstudio.com"].some((suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`))) {
+    throw new Error("origin no es un repositorio Azure válido");
+  }
+  const organization = hostname === "dev.azure.com" ? segments[0] : hostname.split(".")[0];
+  const project = segments[gitIndex - 1];
+  const repository = segments[gitIndex + 1]?.replace(/\.git$/, "");
+  if (!organization || !project || !repository || gitIndex + 1 !== segments.length - 1) {
+    throw new Error("origin Azure no contiene proyecto y repositorio válidos");
+  }
+  return { organization, project, repository };
+}
+
+function decodeSegment(value: string): string {
+  try { return decodeURIComponent(value); } catch { throw new Error("origin Azure contiene una ruta malformada"); }
+}
+
+function normalizeBranch(value: string): { ref: string; name: string } {
+  const input = value.trim();
+  const prefix = "refs/heads/";
+  if (input.startsWith("refs/") && !input.startsWith(prefix)) throw new Error(`Rama no válida: ${value}`);
+  const name = input.startsWith(prefix) ? input.slice(prefix.length) : input;
+  if (
+    name === "HEAD"
+    || !name
+    || !/^[A-Za-z0-9._/-]+$/.test(name)
+    || name.includes("..")
+    || name.includes("//")
+    || name.startsWith("/")
+    || name.endsWith("/")
+  ) throw new Error(`Rama no válida: ${value}`);
+  return { ref: `${prefix}${name}`, name };
 }

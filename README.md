@@ -31,6 +31,7 @@ lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
 lazy-workflow hu-branch-info --hu 23438
+lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 --working-directory /path/to/repository
 ```
 
 ## Skills
@@ -88,6 +89,13 @@ Git or Azure:
 
 ```bash
 bun run main.ts hu-branch-info --hu 23438
+```
+
+To assign an existing remote Azure branch to the HU without starting OpenCode:
+
+```bash
+bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --working-directory /path/to/repository
 ```
 
 See [the agent README](agent/lazy-workflow/README.md) for behavior and
