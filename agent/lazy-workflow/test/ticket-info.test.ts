@@ -48,6 +48,10 @@ function fixture() {
           rel: "AttachedFile",
            url: "https://example.test/evidence.json",
            attributes: { name: "evidence.json", comment: "http-json", digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        }, {
+          rel: "ArtifactLink",
+          url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read",
+          attributes: { name: "Branch" },
         }],
       });
     }
@@ -81,7 +85,7 @@ test("ticket-info returns normalized delivery context and validates its direct p
       state: "Active",
       revision: 4,
     }),
-    branch: null,
+    branch: "refs/heads/ticket/51-read",
     integrationBranch: "refs/heads/hu/23438",
     effort: { estimated: 3, real: 1.25, realHours: 1.25 },
     completionEvidence: "evidence",
@@ -105,7 +109,7 @@ test("ticket-info does not infer a canonical PR without native association", asy
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       fields: { "System.WorkItemType": "Task", "System.State": "Active" },
-      relations: [],
+      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
     });
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([]);
     if (args[0] === "repos") return JSON.stringify([{
@@ -191,7 +195,7 @@ test("ticket-info falls back for PR listing and native association without cross
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       fields: { "System.WorkItemType": "Task", "System.State": "Active" },
-      relations: [],
+      relations: [{ rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } }],
     });
     if (args[0] === "repos" && args.includes("work-item")) throw new Error("route unavailable");
     if (args[0] === "repos") throw new Error("route unavailable");
