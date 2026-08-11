@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
+  GitAutocodeCheckpointStore,
   isVersionedAutocodeCheckpoint,
   migrateAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../src/azure/autocode-checkpoint.ts";
+import { runGit } from "../src/git/git-ticket-branch-cleaner.ts";
 
 test("migra el checkpoint legacy a implementing sin adivinar efectos completados", () => {
   const migrated = migrateAutocodeCheckpoint({
@@ -77,4 +82,39 @@ test("contabiliza una operacion interrumpida una sola vez al migrar", () => {
 
 test("migra un checkpoint legacy sessionless a reconciliacion", () => {
   expect(migrateAutocodeCheckpoint({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null })?.phase).toBe("reconciling");
+});
+
+test("guarda el checkpoint en el repositorio del working directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-checkpoint-"));
+  const store = new GitAutocodeCheckpointStore();
+  const checkpoint: VersionedAutocodeCheckpoint = {
+    schemaVersion: 2,
+    workflow: "autocode",
+    phase: "selected",
+    hu: 23438,
+    ticket: 51,
+    integrationBranch: null,
+    ticketBranch: null,
+    azureRevision: null,
+    effortBaseline: { real: 0, realHours: 0 },
+    activeDurationMs: 0,
+    activeSince: null,
+    sessionId: null,
+    intent: null,
+    receipts: {},
+  };
+
+  try {
+    await runGit(["init"], root);
+    await store.write(checkpoint, root);
+
+    const checkpointPath = (await runGit(["rev-parse", "--git-path", "lazy-workflow/autocode-checkpoint.json"], root)).trim();
+    expect(await Bun.file(join(root, checkpointPath)).exists()).toBeTrue();
+    expect(await store.read(root)).toEqual(checkpoint);
+
+    await store.clear(root);
+    expect(await Bun.file(join(root, checkpointPath)).exists()).toBeFalse();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
