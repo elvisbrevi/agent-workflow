@@ -38,6 +38,11 @@ export interface AutocodeCheckpointStore {
 }
 
 const FILE_NAME = "lazy-workflow/autocode-checkpoint.json";
+const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch"];
+
+function validBranch(value: string | null): boolean {
+  return value === null || (/^refs\/heads\/[^\s]+$/.test(value) && !value.includes("//"));
+}
 
 function validLegacy(value: unknown): value is AutocodeCheckpoint {
   if (typeof value !== "object" || value === null) return false;
@@ -59,8 +64,8 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
     && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "reconciling")
     && Number.isInteger(checkpoint.hu)
     && (checkpoint.ticket === null || Number.isInteger(checkpoint.ticket))
-    && (checkpoint.integrationBranch === null || typeof checkpoint.integrationBranch === "string")
-    && (checkpoint.ticketBranch === null || typeof checkpoint.ticketBranch === "string")
+    && (checkpoint.integrationBranch === null || (typeof checkpoint.integrationBranch === "string" && validBranch(checkpoint.integrationBranch)))
+    && (checkpoint.ticketBranch === null || (typeof checkpoint.ticketBranch === "string" && validBranch(checkpoint.ticketBranch)))
     && (checkpoint.azureRevision === null || Number.isInteger(checkpoint.azureRevision))
     && typeof checkpoint.effortBaseline?.real === "number"
     && Number.isFinite(checkpoint.effortBaseline.real)
@@ -70,9 +75,12 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
     && Number.isFinite(checkpoint.activeDurationMs)
     && (checkpoint.activeSince === null || typeof checkpoint.activeSince === "string")
     && (checkpoint.sessionId === null || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.trim().length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
-    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && checkpoint.intent !== null && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string"))
+    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && checkpoint.intent !== null && EFFECTS.includes(checkpoint.intent.effect) && typeof checkpoint.intent.target === "string" && checkpoint.intent.target.length > 0))
     && typeof checkpoint.receipts === "object"
-    && checkpoint.receipts !== null;
+    && checkpoint.receipts !== null
+    && Object.entries(checkpoint.receipts).every(([effect, receipt]) => EFFECTS.includes(effect as AutocodeEffect)
+      && typeof receipt?.verifiedAt === "string"
+      && receipt.verifiedAt.length > 0);
 }
 
 export function isVersionedAutocodeCheckpoint(value: StoredAutocodeCheckpoint): value is VersionedAutocodeCheckpoint {

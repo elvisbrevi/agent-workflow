@@ -864,23 +864,26 @@ export class LazyWorkflowCli {
       }
       context = state.context;
     }
-    if (!context || context.hu.id !== hu || !integrationBranch) {
+    if (!context || context.hu.id !== hu || context.integrationBranch !== integrationBranch || !integrationBranch) {
       reportOperator(`lazy-workflow: no se pudo reconstruir el ticket fijado de la HU ${hu}.`);
       return 1;
     }
 
     const ticket = context.ticket.id;
+    checkpoint = { ...checkpoint, hu, ticket, integrationBranch };
+    await save();
     const stateInfo = this.huInfoService.getState ? await this.huInfoService.getState(ticket) : { ticket, state: context.ticket.state ?? null, revision: context.ticket.revision ?? null };
     const effortInfo = this.huInfoService.getEffort ? await this.huInfoService.getEffort(ticket) : { ticket, effort: context.ticket.effort ?? {} };
+    const azureRevision = checkpoint.azureRevision ?? stateInfo.revision ?? context.ticket.revision ?? null;
     const effortBaseline = {
-      real: effortInfo.effort.real ?? context.ticket.effort?.real ?? 0,
-      realHours: effortInfo.effort.realHours ?? context.ticket.effort?.realHours ?? 0,
+      real: checkpoint.receipts["ticket-selected"] ? checkpoint.effortBaseline.real : effortInfo.effort.real ?? context.ticket.effort?.real ?? 0,
+      realHours: checkpoint.receipts["ticket-selected"] ? checkpoint.effortBaseline.realHours : effortInfo.effort.realHours ?? context.ticket.effort?.realHours ?? 0,
     };
-    await markPhase("selected", {
+    await markPhase(checkpoint.phase === "preflight-hu" ? "selected" : checkpoint.phase, {
       hu,
       ticket,
       integrationBranch,
-      azureRevision: stateInfo.revision ?? context.ticket.revision ?? null,
+      azureRevision,
       effortBaseline,
       receipts: { ...checkpoint.receipts, "ticket-selected": { verifiedAt: new Date(now()).toISOString() } },
     });
@@ -890,6 +893,10 @@ export class LazyWorkflowCli {
       ? await this.huInfoService.getBranch(hu, ticket)
       : null;
     ticketBranch = ticketBranch ?? existingBranch?.branch ?? `refs/heads/ticket/${ticket}`;
+    if (existingBranch?.integrationBranch !== null && existingBranch?.integrationBranch !== undefined && existingBranch.integrationBranch !== integrationBranch) {
+      reportOperator(`lazy-workflow: la rama de integración del ticket ${ticket} no coincide con la HU fijada; ejecución detenida.`);
+      return 1;
+    }
     if (checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
       reportOperator(`lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
       return 1;
@@ -906,7 +913,7 @@ export class LazyWorkflowCli {
         "En progreso",
         stateInfo.state ?? context!.ticket.state ?? "Active",
         false,
-        stateInfo.revision ?? undefined,
+        azureRevision ?? undefined,
       ).then(() => undefined), "En progreso");
     } else {
       checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-state": { verifiedAt: new Date(now()).toISOString() } } };
@@ -954,6 +961,12 @@ export class LazyWorkflowCli {
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       } catch (error) {
+        if (error instanceof OpenCodeSessionNotFoundError || error instanceof OpenCodeSessionCloseError) {
+          checkpoint = { ...checkpoint, phase: "reconciling", sessionId: null, activeSince: null, intent: null };
+          await save();
+          reportOperator(`lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`);
+          return 1;
+        }
         reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
