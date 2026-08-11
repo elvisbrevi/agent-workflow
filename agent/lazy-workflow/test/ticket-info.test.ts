@@ -156,6 +156,21 @@ test("ticket reads reject invalid or non-direct delivery tickets", async () => {
     .rejects.toThrow("Task o Bug");
 });
 
+test("ticket branch reads reject native links that are not valid Git refs", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project%2Frepository%2FGBfoo..bar", attributes: { name: "Branch" } },
+      ],
+    });
+    return JSON.stringify({ id: 51, fields: { "System.WorkItemType": "Task" }, relations: [] });
+  });
+
+  await expect(service.getBranch(23438, 51)).rejects.toThrow("URI de rama Azure Git malformada");
+});
+
 test("ticket read commands return one normalized JSON object without OpenCode", async () => {
   const output: string[] = [];
   const originalLog = console.log;
