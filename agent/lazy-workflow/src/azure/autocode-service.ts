@@ -83,6 +83,7 @@ export interface AutocodeAzureService {
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
+  validateDirectTicketContext(hu: number, ticket: number): Promise<void>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
@@ -256,6 +257,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
     return this.ticketInfoService.getTicketInfo(hu, ticket);
+  }
+
+  validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
+    return this.ticketInfoService.validateDirectTicketContext(hu, ticket);
   }
 
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }> {
