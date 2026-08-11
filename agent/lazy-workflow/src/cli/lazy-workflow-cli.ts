@@ -92,6 +92,15 @@ const DEFAULT_PROMPT = "cuanto es uno mas 3";
 const DEFAULT_HU = -1;
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
+const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
+
+function isStableIntegrationBranchFailure(error: unknown): boolean {
+  return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
+}
+
+function isTransientAzureFailure(error: unknown): boolean {
+  return /Azure command failed|azure .* (temporar|unavailable|unreachable)|timeout|timed out|network|connection|\b(?:429|500|502|503|504)\b/i.test(errorMessage(error));
+}
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -209,7 +218,7 @@ export class LazyWorkflowCli {
       }
     }
 
-    if (options.hu <= 0) {
+    if (options.hu <= 0 && !(command === "code" && options.session !== null)) {
       printHelp();
       return 1;
     }
@@ -258,76 +267,66 @@ export class LazyWorkflowCli {
     let integrationBranch: string | null = null;
     let sessionId = options.session;
     let lastResult;
-    if (!recovering) {
-      try {
-        integrationBranch = await this.huInfoService.ensureIntegrationBranch(
-          hu,
-          options.workingDirectory,
-          options.baseBranch,
-        );
-      } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
-        return 1;
-      }
-      if (!integrationBranch) {
-        reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
-        return 1;
-      }
+    if ((recovering || reconciling) && !this.huInfoService.getAutocodeContextForTicket) {
+      reportOperator("lazy-workflow: el servicio Azure no puede reconstruir el ticket interrumpido.");
+      return 1;
+    }
+    integrationBranch = await this.prepareIntegrationBranch(
+      hu,
+      options,
+      recovering || reconciling,
+    );
+    if (!integrationBranch) {
+      return 1;
     }
     reportOperator(`lazy-workflow: buscando la rama de integración y los tickets de la HU ${hu}...`);
     while (true) {
       let state: AutocodeState;
       try {
-        if (recovering && !integrationBranch) {
-          state = this.huInfoService.getAutocodeState
-            ? await this.huInfoService.getAutocodeState(hu)
-            : { context: await this.huInfoService.getAutocodeContext(hu), pending: false };
-          integrationBranch = state.context?.integrationBranch ?? null;
-        }
         if (!integrationBranch) {
           reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
           return 1;
         }
-        if (reconciling) {
-          if (!this.huInfoService.getAutocodeContextForTicket) {
-            reportOperator("lazy-workflow: el servicio Azure no puede reconciliar el ticket interrumpido.");
-            return 1;
-          }
-          const completedContext = await this.huInfoService.getAutocodeContextForTicket(
+        if (recovering || reconciling) {
+          const pinnedContext = await this.huInfoService.getAutocodeContextForTicket!(
             hu,
             checkpoint!.ticket,
             integrationBranch,
           );
-          if (!completedContext) {
+          if (!pinnedContext) {
             reportUnmetCompletion(checkpoint!.ticket, {
               ticketId: checkpoint!.ticket,
               unmetGates: [COMPLETION_GATE.pinnedTicketContext],
             });
             return 1;
           }
-          const verification = await this.huInfoService.verifyTicketCompletion(completedContext);
-          if (!requireVerifiedCompletion(
-            checkpoint!.ticket,
-            verification,
-            `lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`,
-          )) return 1;
-          try {
-            await this.cleanupCompletedTicketBranch(
-              completedContext,
-              options.workingDirectory,
-              verification.ticketBranch,
-            );
-          } catch (error) {
-            reportOperator(`lazy-workflow: la limpieza Git del ticket ${completedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
-            return 1;
+          if (reconciling) {
+            const verification = await this.huInfoService.verifyTicketCompletion(pinnedContext);
+            if (!requireVerifiedCompletion(
+              checkpoint!.ticket,
+              verification,
+              `lazy-workflow: el ticket ${checkpoint!.ticket} todavía no cumple el cierre verificable.`,
+            )) return 1;
+            try {
+              await this.cleanupCompletedTicketBranch(
+                pinnedContext,
+                options.workingDirectory,
+                verification.ticketBranch,
+              );
+            } catch (error) {
+              reportOperator(`lazy-workflow: la limpieza Git del ticket ${pinnedContext.ticket.id} falló (${errorMessage(error)}); checkpoint conservado.`);
+              return 1;
+            }
+            await this.checkpointStore.clear();
+            reconciling = false;
+            continue;
           }
-          await this.checkpointStore.clear();
-          reconciling = false;
-          continue;
+          state = { context: pinnedContext, pending: true };
+        } else {
+          state = this.huInfoService.getAutocodeState
+            ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
+            : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
         }
-        state = this.huInfoService.getAutocodeState
-          ? await this.huInfoService.getAutocodeState(hu, integrationBranch)
-          : { context: await this.huInfoService.getAutocodeContext(hu, integrationBranch), pending: false };
       } catch (error) {
         reportOperator(`lazy-workflow: Azure no respondió (${errorMessage(error)}); reintentando en 10s.`);
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
@@ -445,6 +444,37 @@ export class LazyWorkflowCli {
         try { await this.retryTimer.wait(10_000); } catch { return 1; }
       }
     }
+  }
+
+  private async prepareIntegrationBranch(
+    hu: number,
+    options: CliOptions,
+    retryTransient: boolean,
+  ): Promise<string | null> {
+    for (let attempt = 0; attempt <= MAX_BRANCH_PREFLIGHT_RETRIES; attempt += 1) {
+      try {
+        const branch = await this.huInfoService.ensureIntegrationBranch!(
+          hu,
+          options.workingDirectory,
+          options.baseBranch,
+        );
+        if (branch) return branch;
+        reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
+        return null;
+      } catch (error) {
+        const retryable = retryTransient
+          && !isStableIntegrationBranchFailure(error)
+          && isTransientAzureFailure(error)
+          && attempt < MAX_BRANCH_PREFLIGHT_RETRIES;
+        if (!retryable) {
+          reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+          return null;
+        }
+        reportOperator(`lazy-workflow: Azure no respondió al preparar la rama de integración (${errorMessage(error)}); reintentando ${attempt + 1}/${MAX_BRANCH_PREFLIGHT_RETRIES} en 10s.`);
+        try { await this.retryTimer.wait(10_000); } catch { return null; }
+      }
+    }
+    return null;
   }
 
   private async cleanupCompletedTicketBranch(

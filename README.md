@@ -78,6 +78,11 @@ To recover the exact interrupted ticket from its repository checkpoint:
 bun run main.ts code --session <session-id> --prompt continue
 ```
 
+Recovery first reacquires and verifies the HU's native integration-branch link
+before rebuilding the pinned ticket context. Stable missing or conflicting
+branch state stops once and preserves the checkpoint; rerun the same command
+after correcting the reported Azure state.
+
 To query HU data without starting OpenCode:
 
 ```bash
