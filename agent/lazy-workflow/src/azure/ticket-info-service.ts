@@ -804,6 +804,7 @@ export class AzureTicketInfoService {
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    await this.readDirectParent(ticket, item);
 
     const integration = uniqueBranch(parent);
     const ticketBranch = uniqueBranch(item);
@@ -870,6 +871,10 @@ export class AzureTicketInfoService {
     if (existing && (
       existing.project !== project || existing.repository !== repository || existing.commit !== pullRequest.mergeCommit
     )) throw new Error(`El ticket ${ticket} ya tiene un Fixed in Commit distinto; conflicto`);
+    const existingCommitUrl = text(item, "Custom.URLCommit");
+    if (existingCommitUrl && existingCommitUrl !== artifactLink) {
+      throw new Error(`El ticket ${ticket} ya tiene una URL de commit distinta; conflicto`);
+    }
 
     if (!existing) {
       await this.patchWorkItem(item, [
@@ -1064,6 +1069,10 @@ export class AzureTicketInfoService {
         "--output", "json",
       ])));
     } catch (error) {
+      const existing = (await this.readPullRequests(ticket, project, target, project, repository, source, "active").catch(() => []))
+        .filter((pr) => pr.source === source && pr.target === target);
+      if (existing.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
+      if (existing.length === 1) return existing[0]!;
       try {
         return this.toPullRequest(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post",

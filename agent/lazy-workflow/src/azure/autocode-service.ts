@@ -483,7 +483,12 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const isDirectChild = (parent.relations ?? []).some((relation) =>
       relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === ticket
     );
-    if (!isDirectChild) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    const reverseParents = (item.relations ?? [])
+      .filter((relation) => relation.rel === "System.LinkTypes.Hierarchy-Reverse")
+      .map((relation) => relationId(relation.url));
+    if (!isDirectChild || reverseParents.length !== 1 || reverseParents[0] !== hu) {
+      throw new Error(`El ticket ${ticket} no es hijo directo único de la HU ${hu}`);
+    }
     const type = field(item, "System.WorkItemType");
     if (type !== "Task" && type !== "Bug") throw new Error(`El work item ${ticket} no es un Task o Bug de entrega`);
     const revision = item.rev;

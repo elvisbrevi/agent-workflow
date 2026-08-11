@@ -1888,6 +1888,7 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   let attached = false;
   let evidence = false;
   let commit = false;
+  let queueHasTicket = true;
   let infoReads = 0;
   const manifest = {
     ticket: 51,
@@ -1927,7 +1928,9 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
-      getAutocodeState: async () => ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true }),
+      getAutocodeState: async () => queueHasTicket
+        ? ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true })
+        : ({ context: null, pending: false }),
       getState: async () => ({ ticket: 51, state, revision: 7 }),
       getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
       setState: async (_ticket, desiredState) => { events.push("state"); state = desiredState; },
@@ -1952,11 +1955,11 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
     { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
     { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
     undefined,
-    { deleteTicketBranch: async () => { events.push("cleanup"); } },
+      { deleteTicketBranch: async () => { events.push("cleanup"); queueHasTicket = false; } },
   ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
   await expect(code).resolves.toBe(0);
-  expect(events).toEqual(["ticket-branch", "checkout", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear"]);
+  expect(events).toEqual(["ticket-branch", "checkout", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear", "clear"]);
   expect(infoReads).toBeGreaterThan(1);
 });
 
