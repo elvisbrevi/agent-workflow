@@ -1834,6 +1834,44 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
   expect(calls).toBe(0);
 });
 
+test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni OpenCode", async () => {
+  const checkpoint = {
+    schemaVersion: 2 as const,
+    workflow: "autocode" as const,
+    phase: "implementing" as const,
+    hu: 23438,
+    ticket: 51,
+    integrationBranch: "refs/heads/hu/23438",
+    ticketBranch: "refs/heads/ticket/51",
+    azureRevision: 7,
+    effortBaseline: { real: 1, realHours: 1 },
+    activeDurationMs: 0,
+    activeSince: null,
+    sessionId: null,
+    intent: null,
+    receipts: {},
+  };
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => { calls += 1; throw new Error("must not prepare Azure"); },
+      getAutocodeContext: async () => { calls += 1; throw new Error("must not select"); },
+      getAutocodeContextForTicket: async () => { calls += 1; throw new Error("must not recover"); },
+      verifyTicketCompletion: async () => { calls += 1; throw new Error("must not verify"); },
+    },
+    {
+      run: async () => { calls += 1; throw new Error("must not run OpenCode"); },
+      resume: async () => { calls += 1; throw new Error("must not resume OpenCode"); },
+    },
+    { read: async () => checkpoint, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+  ).run(["code", "--hu", "999"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+});
+
 test("code versionado persiste fases y prepara estado y rama antes de OpenCode", async () => {
   const phases: string[] = [];
   const events: string[] = [];

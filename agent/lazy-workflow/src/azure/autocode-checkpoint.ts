@@ -1,5 +1,6 @@
-import { $ } from "bun";
 import { unlink } from "node:fs/promises";
+import { resolve } from "node:path";
+import { runGit } from "../git/git-ticket-branch-cleaner.ts";
 
 export interface AutocodeCheckpoint {
   workflow: "autocode";
@@ -37,9 +38,9 @@ export interface VersionedAutocodeCheckpoint {
 export type StoredAutocodeCheckpoint = AutocodeCheckpoint | VersionedAutocodeCheckpoint;
 
 export interface AutocodeCheckpointStore {
-  read(): Promise<StoredAutocodeCheckpoint | null>;
-  write(checkpoint: StoredAutocodeCheckpoint): Promise<void>;
-  clear(): Promise<void>;
+  read(workingDirectory?: string): Promise<StoredAutocodeCheckpoint | null>;
+  write(checkpoint: StoredAutocodeCheckpoint, workingDirectory?: string): Promise<void>;
+  clear(workingDirectory?: string): Promise<void>;
 }
 
 const FILE_NAME = "lazy-workflow/autocode-checkpoint.json";
@@ -124,12 +125,12 @@ export function migrateAutocodeCheckpoint(value: unknown, now = Date.now()): Ver
 }
 
 export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
-  private async path(): Promise<string> {
-    return (await $`git rev-parse --git-path ${FILE_NAME}`.text()).trim();
+  private async path(workingDirectory = process.cwd()): Promise<string> {
+    return resolve(workingDirectory, (await runGit(["rev-parse", "--git-path", FILE_NAME], workingDirectory)).trim());
   }
 
-  async read(): Promise<StoredAutocodeCheckpoint | null> {
-    const path = await this.path();
+  async read(workingDirectory?: string): Promise<StoredAutocodeCheckpoint | null> {
+    const path = await this.path(workingDirectory);
     const file = Bun.file(path);
     if (!await file.exists()) return null;
     const value: unknown = await file.json();
@@ -141,8 +142,8 @@ export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
     return migrated;
   }
 
-  async write(checkpoint: StoredAutocodeCheckpoint): Promise<void> {
-    const path = await this.path();
+  async write(checkpoint: StoredAutocodeCheckpoint, workingDirectory?: string): Promise<void> {
+    const path = await this.path(workingDirectory);
     await Bun.$`mkdir -p ${path.substring(0, path.lastIndexOf("/"))}`;
     const normalized = isVersionedAutocodeCheckpoint(checkpoint)
       ? checkpoint
@@ -151,8 +152,8 @@ export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
     await Bun.write(path, `${JSON.stringify(normalized)}\n`);
   }
 
-  async clear(): Promise<void> {
-    const path = await this.path();
+  async clear(workingDirectory?: string): Promise<void> {
+    const path = await this.path(workingDirectory);
     try { await unlink(path); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
