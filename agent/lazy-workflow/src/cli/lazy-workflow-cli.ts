@@ -16,12 +16,14 @@ import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number;
+  branch: string | null;
   numberOfQuestions: number;
   workingDirectory: string;
 };
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
+  setIntegrationBranch?(hu: number, branch: string, workingDirectory: string): Promise<{ hu: number; branch: string }>;
   ensureIntegrationBranch(hu: number): Promise<string | null>;
   getAutocodeState?(hu: number, integrationBranch?: string): Promise<AutocodeState>;
   getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null>;
@@ -102,6 +104,7 @@ function parseOptions(args: string[]): CliOptions {
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
     hu: Number(optionValue(args, "--hu") ?? `${DEFAULT_HU}`),
+    branch: optionValue(args, "--branch"),
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -115,6 +118,7 @@ function printHelp(): void {
     "  lazy-workflow code --session <id> --prompt continue",
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
+    "  lazy-workflow hu-branch-set --hu <id> --branch <name> --working-directory <path>",
     "",
     "Options:",
     "  --hu <id>",
@@ -122,6 +126,7 @@ function printHelp(): void {
     "  --model <model>",
     "  --variant <variant>",
     "  --prompt <prompt>",
+    "  --branch <name>",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
   ].join("\n"));
@@ -138,7 +143,7 @@ export class LazyWorkflowCli {
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info") {
+    if (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set") {
       printHelp();
       return 1;
     }
@@ -165,6 +170,32 @@ export class LazyWorkflowCli {
         return 0;
       } catch (error) {
         reportOperator(`lazy-workflow: no se pudo consultar la rama de la HU ${options.hu} (${errorMessage(error)})`);
+        return 1;
+      }
+    }
+
+    if (command === "hu-branch-set") {
+      if (!Number.isInteger(options.hu) || options.hu <= 0) {
+        reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+        return 1;
+      }
+      if (!options.branch?.trim()) {
+        reportOperator("hu-branch-set requiere --branch <name>");
+        return 1;
+      }
+      if (!this.huInfoService.setIntegrationBranch) {
+        reportOperator("El servicio Azure no soporta hu-branch-set");
+        return 1;
+      }
+      try {
+        console.log(JSON.stringify(
+          await this.huInfoService.setIntegrationBranch(options.hu, options.branch, options.workingDirectory),
+          null,
+          2,
+        ));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo vincular la rama de la HU ${options.hu} (${errorMessage(error)})`);
         return 1;
       }
     }

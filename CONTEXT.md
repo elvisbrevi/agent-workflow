@@ -23,7 +23,8 @@ completed ticket branch, and refreshes Azure before selecting the next ticket.
 _Avoid_: Azure HU planning run
 
 **Explicit command**:
-The first argument must be `plan`, `code`, `hu-info`, or `hu-branch-info`.
+The first argument must be `plan`, `code`, `hu-info`, `hu-branch-info`, or
+`hu-branch-set`.
 Missing or unsupported subcommands print help and do not call Azure Boards or
 OpenCode.
 _Avoid_: accidental OpenCode execution
@@ -40,6 +41,14 @@ The `hu-branch-info --hu <ID>` command that reads the HU's native Azure Git
 Git or Azure. Missing links are `null`; malformed or conflicting native links
 fail with a nonzero status.
 _Avoid_: proposing a branch from the HU number
+
+**HU integration branch assignment**:
+The `hu-branch-set --hu <ID> --branch <name> --working-directory <path>` command
+assigns an already existing remote Azure Git branch to an HU through its native
+Branch ArtifactLink. It validates the selected worktree's Azure `origin`,
+rejects conflicting links, and rereads Azure after the update without invoking
+OpenCode.
+_Avoid_: creating or replacing an integration branch during assignment
 
 **OpenCode result**:
 The normalized JSON representation of OpenCode JSONL output, including the
