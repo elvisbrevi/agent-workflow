@@ -146,7 +146,12 @@ function branchParts(url: string): { project: string; repository: string; branch
   }
   const match = decoded.match(/^vstfs:\/\/\/Git\/Ref\/([^/]+)\/([^/]+)\/GB(.+)$/);
   const branch = match?.[3];
-  if (!match || !branch || branch.startsWith("/") || branch.endsWith("/") || branch.includes("//")) {
+  const parts = branch?.split("/") ?? [];
+  if (
+    !match || !branch || branch === "HEAD" || branch.startsWith("/") || branch.endsWith("/") || branch.includes("//")
+    || branch.includes("..") || branch.includes("@{")
+    || parts.some((part) => part === "." || part === ".." || part.startsWith(".") || part.endsWith(".") || part.toLowerCase().endsWith(".lock"))
+  ) {
     throw new Error("Branch ArtifactLink con URI de rama Azure Git malformada");
   }
   return { project: match[1]!, repository: match[2]!, branch };
