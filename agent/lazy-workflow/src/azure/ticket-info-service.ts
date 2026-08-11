@@ -5,6 +5,26 @@ const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EVIDENCE_KINDS = ["http-json", "screen", "command-output"] as const;
+const SUPPORTED_STATES = new Set([
+  "New",
+  "Active",
+  "En progreso",
+  "In Progress",
+  "Resolved",
+  "Done",
+  "Closed",
+  "Removed",
+]);
+const STATE_TRANSITIONS: Record<string, readonly string[]> = {
+  New: ["Active", "En progreso", "In Progress", "Removed"],
+  Active: ["En progreso", "In Progress", "Resolved", "Done", "Removed"],
+  "En progreso": ["Active", "Resolved", "Done", "Removed"],
+  "In Progress": ["Active", "Resolved", "Done", "Removed"],
+  Resolved: ["Active", "En progreso", "In Progress", "Done", "Closed"],
+  Done: ["Done"],
+  Closed: ["Closed"],
+  Removed: ["Removed"],
+};
 
 const COMPLETION_FIELDS = [
   "Custom.CompletionEvidence",
@@ -256,6 +276,25 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
   }
 }
 
+async function readUtf8File(filePath: string): Promise<string> {
+  const file = Bun.file(filePath);
+  if (!await file.exists()) throw new Error(`El archivo no existe: ${filePath}`);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(await file.arrayBuffer()));
+  } catch (error) {
+    throw new Error(`El archivo no contiene UTF-8 válido: ${filePath}`, { cause: error });
+  }
+}
+
+function workItemRevision(item: WorkItem): number {
+  if (!Number.isInteger(item.rev) || item.rev <= 0) throw new Error(`El work item ${item.id} no tiene una revision Azure válida`);
+  return item.rev;
+}
+
+function validateState(state: string, name: string): void {
+  if (!SUPPORTED_STATES.has(state)) throw new Error(`${name} no soportado: ${state}`);
+}
+
 function validateScreenEvidence(name: string, bytes: Uint8Array): void {
   const lowerName = name.toLowerCase();
   const png = lowerName.endsWith(".png") && bytes.length >= 8 && bytes.slice(0, 8).every((byte, index) => byte === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]);
@@ -425,6 +464,90 @@ export class AzureTicketInfoService {
   async getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }> {
     const item = await this.readWorkItemValidated(ticket);
     return { ticket, completionEvidence: COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean) ?? null };
+  }
+
+  async setDescription(ticket: number, filePath: string): Promise<{ ticket: number; description: string; revision: number }> {
+    positiveId(ticket, "El ticket");
+    const content = await readUtf8File(filePath);
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const existing = item.fields?.["System.Description"];
+    const revision = workItemRevision(item);
+    if (existing === content) return { ticket, description: content, revision };
+
+    await this.patchWorkItem(item, [
+      { op: "test", path: "/rev", value: revision },
+      { op: "add", path: "/fields/System.Description", value: content },
+    ]);
+    const verified = await this.readWorkItemValidated(ticket);
+    const description = verified.fields?.["System.Description"];
+    if (description !== content) throw new Error(`No se pudo verificar la descripción del ticket ${ticket}`);
+    return { ticket, description: content, revision: workItemRevision(verified) };
+  }
+
+  async setState(
+    ticket: number,
+    desiredState: string,
+    expectedState: string,
+  ): Promise<{ ticket: number; state: string; revision: number }> {
+    positiveId(ticket, "El ticket");
+    validateState(desiredState, "El estado deseado");
+    validateState(expectedState, "El estado esperado");
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const currentState = text(item, "System.State");
+    if (currentState !== expectedState) {
+      throw new Error(`El estado actual del ticket ${ticket} (${currentState ?? "null"}) no coincide con el estado esperado ${expectedState}`);
+    }
+    const revision = workItemRevision(item);
+    if (currentState === desiredState) return { ticket, state: desiredState, revision };
+    if (!STATE_TRANSITIONS[currentState]?.includes(desiredState)) {
+      throw new Error(`Transición de estado no soportada: ${currentState} -> ${desiredState}`);
+    }
+
+    await this.patchWorkItem(item, [
+      { op: "test", path: "/rev", value: revision },
+      { op: "replace", path: "/fields/System.State", value: desiredState },
+    ]);
+    const verified = await this.readWorkItemValidated(ticket);
+    const state = text(verified, "System.State");
+    if (state !== desiredState) throw new Error(`No se pudo verificar el estado del ticket ${ticket}`);
+    return { ticket, state: desiredState, revision: workItemRevision(verified) };
+  }
+
+  async setEffort(
+    ticket: number,
+    realEffort: number,
+    realEffortHours: number,
+    expectedRevision: number,
+  ): Promise<{ ticket: number; effort: { real: number; realHours: number }; revision: number }> {
+    positiveId(ticket, "El ticket");
+    if (!Number.isFinite(realEffort) || realEffort < 0) throw new Error(`Real Effort debe ser un número no negativo: ${realEffort}`);
+    if (!Number.isFinite(realEffortHours) || realEffortHours < 0) throw new Error(`Real Effort HH debe ser un número no negativo: ${realEffortHours}`);
+    if (!Number.isInteger(expectedRevision) || expectedRevision <= 0) throw new Error(`La revision esperada debe ser un entero positivo: ${expectedRevision}`);
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const revision = workItemRevision(item);
+    const currentReal = number(item, ["Custom.EsfuerzoReal"]);
+    const currentRealHours = number(item, ["Custom.EsfuerzoRealHH"]);
+    if (currentReal === realEffort && currentRealHours === realEffortHours) {
+      return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision };
+    }
+    if (revision !== expectedRevision) {
+      throw new Error(`La revision esperada ${expectedRevision} no coincide con la revision actual ${revision}`);
+    }
+
+    await this.patchWorkItem(item, [
+      { op: "test", path: "/rev", value: expectedRevision },
+      { op: "add", path: "/fields/Custom.EsfuerzoReal", value: realEffort },
+      { op: "add", path: "/fields/Custom.EsfuerzoRealHH", value: realEffortHours },
+    ]);
+    const verified = await this.readWorkItemValidated(ticket);
+    if (
+      number(verified, ["Custom.EsfuerzoReal"]) !== realEffort
+      || number(verified, ["Custom.EsfuerzoRealHH"]) !== realEffortHours
+    ) throw new Error(`No se pudo verificar el esfuerzo del ticket ${ticket}`);
+    return { ticket, effort: { real: realEffort, realHours: realEffortHours }, revision: workItemRevision(verified) };
   }
 
   async linkPullRequest(
