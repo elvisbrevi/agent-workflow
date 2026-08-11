@@ -1006,6 +1006,18 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
   expect(calls).toBe(0);
 });
 
+test("code --session rechaza una sesión sin checkpoint sin tocar Azure", async () => {
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
+    { read: async () => null, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+  ).run(["code", "--session", "ses-missing", "--prompt", "continue"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+});
+
 test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni OpenCode", async () => {
   const checkpoint = {
     schemaVersion: 2 as const,
@@ -1175,6 +1187,10 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   expect(infoReads).toBeGreaterThan(1);
   expect(openCodePrompt).toContain("Supplemental operator request (non-authoritative)");
   expect(openCodePrompt).toContain("refs/heads/hu/23438");
+  expect(openCodePrompt).toContain('"id":51');
+  expect(openCodePrompt).toContain('"ticketBranch":"refs/heads/ticket/51"');
+  expect(openCodePrompt).toContain('"workflowPhase":"implementing"');
+  expect(openCodePrompt).toContain('"completionGates":["pinned-ticket-context"');
 });
 
 test("code migra un checkpoint legacy y conserva el marcador al reanudar", async () => {
@@ -1189,6 +1205,8 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
+  const writes: Array<{ schemaVersion?: number; phase?: string; sessionId?: string | null }> = [];
+  let verificationCalls = 0;
   const code = await new LazyWorkflowCli(
     {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
@@ -1198,21 +1216,23 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
       getState: async () => ({ ticket: 51, state: "En progreso", revision: 7 }),
       getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
       setState: async () => undefined,
-       getBranch: async () => ({ hu: 23438, ticket: 51, branch: ticketBranch, integrationBranch: context.integrationBranch }),
-       setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: ticketBranch }),
-       verifyTicketCompletion: async () => ({ ticketBranch }),
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: ticketBranch, integrationBranch: context.integrationBranch }),
+      setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: ticketBranch }),
+      verifyTicketCompletion: async () => { verificationCalls += 1; return { ticketBranch }; },
     },
     {
       run: async () => { throw new Error("must resume"); },
       resume: async (_session, _prompt, _directory, marker) => { markers.push(marker ?? ""); return result; },
     },
-    { read: async () => checkpoint, write: async () => undefined, clear: async () => undefined },
+    { read: async () => checkpoint, write: async (value) => { writes.push(value); }, clear: async () => undefined },
     undefined,
     { deleteTicketBranch: async () => undefined },
   ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(markers).toEqual(["IMPLEMENTATION_READY"]);
+  expect(writes.some(({ schemaVersion, phase }) => schemaVersion === 2 && phase === "implementing")).toBeTrue();
+  expect(verificationCalls).toBe(0);
 });
 
 test("code versionado no reintenta OpenCode si falla la limpieza tras el marcador", async () => {

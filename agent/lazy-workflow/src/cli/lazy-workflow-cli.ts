@@ -151,7 +151,6 @@ const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
-const MAX_BRANCH_PREFLIGHT_RETRIES = 3;
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
   "ticket-description-info",
@@ -174,14 +173,6 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-evidence-set",
   "ticket-completion-apply",
 ]);
-
-function isStableIntegrationBranchFailure(error: unknown): boolean {
-  return /ArtifactLink|rama .* (malformada|conflicto|no existe|no válida|ambigua)|indique --base-branch|cambios sin guardar|origin .* (no es|no contiene)|repositorio Azure .* no coincide|proyecto .* no al proyecto/i.test(errorMessage(error));
-}
-
-function isTransientAzureFailure(error: unknown): boolean {
-  return /Azure command failed|azure .* (temporar|unavailable|unreachable)|timeout|timed out|network|connection|\b(?:429|500|502|503|504)\b/i.test(errorMessage(error));
-}
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -748,6 +739,10 @@ export class LazyWorkflowCli {
 
   private async runAzureCode(options: CliOptions): Promise<number> {
     const checkpoint = await this.checkpointStore.read(options.workingDirectory);
+    if (options.session !== null && checkpoint === null) {
+      reportOperator("lazy-workflow: no existe un checkpoint para la sesión solicitada.");
+      return 1;
+    }
     return this.runVersionedAzureCode(options, checkpoint);
   }
 
@@ -1176,37 +1171,6 @@ export class LazyWorkflowCli {
         resumePrompt = options.prompt;
       }
     }
-  }
-
-  private async prepareIntegrationBranch(
-    hu: number,
-    options: CliOptions,
-    retryTransient: boolean,
-  ): Promise<string | null> {
-    for (let attempt = 0; attempt <= MAX_BRANCH_PREFLIGHT_RETRIES; attempt += 1) {
-      try {
-        const branch = await this.huInfoService.ensureIntegrationBranch!(
-          hu,
-          options.workingDirectory,
-          options.baseBranch,
-        );
-        if (branch) return branch;
-        reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
-        return null;
-      } catch (error) {
-        const retryable = retryTransient
-          && !isStableIntegrationBranchFailure(error)
-          && isTransientAzureFailure(error)
-          && attempt < MAX_BRANCH_PREFLIGHT_RETRIES;
-        if (!retryable) {
-          reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
-          return null;
-        }
-        reportOperator(`lazy-workflow: Azure no respondió al preparar la rama de integración (${errorMessage(error)}); reintentando ${attempt + 1}/${MAX_BRANCH_PREFLIGHT_RETRIES} en 10s.`);
-        try { await this.retryTimer.wait(10_000); } catch { return null; }
-      }
-    }
-    return null;
   }
 
   private async cleanupCompletedTicketBranch(
