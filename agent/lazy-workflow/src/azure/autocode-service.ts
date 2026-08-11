@@ -1,10 +1,11 @@
 import { $ } from "bun";
-import { unlink } from "node:fs/promises";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
+const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
+const WORK_ITEM_API_VERSION = "7.1";
 const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
 const COMPLETION_EVIDENCE_FIELDS = [
   "Custom.CompletionEvidence",
@@ -294,26 +295,19 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (linkedBranches[0] === normalized.ref) return { hu, branch: normalized.ref };
 
     const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${repository.project.id}/${repository.id}/GB${normalized.name}`)}`;
-    const patchPath = `/tmp/lazy-workflow-branch-${crypto.randomUUID()}.json`;
-    await Bun.write(patchPath, JSON.stringify([{
+    const patchBody = JSON.stringify([{
       op: "add",
       path: "/relations/-",
       value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
-    }]));
-    try {
-      await this.az([
-        "devops", "invoke", "--organization", ORGANIZATION,
-        "--area", "wit", "--resource", "workitems",
-        "--route-parameters", `project=${repository.project.id}`, `workItemId=${hu}`,
-        "--http-method", "PATCH", "--api-version", "7.1",
-        "--media-type", "application/json-patch+json", "--in-file", patchPath,
-        "--output", "json",
-      ]);
-    } finally {
-      try { await unlink(patchPath); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
+    }]);
+    await this.az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE,
+      "--method", "patch",
+      "--uri", `${ORGANIZATION}/${repository.project.id}/_apis/wit/workitems/${hu}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--headers", "Content-Type=application/json-patch+json",
+      "--body", patchBody,
+      "--output", "json",
+    ]);
 
     const verified = await this.getIntegrationBranchInfo(hu);
     if (verified.branch !== normalized.ref) {
@@ -518,7 +512,7 @@ async function runAz(args: string[]): Promise<string> {
   try {
     return await $`az ${args}`.text();
   } catch (error) {
-    throw new Error("Azure command failed", { cause: error });
+    throw new Error(`Azure command failed: ${commandError(error)}`, { cause: error });
   }
 }
 

@@ -20,6 +20,7 @@ function serviceFixture(options: {
   verifiedRelations?: Array<Record<string, unknown>>;
 } = {}) {
   const patchBodies: unknown[] = [];
+  const patchCommands: string[][] = [];
   let patched = false;
   const az = async (args: string[]): Promise<string> => {
     if (args[0] === "boards") {
@@ -41,9 +42,9 @@ function serviceFixture(options: {
         remoteUrl: options.resolvedRemoteUrl ?? "https://dev.azure.com/org/Team/_git/repo",
       });
     }
-    if (args[0] === "devops") {
-      const path = args[args.indexOf("--in-file") + 1]!;
-      patchBodies.push(await Bun.file(path).json());
+    if (args[0] === "rest") {
+      patchCommands.push(args);
+      patchBodies.push(JSON.parse(args[args.indexOf("--body") + 1]!));
       patched = true;
       return "{}";
     }
@@ -54,7 +55,7 @@ function serviceFixture(options: {
     if (args[0] === "ls-remote") return options.remoteBranch === false ? "" : `${"a".repeat(40)}\t${args.at(-1)}\n`;
     throw new Error(`Unexpected Git command: ${args.join(" ")}`);
   };
-  return { service: new AzureAutocodeService(az, git), patchBodies };
+  return { service: new AzureAutocodeService(az, git), patchBodies, patchCommands };
 }
 
 test("hu-branch-set valida la rama remota, crea el Branch ArtifactLink y verifica Azure", async () => {
@@ -66,6 +67,14 @@ test("hu-branch-set valida la rama remota, crea el Branch ArtifactLink y verific
     path: "/relations/-",
     value: { rel: "ArtifactLink", url: branchUri, attributes: { name: "Branch" } },
   }]]);
+  expect(fixture.patchCommands[0]).toEqual(expect.arrayContaining([
+    "rest",
+    "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
+    "--method", "patch",
+    "--uri", "https://dev.azure.com/SubdepartamentoSolucionesTI/project-id/_apis/wit/workitems/125?api-version=7.1",
+    "--headers", "Content-Type=application/json-patch+json",
+    "--output", "json",
+  ]));
 });
 
 test("hu-branch-set es idempotente para el mismo vínculo y no lo duplica", async () => {
@@ -171,8 +180,8 @@ function provisioningFixture(options: {
         remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
       });
     }
-    if (args[0] === "devops") {
-      patchBodies.push(await Bun.file(args[args.indexOf("--in-file") + 1]!).json());
+    if (args[0] === "rest") {
+      patchBodies.push(JSON.parse(args[args.indexOf("--body") + 1]!));
       patched = true;
       return "{}";
     }
@@ -353,7 +362,7 @@ test("hu-branch-set publica en un Git real el commit exacto de la base remota", 
       project: { id: "project-id", name: "Team" },
       remoteUrl: "https://dev.azure.com/org/Team/_git/repo",
     });
-    if (args[0] === "devops") {
+    if (args[0] === "rest") {
       patched = true;
       return "{}";
     }
