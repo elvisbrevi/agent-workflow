@@ -567,8 +567,14 @@ export class AzureTicketInfoService {
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
   }
 
-  async readCompletionManifest(path: string): Promise<CompletionManifest> {
-    const content = await readUtf8File(path);
+  async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
+    const commonDirectory = resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim());
+    const manifestPath = resolve(path);
+    const manifestRelativePath = relative(commonDirectory, manifestPath);
+    if (!manifestRelativePath || (manifestRelativePath !== ".." && manifestRelativePath.startsWith(`..${sep}`))) {
+      throw new Error("El manifest de completion debe estar bajo el directorio Git común");
+    }
+    const content = await readUtf8File(manifestPath);
     let value: unknown;
     try {
       value = JSON.parse(content);
