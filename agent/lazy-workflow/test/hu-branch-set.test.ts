@@ -172,6 +172,8 @@ function provisioningFixture(options: {
     gitCommands.push(args);
     if (args[0] === "remote") return "https://dev.azure.com/org/Team/_git/repo\n";
     if (args[0] === "status") return options.dirty ?? "";
+    if (args[0] === "fetch") return "";
+    if (args[0] === "rev-parse") return baseSha;
     if (args[0] === "ls-remote") {
       const ref = args.at(-1)!;
       if (ref === base && options.baseExists !== false) return `${baseSha}\t${base}\n`;
@@ -185,6 +187,7 @@ function provisioningFixture(options: {
       pushed = true;
       return "";
     }
+    if (args[0] === "update-ref") return "";
     throw new Error(`Unexpected Git command: ${args.join(" ")}`);
   };
   return { service: new AzureAutocodeService(az, git), patchBodies, gitCommands };
@@ -195,7 +198,11 @@ test("hu-branch-set crea la rama ausente desde el SHA exacto de la base remota",
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands).toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands).toContainEqual([
+    "fetch", "--no-tags", "origin",
+    `+refs/heads/main:refs/lazy-workflow/base-${"1".repeat(40)}`,
+  ]);
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
@@ -205,7 +212,7 @@ test("hu-branch-set exige base explícita y no escribe Azure si falta la base", 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo"))
     .rejects.toThrow("--base-branch");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
 });
 
 test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el worktree", async () => {
@@ -213,8 +220,8 @@ test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el wor
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain"]);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
@@ -224,7 +231,15 @@ test("hu-branch-set falla cerrado con worktree sucio antes de publicar", async (
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("cambios");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+  expect(fixture.gitCommands).not.toContainEqual(["push", "origin", `refs/lazy-workflow/base-${"1".repeat(40)}:refs/heads/feature/hu-126`]);
+});
+
+test("hu-branch-set falla cerrado ante cambios no rastreados", async () => {
+  const fixture = provisioningFixture({ dirty: "?? evidencia-local.txt\n" });
+
+  await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
+    .rejects.toThrow("cambios");
+  expect(fixture.patchBodies).toHaveLength(0);
 });
 
 test("hu-branch-set no escribe Azure si la publicación falla", async () => {

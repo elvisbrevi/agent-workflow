@@ -272,12 +272,20 @@ export class AzureAutocodeService implements AutocodeAzureService {
       if (base.ref === normalized.ref) throw new Error("La base remota no puede ser la rama HU");
       const baseSha = await remoteBranchSha(this.git, base.ref, workingDirectory);
       if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
-      const status = await this.git(["status", "--porcelain"], workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama HU");
-      await this.git(["push", "origin", `${baseSha}:${normalized.ref}`], workingDirectory);
-      const publishedSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
-      if (publishedSha !== baseSha) {
-        throw new Error(`No se pudo verificar remotamente la rama ${normalized.ref} desde ${base.ref}`);
+      const localBaseRef = `refs/lazy-workflow/base-${baseSha}`;
+      try {
+        await this.git(["fetch", "--no-tags", "origin", `+${base.ref}:${localBaseRef}`], workingDirectory);
+        const fetchedSha = (await this.git(["rev-parse", `${localBaseRef}^{commit}`], workingDirectory)).trim();
+        if (fetchedSha !== baseSha) throw new Error(`La base remota ${base.ref} cambió durante la preparación`);
+        await this.git(["push", "origin", `${localBaseRef}:${normalized.ref}`], workingDirectory);
+        const publishedSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
+        if (publishedSha !== baseSha) {
+          throw new Error(`No se pudo verificar remotamente la rama ${normalized.ref} desde ${base.ref}`);
+        }
+      } finally {
+        await this.git(["update-ref", "-d", localBaseRef], workingDirectory);
       }
     }
 
