@@ -44,8 +44,9 @@ completed ticket branch, and refreshes Azure before selecting the next ticket.
 _Avoid_: Azure HU planning run
 
 **Explicit command**:
-The first argument must be `plan`, `code`, `hu-info`, `hu-branch-info`, or
-`hu-branch-set`.
+The first argument must be a supported workflow command: `plan`, `code`,
+`hu-info`, `hu-branch-info`, `hu-branch-set`, or a documented `ticket-*`
+read/mutation command.
 Missing or unsupported subcommands print help and do not call Azure Boards or
 OpenCode.
 _Avoid_: accidental OpenCode execution

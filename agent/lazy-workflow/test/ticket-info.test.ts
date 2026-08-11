@@ -190,6 +190,15 @@ test("PR linking validates the exact ticket branch and verifies native associati
       lastMergeCommit: { commitId: "merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
+      pullRequestId: 99,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51-read",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "merge-commit" },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    }]);
     if (args[0] === "repos" && args[2] === "work-item" && args[3] === "add") {
       associated = true;
       return "{}";
@@ -210,15 +219,24 @@ test("PR linking validates the exact ticket branch and verifies native associati
 test("commit linking is idempotent and rejects a conflicting native commit", async () => {
   let fixed = false;
   const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } }],
+    });
     if (args[0] === "boards") return JSON.stringify({
       id: 51,
       rev: 4,
       fields: { "System.WorkItemType": "Task" },
-      relations: fixed ? [{
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+        ...(fixed ? [{
         rel: "ArtifactLink",
         url: "vstfs:///Git/Commit/project-id%2Frepository-id%2Fmerge-commit",
         attributes: { name: "Fixed in Commit" },
-      }] : [],
+        }] : []),
+      ],
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
       pullRequestId: 99,
@@ -229,6 +247,15 @@ test("commit linking is idempotent and rejects a conflicting native commit", asy
       lastMergeCommit: { commitId: "merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
+      pullRequestId: 99,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51-read",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "merge-commit" },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    }]);
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([51]);
     if (args[0] === "rest" && args.includes("patch")) {
       fixed = true;
@@ -253,6 +280,7 @@ test("attachment validation records a digest and retries by digest", async () =>
   let attached = false;
   let uploads = 0;
   let digest = "";
+  let patchFailures = 1;
   try {
     const service = new AzureTicketInfoService(async (args) => {
       if (args[0] === "boards") return JSON.stringify({
@@ -262,7 +290,7 @@ test("attachment validation records a digest and retries by digest", async () =>
         relations: attached ? [{
           rel: "AttachedFile",
           url: "https://example.test/evidence.json",
-          attributes: { name: "evidence.json", comment: "json", digest },
+          attributes: { name: "evidence.json", comment: "http-json", digest },
         }] : [],
       });
       if (args[0] === "rest" && args.some((value) => value.includes("attachments?"))) {
@@ -273,13 +301,14 @@ test("attachment validation records a digest and retries by digest", async () =>
         attached = true;
         const patch = JSON.parse(args[args.indexOf("--body") + 1]!);
         digest = patch[1].value.attributes.digest;
+        if (patchFailures-- > 0) throw new Error("response lost after Azure applied relation");
         return "{}";
       }
       throw new Error(`unexpected command: ${args.join(" ")}`);
     });
 
-    const first = await service.addAttachment(51, path, "json");
-    const second = await service.addAttachment(51, path, "json");
+    const first = await service.addAttachment(51, path, "http-json");
+    const second = await service.addAttachment(51, path, "http-json");
     expect(first.url).toBe(second.url);
     expect(uploads).toBe(1);
   } finally {
@@ -392,7 +421,7 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
     waitForAccess: async () => undefined,
     linkPullRequest: async (...args: [number, number, number]) => { calls.push(args); return { pullRequest: args[2] }; },
     linkCommit: async (...args: [number, number]) => { calls.push(args); return { commit: args[1] }; },
-    addAttachment: async (...args: [number, string, "json"]) => { calls.push(args); return { file: args[1] }; },
+    addAttachment: async (...args: [number, string, "http-json"]) => { calls.push(args); return { file: args[1] }; },
     setEvidence: async (...args: [number, string]) => { calls.push(args); return { file: args[1] }; },
   };
 
@@ -400,8 +429,8 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     expect(await new LazyWorkflowCli(service).run(["ticket-pr-link", "--hu", "23438", "--ticket", "51", "--pr", "99"])).toBe(0);
     expect(await new LazyWorkflowCli(service).run(["ticket-commit-link", "--ticket", "51", "--pr", "99"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-attachment-add", "--ticket", "51", "--file", "/tmp/evidence.json", "--kind", "json"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-evidence-set", "--ticket", "51", "--file", "/tmp/evidence.html"])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run(["ticket-attachment-add", "--ticket", "51", "--file", "/tmp/evidence.json", "--kind", "http-json"])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run(["ticket-evidence-set", "--ticket", "51", "--evidence-file", "/tmp/evidence.html"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
@@ -409,7 +438,7 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
   expect(calls).toEqual([
     [23438, 51, 99],
     [51, 99],
-    [51, "/tmp/evidence.json", "json"],
+    [51, "/tmp/evidence.json", "http-json"],
     [51, "/tmp/evidence.html"],
   ]);
   expect(output).toHaveLength(4);

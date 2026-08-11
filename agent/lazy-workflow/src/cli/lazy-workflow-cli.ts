@@ -165,8 +165,8 @@ function parseOptions(args: string[]): CliOptions {
     baseBranch: optionValue(args, "--base-branch"),
     ticket: args.includes("--ticket") ? Number(ticket) : null,
     pullRequest: args.includes("--pr") ? Number(optionValue(args, "--pr")) : null,
-    file: optionValue(args, "--file"),
-    evidenceKind: (optionValue(args, "--evidence-kind") ?? optionValue(args, "--kind")) as EvidenceKind | null,
+    file: optionValue(args, "--evidence-file") ?? optionValue(args, "--file"),
+    evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
@@ -189,8 +189,8 @@ function printHelp(): void {
     "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
     "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
     "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
-    "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --evidence-kind <screen|json|command>",
-    "  lazy-workflow ticket-evidence-set --ticket <id> --file <path>",
+    "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
+    "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
@@ -203,7 +203,8 @@ function printHelp(): void {
     "  --ticket <id>",
     "  --pr <id>",
     "  --file <path>",
-    "  --evidence-kind <screen|json|command>",
+    "  --kind <http-json|screen|command-output>",
+    "  --evidence-file <path>",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  --number-of-questions <count>",
     "  --working-directory <path>",
@@ -254,7 +255,7 @@ export class LazyWorkflowCli {
         return 1;
       }
       if (command === "ticket-attachment-add" && !options.evidenceKind) {
-        reportOperator("ticket-attachment-add requiere --evidence-kind <screen|json|command>");
+        reportOperator("ticket-attachment-add requiere --kind <http-json|screen|command-output>");
         return 1;
       }
       try {
