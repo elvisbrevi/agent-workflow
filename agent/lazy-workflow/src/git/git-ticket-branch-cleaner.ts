@@ -51,6 +51,30 @@ export async function pushGitBranch(
   if (remote !== head) throw new Error(`La rama remota ${branchRef} no coincide con el commit local`);
 }
 
+export async function checkoutGitBranch(
+  git: GitRunner,
+  branchRef: string,
+  workingDirectory: string,
+): Promise<void> {
+  const branch = branchName(branchRef);
+  const status = await git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+  if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se cambiará a la rama del ticket");
+  const current = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+  if (current === branch) return;
+  await git(["fetch", "origin", `+${branchRef}:refs/remotes/origin/${branch}`], workingDirectory);
+  const local = await git(["branch", "--list", branch], workingDirectory);
+  if (local.trim()) {
+    const localSha = (await git(["rev-parse", `refs/heads/${branch}^{commit}`], workingDirectory)).trim();
+    const remoteSha = (await git(["rev-parse", `refs/remotes/origin/${branch}^{commit}`], workingDirectory)).trim();
+    if (localSha !== remoteSha) throw new Error(`La rama local ${branchRef} no coincide con su rama remota`);
+    await git(["switch", branch], workingDirectory);
+  } else {
+    await git(["switch", "--create", branch, "--track", `refs/remotes/origin/${branch}`], workingDirectory);
+  }
+  const active = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+  if (active !== branch) throw new Error(`No se pudo activar la rama ${branchRef}`);
+}
+
 export class GitTicketBranchCleaner {
   constructor(private readonly git: GitRunner = runGit) {}
 
