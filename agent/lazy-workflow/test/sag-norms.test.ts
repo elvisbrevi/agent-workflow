@@ -406,6 +406,7 @@ test("--normas-sag code se rechaza antes de servicios si falta el cargador codin
 test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async () => {
   const directory = await config();
   let received: OpenCodeRunOptions | null = null;
+  let sourceCalls = 0;
   const results = ["TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED", "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED"].map((text, index) => OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: `ses-code-sag-${index}`,
@@ -422,13 +423,17 @@ test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async ()
       undefined,
       undefined,
       undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => new SagNormsService(codingSource()).loadCoding(directory) },
+      {
+        loadPlanning: async () => { throw new Error("must not plan"); },
+        loadCoding: async () => { sourceCalls += 1; return new SagNormsService(codingSource()).loadCoding(directory); },
+      },
     ).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(received?.prompt).toContain('"phase": "coding"');
     expect(received?.prompt).toContain('"commit": "coding-commit"');
     expect(received?.prompt).toContain('"ruleId": "com-C1"');
+    expect(sourceCalls).toBe(2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
