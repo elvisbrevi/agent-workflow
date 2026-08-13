@@ -118,6 +118,17 @@ export interface SagDeploymentContext {
   needsDecision: string[];
 }
 
+export interface SagInfrastructureContext {
+  phase: "infrastructure";
+  sourceRepository: string;
+  branch: "master";
+  commit: string;
+  component: SagComponent;
+  explicitFacts: SagNormsContext["explicitFacts"];
+  selectedRules: SagNormSelection[];
+  needsDecision: string[];
+}
+
 export interface SagNormSourceSnapshot {
   commit: string;
   files: Record<string, string>;
@@ -538,6 +549,35 @@ export class SagNormsService {
       selectedRules,
       guidance,
       needsDecision: decisions,
+    };
+  }
+
+  async loadInfrastructure(workingDirectory: string): Promise<SagInfrastructureContext> {
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
+    const componentPaths = COMPONENT_PATHS[component];
+    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.integrations];
+    const snapshot = await this.source.load(paths);
+    if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
+    const content = (path: string): string => snapshot.files[path] ?? "";
+    const common = ruleIds(content(NORMATIVE_PATHS.common), "com");
+    const componentRules = componentPaths.flatMap((path) => ruleIds(content(path), component));
+    const integrationRules = ruleIds(content(NORMATIVE_PATHS.integrations), "int");
+    if (!common.includes("com-G1")) throw new Error("la fuente SAG no contiene la norma com-G1");
+    if (componentRules.length === 0) throw new Error(`la fuente SAG no contiene normas para ${component}`);
+    if (!integrationRules.includes("int-R1")) throw new Error("la fuente SAG no contiene la norma int-R1");
+    return {
+      phase: "infrastructure",
+      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      branch: "master",
+      commit: snapshot.commit,
+      component,
+      explicitFacts,
+      selectedRules: [
+        ...this.select(["com-G1"], NORMATIVE_PATHS.common, snapshot.commit, "phase=infrastructure; common verification rule", "applicable"),
+        ...this.select(componentRules, componentPaths[0]!, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
+        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration verification", "applicable"),
+      ],
+      needsDecision,
     };
   }
 

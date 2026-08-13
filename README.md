@@ -31,6 +31,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
 lazy-workflow plan --normas-sag --working-directory /path/to/repository
 lazy-workflow code --working-directory /path/to/repository
+lazy-workflow infra-sag --issue 155 --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
 lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
@@ -94,6 +95,13 @@ verifies the deployment result. DEV is the default and only supported
 environment in this slice; PROD and every production alias fail before any
 external mutation. Missing authentication, ambiguous routes, or unverifiable
 targets fail closed.
+
+`infra-sag` always loads infrastructure norms and requires exactly one explicit
+`--issue` or `--hu`. It verifies repository/base branch, Consul variables, and
+explicitly declared database, pipeline, and Release Definition prerequisites
+through an authenticated read-only adapter. Missing or unverifiable
+prerequisites become corrective tracker work; the command never provisions
+infrastructure.
 Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
 the source requires authentication; the token is never placed in prompts or
 logs.
