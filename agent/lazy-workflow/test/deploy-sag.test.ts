@@ -297,7 +297,7 @@ test("deploy-sag rechaza un comando de adapter PROD antes de descubrir rutas", a
   const directory = await config();
   const path = `${directory}/.sag/config.json`;
   const value = JSON.parse(await Bun.file(path).text()) as { deployment: { adapter: { command: string[] } } };
-  value.deployment.adapter.command[0] = ".sag/deploy-prod";
+  value.deployment.adapter.command = [".sag/deploy-adapter", "--environment=prod"];
   await Bun.write(path, JSON.stringify(value));
   let discoveryCalls = 0;
   const systems: DeploymentSystems = {
