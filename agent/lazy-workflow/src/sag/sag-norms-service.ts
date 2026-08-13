@@ -7,6 +7,10 @@ const COMPONENTS = ["api", "bff", "nextjs"] as const;
 const NORMATIVE_PATHS = {
   common: "/estandares/comunes.md",
   tracker: "/estandares/seguimiento.md",
+  documentation: "/estandares/documentacion.md",
+  integrations: "/estandares/integraciones.md",
+  extraction: "/estandares/extraccion-documentos.md",
+  sonar: "/estandares/sonarqube.md",
 } as const;
 
 export type SagComponent = typeof COMPONENTS[number];
@@ -26,6 +30,12 @@ export interface SagNormsContext {
   branch: "master";
   commit: string;
   component: SagComponent;
+  explicitFacts: {
+    changeKind: string | null;
+    artifacts: string[] | null;
+    capabilities: string[] | null;
+    significantChange: boolean | null;
+  };
   selectedRules: SagNormSelection[];
   needsDecision: string[];
 }
@@ -77,6 +87,7 @@ function readComponent(config: Record<string, unknown>): SagComponent {
 async function readConfig(workingDirectory: string): Promise<{
   component: SagComponent;
   needsDecision: string[];
+  explicitFacts: SagNormsContext["explicitFacts"];
 }> {
   const path = resolve(workingDirectory, ".sag/config.json");
   let value: unknown;
@@ -117,7 +128,21 @@ async function readConfig(workingDirectory: string): Promise<{
     }
   }
 
-  return { component: readComponent(value), needsDecision };
+  const readAlias = (names: string[]): unknown => names.map((name) => value[name]).find((candidate) => candidate !== undefined);
+  const changeKind = readAlias(["changeKind", "cambio"]);
+  const artifacts = readAlias(["artifacts", "artefactos"]);
+  const capabilities = readAlias(["capabilities", "capacidades"]);
+  const significantChange = readAlias(["significantChange", "cambioSignificativo"]);
+  return {
+    component: readComponent(value),
+    needsDecision,
+    explicitFacts: {
+      changeKind: typeof changeKind === "string" ? changeKind : null,
+      artifacts: Array.isArray(artifacts) ? artifacts as string[] : null,
+      capabilities: Array.isArray(capabilities) ? capabilities as string[] : null,
+      significantChange: typeof significantChange === "boolean" ? significantChange : null,
+    },
+  };
 }
 
 export class RemoteSagNormSource implements SagNormSource {
@@ -157,9 +182,17 @@ export class SagNormsService {
   constructor(private readonly source: SagNormSource = new RemoteSagNormSource()) {}
 
   async loadPlanning(workingDirectory: string): Promise<SagNormsContext> {
-    const { component, needsDecision } = await readConfig(workingDirectory);
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
     const componentPaths = [`/estandares/${component}.md`, `/estandares/${component}-patrones.md`];
-    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.tracker];
+    const optionalPaths = [
+      ...(explicitFacts.significantChange === true ? [NORMATIVE_PATHS.documentation] : []),
+      ...(explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret")
+        ? [NORMATIVE_PATHS.integrations] : []),
+      ...(explicitFacts.artifacts?.includes("document") || explicitFacts.capabilities?.includes("document-processing")
+        ? [NORMATIVE_PATHS.extraction] : []),
+      ...(explicitFacts.capabilities?.includes("sonar") ? [NORMATIVE_PATHS.sonar] : []),
+    ];
+    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.tracker, ...optionalPaths];
     const snapshot = await this.source.load(paths);
     if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
 
@@ -175,6 +208,15 @@ export class SagNormsService {
         .map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`),
       ...tracker.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por change-kind`),
     ];
+    const selectedOptionalRules = optionalPaths.flatMap((path) => this.select(
+      ruleIds(snapshot.files[path] ?? "", path === NORMATIVE_PATHS.documentation ? "doc"
+        : path === NORMATIVE_PATHS.integrations ? "int"
+          : path === NORMATIVE_PATHS.extraction ? "ext" : "sonar"),
+      path,
+      snapshot.commit,
+      "phase=planning; explicit .sag/config.json facts make this family applicable",
+      "applicable",
+    ));
 
     const selectedRules = [
       ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule", "applicable"),
@@ -192,6 +234,7 @@ export class SagNormsService {
         `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
         "needs-decision",
       ),
+      ...selectedOptionalRules,
       ...this.select(
         tracker,
         NORMATIVE_PATHS.tracker,
@@ -206,6 +249,7 @@ export class SagNormsService {
       branch: "master",
       commit: snapshot.commit,
       component,
+      explicitFacts,
       selectedRules,
       needsDecision: [...needsDecision, ...conditionalDecisions],
     };
