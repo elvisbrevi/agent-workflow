@@ -22,7 +22,7 @@ import {
 } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
-import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
+import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
@@ -291,6 +291,7 @@ export class LazyWorkflowCli {
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
     private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview">> = new SagNormsService(),
+    private readonly git: GitRunner = runGit,
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -646,6 +647,8 @@ export class LazyWorkflowCli {
       return 1;
     }
     try {
+      const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      if (initialStatus.trim()) throw new Error("el repositorio tiene cambios sin guardar; la revision no mutara un arbol sucio");
       const scope = options.hu !== null
         ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
         : { tracker: "github", issue: options.issue };
@@ -666,6 +669,8 @@ export class LazyWorkflowCli {
         await this.huInfoService.waitForAccess(options.hu);
         result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
       }
+      const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
       console.log(JSON.stringify(result, null, 2));
       return execution.failed ? 1 : 0;
     } catch (error) {

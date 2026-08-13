@@ -404,6 +404,7 @@ test("architecture-review rechaza source SAG inaccesible antes de OpenCode", asy
       undefined,
       undefined,
       { loadPlanning: async () => { throw new Error("must not use planning"); }, loadArchitectureReview: async () => { throw new Error("source unavailable"); } },
+      async () => "",
     ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
 
     expect(code).toBe(1);
@@ -446,14 +447,135 @@ test("architecture-review GitHub usa un Issue explicito y no toca Azure", async 
       undefined,
       undefined,
       { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => context },
+      async () => "",
     ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory, "--prompt", "review this Issue"]);
 
     expect(code).toBe(0);
     expect(azureCalls).toBe(0);
     expect(received?.prompt).toContain('"issue":154');
     expect(received?.prompt).toContain("/to-spec");
+    expect(received?.prompt).toContain("/to-tickets");
+    expect(received?.prompt).toContain("use `gh`");
     expect(received?.prompt).toContain("do not modify source code");
     expect(received?.prompt).toContain('"commit": "review-commit"');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("architecture-review Azure usa la HU completa y conserva la ruta del tracker", async () => {
+  const directory = await config();
+  let received: OpenCodeRunOptions | null = null;
+  let detectsAzure = false;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-architecture-azure",
+    part: { type: "text", text: "clean review" },
+  }));
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => ({ id: 23438, title: "HU architecture" }), waitForAccess: async () => undefined },
+      {
+        run: async (options, azure) => { received = options; detectsAzure = azure; return { result, azureLoginRequired: false }; },
+        resume: async () => result,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+        phase: "architecture-review",
+        sourceRepository: "https://example.test/sag",
+        branch: "master",
+        commit: "review-commit",
+        component: "api",
+        explicitFacts: { changeKind: null, artifacts: null, capabilities: null, significantChange: null, environment: null },
+        reviewFamilies: [],
+        selectedRules: [],
+        guidance: [],
+        needsDecision: [],
+      }) },
+      async () => "",
+    ).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
+
+    expect(code).toBe(0);
+    expect(detectsAzure).toBeTrue();
+    expect(received?.prompt).toContain('"tracker":"azure"');
+    expect(received?.prompt).toContain('"id":23438');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("architecture-review rechaza una ejecucion OpenCode fallida", async () => {
+  const directory = await config();
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-architecture-failed",
+    part: { type: "text", text: "operational failure" },
+  }));
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => ({ result, azureLoginRequired: false, failed: true }), resume: async () => result },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+        phase: "architecture-review",
+        sourceRepository: "https://example.test/sag",
+        branch: "master",
+        commit: "review-commit",
+        component: "api",
+        explicitFacts: { changeKind: null, artifacts: null, capabilities: null, significantChange: null, environment: null },
+        reviewFamilies: [],
+        selectedRules: [],
+        guidance: [],
+        needsDecision: [],
+      }) },
+      async () => "",
+    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("architecture-review detiene la revision si OpenCode modifica el arbol", async () => {
+  const directory = await config();
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-architecture-mutated",
+    part: { type: "text", text: "review" },
+  }));
+  let statusCalls = 0;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+        phase: "architecture-review",
+        sourceRepository: "https://example.test/sag",
+        branch: "master",
+        commit: "review-commit",
+        component: "api",
+        explicitFacts: { changeKind: null, artifacts: null, capabilities: null, significantChange: null, environment: null },
+        reviewFamilies: [],
+        selectedRules: [],
+        guidance: [],
+        needsDecision: [],
+      }) },
+      async () => statusCalls++ === 0 ? "" : " M reviewed.ts\n",
+    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(statusCalls).toBe(2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

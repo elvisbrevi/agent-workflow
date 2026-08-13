@@ -37,6 +37,18 @@ const ARCHITECTURE_FAMILIES = [
   "realtime",
   "deployment-topology",
 ] as const;
+const FAMILY_TERMS: Record<SagArchitectureFamily, readonly string[]> = {
+  boundaries: ["boundary", "boundar", "limite", "módulo", "modulo"],
+  contracts: ["contract", "contrato", "endpoint", "api"],
+  auth: ["auth", "autentic", "seguridad", "permiso", "rol", "token"],
+  session: ["session", "sesión", "sesion", "cookie"],
+  data: ["database", "base de datos", "persist", "datos"],
+  cache: ["cache", "caché"],
+  consul: ["consul", "configuración", "configuracion"],
+  observability: ["observ", "logging", "log", "trazab", "monitor"],
+  realtime: ["realtime", "tiempo real", "websocket"],
+  "deployment-topology": ["deploy", "desplieg", "openshift", "route", "pipeline", "topolog"],
+};
 
 export type SagComponent = typeof COMPONENTS[number];
 export type SagArchitectureFamily = typeof ARCHITECTURE_FAMILIES[number];
@@ -381,30 +393,27 @@ export class SagNormsService {
         .filter(({ applicability }) => applicability === "needs-decision")
         .map(({ family }) => `${family}: requiere decidir aplicabilidad por hechos de alcance`),
     ];
-    const patternApplicability = reviewFamilies.some(({ applicability }) => applicability === "applicable")
-      ? "applicable"
-      : reviewFamilies.some(({ applicability }) => applicability === "needs-decision") ? "needs-decision" : "not-applicable";
     const selectFamilyRules = (
+      content: string,
       ids: string[],
       path: string,
-      familyApplicability: SagArchitectureFamilySelection["applicability"],
-    ): SagNormSelection[] => familyApplicability === "not-applicable"
-      ? []
-      : this.select(
-        ids,
+      families: SagArchitectureFamily[],
+    ): SagNormSelection[] => ids.flatMap((ruleId) => {
+      const familyApplicability = this.ruleFamilyApplicability(content, ruleId, families, reviewFamilies);
+      return familyApplicability === "not-applicable" ? [] : this.select(
+        [ruleId],
         path,
         snapshot.commit,
-        `phase=architecture-review; tipo=${component}; cross-cutting family applicability=${familyApplicability}`,
+        `phase=architecture-review; tipo=${component}; rule-specific family applicability=${familyApplicability}`,
         familyApplicability,
       );
-    const integrationApplicability = this.familyApplicability(reviewFamilies, ["auth", "consul"]);
-    const deploymentApplicability = this.familyApplicability(reviewFamilies, ["deployment-topology"]);
+    });
     const selectedRules = [
       ...this.select(ruleIds(snapshot.files[NORMATIVE_PATHS.common] ?? "", "com"), NORMATIVE_PATHS.common, snapshot.commit, "phase=architecture-review; common structural rule", "applicable"),
       ...this.select(ruleIds(snapshot.files[componentPaths[0]!] ?? "", component), componentPaths[0]!, snapshot.commit, `phase=architecture-review; tipo=${component} from .sag/config.json`, "applicable"),
-      ...selectFamilyRules(ruleIds(snapshot.files[componentPaths[1]!] ?? "", component), componentPaths[1]!, patternApplicability),
-      ...selectFamilyRules(ruleIds(snapshot.files[NORMATIVE_PATHS.integrations] ?? "", "int"), NORMATIVE_PATHS.integrations, integrationApplicability),
-      ...selectFamilyRules(ruleIds(snapshot.files["/estandares/pull-requests.md"] ?? "", "pr"), "/estandares/pull-requests.md", deploymentApplicability),
+      ...selectFamilyRules(snapshot.files[componentPaths[1]!] ?? "", ruleIds(snapshot.files[componentPaths[1]!] ?? "", component), componentPaths[1]!, [...ARCHITECTURE_FAMILIES]),
+      ...selectFamilyRules(snapshot.files[NORMATIVE_PATHS.integrations] ?? "", ruleIds(snapshot.files[NORMATIVE_PATHS.integrations] ?? "", "int"), NORMATIVE_PATHS.integrations, ["auth", "consul"]),
+      ...selectFamilyRules(snapshot.files["/estandares/pull-requests.md"] ?? "", ruleIds(snapshot.files["/estandares/pull-requests.md"] ?? "", "pr"), "/estandares/pull-requests.md", ["deployment-topology"]),
     ];
     const guidance = ARCHITECTURE_GUIDANCE_PATHS.map((path) => ({
       classification: "W" as const,
@@ -466,11 +475,18 @@ export class SagNormsService {
     };
   }
 
-  private familyApplicability(
-    families: SagArchitectureFamilySelection[],
-    names: SagArchitectureFamily[],
+  private ruleFamilyApplicability(
+    content: string,
+    ruleId: string,
+    families: SagArchitectureFamily[],
+    selections: SagArchitectureFamilySelection[],
   ): SagArchitectureFamilySelection["applicability"] {
-    const selected = families.filter(({ family }) => names.includes(family));
+    const start = content.indexOf(ruleId);
+    const nextRule = start < 0 ? -1 : content.slice(start + ruleId.length).search(/\b[A-Za-z]+-[A-Z]\d+\b/);
+    const ruleText = start < 0 ? "" : content.slice(start, nextRule < 0 ? undefined : start + ruleId.length + nextRule).toLowerCase();
+    const mentioned = families.filter((family) => FAMILY_TERMS[family].some((term) => ruleText.includes(term)));
+    if (mentioned.length === 0) return "needs-decision";
+    const selected = selections.filter(({ family }) => mentioned.includes(family));
     if (selected.some(({ applicability }) => applicability === "applicable")) return "applicable";
     if (selected.some(({ applicability }) => applicability === "needs-decision")) return "needs-decision";
     return "not-applicable";

@@ -3,8 +3,10 @@ in the supplied working directory and do not modify source code, tests,
 configuration, branches, commits, pull requests, or reviewed artifacts.
 
 Review the complete supplied Azure HU or the one supplied GitHub Issue. Read
-the scoped work and repository evidence, then use the repository's applicable
-architecture and design skills plus the listed SAG sources. Numbered `N`
+the scoped work and repository evidence, then invoke `/improve-codebase-architecture`
+and `/domain-modeling` where their review seams apply, plus any repository-owned
+architecture or design skill named by the repository. Use the listed SAG
+sources. Numbered `N`
 sources are normative. `W`, `I`, `T`, `G`, and `E` sources are procedural,
 implementation, template, governance, or external context and must not be
 presented as normative evidence.
