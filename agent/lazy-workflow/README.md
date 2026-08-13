@@ -105,6 +105,8 @@ The adapter is executed without a shell and receives JSON on stdin with
 `--operation discover|reconcile|verify`. It must use operator authentication,
 return exactly one route for `discover`, atomically reconcile the idempotency
 key, and return independently verified OpenShift, Consul, and target evidence.
+Authentication continuation is signaled with exit code 0 and
+`{"authenticationRequired":true}`; nonzero exits are terminal adapter errors.
 
 ## Azure HU workflows
 

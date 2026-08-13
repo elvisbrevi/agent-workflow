@@ -182,6 +182,9 @@ The coordinator never treats these values as proof: the adapter is executed
 without a shell, must use operator authentication, return exactly one matching
 route, atomically reconcile the idempotency key, and verify the resulting
 OpenShift, Consul, and target state.
+Authentication continuation uses exit code 0 with
+`{"authenticationRequired":true}`; other nonzero adapter exits are terminal
+errors.
 
 ## Security and failure rules
 
