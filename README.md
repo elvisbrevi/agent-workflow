@@ -80,12 +80,13 @@ tools. `code` drains all eligible GitHub issues one per fresh OpenCode session
 and stops when the queue is empty. Add `--hu <ID>` to select the existing Azure
 planning or delivery workflow.
 
-Add `--normas-sag` to `plan` to load planning norms from the remote SAG
-`master` branch. The selected repository must contain an explicit
+Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
+remote SAG `master` branch. The selected repository must contain an explicit
 `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt
 records the resolved commit, source URLs, stable rule IDs, selection reasons,
-and applicability facts that need a decision. Missing or unreadable SAG
-context stops before OpenCode; plain `plan` never reads SAG sources.
+and applicability facts that need a decision. Coding sessions receive common,
+component, and explicit artifact/capability norms. Missing or unreadable SAG
+context stops before OpenCode; plain `plan` and `code` never read SAG sources.
 
 `deploy-sag` always loads delivery norms and requires exactly one explicit
 `--issue` or `--hu`. It reads an explicit `deployment` route from
