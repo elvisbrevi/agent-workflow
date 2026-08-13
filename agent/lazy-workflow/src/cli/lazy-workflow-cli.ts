@@ -1464,8 +1464,11 @@ export class LazyWorkflowCli {
     let resumePrompt = options.prompt;
     while (true) {
       try {
+        const authoritativeResumePrompt = norms
+          ? [resumePrompt, this.formatSagContext(norms)].join("\n")
+          : resumePrompt;
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
+          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
           : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({
             ...context,
             ticketBranch,
