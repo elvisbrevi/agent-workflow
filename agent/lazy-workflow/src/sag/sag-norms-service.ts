@@ -13,6 +13,7 @@ export type SagComponent = typeof COMPONENTS[number];
 
 export interface SagNormSelection {
   classification: "N";
+  applicability: "applicable" | "needs-decision";
   ruleId: string;
   source: string;
   commit: string;
@@ -73,7 +74,11 @@ function readComponent(config: Record<string, unknown>): SagComponent {
   return component as SagComponent;
 }
 
-async function readConfig(workingDirectory: string): Promise<{ component: SagComponent; needsDecision: string[] }> {
+async function readConfig(workingDirectory: string): Promise<{
+  component: SagComponent;
+  needsDecision: string[];
+  knownFacts: Record<string, boolean>;
+}> {
   const path = resolve(workingDirectory, ".sag/config.json");
   let value: unknown;
   try {
@@ -84,6 +89,7 @@ async function readConfig(workingDirectory: string): Promise<{ component: SagCom
   if (!isRecord(value)) throw new Error(".sag/config.json debe contener un objeto");
 
   const needsDecision: string[] = [];
+  const knownFacts: Record<string, boolean> = {};
   const facts = [
     ["change-kind", ["changeKind", "cambio"]],
     ["artifacts", ["artifacts", "artefactos"]],
@@ -93,6 +99,7 @@ async function readConfig(workingDirectory: string): Promise<{ component: SagCom
   for (const [name, names] of facts) {
     const values = names.map((key) => value[key]).filter((candidate) => candidate !== undefined);
     const present = values.length > 0;
+    knownFacts[name] = present;
     if (values.length > 1 && JSON.stringify(values[0]) !== JSON.stringify(values[1])) {
       throw new Error(`.sag/config.json contiene valores en conflicto para ${name}`);
     }
@@ -113,7 +120,7 @@ async function readConfig(workingDirectory: string): Promise<{ component: SagCom
     }
   }
 
-  return { component: readComponent(value), needsDecision };
+  return { component: readComponent(value), needsDecision, knownFacts };
 }
 
 export class RemoteSagNormSource implements SagNormSource {
@@ -153,7 +160,7 @@ export class SagNormsService {
   constructor(private readonly source: SagNormSource = new RemoteSagNormSource()) {}
 
   async loadPlanning(workingDirectory: string): Promise<SagNormsContext> {
-    const { component, needsDecision } = await readConfig(workingDirectory);
+    const { component, needsDecision, knownFacts } = await readConfig(workingDirectory);
     const componentPaths = [`/estandares/${component}.md`, `/estandares/${component}-patrones.md`];
     const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.tracker];
     const snapshot = await this.source.load(paths);
@@ -167,14 +174,28 @@ export class SagNormsService {
     if (tracker.length === 0) throw new Error("la fuente SAG no contiene normas de seguimiento");
 
     const selectedRules = [
-      ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule"),
-      ...componentPaths.flatMap((path) => this.select(
-        ruleIds(snapshot.files[path] ?? "", component),
-        path,
+      ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule", "applicable"),
+      ...this.select(
+        ruleIds(snapshot.files[componentPaths[0]!] ?? "", component),
+        componentPaths[0]!,
         snapshot.commit,
         `phase=planning; tipo=${component} from .sag/config.json`,
-      )),
-      ...this.select(tracker, NORMATIVE_PATHS.tracker, snapshot.commit, "phase=planning; tracker traceability applies"),
+        "applicable",
+      ),
+      ...this.select(
+        ruleIds(snapshot.files[componentPaths[1]!] ?? "", component),
+        componentPaths[1]!,
+        snapshot.commit,
+        `phase=planning; tipo=${component}; artifacts or capabilities are unknown`,
+        knownFacts.artifacts || knownFacts.capabilities ? "applicable" : "needs-decision",
+      ),
+      ...this.select(
+        tracker,
+        NORMATIVE_PATHS.tracker,
+        snapshot.commit,
+        knownFacts["change-kind"] ? "phase=planning; change-kind is explicit" : "phase=planning; change-kind is unknown",
+        knownFacts["change-kind"] ? "applicable" : "needs-decision",
+      ),
     ];
     return {
       phase: "planning",
@@ -187,9 +208,16 @@ export class SagNormsService {
     };
   }
 
-  private select(ids: string[], path: string, commit: string, selectedBecause: string): SagNormSelection[] {
+  private select(
+    ids: string[],
+    path: string,
+    commit: string,
+    selectedBecause: string,
+    applicability: SagNormSelection["applicability"],
+  ): SagNormSelection[] {
     return ids.map((ruleId) => ({
       classification: "N",
+      applicability,
       ruleId,
       source: sourceUrl(path),
       commit,

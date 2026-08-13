@@ -529,15 +529,8 @@ export class LazyWorkflowCli {
     if (options.hu === null) return this.runDefaultWorkflow("plan", options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
-    let norms: SagNormsContext | null = null;
-    if (options.normasSag) {
-      try {
-        norms = await this.sagNormsService.loadPlanning(options.workingDirectory);
-      } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
-        return 1;
-      }
-    }
+    const norms = await this.loadSagNorms(options);
+    if (options.normasSag && norms === null) return 1;
 
     options.prompt = [
       JSON.stringify(huInfo),
@@ -560,15 +553,8 @@ export class LazyWorkflowCli {
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
-    let norms: SagNormsContext | null = null;
-    if (options.normasSag) {
-      try {
-        norms = await this.sagNormsService.loadPlanning(options.workingDirectory);
-      } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
-        return 1;
-      }
-    }
+    const norms = await this.loadSagNorms(options);
+    if (options.normasSag && norms === null) return 1;
     const prompt = [
       await readPrompt("default"),
       `Selected workflow: ${command}`,
@@ -609,6 +595,16 @@ export class LazyWorkflowCli {
         reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
         return 0;
       }
+    }
+  }
+
+  private async loadSagNorms(options: CliOptions): Promise<SagNormsContext | null> {
+    if (!options.normasSag) return null;
+    try {
+      return await this.sagNormsService.loadPlanning(options.workingDirectory);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
+      return null;
     }
   }
 
