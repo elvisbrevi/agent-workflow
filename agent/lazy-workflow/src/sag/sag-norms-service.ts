@@ -77,7 +77,6 @@ function readComponent(config: Record<string, unknown>): SagComponent {
 async function readConfig(workingDirectory: string): Promise<{
   component: SagComponent;
   needsDecision: string[];
-  knownFacts: Record<string, boolean>;
 }> {
   const path = resolve(workingDirectory, ".sag/config.json");
   let value: unknown;
@@ -89,7 +88,6 @@ async function readConfig(workingDirectory: string): Promise<{
   if (!isRecord(value)) throw new Error(".sag/config.json debe contener un objeto");
 
   const needsDecision: string[] = [];
-  const knownFacts: Record<string, boolean> = {};
   const facts = [
     ["change-kind", ["changeKind", "cambio"]],
     ["artifacts", ["artifacts", "artefactos"]],
@@ -99,7 +97,6 @@ async function readConfig(workingDirectory: string): Promise<{
   for (const [name, names] of facts) {
     const values = names.map((key) => value[key]).filter((candidate) => candidate !== undefined);
     const present = values.length > 0;
-    knownFacts[name] = present;
     if (values.length > 1 && JSON.stringify(values[0]) !== JSON.stringify(values[1])) {
       throw new Error(`.sag/config.json contiene valores en conflicto para ${name}`);
     }
@@ -120,7 +117,7 @@ async function readConfig(workingDirectory: string): Promise<{
     }
   }
 
-  return { component: readComponent(value), needsDecision, knownFacts };
+  return { component: readComponent(value), needsDecision };
 }
 
 export class RemoteSagNormSource implements SagNormSource {
@@ -160,7 +157,7 @@ export class SagNormsService {
   constructor(private readonly source: SagNormSource = new RemoteSagNormSource()) {}
 
   async loadPlanning(workingDirectory: string): Promise<SagNormsContext> {
-    const { component, needsDecision, knownFacts } = await readConfig(workingDirectory);
+    const { component, needsDecision } = await readConfig(workingDirectory);
     const componentPaths = [`/estandares/${component}.md`, `/estandares/${component}-patrones.md`];
     const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.tracker];
     const snapshot = await this.source.load(paths);
@@ -172,6 +169,12 @@ export class SagNormsService {
     if (!common.includes("com-G1")) throw new Error("la fuente SAG no contiene la norma com-G1");
     if (componentRules.length === 0) throw new Error(`la fuente SAG no contiene normas para ${component}`);
     if (tracker.length === 0) throw new Error("la fuente SAG no contiene normas de seguimiento");
+
+    const conditionalDecisions = [
+      ...ruleIds(snapshot.files[componentPaths[1]!] ?? "", component)
+        .map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`),
+      ...tracker.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por change-kind`),
+    ];
 
     const selectedRules = [
       ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule", "applicable"),
@@ -186,15 +189,15 @@ export class SagNormsService {
         ruleIds(snapshot.files[componentPaths[1]!] ?? "", component),
         componentPaths[1]!,
         snapshot.commit,
-        `phase=planning; tipo=${component}; artifacts or capabilities are unknown`,
-        knownFacts.artifacts || knownFacts.capabilities ? "applicable" : "needs-decision",
+        `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
+        "needs-decision",
       ),
       ...this.select(
         tracker,
         NORMATIVE_PATHS.tracker,
         snapshot.commit,
-        knownFacts["change-kind"] ? "phase=planning; change-kind is explicit" : "phase=planning; change-kind is unknown",
-        knownFacts["change-kind"] ? "applicable" : "needs-decision",
+        "phase=planning; rule-specific change-kind applicability needs decision",
+        "needs-decision",
       ),
     ];
     return {
@@ -204,7 +207,7 @@ export class SagNormsService {
       commit: snapshot.commit,
       component,
       selectedRules,
-      needsDecision,
+      needsDecision: [...needsDecision, ...conditionalDecisions],
     };
   }
 
