@@ -45,6 +45,38 @@ function source(): SagNormSource {
   };
 }
 
+function codingSource(): SagNormSource {
+  return {
+    async load(paths) {
+      expect(paths).toEqual([
+        "/estandares/comunes.md",
+        "/estandares/api.md",
+        "/estandares/api-adonis-patrones.md",
+        "/estandares/seguimiento.md",
+        "/estandares/documentacion.md",
+        "/estandares/integraciones.md",
+        "/estandares/extraccion-documentos.md",
+        "/estandares/pull-requests.md",
+        "/estandares/sonarqube.md",
+      ]);
+      return {
+        commit: "coding-commit",
+        files: {
+          "/estandares/comunes.md": "com-C1 com-C2 com-C3 com-C4 com-C5",
+          "/estandares/api.md": "api-R1",
+          "/estandares/api-adonis-patrones.md": "api-R9 api-R10",
+          "/estandares/seguimiento.md": "seg-R1",
+          "/estandares/documentacion.md": "doc-R1",
+          "/estandares/integraciones.md": "int-R1",
+          "/estandares/extraccion-documentos.md": "ext-R1",
+          "/estandares/pull-requests.md": "pr-R1",
+          "/estandares/sonarqube.md": "sonar-R1",
+        },
+      };
+    },
+  };
+}
+
 const reviewTracker = {
   readIssue: async (issue: number) => ({ number: issue, title: "Issue scope", body: "scope", comments: [], state: "OPEN", labels: [] }),
   publishFindings: async () => ({ specification: 200, tickets: [201] }),
@@ -78,6 +110,31 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
       "ext-R1: requiere decidir aplicabilidad por hechos de alcance",
       "sonar-R1: requiere decidir aplicabilidad por hechos de alcance",
     ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("coding selecciona normas comunes y familias condicionales por hechos explicitos", async () => {
+  const directory = await config("api", {
+    cambio: "feature",
+    artefactos: ["source", "config"],
+    capacidades: ["sonar"],
+    cambioSignificativo: true,
+    entorno: "dev",
+  });
+  try {
+    const context = await new SagNormsService(codingSource()).loadCoding(directory);
+
+    expect(context.phase).toBe("coding");
+    expect(context.commit).toBe("coding-commit");
+    expect(context.selectedRules.map(({ ruleId }) => ruleId)).toEqual([
+      "com-C1", "com-C2", "com-C3", "com-C4", "com-C5",
+      "api-R1", "api-R10", "api-R9", "seg-R1", "doc-R1", "int-R1", "sonar-R1",
+    ]);
+    expect(context.selectedRules.filter(({ ruleId }) => ["doc-R1", "int-R1", "sonar-R1"].includes(ruleId))
+      .every(({ applicability }) => applicability === "applicable")).toBeTrue();
+    expect(context.selectedRules.every(({ classification, commit }) => classification === "N" && commit === context.commit)).toBeTrue();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -335,7 +392,7 @@ test("un contexto SAG inaccesible detiene plan antes de iniciar OpenCode", async
   }
 });
 
-test("--normas-sag no cambia el flujo code y se rechaza antes de servicios", async () => {
+test("--normas-sag code se rechaza antes de servicios si falta el cargador coding", async () => {
   let calls = 0;
   const code = await new LazyWorkflowCli(
     { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
@@ -344,6 +401,109 @@ test("--normas-sag no cambia el flujo code y se rechaza antes de servicios", asy
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
+});
+
+test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async () => {
+  const directory = await config();
+  let received: OpenCodeRunOptions | null = null;
+  let sourceCalls = 0;
+  const results = ["TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED", "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED"].map((text, index) => OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: `ses-code-sag-${index}`,
+    part: { type: "text", text },
+  })));
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async (options) => { received = options; return { result: results.shift()!, azureLoginRequired: false }; },
+        resume: async () => results[0]!,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        loadPlanning: async () => { throw new Error("must not plan"); },
+        loadCoding: async () => { sourceCalls += 1; return new SagNormsService(codingSource()).loadCoding(directory); },
+      },
+    ).run(["code", "--normas-sag", "--working-directory", directory]);
+
+    expect(code).toBe(0);
+    expect(received?.prompt).toContain('"phase": "coding"');
+    expect(received?.prompt).toContain('"commit": "coding-commit"');
+    expect(received?.prompt).toContain('"ruleId": "com-C1"');
+    expect(sourceCalls).toBe(2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("un contexto SAG de coding inaccesible detiene code antes de iniciar OpenCode", async () => {
+  const directory = await config();
+  let openCodeCalls = 0;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => { throw new Error("source unavailable"); } },
+    ).run(["code", "--normas-sag", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(openCodeCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("code Azure agrega normas SAG al prompt despues de fijar el ticket", async () => {
+  const directory = await config();
+  let received: OpenCodeRunOptions | null = null;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-code-azure-sag",
+    part: { type: "text", text: "IMPLEMENTATION_READY" },
+  }));
+  try {
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => ({ id: 23438 }),
+        waitForAccess: async () => undefined,
+        ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+        getAutocodeState: async () => ({
+          context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" },
+          pending: true,
+        }),
+        getState: async () => ({ ticket: 51, state: "Active", revision: 1 }),
+        getEffort: async () => ({ ticket: 51, effort: { real: 0, realHours: 0 } }),
+        setState: async () => undefined,
+        getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+        setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
+      },
+      {
+        run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
+        resume: async () => result,
+      },
+      { read: async () => null, write: async () => undefined, clear: async () => undefined },
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => new SagNormsService(codingSource()).loadCoding(directory) },
+    ).run(["code", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(received?.prompt).toContain('"phase": "coding"');
+    expect(received?.prompt).toContain('"commit": "coding-commit"');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("architecture-review selecciona normas y guidance con familias explicitas", async () => {

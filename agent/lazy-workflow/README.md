@@ -53,13 +53,15 @@ session after `TICKET_COMPLETED`, and repeats. A final fresh session returns
 `QUEUE_EMPTY` and stops the command. `WORKFLOW_STEP_FINISHED` closes every
 provider session. There is no GitHub checkpoint or coordinator adapter.
 
-`plan --normas-sag` is opt-in. It reads the canonical SAG `master` branch and
+`plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
 `nextjs`; it never infers the component from source layout. OpenCode receives
 the resolved commit, stable normative rule IDs, source URLs, selection reasons,
 and explicit `needsDecision` values for unknown applicability. An unavailable
-source or invalid configuration stops before OpenCode. Plain `plan` does not
-access SAG sources. If the canonical source requires authentication, provide
+source or invalid configuration stops before OpenCode. Coding selects common
+and component rules plus families supported by explicit artifacts and
+capabilities. Plain `plan` and `code` do not access SAG sources. If the
+canonical source requires authentication, provide
 `AZURE_DEVOPS_EXT_PAT`; its value is used only in the request Authorization
 header and is never persisted or sent to OpenCode.
 
