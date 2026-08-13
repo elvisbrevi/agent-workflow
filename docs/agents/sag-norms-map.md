@@ -47,8 +47,9 @@ selection reason; the workflow does not copy rule text into the repository.
 Missing `.sag/config.json`, an invalid explicit component, an inaccessible
 source, or missing required rule families stops planning before OpenCode.
 
-The coding modifier is reserved for the separate coding slice tracked by #156;
-the current command rejects `code --normas-sag` until that slice is delivered.
+The coding modifier is delivered by #156. `code --normas-sag` selects common
+coding/review rules plus the configured component and explicit artifact,
+capability, and delivery families. Plain `code` does not read SAG sources.
 
 ## Deterministic applicability
 
