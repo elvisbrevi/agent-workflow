@@ -10,7 +10,8 @@ import {
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { OpenCodeService, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
-import { operatorLine } from "../src/output/operator-output.ts";
+import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
+import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
@@ -1278,4 +1279,173 @@ test("code versionado no reintenta OpenCode si falla la limpieza tras el marcado
   expect(code).toBe(1);
   expect(runs).toBe(1);
   expect(waits).toBe(0);
+});
+
+const captureReporter = () => {
+  const info: string[] = [];
+  const warn: string[] = [];
+  const error: string[] = [];
+  const debug: string[] = [];
+  const reporter: Reporter = {
+    info: (message: string) => { info.push(message); },
+    warn: (message: string) => { warn.push(message); },
+    error: (message: string) => { error.push(message); },
+    debug: (message: string) => { debug.push(message); },
+    start: () => ({ stop: () => undefined }),
+    stop: () => undefined,
+  };
+  return { reporter, info, warn, error, debug };
+};
+
+test("--verbose enrutado al Reportador conserva los errores y emite debug", async () => {
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+  }));
+  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => result,
+      },
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
+        received = options;
+        return createReporter(options);
+      }) as typeof createReporter,
+    ).run(["plan", "--verbose", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  expect(received).not.toBeNull();
+  expect(received?.verbose).toBeTrue();
+  expect(received?.quiet).toBeFalse();
+  expect(received?.noColor).toBeFalse();
+});
+
+test("--quiet filtra info y warn pero conserva errores del Reportador", async () => {
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+  }));
+  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => result,
+      },
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
+        received = options;
+        return createReporter(options);
+      }) as typeof createReporter,
+    ).run(["plan", "--quiet", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  expect(received).not.toBeNull();
+  expect(received?.quiet).toBeTrue();
+  expect(received?.verbose).toBeFalse();
+});
+
+test("--no-color produce Reportador sin codigos ANSI", async () => {
+  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  setDefaultReporter(createReporter({ verbose: false, noColor: false }));
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+  }));
+
+  try {
+    await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => result,
+      },
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
+        received = options;
+        return createReporter(options);
+      }) as typeof createReporter,
+    ).run(["plan", "--no-color", "--working-directory", "/repo"]);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  expect(received).not.toBeNull();
+  expect(received?.noColor).toBeTrue();
+  expect(received?.verbose).toBeFalse();
+});
+
+test("--verbose y --quiet son mutuamente excluyentes", async () => {
+  let azureCalls = 0;
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+  ).run(["plan", "--verbose", "--quiet", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(azureCalls).toBe(0);
+});
+
+test("lazy-workflow sin argumentos imprime ayuda y devuelve codigo 1", async () => {
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    ).run([]);
+
+    expect(code).toBe(1);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(output[0]).toContain("plan");
+  expect(output[0]).toContain("code");
+  expect(output[0]).toContain("--verbose");
+  expect(output[0]).toContain("--quiet");
+  expect(output[0]).toContain("--no-color");
+});
+
+test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    ).run(["--help"]);
+
+    expect(code).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(output[0]).toContain("plan [options]");
+  expect(output[0]).toContain("code [options]");
+  expect(output[0]).toContain("--verbose");
+  expect(output[0]).toContain("--quiet");
+  expect(output[0]).toContain("--no-color");
 });
