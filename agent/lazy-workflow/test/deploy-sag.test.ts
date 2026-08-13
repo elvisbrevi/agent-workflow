@@ -320,6 +320,39 @@ test.each(["test", "qa"] as const)("deploy-sag CLI selecciona %s", async (enviro
   }
 });
 
+test.each(["ambiguous", "unverified"] as const)("deploy-sag CLI falla cerrado ante ruta %s", async (failure) => {
+  const directory = await config();
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => failure === "ambiguous" ? [route, { ...route, id: "route-other" }] : [route],
+    reconcile: async () => ({ record: { id: "deployment-1", status: "accepted" }, reconciled: false }),
+    verify: async () => ({ id: "deployment-1", status: "succeeded", environment: "dev", target: failure === "unverified" ? "other-target" : route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }),
+  };
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => errors.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      undefined,
+      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      new SagDeploymentService(systems),
+    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain(failure === "ambiguous" ? "ruta unica" : "estado DEV verificado");
+  } finally {
+    console.error = originalError;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticacion", async () => {
   const directory = await config();
   let attempts = 0;
