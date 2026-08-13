@@ -238,16 +238,18 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
 
 test.each([
   ["route", { ...route, id: "production-route" }],
+  ["camel-case route", { ...route, id: "openshiftProd" }],
   ["repository", { ...route, repository: "project.prod/repository" }],
+  ["numeric pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod01" } }],
   ["base branch", { ...route, baseBranch: "production" }],
   ["pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod" } }],
   ["release", { ...route, releaseDefinition: { ...route.releaseDefinition, id: "release-live" } }],
   ["OpenShift", { ...route, openShift: { ...route.openShift, id: "openshift-prod" } }],
   ["OpenShift evidence", { ...route, openShift: { ...route.openShift, evidence: "production-evidence" } }],
   ["Consul", { ...route, consul: { ...route.consul, deployKey: "project/live" } }],
-  ["Consul variable", { ...route, consul: { ...route.consul, requiredVariables: ["PRIMARY_DATABASE_URL"] } }],
-  ["Consul evidence", { ...route, consul: { ...route.consul, evidence: "online-evidence" } }],
-  ["target", { ...route, target: { ...route.target, id: "openshift-primary" } }],
+  ["Consul variable", { ...route, consul: { ...route.consul, requiredVariables: ["PROD_DATABASE_URL"] } }],
+  ["Consul evidence", { ...route, consul: { ...route.consul, evidence: "prod-evidence" } }],
+  ["target", { ...route, target: { ...route.target, id: "openshift-live" } }],
   ["target evidence", { ...route, target: { ...route.target, evidence: "live-evidence" } }],
 ] as const)("deploy-sag rechaza aliases PROD en la identidad de %s antes de reconciliar", async (kind, unsafeRoute) => {
   const directory = await config();
@@ -297,7 +299,7 @@ test("deploy-sag rechaza un comando de adapter PROD antes de descubrir rutas", a
   const directory = await config();
   const path = `${directory}/.sag/config.json`;
   const value = JSON.parse(await Bun.file(path).text()) as { deployment: { adapter: { command: string[] } } };
-  value.deployment.adapter.command = [".sag/deploy-adapter", "--environment=prod"];
+  value.deployment.adapter.command = [".sag/deploy-adapter", "--environment=prod01"];
   await Bun.write(path, JSON.stringify(value));
   let discoveryCalls = 0;
   const systems: DeploymentSystems = {
