@@ -446,24 +446,37 @@ export class SagNormsService {
       if (applies === null) decisions.push(...familyRules.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`));
       return this.select(familyRules, path, snapshot.commit, selectedBecause, applicability);
     };
-    const hasArtifact = (values: string[] | null, names: string[]): boolean | null =>
-      values === null ? null : values.some((value) => names.includes(value));
-    const hasCapability = (values: string[] | null, names: string[]): boolean | null =>
+    const includesFact = (values: string[] | null, names: string[]): boolean | null =>
       values === null ? null : values.some((value) => names.includes(value));
     const conditionalFamily = (path: string, prefix: string, applies: boolean | null): SagNormSelection[] =>
       selectFamily(path, prefix, applies, `phase=coding; tipo=${component}; explicit artifact and capability facts select this family`);
-    const integration = hasArtifact(explicitFacts.artifacts, ["config", "secret", "consul"]);
-    const document = hasArtifact(explicitFacts.artifacts, ["document"]);
-    const documentProcessing = hasCapability(explicitFacts.capabilities, ["document-processing"]);
-    const pullRequest = hasArtifact(explicitFacts.artifacts, ["pr", "pipeline", "release", "openshift"]);
-    const sonar = hasCapability(explicitFacts.capabilities, ["sonar"]);
-    const patterns = explicitFacts.artifacts === null || explicitFacts.capabilities === null
-      ? null
-      : explicitFacts.artifacts.length > 0 || explicitFacts.capabilities.length > 0;
+    const integration = includesFact(explicitFacts.artifacts, ["config", "secret", "consul"]);
+    const document = includesFact(explicitFacts.artifacts, ["document"]);
+    const documentProcessing = includesFact(explicitFacts.capabilities, ["document-processing"]);
+    const pullRequest = includesFact(explicitFacts.artifacts, ["pr", "pipeline", "release", "openshift"]);
+    const sonar = includesFact(explicitFacts.capabilities, ["sonar"]);
     const tracker = explicitFacts.changeKind === null ? null : true;
     const extraction = document === true || documentProcessing === true
       ? true
       : document === false && documentProcessing === false ? false : null;
+    const patternFamilies = ARCHITECTURE_FAMILIES.map((family) => this.architectureFamily(family, explicitFacts));
+    const patternRules = ids(componentPaths[1]!, component).flatMap((ruleId) => {
+      const applicability = this.ruleFamilyApplicability(
+        content(componentPaths[1]!),
+        ruleId,
+        [...ARCHITECTURE_FAMILIES],
+        patternFamilies,
+      );
+      if (applicability === "not-applicable") return [];
+      if (applicability === "needs-decision") decisions.push(`${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`);
+      return this.select(
+        [ruleId],
+        componentPaths[1]!,
+        snapshot.commit,
+        `phase=coding; tipo=${component}; rule-specific artifact and capability applicability=${applicability}`,
+        applicability,
+      );
+    });
 
     return {
       phase: "coding",
@@ -475,7 +488,7 @@ export class SagNormsService {
       selectedRules: [
         ...this.select(common, NORMATIVE_PATHS.common, snapshot.commit, "phase=coding; common coding and review rules", "applicable"),
         ...this.select(ids(componentPaths[0]!, component), componentPaths[0]!, snapshot.commit, `phase=coding; tipo=${component} from .sag/config.json`, "applicable"),
-        ...conditionalFamily(componentPaths[1]!, component, patterns),
+        ...patternRules,
         ...conditionalFamily(NORMATIVE_PATHS.tracker, "seg", tracker),
         ...conditionalFamily(NORMATIVE_PATHS.documentation, "doc", explicitFacts.significantChange),
         ...conditionalFamily(NORMATIVE_PATHS.integrations, "int", integration),
