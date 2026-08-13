@@ -1,3 +1,5 @@
+import { createReporter, type Reporter } from "./reporter.ts";
+
 const pad = (value: number): string => value.toString().padStart(2, "0");
 
 export function formatOperatorTimestamp(date = new Date()): string {
@@ -12,6 +14,16 @@ export function operatorLine(message: string, date = new Date()): string {
   return message.split(/\r?\n/).map((line) => `${prefix} ${line}`).join("\n");
 }
 
+let defaultReporter: Reporter = createReporter(false);
+
+export function getDefaultReporter(): Reporter {
+  return defaultReporter;
+}
+
+export function setDefaultReporter(reporter: Reporter): void {
+  defaultReporter = reporter;
+}
+
 export function reportOperator(message: string): void {
-  console.error(operatorLine(message));
+  defaultReporter.info(message);
 }
