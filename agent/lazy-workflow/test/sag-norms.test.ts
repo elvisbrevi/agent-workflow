@@ -80,15 +80,63 @@ test("normas SAG rechazan una configuracion ausente sin consultar la fuente", as
 test("los hechos parciales no convierten reglas condicionales en aplicables", async () => {
   const directory = await config("api", {
     cambio: "feature",
-    artefactos: ["source"],
     capacidades: [],
-    cambioSignificativo: true,
+    cambioSignificativo: false,
   });
   try {
     const context = await new SagNormsService(source()).loadPlanning(directory);
     expect(context.selectedRules.find(({ ruleId }) => ruleId === "api-R10")?.applicability).toBe("needs-decision");
     expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("needs-decision");
     expect(context.needsDecision).toContain("api-R10: requiere decidir aplicabilidad por artefacto o capacidad");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("los hechos explicitos seleccionan familias documentales aplicables", async () => {
+  const directory = await config("api", {
+    cambio: "feature",
+    artefactos: ["document", "config"],
+    capacidades: ["document-processing", "sonar"],
+    cambioSignificativo: true,
+  });
+  try {
+    const context = await new SagNormsService({
+      load: async (paths) => {
+        expect(paths).toEqual([
+          "/estandares/comunes.md",
+          "/estandares/api.md",
+          "/estandares/api-patrones.md",
+          "/estandares/seguimiento.md",
+          "/estandares/documentacion.md",
+          "/estandares/integraciones.md",
+          "/estandares/extraccion-documentos.md",
+          "/estandares/sonarqube.md",
+        ]);
+        return {
+          commit: "families-commit",
+          files: {
+            "/estandares/comunes.md": "com-G1",
+            "/estandares/api.md": "api-R1",
+            "/estandares/api-patrones.md": "api-R9",
+            "/estandares/seguimiento.md": "seg-R1",
+            "/estandares/documentacion.md": "doc-R1",
+            "/estandares/integraciones.md": "int-R1",
+            "/estandares/extraccion-documentos.md": "ext-R1",
+            "/estandares/sonarqube.md": "sonar-R1",
+          },
+        };
+      },
+    }).loadPlanning(directory);
+
+    expect(context.explicitFacts).toEqual({
+      changeKind: "feature",
+      artifacts: ["document", "config"],
+      capabilities: ["document-processing", "sonar"],
+      significantChange: true,
+    });
+    expect(context.selectedRules.filter(({ ruleId }) => ["doc-R1", "int-R1", "ext-R1", "sonar-R1"].includes(ruleId))
+      .every(({ applicability }) => applicability === "applicable")).toBeTrue();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
