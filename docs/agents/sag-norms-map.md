@@ -155,6 +155,25 @@ The RAG does not version the real pipeline v7, Release Definitions,
 Ambiguity or inability to inspect those systems must stop deployment rather
 than be replaced by inference.
 
+The first executable DEV route is declared under `deployment` in
+`.sag/config.json`:
+
+```json
+{
+  "authentication": "operator",
+  "route": {
+    "repository": "project/repository",
+    "baseBranch": "main",
+    "pipeline": { "id": "pipeline-7", "version": "v7" },
+    "releaseDefinition": { "id": "release-1" },
+    "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
+  }
+}
+```
+
+The coordinator never treats these values as proof: an authenticated external
+adapter must return exactly one matching route and verify the resulting state.
+
 ## Security and failure rules
 
 - SAG context is opt-in for `plan` and `code`, mandatory for SAG-scoped commands, and absent otherwise.
