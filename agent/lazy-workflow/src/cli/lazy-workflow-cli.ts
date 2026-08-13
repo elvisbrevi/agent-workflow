@@ -412,8 +412,8 @@ export class LazyWorkflowCli {
 
     if (command === "infra-sag") {
       const unsupportedFlag = args.slice(1)
-        .map((arg) => arg.split("=", 1)[0])
-        .find((arg) => arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
+        .map((arg) => arg?.split("=", 1)[0])
+        .find((arg): arg is string => typeof arg === "string" && arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
       if (unsupportedFlag) {
         reportOperator(`infra-sag no permite ${unsupportedFlag}`);
         return 1;
@@ -845,11 +845,15 @@ export class LazyWorkflowCli {
       const verification = await this.infrastructureService.verify(scope, options.workingDirectory);
       let publication: ArchitectureReviewPublication | null = null;
       if (verification.findings.length > 0) {
+        const provenance = [
+          `SAG source: ${context.sourceRepository} (${context.branch} @ ${context.commit})`,
+          `Selected rules: ${context.selectedRules.map(({ ruleId }) => ruleId).join(", ") || "none"}`,
+        ].join("\n");
         const specification = {
           title: `Infrastructure readiness findings for ${scope.title}`,
-          body: "Authenticated infrastructure verification found missing or unverifiable prerequisites. Each finding below is a separate corrective work item.",
+          body: `Authenticated infrastructure verification found missing or unverifiable prerequisites. Each finding below is a separate corrective work item.\n\n${provenance}`,
         };
-        const tickets = verification.findings.map(({ title, body }) => ({ title, body }));
+        const tickets = verification.findings.map(({ title, body }) => ({ title, body: `${body}\n\n${provenance}` }));
         if (issueScope !== null) {
           publication = await this.githubTracker.publishFindings(
             issueScope.number,
@@ -865,7 +869,7 @@ export class LazyWorkflowCli {
         }
       }
       console.log(JSON.stringify({
-        infrastructure: verification,
+        infrastructure: sanitizeDeploymentOutput(verification),
         scope: { tracker: scope.tracker, id: scope.id, title: scope.title },
         sag: context,
         publication,

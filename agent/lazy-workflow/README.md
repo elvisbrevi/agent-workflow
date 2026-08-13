@@ -83,7 +83,8 @@ runs reconcile by route and scope identity rather than triggering a duplicate.
 `infra-sag` always loads infrastructure norms and requires exactly one explicit
 `--issue` or `--hu`. It verifies repository identity/base branch, Consul
 configuration, and explicitly declared database, pipeline, and Release
-Definition prerequisites through a read-only authenticated adapter. Missing or
+Definition prerequisites through a read-only authenticated adapter and records
+the versioned config/Consul contracts used. Missing or
 unverifiable checks are published as corrective work, and the command never
 provisions infrastructure.
 

@@ -126,6 +126,7 @@ export interface SagInfrastructureContext {
   component: SagComponent;
   explicitFacts: SagNormsContext["explicitFacts"];
   selectedRules: SagNormSelection[];
+  guidance: Array<Omit<SagArchitectureGuidance, "classification"> & { classification: "I" }>;
   needsDecision: string[];
 }
 
@@ -555,7 +556,13 @@ export class SagNormsService {
   async loadInfrastructure(workingDirectory: string): Promise<SagInfrastructureContext> {
     const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
     const componentPaths = COMPONENT_PATHS[component];
-    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.integrations];
+    const infrastructureGuidancePaths = [
+      "/config/README.md",
+      "/config/sag.config.schema.json",
+      "/scripts/lib/config.py",
+      "/scripts/lib/consul.py",
+    ] as const;
+    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.integrations, ...infrastructureGuidancePaths];
     const snapshot = await this.source.load(paths);
     if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
     const content = (path: string): string => snapshot.files[path] ?? "";
@@ -566,12 +573,15 @@ export class SagNormsService {
     if (componentRules.every(({ ids }) => ids.length === 0)) throw new Error(`la fuente SAG no contiene normas para ${component}`);
     if (!integrationRules.includes("int-R1")) throw new Error("la fuente SAG no contiene la norma int-R1");
     const componentPatternDecisions = componentRules[1]!.ids.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`);
-    const integrationApplicable = explicitFacts.artifacts?.some((artifact) => ["config", "secret", "consul"].includes(artifact));
-    const integrationApplicability: SagNormSelection["applicability"] = integrationApplicable === undefined ? "needs-decision" : "applicable";
-    const integrationDecisions = integrationApplicable === undefined
-      ? integrationRules.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por hechos de alcance`)
-      : [];
-    const selectedIntegrationRules = integrationApplicable === false ? [] : integrationRules;
+    const integrationApplicability: SagNormSelection["applicability"] = "applicable";
+    const integrationDecisions: string[] = [];
+    const guidance = infrastructureGuidancePaths.map((path) => ({
+      classification: "I" as const,
+      path,
+      source: sourceUrl(path),
+      commit: snapshot.commit,
+      selectedBecause: "phase=infrastructure; versioned configuration or Consul implementation contract",
+    }));
     return {
       phase: "infrastructure",
       sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
@@ -583,8 +593,9 @@ export class SagNormsService {
         ...this.select(["com-G1"], NORMATIVE_PATHS.common, snapshot.commit, "phase=infrastructure; common verification rule", "applicable"),
         ...this.select(componentRules[0]!.ids, componentRules[0]!.path, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
         ...this.select(componentRules[1]!.ids, componentRules[1]!.path, snapshot.commit, "phase=infrastructure; component cross-cutting applicability needs decision", "needs-decision"),
-        ...this.select(selectedIntegrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration applicability is explicit", integrationApplicability),
+        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; Consul/configuration verification is in scope", integrationApplicability),
       ],
+      guidance,
       needsDecision: [...needsDecision, ...componentPatternDecisions, ...integrationDecisions],
     };
   }

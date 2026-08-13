@@ -99,7 +99,8 @@ targets fail closed.
 `infra-sag` always loads infrastructure norms and requires exactly one explicit
 `--issue` or `--hu`. It verifies repository/base branch, Consul variables, and
 explicitly declared database, pipeline, and Release Definition prerequisites
-through an authenticated read-only adapter. Missing or unverifiable
+through an authenticated read-only adapter, using traceable versioned config
+and Consul contracts. Missing or unverifiable
 prerequisites become corrective tracker work; the command never provisions
 infrastructure.
 Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
