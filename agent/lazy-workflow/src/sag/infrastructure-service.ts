@@ -26,7 +26,7 @@ export interface InfrastructureObservation {
 }
 
 export interface InfrastructureFinding {
-  category: "repository" | "consul" | "database" | "pipeline" | "release-definition";
+  category: "repository" | "consul" | "database" | "pipeline" | "release-definition" | "verification";
   title: string;
   body: string;
 }
@@ -67,6 +67,14 @@ function requiredTextList(value: unknown, name: string): string[] {
     throw new Error(`.sag/config.json requiere ${name} como lista de textos`);
   }
   return value.map((item) => item.trim());
+}
+
+function sanitizeText(value: string): string {
+  return value.replace(/(authorization\s*:\s*(?:basic|bearer)\s+|bearer\s+|(?:access[-_ ]?token|token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
+}
+
+function isAuthenticationError(error: unknown): boolean {
+  return /(?:authentication|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(error instanceof Error ? error.message : String(error));
 }
 
 function optionalResource(value: unknown, name: string): { required: boolean; id: string | null } {
@@ -183,7 +191,24 @@ export class SagInfrastructureService {
 
   async verify(scope: InfrastructureScope, workingDirectory: string): Promise<InfrastructureVerification> {
     const config = await readConfig(workingDirectory);
-    const observation = await (this.systems ?? new ProcessInfrastructureSystems(workingDirectory)).verify(config, scope);
+    let observation: InfrastructureObservation;
+    try {
+      observation = await (this.systems ?? new ProcessInfrastructureSystems(workingDirectory)).verify(config, scope);
+    } catch (error) {
+      if (scope.tracker === "azure" && isAuthenticationError(error)) throw error;
+      const reason = sanitizeText(error instanceof Error ? error.message : String(error));
+      return {
+        status: "findings",
+        observations: {
+          repository: { id: "", baseBranch: "", exists: false, baseBranchExists: false },
+          consul: { deployKey: "", variables: [], available: false },
+          database: { id: null, available: false },
+          pipeline: { id: null, available: false },
+          releaseDefinition: { id: null, available: false },
+        },
+        findings: [finding("verification", "Infrastructure verification was unavailable", reason)],
+      };
+    }
     const findings: InfrastructureFinding[] = [];
     if (!observation.repository.exists || !observation.repository.baseBranchExists
       || observation.repository.id !== config.repository.id || observation.repository.baseBranch !== config.repository.baseBranch) {

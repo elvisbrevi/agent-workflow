@@ -560,11 +560,17 @@ export class SagNormsService {
     if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
     const content = (path: string): string => snapshot.files[path] ?? "";
     const common = ruleIds(content(NORMATIVE_PATHS.common), "com");
-    const componentRules = componentPaths.flatMap((path) => ruleIds(content(path), component));
+    const componentRules = componentPaths.map((path) => ({ path, ids: ruleIds(content(path), component) }));
     const integrationRules = ruleIds(content(NORMATIVE_PATHS.integrations), "int");
     if (!common.includes("com-G1")) throw new Error("la fuente SAG no contiene la norma com-G1");
-    if (componentRules.length === 0) throw new Error(`la fuente SAG no contiene normas para ${component}`);
+    if (componentRules.every(({ ids }) => ids.length === 0)) throw new Error(`la fuente SAG no contiene normas para ${component}`);
     if (!integrationRules.includes("int-R1")) throw new Error("la fuente SAG no contiene la norma int-R1");
+    const componentPatternDecisions = componentRules[1]!.ids.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`);
+    const integrationApplicable = explicitFacts.artifacts?.some((artifact) => ["config", "secret", "consul"].includes(artifact));
+    const integrationApplicability: SagNormSelection["applicability"] = integrationApplicable === undefined ? "needs-decision" : "applicable";
+    const integrationDecisions = integrationApplicable === undefined
+      ? integrationRules.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por hechos de alcance`)
+      : [];
     return {
       phase: "infrastructure",
       sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
@@ -574,10 +580,11 @@ export class SagNormsService {
       explicitFacts,
       selectedRules: [
         ...this.select(["com-G1"], NORMATIVE_PATHS.common, snapshot.commit, "phase=infrastructure; common verification rule", "applicable"),
-        ...this.select(componentRules, componentPaths[0]!, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
-        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration verification", "applicable"),
+        ...this.select(componentRules[0]!.ids, componentRules[0]!.path, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
+        ...this.select(componentRules[1]!.ids, componentRules[1]!.path, snapshot.commit, "phase=infrastructure; component cross-cutting applicability needs decision", "needs-decision"),
+        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration applicability is explicit", integrationApplicability),
       ],
-      needsDecision,
+      needsDecision: [...needsDecision, ...componentPatternDecisions, ...integrationDecisions],
     };
   }
 
