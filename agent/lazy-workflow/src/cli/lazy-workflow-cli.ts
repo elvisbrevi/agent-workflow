@@ -25,6 +25,7 @@ import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
+import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
@@ -88,6 +89,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence?(ticket: number, filePath: string): Promise<unknown>;
   publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
+  publishInfrastructureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -284,6 +286,8 @@ function printHelp(): void {
     "  lazy-workflow code [options]",
     "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow code --session <id> --prompt continue",
+     "  lazy-workflow infra-sag --hu <id> [options]",
+     "  lazy-workflow infra-sag --issue <id> [options]",
     "  lazy-workflow architecture-review-sag --hu <id> [options]",
     "  lazy-workflow architecture-review-sag --issue <id> [options]",
     "  lazy-workflow deploy-sag --hu <id> [options]",
@@ -329,6 +333,7 @@ function printHelp(): void {
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
     "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
+     "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV y verifica el resultado; no infiere destinos",
     "  --working-directory <path>",
@@ -343,15 +348,16 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview" | "loadDeployment">> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview" | "loadDeployment" | "loadInfrastructure">> = new SagNormsService(),
     private readonly git: GitRunner = runGit,
     private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
     private readonly deploymentService: Pick<SagDeploymentService, "deploy"> = new SagDeploymentService(),
+    private readonly infrastructureService: Pick<SagInfrastructureService, "verify"> = new SagInfrastructureService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "infra-sag" && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -368,8 +374,8 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag") {
-      reportOperator("--issue solo se permite con architecture-review-sag o deploy-sag");
+    if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "infra-sag") {
+      reportOperator("--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
       return 1;
     }
 
@@ -401,6 +407,26 @@ export class LazyWorkflowCli {
         return 1;
       }
       return this.runArchitectureReview(options);
+    }
+
+    if (command === "infra-sag") {
+      if (options.hu !== null && options.issue !== null) {
+        reportOperator("infra-sag no permite combinar --hu y --issue");
+        return 1;
+      }
+      if (options.hu === null && options.issue === null) {
+        reportOperator("infra-sag requiere --hu <id> o --issue <id>");
+        return 1;
+      }
+      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
+        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
+        return 1;
+      }
+      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+        reportOperator("infra-sag no permite --session, --branch ni --base-branch");
+        return 1;
+      }
+      return this.runInfrastructure(options);
     }
 
     if (command === "deploy-sag") {
@@ -767,6 +793,61 @@ export class LazyWorkflowCli {
         return this.runDeployment(options, environment, true);
       }
       reportOperator(`lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
+      return 1;
+    }
+  }
+
+  private async runInfrastructure(options: CliOptions, authenticationRetried = false): Promise<number> {
+    if (!this.sagNormsService.loadInfrastructure) {
+      reportOperator("lazy-workflow: el servicio SAG no soporta infra-sag");
+      return 1;
+    }
+    try {
+      const issueScope = options.issue !== null
+        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
+        : null;
+      const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
+      const scope: InfrastructureScope = options.issue !== null
+        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}`, source: issueScope }
+        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}`, source: huScope };
+      const context = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
+      const verification = await this.infrastructureService.verify(scope, options.workingDirectory);
+      let publication: ArchitectureReviewPublication | null = null;
+      if (verification.findings.length > 0) {
+        const specification = {
+          title: `Infrastructure readiness findings for ${scope.title}`,
+          body: "Authenticated infrastructure verification found missing or unverifiable prerequisites. Each finding below is a separate corrective work item.",
+        };
+        const tickets = verification.findings.map(({ title, body }) => ({ title, body }));
+        if (issueScope !== null) {
+          publication = await this.githubTracker.publishFindings(
+            issueScope.number,
+            specification,
+            tickets,
+            options.workingDirectory,
+          );
+        } else {
+          if (!this.huInfoService.publishInfrastructureFindings) {
+            throw new Error("el servicio Azure no expone publication verificada para infra-sag");
+          }
+          publication = await this.huInfoService.publishInfrastructureFindings(options.hu!, specification, tickets);
+        }
+      }
+      console.log(JSON.stringify({
+        infrastructure: verification,
+        scope,
+        sag: context,
+        publication,
+      }, null, 2));
+      return 0;
+    } catch (error) {
+      if ((error instanceof InfrastructureAuthenticationRequiredError || isAuthenticationError(error))
+        && options.hu !== null && !authenticationRetried) {
+        reportOperator(`Sesion de infraestructura detenida; autenticacion requerida para la HU ${options.hu}.`);
+        await this.huInfoService.waitForAccess(options.hu);
+        return this.runInfrastructure(options, true);
+      }
+      reportOperator(`lazy-workflow: no se pudo ejecutar infra-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
       return 1;
     }
   }
