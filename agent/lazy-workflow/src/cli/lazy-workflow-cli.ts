@@ -816,9 +816,32 @@ export class LazyWorkflowCli {
         : null;
       const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
       const scope: InfrastructureScope = options.issue !== null
-        ? { tracker: "github", id: options.issue, title: `Issue #${options.issue}` }
-        : { tracker: "azure", id: huScope!.id, title: `HU #${huScope!.id}` };
+        ? {
+          tracker: "github",
+          id: options.issue,
+          title: `Issue #${options.issue}`,
+          source: issueScope ? {
+            title: issueScope.title,
+            description: sanitizeDeploymentText(issueScope.body),
+            comments: issueScope.comments.map(sanitizeDeploymentText),
+            state: issueScope.state,
+          } : undefined,
+        }
+        : {
+          tracker: "azure",
+          id: huScope!.id,
+          title: `HU #${huScope!.id}`,
+          source: huScope ? {
+            title: huScope.title,
+            description: huScope.description ? sanitizeDeploymentText(huScope.description) : undefined,
+            acceptanceCriteria: huScope.criterioDeAceptacion ? sanitizeDeploymentText(huScope.criterioDeAceptacion) : undefined,
+            state: huScope.state,
+            project: huScope.project,
+          } : undefined,
+        };
       const context = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
+      const verifiedContext = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
+      if (context.commit !== verifiedContext.commit) throw new Error("la fuente SAG cambio durante la preparacion; ejecucion detenida");
       const verification = await this.infrastructureService.verify(scope, options.workingDirectory);
       let publication: ArchitectureReviewPublication | null = null;
       if (verification.findings.length > 0) {
@@ -843,7 +866,7 @@ export class LazyWorkflowCli {
       }
       console.log(JSON.stringify({
         infrastructure: verification,
-        scope,
+        scope: { tracker: scope.tracker, id: scope.id, title: scope.title },
         sag: context,
         publication,
       }, null, 2));

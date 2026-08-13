@@ -211,6 +211,64 @@ test("Azure infra findings create and verify child work items", async () => {
   expect(commands.filter((args) => args[2] === "relation")).toHaveLength(2);
 });
 
+test("infra-sag publishes Azure findings with the complete sanitized HU scope", async () => {
+  const directory = await config();
+  let published = false;
+  try {
+    const code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => ({ id: 23438, title: "HU", description: "token: fixture-secret", criterioDeAceptacion: "acceptance", state: "Active", project: "project" }),
+        waitForAccess: async () => undefined,
+        publishInfrastructureFindings: async (hu, _specification, tickets) => {
+          published = hu === 23438 && tickets.length === 1;
+          return { specification: 300, tickets: [301] };
+        },
+      },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
+      undefined,
+      undefined,
+      undefined,
+      { verify: async (scope) => {
+        expect(scope.source?.description).toBe("token: [REDACTED]");
+        return { status: "findings", observations: observation, findings: [{ category: "consul", title: "Consul missing", body: "fix" }] };
+      } },
+    ).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
+    expect(code).toBe(0);
+    expect(published).toBeTrue();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("infra-sag stops before verification when canonical SAG context is unavailable", async () => {
+  const directory = await config();
+  let verificationCalls = 0;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => { throw new Error("source unavailable"); } },
+      undefined,
+      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      undefined,
+      { verify: async () => { verificationCalls += 1; return { status: "ready", observations: observation, findings: [] }; } },
+    ).run(["infra-sag", "--issue", "155", "--working-directory", directory]);
+    expect(code).toBe(1);
+    expect(verificationCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("infra-sag rejects missing or conflicting scope before external services", async () => {
   let calls = 0;
   for (const args of [["infra-sag"], ["infra-sag", "--hu", "1", "--issue", "2"], ["infra-sag", "--issue", "bad"], ["infra-sag", "--issue", "155", "--ticket", "1"]]) {
