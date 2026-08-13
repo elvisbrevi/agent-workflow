@@ -83,6 +83,9 @@ Add `--normas-sag` to `plan` to load planning norms from the remote SAG
 records the resolved commit, source URLs, stable rule IDs, selection reasons,
 and applicability facts that need a decision. Missing or unreadable SAG
 context stops before OpenCode; plain `plan` never reads SAG sources.
+Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
+the source requires authentication; the token is never placed in prompts or
+logs.
 
 Azure delivery tickets can be inspected without starting OpenCode. Use
 `ticket-info --hu <HU> --ticket <ticket>` for the aggregate normalized record,

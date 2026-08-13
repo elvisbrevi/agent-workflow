@@ -55,7 +55,9 @@ requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
 the resolved commit, stable normative rule IDs, source URLs, selection reasons,
 and explicit `needsDecision` values for unknown applicability. An unavailable
 source or invalid configuration stops before OpenCode. Plain `plan` does not
-access SAG sources.
+access SAG sources. If the canonical source requires authentication, provide
+`AZURE_DEVOPS_EXT_PAT`; its value is used only in the request Authorization
+header and is never persisted or sent to OpenCode.
 
 ## Azure HU workflows
 
