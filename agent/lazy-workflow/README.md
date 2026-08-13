@@ -14,6 +14,7 @@ lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory
 lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --hu 23438 --working-directory /path/to/repository
+lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
@@ -68,6 +69,44 @@ separate from procedural guidance; findings are synthesized and published as
 corrective tracker work with `/to-spec` and `/to-tickets` semantics. A clean
 review publishes nothing, and the command never deploys or requires another
 SAG workflow.
+
+`deploy-sag` always loads delivery norms and requires exactly one explicit
+`--issue` or `--hu`. It reads the explicit `deployment` route in
+`.sag/config.json`, asks an authenticated external adapter to verify one
+pipeline v7, Release Definition, repository/base branch, and DEV target, then
+verifies the external deployment state. DEV is the default and only supported
+environment in this slice. PROD and every production alias fail before
+external mutation; ambiguous or unverifiable routes fail closed. Repeated
+runs reconcile by route and scope identity rather than triggering a duplicate.
+
+The deployment configuration has this shape (identities are examples, not
+inferred defaults):
+
+```json
+{
+  "tipo": "api",
+  "deployment": {
+    "authentication": "operator",
+    "adapter": { "command": [".sag/deploy-adapter"] },
+    "route": {
+      "repository": "project/repository",
+      "baseBranch": "main",
+      "pipeline": { "id": "pipeline-7", "version": "v7" },
+      "releaseDefinition": { "id": "release-1" },
+      "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
+      "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
+      "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
+    }
+  }
+}
+```
+
+The adapter is executed without a shell and receives JSON on stdin with
+`--operation discover|reconcile|verify`. It must use operator authentication,
+return exactly one route for `discover`, atomically reconcile the idempotency
+key, and return independently verified OpenShift, Consul, and target evidence.
+Authentication continuation is signaled with exit code 0 and
+`{"authenticationRequired":true}`; nonzero exits are terminal adapter errors.
 
 ## Azure HU workflows
 
@@ -237,6 +276,7 @@ main.ts                 CLI entrypoint
 prompts/                OpenCode prompt assets
 src/azure/              Azure Boards model and service
 src/github/             GitHub tracker boundaries for SAG review publication
+src/sag/                SAG norm retrieval and deployment coordination
 src/cli/                Workflow coordination
 src/git/                Verified ticket-branch cleanup
 src/opencode/           OpenCode execution and JSONL result
