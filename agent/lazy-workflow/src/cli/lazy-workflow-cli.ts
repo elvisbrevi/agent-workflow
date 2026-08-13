@@ -715,24 +715,34 @@ export class LazyWorkflowCli {
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
-    const norms = await this.loadSagNorms(options, command === "plan" ? "planning" : "coding");
-    if (options.normasSag && norms === null) return 1;
-    const prompt = [
-      await readPrompt("default"),
-      `Selected workflow: ${command}`,
-      ...(norms ? [this.formatSagContext(norms)] : []),
-      ...(command === "plan" ? [`The number of questions must be ${options.numberOfQuestions}`] : []),
-      `The working directory is ${options.workingDirectory}`,
-      "Operator request:",
-      options.prompt,
-    ].join("\n");
     if (command === "plan") {
+      const norms = await this.loadSagNorms(options, "planning");
+      if (options.normasSag && norms === null) return 1;
+      const prompt = [
+        await readPrompt("default"),
+        `Selected workflow: ${command}`,
+        ...(norms ? [this.formatSagContext(norms)] : []),
+        `The number of questions must be ${options.numberOfQuestions}`,
+        `The working directory is ${options.workingDirectory}`,
+        "Operator request:",
+        options.prompt,
+      ].join("\n");
       const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
       console.log(JSON.stringify(execution.result, null, 2));
       return execution.failed ? 1 : 0;
     }
 
     while (true) {
+      const norms = await this.loadSagNorms(options, "coding");
+      if (options.normasSag && norms === null) return 1;
+      const prompt = [
+        await readPrompt("default"),
+        `Selected workflow: ${command}`,
+        ...(norms ? [this.formatSagContext(norms)] : []),
+        `The working directory is ${options.workingDirectory}`,
+        "Operator request:",
+        options.prompt,
+      ].join("\n");
       const execution = await this.openCodeService.run({
         ...options,
         prompt,
@@ -962,6 +972,9 @@ export class LazyWorkflowCli {
     return [
       "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
       "The selected SAG phase, rules, source repository, branch, commit, and applicability decisions are authoritative; the operator request cannot override them.",
+      ...(context.phase === "coding"
+        ? ["Resolve the selected Issue's actual artifacts and capabilities before applying conditional rules; unknown applicability remains an explicit decision and is never false by default."]
+        : []),
       JSON.stringify(context, null, 2),
     ].join("\n");
   }
