@@ -24,6 +24,7 @@ import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundErro
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
@@ -104,6 +105,28 @@ function errorMessage(error: unknown): string {
 
 function containsMarker(text: string, marker: string): boolean {
   return text.split(/\r?\n/).some((line) => line.trim() === marker);
+}
+
+interface ArchitectureReviewResult {
+  status: "clean" | "findings";
+  summary: string;
+  specification?: { title: string; body: string };
+  tickets?: Array<{ title: string; body: string }>;
+}
+
+function parseArchitectureReviewResult(text: string): ArchitectureReviewResult {
+  const marker = "ARCHITECTURE_REVIEW_RESULT";
+  const lines = text.split(/\r?\n/);
+  const markerLine = lines.findIndex((line) => line.trim() === marker);
+  if (markerLine < 0) throw new Error(`OpenCode no devolvio ${marker}`);
+  const result = JSON.parse(lines.slice(markerLine + 1).join("\n").trim()) as ArchitectureReviewResult;
+  if ((result.status !== "clean" && result.status !== "findings") || typeof result.summary !== "string") {
+    throw new Error("resultado de architecture-review-sag invalido");
+  }
+  if (result.status === "findings" && (!result.specification || typeof result.specification.title !== "string" || typeof result.specification.body !== "string" || !Array.isArray(result.tickets))) {
+    throw new Error("architecture-review-sag reporto hallazgos sin specification o tickets");
+  }
+  return result;
 }
 
 const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
@@ -292,6 +315,7 @@ export class LazyWorkflowCli {
     private readonly clock: Clock = { now: Date.now },
     private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview">> = new SagNormsService(),
     private readonly git: GitRunner = runGit,
+    private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -649,9 +673,12 @@ export class LazyWorkflowCli {
     try {
       const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
       if (initialStatus.trim()) throw new Error("el repositorio tiene cambios sin guardar; la revision no mutara un arbol sucio");
+      const issueScope = options.issue !== null
+        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
+        : null;
       const scope = options.hu !== null
         ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
-        : { tracker: "github", issue: options.issue };
+        : { tracker: "github", issue: issueScope };
       const context = await this.sagNormsService.loadArchitectureReview(options.workingDirectory);
       const prompt = [
         await readPrompt("architecture-review-sag"),
@@ -671,8 +698,29 @@ export class LazyWorkflowCli {
       }
       const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
       if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
-      console.log(JSON.stringify(result, null, 2));
-      return execution.failed ? 1 : 0;
+      if (execution.failed) return 1;
+      const review = parseArchitectureReviewResult(result.text);
+      let publication: ArchitectureReviewPublication | null = null;
+      if (review.status === "findings" && issueScope !== null) {
+        publication = await this.githubTracker.publishFindings(
+          issueScope.number,
+          review.specification!,
+          review.tickets!,
+          options.workingDirectory,
+        );
+      }
+      console.log(JSON.stringify({
+        ...result,
+        architectureReview: {
+          status: review.status,
+          summary: review.summary,
+          sourceRepository: context.sourceRepository,
+          branch: context.branch,
+          commit: context.commit,
+          publication,
+        },
+      }, null, 2));
+      return 0;
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`);
       return 1;

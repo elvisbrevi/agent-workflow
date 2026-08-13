@@ -18,13 +18,23 @@ do not infer it from filenames, issue titles, prompts, or conventional names.
 Report findings with evidence, affected scope, severity, and a concrete
 corrective direction. If there are findings, synthesize one specification with
 `/to-spec` semantics and split it into tracer corrective issues with
-`/to-tickets` semantics in the source tracker. For GitHub, use `gh` and
-associate every corrective issue with the supplied Issue. For Azure, use the
-repository's documented Azure tracker conventions and associate work with the
-supplied HU. A clean review publishes no corrective work.
+`/to-tickets` semantics. Do not publish tracker work yourself: return the
+specification and ticket bodies in the machine-readable result below so the
+coordinator can publish and verify them in the source tracker. A clean review
+publishes no corrective work.
 
 Never implement or repair findings during this workflow. Do not deploy, invoke
 another workflow, require a prior architecture-review receipt, expose
 credentials, or include tokens and secret values in output, tracker content,
 or evidence. End with a concise review result and distinguish clean review,
 published corrective work, unresolved applicability, and operational failure.
+
+The final output must end with this exact marker followed by one JSON object
+and no further text:
+
+`ARCHITECTURE_REVIEW_RESULT`
+`{"status":"clean","summary":"..."}`
+
+For findings, use `status: "findings"`, a concise `summary`, one
+`specification` object with `title` and `body`, and a `tickets` array of
+objects with `title` and `body`.

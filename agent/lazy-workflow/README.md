@@ -236,6 +236,7 @@ and resumes that session once with `continue`.
 main.ts                 CLI entrypoint
 prompts/                OpenCode prompt assets
 src/azure/              Azure Boards model and service
+src/github/             GitHub tracker boundaries for SAG review publication
 src/cli/                Workflow coordination
 src/git/                Verified ticket-branch cleanup
 src/opencode/           OpenCode execution and JSONL result
