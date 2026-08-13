@@ -23,6 +23,7 @@ import {
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
+import { SagNormsService, type SagNormsContext } from "../sag/sag-norms-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
@@ -43,6 +44,7 @@ type CliOptions = OpenCodeRunOptions & {
   hasExpectedRevision: boolean;
   evidenceKind: EvidenceKind | null;
   numberOfQuestions: number;
+  normasSag: boolean;
   workingDirectory: string;
 };
 
@@ -217,6 +219,7 @@ function parseOptions(args: string[]): CliOptions {
     hasExpectedRevision: presentValue(expectedRevision),
     evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
     numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
+    normasSag: args.includes("--normas-sag"),
     workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
   };
 }
@@ -267,6 +270,7 @@ function printHelp(): void {
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
+    "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
     "  --working-directory <path>",
   ].join("\n"));
 }
@@ -279,6 +283,7 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> = new SagNormsService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -292,6 +297,11 @@ export class LazyWorkflowCli {
 
     if (options.hu !== null && !isValidHu(options.hu)) {
       reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+      return 1;
+    }
+
+    if (options.normasSag && command !== "plan") {
+      reportOperator("--normas-sag solo se permite con plan");
       return 1;
     }
 
@@ -519,10 +529,13 @@ export class LazyWorkflowCli {
     if (options.hu === null) return this.runDefaultWorkflow("plan", options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
+    const norms = await this.loadSagNorms(options);
+    if (options.normasSag && norms === null) return 1;
 
     options.prompt = [
       JSON.stringify(huInfo),
       await readPrompt("autoplan"),
+      ...(norms ? [this.formatSagContext(norms)] : []),
       `The number of questions must be ${options.numberOfQuestions}`,
       options.prompt,
       `The working directory is ${options.workingDirectory}`,
@@ -540,9 +553,12 @@ export class LazyWorkflowCli {
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
+    const norms = await this.loadSagNorms(options);
+    if (options.normasSag && norms === null) return 1;
     const prompt = [
       await readPrompt("default"),
       `Selected workflow: ${command}`,
+      ...(norms ? [this.formatSagContext(norms)] : []),
       ...(command === "plan" ? [`The number of questions must be ${options.numberOfQuestions}`] : []),
       `The working directory is ${options.workingDirectory}`,
       "Operator request:",
@@ -580,6 +596,23 @@ export class LazyWorkflowCli {
         return 0;
       }
     }
+  }
+
+  private async loadSagNorms(options: CliOptions): Promise<SagNormsContext | null> {
+    if (!options.normasSag) return null;
+    try {
+      return await this.sagNormsService.loadPlanning(options.workingDirectory);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
+      return null;
+    }
+  }
+
+  private formatSagContext(context: SagNormsContext): string {
+    return [
+      "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
+      JSON.stringify(context, null, 2),
+    ].join("\n");
   }
 
   private async runTicketRead(command: string, options: CliOptions): Promise<number> {

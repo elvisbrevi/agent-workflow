@@ -41,6 +41,15 @@ commit and that its target and parameters are unambiguous.
 SAG-scoped commands are independent. `deploy-sag` does not require a receipt
 from `architecture-review-sag`, and no command silently invokes another.
 
+`plan --normas-sag` passes only retrieval metadata to OpenCode. Each selected
+`N` rule includes its stable ID, source URL, resolved `master` commit, and
+selection reason; the workflow does not copy rule text into the repository.
+Missing `.sag/config.json`, an invalid explicit component, an inaccessible
+source, or missing required rule families stops planning before OpenCode.
+
+The coding modifier is reserved for the separate coding slice tracked by #156;
+the current command rejects `code --normas-sag` until that slice is delivered.
+
 ## Deterministic applicability
 
 Read `.sag/config.json` before selecting component rules. Do not infer `tipo`

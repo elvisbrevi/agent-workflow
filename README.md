@@ -29,6 +29,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
+lazy-workflow plan --normas-sag --working-directory /path/to/repository
 lazy-workflow code --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
@@ -75,6 +76,16 @@ Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
 tools. `code` drains all eligible GitHub issues one per fresh OpenCode session
 and stops when the queue is empty. Add `--hu <ID>` to select the existing Azure
 planning or delivery workflow.
+
+Add `--normas-sag` to `plan` to load planning norms from the remote SAG
+`master` branch. The selected repository must contain an explicit
+`.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt
+records the resolved commit, source URLs, stable rule IDs, selection reasons,
+and applicability facts that need a decision. Missing or unreadable SAG
+context stops before OpenCode; plain `plan` never reads SAG sources.
+Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
+the source requires authentication; the token is never placed in prompts or
+logs.
 
 Azure delivery tickets can be inspected without starting OpenCode. Use
 `ticket-info --hu <HU> --ticket <ticket>` for the aggregate normalized record,
