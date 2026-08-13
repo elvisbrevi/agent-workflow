@@ -31,6 +31,7 @@ at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
 lazy-workflow plan --normas-sag --working-directory /path/to/repository
 lazy-workflow code --working-directory /path/to/repository
+lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
@@ -86,6 +87,12 @@ context stops before OpenCode; plain `plan` never reads SAG sources.
 Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
 the source requires authentication; the token is never placed in prompts or
 logs.
+
+`architecture-review-sag` always loads SAG norms and requires exactly one
+explicit `--issue` or `--hu`. It reviews without changing code, keeps numbered
+norms separate from procedural guidance, and publishes findings as corrective
+tracker work using `/to-spec` and `/to-tickets` semantics. A clean review
+publishes nothing and does not invoke deployment.
 
 Azure delivery tickets can be inspected without starting OpenCode. Use
 `ticket-info --hu <HU> --ticket <ticket>` for the aggregate normalized record,

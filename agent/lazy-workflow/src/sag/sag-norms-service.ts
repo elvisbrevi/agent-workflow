@@ -11,7 +11,7 @@ const COMPONENT_PATHS: Record<SagComponent, readonly [string, string]> = {
 };
 const CHANGE_KINDS = ["new-component", "feature", "bugfix", "contract-change", "migration", "infrastructure"];
 const ARTIFACTS = ["work-item", "source", "test", "config", "secret", "pr", "pipeline", "release", "consul", "database", "openshift", "document"];
-const CAPABILITIES = ["database", "admin-endpoints", "server-auth", "user-session", "permissions", "forms", "realtime", "document-processing", "sonar"];
+const CAPABILITIES = ["database", "admin-endpoints", "server-auth", "user-session", "permissions", "forms", "realtime", "document-processing", "sonar", "cache", "observability"];
 const ENVIRONMENTS = ["none", "dev", "test", "qa"];
 const NORMATIVE_PATHS = {
   common: "/estandares/comunes.md",
@@ -21,8 +21,37 @@ const NORMATIVE_PATHS = {
   extraction: "/estandares/extraccion-documentos.md",
   sonar: "/estandares/sonarqube.md",
 } as const;
+const ARCHITECTURE_GUIDANCE_PATHS = [
+  "/estandares/revision.md",
+  "/core/agents/arquitecto-sag.md",
+] as const;
+const ARCHITECTURE_FAMILIES = [
+  "boundaries",
+  "contracts",
+  "auth",
+  "session",
+  "data",
+  "cache",
+  "consul",
+  "observability",
+  "realtime",
+  "deployment-topology",
+] as const;
+const FAMILY_TERMS: Record<SagArchitectureFamily, readonly string[]> = {
+  boundaries: ["boundary", "boundar", "limite", "módulo", "modulo"],
+  contracts: ["contract", "contrato", "endpoint", "api"],
+  auth: ["auth", "autentic", "seguridad", "permiso", "rol", "token"],
+  session: ["session", "sesión", "sesion", "cookie"],
+  data: ["database", "base de datos", "persist", "datos"],
+  cache: ["cache", "caché"],
+  consul: ["consul", "configuración", "configuracion"],
+  observability: ["observ", "logging", "log", "trazab", "monitor"],
+  realtime: ["realtime", "tiempo real", "websocket"],
+  "deployment-topology": ["deploy", "desplieg", "openshift", "route", "pipeline", "topolog"],
+};
 
 export type SagComponent = typeof COMPONENTS[number];
+export type SagArchitectureFamily = typeof ARCHITECTURE_FAMILIES[number];
 
 export interface SagNormSelection {
   classification: "N";
@@ -47,6 +76,33 @@ export interface SagNormsContext {
     environment: string | null;
   };
   selectedRules: SagNormSelection[];
+  needsDecision: string[];
+}
+
+export interface SagArchitectureFamilySelection {
+  family: SagArchitectureFamily;
+  applicability: "applicable" | "not-applicable" | "needs-decision";
+  selectedBecause: string;
+}
+
+export interface SagArchitectureGuidance {
+  classification: "W";
+  path: string;
+  source: string;
+  commit: string;
+  selectedBecause: string;
+}
+
+export interface SagArchitectureReviewContext {
+  phase: "architecture-review";
+  sourceRepository: string;
+  branch: "master";
+  commit: string;
+  component: SagComponent;
+  explicitFacts: SagNormsContext["explicitFacts"];
+  reviewFamilies: SagArchitectureFamilySelection[];
+  selectedRules: SagNormSelection[];
+  guidance: SagArchitectureGuidance[];
   needsDecision: string[];
 }
 
@@ -315,6 +371,125 @@ export class SagNormsService {
       selectedRules,
       needsDecision: [...needsDecision, ...conditionalDecisions],
     };
+  }
+
+  async loadArchitectureReview(workingDirectory: string): Promise<SagArchitectureReviewContext> {
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
+    const componentPaths = COMPONENT_PATHS[component];
+    const paths = [
+      NORMATIVE_PATHS.common,
+      ...componentPaths,
+      NORMATIVE_PATHS.integrations,
+      "/estandares/pull-requests.md",
+      ...ARCHITECTURE_GUIDANCE_PATHS,
+    ];
+    const snapshot = await this.source.load(paths);
+    if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
+
+    const reviewFamilies = ARCHITECTURE_FAMILIES.map((family) => this.architectureFamily(family, explicitFacts));
+    const decisions = [
+      ...needsDecision,
+      ...reviewFamilies
+        .filter(({ applicability }) => applicability === "needs-decision")
+        .map(({ family }) => `${family}: requiere decidir aplicabilidad por hechos de alcance`),
+    ];
+    const selectFamilyRules = (
+      content: string,
+      ids: string[],
+      path: string,
+      families: SagArchitectureFamily[],
+    ): SagNormSelection[] => ids.flatMap((ruleId) => {
+      const familyApplicability = this.ruleFamilyApplicability(content, ruleId, families, reviewFamilies);
+      return familyApplicability === "not-applicable" ? [] : this.select(
+        [ruleId],
+        path,
+        snapshot.commit,
+        `phase=architecture-review; tipo=${component}; rule-specific family applicability=${familyApplicability}`,
+        familyApplicability,
+      );
+    });
+    const selectedRules = [
+      ...this.select(ruleIds(snapshot.files[NORMATIVE_PATHS.common] ?? "", "com"), NORMATIVE_PATHS.common, snapshot.commit, "phase=architecture-review; common structural rule", "applicable"),
+      ...this.select(ruleIds(snapshot.files[componentPaths[0]!] ?? "", component), componentPaths[0]!, snapshot.commit, `phase=architecture-review; tipo=${component} from .sag/config.json`, "applicable"),
+      ...selectFamilyRules(snapshot.files[componentPaths[1]!] ?? "", ruleIds(snapshot.files[componentPaths[1]!] ?? "", component), componentPaths[1]!, [...ARCHITECTURE_FAMILIES]),
+      ...selectFamilyRules(snapshot.files[NORMATIVE_PATHS.integrations] ?? "", ruleIds(snapshot.files[NORMATIVE_PATHS.integrations] ?? "", "int"), NORMATIVE_PATHS.integrations, ["auth", "consul"]),
+      ...selectFamilyRules(snapshot.files["/estandares/pull-requests.md"] ?? "", ruleIds(snapshot.files["/estandares/pull-requests.md"] ?? "", "pr"), "/estandares/pull-requests.md", ["deployment-topology"]),
+    ];
+    const guidance = ARCHITECTURE_GUIDANCE_PATHS.map((path) => ({
+      classification: "W" as const,
+      path,
+      source: sourceUrl(path),
+      commit: snapshot.commit,
+      selectedBecause: "phase=architecture-review; procedural guidance is separate from numbered norms",
+    }));
+    return {
+      phase: "architecture-review",
+      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      branch: "master",
+      commit: snapshot.commit,
+      component,
+      explicitFacts,
+      reviewFamilies,
+      selectedRules,
+      guidance,
+      needsDecision: decisions,
+    };
+  }
+
+  private architectureFamily(
+    family: SagArchitectureFamily,
+    facts: SagNormsContext["explicitFacts"],
+  ): SagArchitectureFamilySelection {
+    const capability = (values: string[] | null, names: string[]): SagArchitectureFamilySelection["applicability"] => {
+      if (values === null) return "needs-decision";
+      return values.some((value) => names.includes(value)) ? "applicable" : "not-applicable";
+    };
+    const artifact = (names: string[]): SagArchitectureFamilySelection["applicability"] => {
+      if (facts.artifacts === null) return "needs-decision";
+      return facts.artifacts.some((value) => names.includes(value)) ? "applicable" : "not-applicable";
+    };
+    let applicability: SagArchitectureFamilySelection["applicability"];
+    if (family === "auth") applicability = capability(facts.capabilities, ["admin-endpoints", "server-auth", "permissions"]);
+    else if (family === "session") applicability = capability(facts.capabilities, ["user-session"]);
+    else if (family === "data") applicability = capability(facts.capabilities, ["database"]);
+    else if (family === "cache") applicability = capability(facts.capabilities, ["cache"]);
+    else if (family === "observability") applicability = capability(facts.capabilities, ["observability", "sonar"]);
+    else if (family === "realtime") applicability = capability(facts.capabilities, ["realtime"]);
+    else if (family === "consul") applicability = artifact(["consul", "config", "secret"]);
+    else if (family === "deployment-topology") {
+      applicability = facts.environment === null ? "needs-decision"
+        : facts.environment === "none" && facts.artifacts !== null && !facts.artifacts.some((value) => ["pipeline", "release", "openshift"].includes(value))
+          ? "not-applicable"
+          : artifact(["pipeline", "release", "openshift"]);
+    } else if (family === "boundaries") {
+      applicability = facts.changeKind === null ? "needs-decision"
+        : ["new-component", "contract-change"].includes(facts.changeKind) ? "applicable" : "not-applicable";
+    } else {
+      applicability = facts.changeKind === null ? "needs-decision"
+        : facts.changeKind === "contract-change" ? "applicable" : "needs-decision";
+    }
+    return {
+      family,
+      applicability,
+      selectedBecause: `phase=architecture-review; explicit .sag/config.json facts select ${family}`,
+    };
+  }
+
+  private ruleFamilyApplicability(
+    content: string,
+    ruleId: string,
+    families: SagArchitectureFamily[],
+    selections: SagArchitectureFamilySelection[],
+  ): SagArchitectureFamilySelection["applicability"] {
+    const start = content.indexOf(ruleId);
+    const nextRule = start < 0 ? -1 : content.slice(start + ruleId.length).search(/\b[A-Za-z]+-[A-Z]\d+\b/);
+    const ruleText = start < 0 ? "" : content.slice(start, nextRule < 0 ? undefined : start + ruleId.length + nextRule).toLowerCase();
+    const mentioned = families.filter((family) => FAMILY_TERMS[family].some((term) => ruleText.includes(term)));
+    if (mentioned.length === 0) return "needs-decision";
+    const selected = selections.filter(({ family }) => mentioned.includes(family));
+    if (selected.some(({ applicability }) => applicability === "applicable")) return "applicable";
+    if (selected.some(({ applicability }) => applicability === "needs-decision")) return "needs-decision";
+    return "not-applicable";
   }
 
   private select(
