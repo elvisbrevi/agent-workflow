@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import {
   InfrastructureAuthenticationRequiredError,
   SagInfrastructureService,
@@ -142,6 +143,9 @@ test("infra-sag publishes one corrective ticket for each missing prerequisite", 
     expect(code).toBe(0);
     expect(publishedIssue).toBe(155);
     expect(publishedCount).toBe(5);
+    expect(JSON.parse(output[0]!).infrastructure.findings.map((finding: { category: string }) => finding.category)).toEqual([
+      "repository", "consul", "database", "pipeline", "release-definition",
+    ]);
     expect(output[0]).toContain('"status": "findings"');
   } finally {
     console.log = originalLog;
@@ -165,11 +169,11 @@ test("infra-sag retries Azure authentication once without exposing credentials",
       undefined,
       undefined,
       undefined,
-      new SagInfrastructureService({ verify: async () => {
-          attempts += 1;
-          if (attempts === 1) throw new InfrastructureAuthenticationRequiredError();
-          return observation;
-        } }),
+      { verify: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new InfrastructureAuthenticationRequiredError();
+        return { status: "ready" as const, observations: observation, findings: [] };
+      } },
     ).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
 
     expect(code).toBe(0);
@@ -180,9 +184,36 @@ test("infra-sag retries Azure authentication once without exposing credentials",
   }
 });
 
+test("Azure infra findings create and verify child work items", async () => {
+  const created = [301, 302];
+  const commands: string[][] = [];
+  const service = new AzureAutocodeService(async (args) => {
+    commands.push(args);
+    if (args[0] === "boards" && args[1] === "work-item" && args[2] === "show" && args.includes("23438")) {
+      return JSON.stringify({ id: 23438, fields: { "System.TeamProject": "project" } });
+    }
+    if (args[0] === "boards" && args[1] === "work-item" && args[2] === "create") {
+      return JSON.stringify({ id: created.shift() });
+    }
+    if (args[0] === "boards" && args[1] === "work-item" && args[2] === "relation") return "{}";
+    const id = Number(args[args.indexOf("--id") + 1]);
+    return JSON.stringify({
+      id,
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/_apis/wit/workItems/23438" }],
+    });
+  });
+
+  await expect(service.publishInfrastructureFindings(23438, { title: "Infrastructure findings", body: "spec" }, [{ title: "Fix Consul", body: "ticket" }])).resolves.toEqual({
+    specification: 301,
+    tickets: [302],
+  });
+  expect(commands.filter((args) => args[2] === "create")).toHaveLength(2);
+  expect(commands.filter((args) => args[2] === "relation")).toHaveLength(2);
+});
+
 test("infra-sag rejects missing or conflicting scope before external services", async () => {
   let calls = 0;
-  for (const args of [["infra-sag"], ["infra-sag", "--hu", "1", "--issue", "2"], ["infra-sag", "--issue", "bad"]]) {
+  for (const args of [["infra-sag"], ["infra-sag", "--hu", "1", "--issue", "2"], ["infra-sag", "--issue", "bad"], ["infra-sag", "--issue", "155", "--ticket", "1"]]) {
     const code = await new LazyWorkflowCli(
       { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
       { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
@@ -199,4 +230,16 @@ test("infra-sag rejects missing or conflicting scope before external services", 
     expect(code).toBe(1);
   }
   expect(calls).toBe(0);
+});
+
+test("infra-sag turns adapter ambiguity into a corrective verification finding", async () => {
+  const directory = await config();
+  try {
+    await expect(new SagInfrastructureService({ verify: async () => { throw new Error("ambiguous external metadata"); } }).verify(scope, directory)).resolves.toMatchObject({
+      status: "findings",
+      findings: [{ category: "verification", body: "ambiguous external metadata" }],
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

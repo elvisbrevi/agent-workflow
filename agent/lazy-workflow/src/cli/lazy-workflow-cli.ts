@@ -224,6 +224,7 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-evidence-set",
   "ticket-completion-apply",
 ]);
+const INFRASTRUCTURE_FLAGS = new Set(["--hu", "--issue", "--model", "--variant", "--prompt", "--working-directory"]);
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -410,6 +411,13 @@ export class LazyWorkflowCli {
     }
 
     if (command === "infra-sag") {
+      const unsupportedFlag = args.slice(1)
+        .map((arg) => arg.split("=", 1)[0])
+        .find((arg) => arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
+      if (unsupportedFlag) {
+        reportOperator(`infra-sag no permite ${unsupportedFlag}`);
+        return 1;
+      }
       if (options.hu !== null && options.issue !== null) {
         reportOperator("infra-sag no permite combinar --hu y --issue");
         return 1;
@@ -808,8 +816,8 @@ export class LazyWorkflowCli {
         : null;
       const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
       const scope: InfrastructureScope = options.issue !== null
-        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}`, source: issueScope }
-        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}`, source: huScope };
+        ? { tracker: "github", id: options.issue, title: `Issue #${options.issue}` }
+        : { tracker: "azure", id: huScope!.id, title: `HU #${huScope!.id}` };
       const context = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
       const verification = await this.infrastructureService.verify(scope, options.workingDirectory);
       let publication: ArchitectureReviewPublication | null = null;
