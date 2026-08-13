@@ -81,7 +81,7 @@ function sanitizeText(value: string): string {
 }
 
 function isAuthenticationError(error: unknown): boolean {
-  return /(?:authentication|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(error instanceof Error ? error.message : String(error));
+  return /(?:authentication|autenticaci[oó]n|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(error instanceof Error ? error.message : String(error));
 }
 
 function optionalResource(value: unknown, name: string): { required: boolean; id: string | null } {

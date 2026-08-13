@@ -47,6 +47,7 @@ const context = {
   component: "api" as const,
   explicitFacts: { changeKind: "infrastructure", artifacts: ["consul"], capabilities: null, significantChange: null, environment: "none" },
   selectedRules: [],
+  guidance: [],
   needsDecision: [],
 };
 
@@ -59,6 +60,10 @@ test("infra-sag loads traceable infrastructure norms from the canonical snapshot
         "/estandares/api.md",
         "/estandares/api-adonis-patrones.md",
         "/estandares/integraciones.md",
+        "/config/README.md",
+        "/config/sag.config.schema.json",
+        "/scripts/lib/config.py",
+        "/scripts/lib/consul.py",
       ]);
       return {
         commit: "infra-commit",
