@@ -19,6 +19,7 @@ const route: DeploymentRoute = {
 
 const config = async (environment: DeploymentEnvironment = "dev"): Promise<string> => {
   const directory = `${root}-${crypto.randomUUID()}`;
+  const target = { ...route.target, id: `openshift-${environment}`, environment };
   await mkdir(`${directory}/.sag`, { recursive: true });
   await Bun.write(`${directory}/.sag/config.json`, JSON.stringify({
     tipo: "api",
@@ -32,7 +33,7 @@ const config = async (environment: DeploymentEnvironment = "dev"): Promise<strin
         releaseDefinition: route.releaseDefinition,
         openShift: route.openShift,
         consul: route.consul,
-        target: { ...route.target, environment },
+        target,
       },
     },
   }));
@@ -139,7 +140,7 @@ test("deploy-sag ejecuta una ruta unica y verifica el estado externo", async () 
 
 test.each(["test", "qa"] as const)("deploy-sag verifica el destino %s", async (environment) => {
   const directory = await config(environment);
-  const environmentRoute = { ...route, target: { ...route.target, environment } };
+  const environmentRoute = { ...route, target: { ...route.target, id: `openshift-${environment}`, environment } };
   const systems: DeploymentSystems = {
     discoverRoutes: async () => [environmentRoute],
     reconcile: async () => ({ record: { id: `deployment-${environment}`, status: "accepted" }, reconciled: false }),
@@ -308,7 +309,7 @@ test.each(["test", "qa"] as const)("deploy-sag CLI selecciona %s", async (enviro
       { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
       { deploy: async (_scope, _directory, received = "dev") => {
         receivedEnvironment = received;
-        return { status: "verified", environment, idempotencyKey: "key", route: { ...route, target: { ...route.target, environment } }, deployment: { id: "deployment-1", status: "succeeded", environment, target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
+        return { status: "verified", environment, idempotencyKey: "key", route: { ...route, target: { ...route.target, id: `openshift-${environment}`, environment } }, deployment: { id: "deployment-1", status: "succeeded", environment, target: `openshift-${environment}`, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
       } },
     ).run(["deploy-sag", "--issue", "157", "--environment", environment, "--working-directory", directory]);
 
@@ -349,7 +350,7 @@ test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticaci
   }
 });
 
-test.each(["adapter unavailable", "trigger failed", "verification failed"])("deploy-sag propaga el fallo de %s sin filtrar secretos", async (failure) => {
+test.each(["adapter unavailable", "ambiguous route", "trigger failed", "verification failed"])("deploy-sag propaga el fallo de %s sin filtrar secretos", async (failure) => {
   const directory = await config();
   const errors: string[] = [];
   const originalError = console.error;
