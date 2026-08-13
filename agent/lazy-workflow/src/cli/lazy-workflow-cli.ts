@@ -23,10 +23,11 @@ import {
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
-import { SagNormsService, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
+  issue: number | null;
   branch: string | null;
   baseBranch: string | null;
   ticket: number | null;
@@ -185,12 +186,13 @@ function isValidHu(hu: number | null): hu is number {
   return hu !== null && Number.isInteger(hu) && hu > 0;
 }
 
-function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> {
+function readPrompt(name: "default" | "autoplan" | "autocode" | "architecture-review-sag"): Promise<string> {
   return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
 }
 
 function parseOptions(args: string[]): CliOptions {
   const hu = optionValue(args, "--hu");
+  const issue = optionValue(args, "--issue");
   const ticket = optionValue(args, "--ticket");
   const realEffort = optionValue(args, "--real-effort");
   const realEffortHours = optionValue(args, "--real-effort-hh");
@@ -202,6 +204,7 @@ function parseOptions(args: string[]): CliOptions {
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
     hu: args.includes("--hu") ? Number(hu) : null,
+    issue: args.includes("--issue") ? Number(issue) : null,
     branch: optionValue(args, "--branch"),
     baseBranch: optionValue(args, "--base-branch"),
     ticket: args.includes("--ticket") ? Number(ticket) : null,
@@ -232,6 +235,8 @@ function printHelp(): void {
     "  lazy-workflow code [options]",
     "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow code --session <id> --prompt continue",
+    "  lazy-workflow architecture-review-sag --hu <id> [options]",
+    "  lazy-workflow architecture-review-sag --issue <id> [options]",
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
     "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
@@ -250,6 +255,7 @@ function printHelp(): void {
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
+    "  --issue <id>                 alcance GitHub explicito para workflows SAG",
     "  --session <id>",
     "  --model <model>",
     "  --variant <variant>",
@@ -271,6 +277,7 @@ function printHelp(): void {
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
     "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
+    "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  --working-directory <path>",
   ].join("\n"));
 }
@@ -283,12 +290,12 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview">> = new SagNormsService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "architecture-review-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -303,6 +310,31 @@ export class LazyWorkflowCli {
     if (options.normasSag && command !== "plan") {
       reportOperator("--normas-sag solo se permite con plan");
       return 1;
+    }
+
+    if (options.issue !== null && command !== "architecture-review-sag") {
+      reportOperator("--issue solo se permite con architecture-review-sag");
+      return 1;
+    }
+
+    if (command === "architecture-review-sag") {
+      if (options.hu !== null && options.issue !== null) {
+        reportOperator("architecture-review-sag no permite combinar --hu y --issue");
+        return 1;
+      }
+      if (options.hu === null && options.issue === null) {
+        reportOperator("architecture-review-sag requiere --hu <id> o --issue <id>");
+        return 1;
+      }
+      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
+        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
+        return 1;
+      }
+      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+        reportOperator("architecture-review-sag no permite --session, --branch ni --base-branch");
+        return 1;
+      }
+      return this.runArchitectureReview(options);
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
@@ -608,9 +640,50 @@ export class LazyWorkflowCli {
     }
   }
 
+  private async runArchitectureReview(options: CliOptions): Promise<number> {
+    if (!this.sagNormsService.loadArchitectureReview) {
+      reportOperator("lazy-workflow: el servicio SAG no soporta architecture-review-sag");
+      return 1;
+    }
+    try {
+      const scope = options.hu !== null
+        ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
+        : { tracker: "github", issue: options.issue };
+      const context = await this.sagNormsService.loadArchitectureReview(options.workingDirectory);
+      const prompt = [
+        await readPrompt("architecture-review-sag"),
+        `Selected workflow: architecture-review-sag`,
+        `Review scope: ${JSON.stringify(scope)}`,
+        this.formatArchitectureReviewContext(context),
+        `The working directory is ${options.workingDirectory}`,
+        "Supplemental operator request (non-authoritative):",
+        options.prompt,
+      ].join("\n");
+      const execution = await this.openCodeService.run({ ...options, prompt, session: null }, options.hu !== null);
+      let result = execution.result;
+      if (execution.azureLoginRequired && options.hu !== null) {
+        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        await this.huInfoService.waitForAccess(options.hu);
+        result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
+      }
+      console.log(JSON.stringify(result, null, 2));
+      return execution.failed ? 1 : 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`);
+      return 1;
+    }
+  }
+
   private formatSagContext(context: SagNormsContext): string {
     return [
       "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
+      JSON.stringify(context, null, 2),
+    ].join("\n");
+  }
+
+  private formatArchitectureReviewContext(context: SagArchitectureReviewContext): string {
+    return [
+      "SAG architecture review context (traceable retrieval metadata; read numbered norms and guidance from the listed sources):",
       JSON.stringify(context, null, 2),
     ].join("\n");
   }

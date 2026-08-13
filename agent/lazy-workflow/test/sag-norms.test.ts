@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import { RemoteSagNormSource, SagNormsService, type SagNormSource } from "../src/sag/sag-norms-service.ts";
+import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import type { OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 
@@ -335,6 +335,145 @@ test("--normas-sag no cambia el flujo code y se rechaza antes de servicios", asy
     { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
   ).run(["code", "--normas-sag"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+});
+
+test("architecture-review selecciona normas y guidance con familias explicitas", async () => {
+  const directory = await config("api", {
+    cambio: "contract-change",
+    artefactos: ["source", "consul", "openshift"],
+    capacidades: ["server-auth", "user-session", "cache", "observability"],
+    entorno: "dev",
+  });
+  try {
+    const context = await new SagNormsService({
+      load: async (paths) => {
+        expect(paths).toEqual([
+          "/estandares/comunes.md",
+          "/estandares/api.md",
+          "/estandares/api-adonis-patrones.md",
+          "/estandares/integraciones.md",
+          "/estandares/pull-requests.md",
+          "/estandares/revision.md",
+          "/core/agents/arquitecto-sag.md",
+        ]);
+        return {
+          commit: "review-commit",
+          files: {
+            "/estandares/comunes.md": "com-C1",
+            "/estandares/api.md": "api-R1",
+            "/estandares/api-adonis-patrones.md": "api-R9",
+            "/estandares/integraciones.md": "int-R1",
+            "/estandares/pull-requests.md": "pr-R1",
+            "/estandares/revision.md": "review guidance",
+            "/core/agents/arquitecto-sag.md": "architect guidance",
+          },
+        };
+      },
+    }).loadArchitectureReview(directory);
+
+    expect(context.phase).toBe("architecture-review");
+    expect(context.commit).toBe("review-commit");
+    expect(context.selectedRules.every(({ classification }) => classification === "N")).toBeTrue();
+    expect(context.selectedRules.map(({ ruleId }) => ruleId)).toEqual([
+      "com-C1", "api-R1", "api-R9", "int-R1", "pr-R1",
+    ]);
+    expect(context.guidance.every(({ classification }) => classification === "W")).toBeTrue();
+    expect(context.reviewFamilies.filter(({ applicability }) => applicability === "applicable").map(({ family }) => family)).toEqual([
+      "boundaries", "contracts", "auth", "session", "cache", "consul", "observability", "deployment-topology",
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("architecture-review rechaza source SAG inaccesible antes de OpenCode", async () => {
+  const directory = await config();
+  let openCodeCalls = 0;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not use planning"); }, loadArchitectureReview: async () => { throw new Error("source unavailable"); } },
+    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(openCodeCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("architecture-review GitHub usa un Issue explicito y no toca Azure", async () => {
+  const directory = await config();
+  let azureCalls = 0;
+  let received: OpenCodeRunOptions | null = null;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-architecture-review",
+    part: { type: "text", text: "clean review" },
+  }));
+  const context: SagArchitectureReviewContext = {
+    phase: "architecture-review",
+    sourceRepository: "https://example.test/sag",
+    branch: "master",
+    commit: "review-commit",
+    component: "api",
+    explicitFacts: { changeKind: "feature", artifacts: ["source"], capabilities: null, significantChange: null, environment: null },
+    reviewFamilies: [{ family: "boundaries", applicability: "needs-decision", selectedBecause: "scope" }],
+    selectedRules: [{ classification: "N", applicability: "applicable", ruleId: "com-C1", source: "https://example.test/com-C1", commit: "review-commit", selectedBecause: "scope" }],
+    guidance: [{ classification: "W", path: "/core/agents/arquitecto-sag.md", source: "https://example.test/architect", commit: "review-commit", selectedBecause: "guidance" }],
+    needsDecision: ["boundaries: requiere decidir aplicabilidad por hechos de alcance"],
+  };
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); }, waitForAccess: async () => { azureCalls += 1; } },
+      {
+        run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
+        resume: async () => { throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => context },
+    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory, "--prompt", "review this Issue"]);
+
+    expect(code).toBe(0);
+    expect(azureCalls).toBe(0);
+    expect(received?.prompt).toContain('"issue":154');
+    expect(received?.prompt).toContain("/to-spec");
+    expect(received?.prompt).toContain("do not modify source code");
+    expect(received?.prompt).toContain('"commit": "review-commit"');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  ["missing scope", ["architecture-review-sag"]],
+  ["conflicting scope", ["architecture-review-sag", "--hu", "23438", "--issue", "154"]],
+  ["invalid Issue", ["architecture-review-sag", "--issue", "abc"]],
+] as const)("architecture-review rejects %s before services", async (_name, args) => {
+  let calls = 0;
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => { calls += 1; } },
+    { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadArchitectureReview: async () => { calls += 1; throw new Error("must not load"); } },
+  ).run([...args, "--working-directory", root]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);

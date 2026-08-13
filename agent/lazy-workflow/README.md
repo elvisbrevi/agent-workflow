@@ -12,6 +12,8 @@ When installed globally by `install.sh --all-global` or
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
 lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
+lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
+lazy-workflow architecture-review-sag --hu 23438 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
@@ -58,6 +60,14 @@ source or invalid configuration stops before OpenCode. Plain `plan` does not
 access SAG sources. If the canonical source requires authentication, provide
 `AZURE_DEVOPS_EXT_PAT`; its value is used only in the request Authorization
 header and is never persisted or sent to OpenCode.
+
+`architecture-review-sag` always loads the canonical SAG `master` branch and
+requires exactly one explicit `--issue` or `--hu` plus `.sag/config.json`. It
+reviews architecture without changing the reviewed code. Numbered norms stay
+separate from procedural guidance; findings are synthesized and published as
+corrective tracker work with `/to-spec` and `/to-tickets` semantics. A clean
+review publishes nothing, and the command never deploys or requires another
+SAG workflow.
 
 ## Azure HU workflows
 
