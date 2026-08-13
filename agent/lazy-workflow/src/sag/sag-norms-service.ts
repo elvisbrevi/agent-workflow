@@ -4,6 +4,15 @@ export const CANONICAL_SAG_REPOSITORY_URL = "https://dev.azure.com/Subdepartamen
 
 const API_URL = "https://dev.azure.com/SubdepartamentoSolucionesTI/Secci%C3%B3n%20Desarrollo/_apis/git/repositories/sag.desarrollo.ia.rag";
 const COMPONENTS = ["api", "bff", "nextjs"] as const;
+const COMPONENT_PATHS: Record<SagComponent, readonly [string, string]> = {
+  api: ["/estandares/api.md", "/estandares/api-adonis-patrones.md"],
+  bff: ["/estandares/bff.md", "/estandares/bff-patrones.md"],
+  nextjs: ["/estandares/nextjs.md", "/estandares/nextjs-patrones.md"],
+};
+const CHANGE_KINDS = ["new-component", "feature", "bugfix", "contract-change", "migration", "infrastructure"];
+const ARTIFACTS = ["work-item", "source", "test", "config", "secret", "pr", "pipeline", "release", "consul", "database", "openshift", "document"];
+const CAPABILITIES = ["database", "admin-endpoints", "server-auth", "user-session", "permissions", "forms", "realtime", "document-processing", "sonar"];
+const ENVIRONMENTS = ["none", "dev", "test", "qa"];
 const NORMATIVE_PATHS = {
   common: "/estandares/comunes.md",
   tracker: "/estandares/seguimiento.md",
@@ -35,6 +44,7 @@ export interface SagNormsContext {
     artifacts: string[] | null;
     capabilities: string[] | null;
     significantChange: boolean | null;
+    environment: string;
   };
   selectedRules: SagNormSelection[];
   needsDecision: string[];
@@ -133,14 +143,33 @@ async function readConfig(workingDirectory: string): Promise<{
   const artifacts = readAlias(["artifacts", "artefactos"]);
   const capabilities = readAlias(["capabilities", "capacidades"]);
   const significantChange = readAlias(["significantChange", "cambioSignificativo"]);
+  const environment = readAlias(["environment", "entorno"]);
+  const normalizeValue = (value: unknown, allowed: string[], name: string): string | null => {
+    if (value === undefined) return null;
+    if (typeof value !== "string" || !allowed.includes(value)) {
+      needsDecision.push(`${name}: contiene un valor desconocido`);
+      return null;
+    }
+    return value;
+  };
+  const normalizeList = (value: unknown, allowed: string[], name: string): string[] | null => {
+    if (value === undefined) return null;
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return null;
+    if (value.some((item) => !allowed.includes(item))) {
+      needsDecision.push(`${name}: contiene valores desconocidos`);
+      return null;
+    }
+    return value;
+  };
   return {
     component: readComponent(value),
     needsDecision,
     explicitFacts: {
-      changeKind: typeof changeKind === "string" ? changeKind : null,
-      artifacts: Array.isArray(artifacts) ? artifacts as string[] : null,
-      capabilities: Array.isArray(capabilities) ? capabilities as string[] : null,
+      changeKind: normalizeValue(changeKind, CHANGE_KINDS, "change-kind"),
+      artifacts: normalizeList(artifacts, ARTIFACTS, "artifacts"),
+      capabilities: normalizeList(capabilities, CAPABILITIES, "capabilities"),
       significantChange: typeof significantChange === "boolean" ? significantChange : null,
+      environment: normalizeValue(environment, ENVIRONMENTS, "environment") ?? "none",
     },
   };
 }
@@ -183,7 +212,7 @@ export class SagNormsService {
 
   async loadPlanning(workingDirectory: string): Promise<SagNormsContext> {
     const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
-    const componentPaths = [`/estandares/${component}.md`, `/estandares/${component}-patrones.md`];
+    const componentPaths = COMPONENT_PATHS[component];
     const optionalPaths = [
       ...(explicitFacts.significantChange === true ? [NORMATIVE_PATHS.documentation] : []),
       ...(explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret")
