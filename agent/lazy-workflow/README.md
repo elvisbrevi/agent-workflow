@@ -33,6 +33,7 @@ GitHub-only scope:
 ```bash
 bun run main.ts plan --prompt "plan the requested change" \
   --working-directory /path/to/repository
+bun run main.ts plan --normas-sag --working-directory /path/to/repository
 bun run main.ts code --working-directory /path/to/repository
 ```
 
@@ -47,6 +48,14 @@ delivers exactly one eligible issue in a fresh OpenCode session, closes that
 session after `TICKET_COMPLETED`, and repeats. A final fresh session returns
 `QUEUE_EMPTY` and stops the command. `WORKFLOW_STEP_FINISHED` closes every
 provider session. There is no GitHub checkpoint or coordinator adapter.
+
+`plan --normas-sag` is opt-in. It reads the canonical SAG `master` branch and
+requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
+`nextjs`; it never infers the component from source layout. OpenCode receives
+the resolved commit, stable normative rule IDs, source URLs, selection reasons,
+and explicit `needsDecision` values for unknown applicability. An unavailable
+source or invalid configuration stops before OpenCode. Plain `plan` does not
+access SAG sources.
 
 ## Azure HU workflows
 
