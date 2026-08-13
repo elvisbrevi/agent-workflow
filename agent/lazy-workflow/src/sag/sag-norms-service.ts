@@ -219,12 +219,10 @@ export class SagNormsService {
     const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
     const componentPaths = COMPONENT_PATHS[component];
     const optionalPaths = [
-      ...(explicitFacts.significantChange === true ? [NORMATIVE_PATHS.documentation] : []),
-      ...(explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret")
-        ? [NORMATIVE_PATHS.integrations] : []),
-      ...(explicitFacts.artifacts?.includes("document") || explicitFacts.capabilities?.includes("document-processing")
-        ? [NORMATIVE_PATHS.extraction] : []),
-      ...(explicitFacts.capabilities?.includes("sonar") ? [NORMATIVE_PATHS.sonar] : []),
+      NORMATIVE_PATHS.documentation,
+      NORMATIVE_PATHS.integrations,
+      NORMATIVE_PATHS.extraction,
+      NORMATIVE_PATHS.sonar,
     ];
     const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.tracker, ...optionalPaths];
     const snapshot = await this.source.load(paths);
@@ -248,16 +246,33 @@ export class SagNormsService {
           : path === NORMATIVE_PATHS.extraction ? "ext" : "sonar";
       const ids = ruleIds(snapshot.files[path] ?? "", prefix);
       if (ids.length === 0) throw new Error(`la fuente SAG no contiene normas para ${path}`);
+      const applicable = path === NORMATIVE_PATHS.documentation
+        ? explicitFacts.significantChange === true && explicitFacts.environment !== null
+        : path === NORMATIVE_PATHS.integrations
+          ? explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret") === true && explicitFacts.environment !== null
+          : path === NORMATIVE_PATHS.extraction
+            ? (explicitFacts.artifacts?.includes("document") || explicitFacts.capabilities?.includes("document-processing")) === true && explicitFacts.environment !== null
+            : explicitFacts.capabilities?.includes("sonar") === true && explicitFacts.environment !== null;
+      const unknown = path === NORMATIVE_PATHS.documentation
+        ? explicitFacts.significantChange === null || explicitFacts.environment === null
+        : path === NORMATIVE_PATHS.integrations
+          ? explicitFacts.artifacts === null || explicitFacts.environment === null
+          : path === NORMATIVE_PATHS.extraction
+            ? explicitFacts.artifacts === null || explicitFacts.capabilities === null || explicitFacts.environment === null
+            : explicitFacts.capabilities === null || explicitFacts.environment === null;
+      if (unknown) {
+        conditionalDecisions.push(...ids.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por hechos de alcance`));
+      }
       return this.select(
         ids,
         path,
         snapshot.commit,
-        "phase=planning; explicit .sag/config.json facts make this family applicable",
-        "applicable",
+        applicable
+          ? "phase=planning; explicit .sag/config.json facts make this family applicable"
+          : "phase=planning; family applicability needs decision",
+        applicable ? "applicable" : "needs-decision",
       );
     });
-    const componentConditionalApplicability = explicitFacts.artifacts !== null && explicitFacts.capabilities !== null;
-    const trackerApplicability = explicitFacts.changeKind !== null;
 
     const selectedRules = [
       ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule", "applicable"),
@@ -272,20 +287,16 @@ export class SagNormsService {
         ruleIds(snapshot.files[componentPaths[1]!] ?? "", component),
         componentPaths[1]!,
         snapshot.commit,
-        componentConditionalApplicability
-          ? `phase=planning; tipo=${component}; artifact and capability facts are explicit`
-          : `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
-        componentConditionalApplicability ? "applicable" : "needs-decision",
+        `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
+        "needs-decision",
       ),
       ...selectedOptionalRules,
       ...this.select(
         tracker,
         NORMATIVE_PATHS.tracker,
         snapshot.commit,
-        trackerApplicability
-          ? "phase=planning; change-kind is explicit"
-          : "phase=planning; rule-specific change-kind applicability needs decision",
-        trackerApplicability ? "applicable" : "needs-decision",
+        "phase=planning; rule-specific change-kind applicability needs decision",
+        "needs-decision",
       ),
     ];
     return {
