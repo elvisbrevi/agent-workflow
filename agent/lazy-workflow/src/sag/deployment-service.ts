@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
-export type DeploymentEnvironment = "dev";
+export type DeploymentEnvironment = "dev" | "test" | "qa";
+const DEPLOYMENT_ENVIRONMENTS: readonly DeploymentEnvironment[] = ["dev", "test", "qa"];
 
 export interface DeploymentScope {
   tracker: "azure" | "github";
@@ -123,9 +124,11 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   }
   const adapter = adapterValue.command;
   if (pipeline.version !== "v7") throw new Error("deploy-sag requiere pipeline v7 explicito");
-  if (target.environment !== "dev" || isProductionAlias(requiredText(target.id, "deployment.route.target.id"))) {
-    throw new Error("deploy-sag solo permite el destino DEV");
+  const targetId = requiredText(target.id, "deployment.route.target.id");
+  if (typeof target.environment !== "string" || !DEPLOYMENT_ENVIRONMENTS.includes(target.environment as DeploymentEnvironment)) {
+    throw new Error("deploy-sag requiere un destino DEV, TEST o QA explicito");
   }
+  if (isProductionAlias(targetId)) throw new Error("deploy-sag no permite destinos PROD ni aliases de produccion");
   return {
     authentication: "operator",
     adapter: {
@@ -146,8 +149,8 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
         evidence: requiredText(consul.evidence, "deployment.route.consul.evidence"),
       },
       target: {
-        id: requiredText(target.id, "deployment.route.target.id"),
-        environment: "dev",
+        id: targetId,
+        environment: target.environment as DeploymentEnvironment,
         evidence: requiredText(target.evidence, "deployment.route.target.evidence"),
       },
     },
@@ -155,7 +158,7 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
 }
 
 function routeKey(route: DeploymentRoute): string {
-  return JSON.stringify([route.repository, route.baseBranch, route.pipeline.id, route.releaseDefinition.id, route.openShift.id, route.consul.deployKey, route.target.id]);
+  return JSON.stringify([route.repository, route.baseBranch, route.pipeline.id, route.releaseDefinition.id, route.openShift.id, route.consul.deployKey, route.target.environment, route.target.id]);
 }
 
 function matchesConfiguredRoute(config: DeploymentProjectConfig, route: DeploymentRoute): boolean {
@@ -182,8 +185,8 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.consul.deployKey.trim() || route.consul.requiredVariables.length === 0 || !route.consul.evidence.trim()) {
     throw new Error("la ruta no tiene Consul verificable");
   }
-  if (!route.target.id.trim() || isProductionAlias(route.target.id) || route.target.environment !== "dev" || !route.target.evidence.trim()) {
-    throw new Error("la ruta no tiene un destino DEV verificable");
+  if (!route.target.id.trim() || isProductionAlias(route.target.id) || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
+    throw new Error("la ruta no tiene un destino no productivo verificable");
   }
 }
 
@@ -241,7 +244,7 @@ export class ProcessDeploymentSystems implements DeploymentSystems {
   async verify(config: DeploymentProjectConfig, route: DeploymentRoute, record: DeploymentRecord): Promise<VerifiedDeployment> {
     const response = await this.invoke(config, "verify", { route, record });
     if (!isRecord(response) || typeof response.id !== "string" || response.status !== "succeeded"
-      || response.environment !== "dev" || typeof response.target !== "string" || typeof response.routeId !== "string"
+      || response.environment !== route.target.environment || typeof response.target !== "string" || typeof response.routeId !== "string"
       || !isRecord(response.evidence)
       || typeof response.evidence.openShift !== "string" || typeof response.evidence.consul !== "string" || typeof response.evidence.target !== "string") {
       throw new Error("adaptador de deployment devolvio un estado no verificable");
@@ -249,7 +252,7 @@ export class ProcessDeploymentSystems implements DeploymentSystems {
     return {
       id: response.id,
       status: "succeeded",
-      environment: "dev",
+      environment: route.target.environment,
       target: response.target,
       routeId: response.routeId,
       evidence: {
@@ -265,7 +268,7 @@ export class SagDeploymentService {
   constructor(private readonly systems: DeploymentSystems | null = null) {}
 
   async deploy(scope: DeploymentScope, workingDirectory: string, environment: DeploymentEnvironment = "dev"): Promise<DeploymentResult> {
-    if (environment !== "dev") throw new Error("deploy-sag solo permite DEV en esta version");
+    if (!DEPLOYMENT_ENVIRONMENTS.includes(environment)) throw new Error("deploy-sag requiere DEV, TEST o QA");
     let raw: unknown;
     try {
       raw = JSON.parse(await Bun.file(resolve(workingDirectory, ".sag/config.json")).text());
@@ -273,6 +276,9 @@ export class SagDeploymentService {
       throw new Error(`no se pudo leer .sag/config.json (${error instanceof Error ? error.message : String(error)})`);
     }
     const config = parseConfig(raw);
+    if (config.route.target.environment !== environment) {
+      throw new Error(`la ruta configurada no coincide con el entorno ${environment.toUpperCase()}`);
+    }
     const systems = this.systems ?? new ProcessDeploymentSystems(workingDirectory);
     const routes = await systems.discoverRoutes(config, scope);
     if (routes.length !== 1) throw new Error(`deploy-sag requiere una ruta unica; se encontraron ${routes.length}`);
@@ -282,16 +288,16 @@ export class SagDeploymentService {
     const idempotencyKey = `lazy-workflow:${scope.tracker}:${scope.id}:${routeKey(route)}`;
     const reconciliation = await systems.reconcile(config, route, idempotencyKey);
     const deployment = await systems.verify(config, route, reconciliation.record);
-    if (deployment.id !== reconciliation.record.id || deployment.status !== "succeeded" || deployment.environment !== "dev"
+    if (deployment.id !== reconciliation.record.id || deployment.status !== "succeeded" || deployment.environment !== environment
       || deployment.target !== route.target.id || deployment.routeId !== route.id
       || !deployment.evidence
       || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"
       || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
-      throw new Error("el despliegue no tiene un estado DEV verificado");
+       throw new Error(`el despliegue no tiene un estado ${environment.toUpperCase()} verificado`);
     }
     return {
       status: "verified",
-      environment: "dev",
+      environment,
       idempotencyKey,
       route,
       deployment,

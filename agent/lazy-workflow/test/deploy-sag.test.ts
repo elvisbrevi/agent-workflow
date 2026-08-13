@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import { DeploymentAuthenticationRequiredError, SagDeploymentService, type DeploymentRoute, type DeploymentSystems } from "../src/sag/deployment-service.ts";
+import { DeploymentAuthenticationRequiredError, SagDeploymentService, type DeploymentEnvironment, type DeploymentRoute, type DeploymentSystems } from "../src/sag/deployment-service.ts";
 import { SagNormsService, type SagDeploymentContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-deploy-${crypto.randomUUID()}`;
@@ -17,8 +17,9 @@ const route: DeploymentRoute = {
   target: { id: "openshift-dev", environment: "dev", evidence: "target-observed" },
 };
 
-const config = async (): Promise<string> => {
+const config = async (environment: DeploymentEnvironment = "dev"): Promise<string> => {
   const directory = `${root}-${crypto.randomUUID()}`;
+  const target = { ...route.target, id: `openshift-${environment}`, environment };
   await mkdir(`${directory}/.sag`, { recursive: true });
   await Bun.write(`${directory}/.sag/config.json`, JSON.stringify({
     tipo: "api",
@@ -32,7 +33,7 @@ const config = async (): Promise<string> => {
         releaseDefinition: route.releaseDefinition,
         openShift: route.openShift,
         consul: route.consul,
-        target: route.target,
+        target,
       },
     },
   }));
@@ -132,6 +133,50 @@ test("deploy-sag ejecuta una ruta unica y verifica el estado externo", async () 
       deployment: { id: "deployment-1", status: "succeeded" },
     });
     expect(calls).toEqual(["discover", "reconcile", "verify"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each(["test", "qa"] as const)("deploy-sag verifica el destino %s", async (environment) => {
+  const directory = await config(environment);
+  const environmentRoute = { ...route, target: { ...route.target, id: `openshift-${environment}`, environment } };
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => [environmentRoute],
+    reconcile: async () => ({ record: { id: `deployment-${environment}`, status: "accepted" }, reconciled: false }),
+    verify: async (_config, _route, record) => ({
+      id: record.id,
+      status: "succeeded",
+      environment,
+      target: environmentRoute.target.id,
+      routeId: environmentRoute.id,
+      evidence: { openShift: "verified", consul: "verified", target: "verified" },
+    }),
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory, environment)).resolves.toMatchObject({
+      status: "verified",
+      environment,
+      deployment: { id: `deployment-${environment}`, environment },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deploy-sag rechaza un destino configurado distinto antes de descubrir rutas", async () => {
+  const directory = await config("qa");
+  let discoveryCalls = 0;
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => { discoveryCalls += 1; return [route]; },
+    reconcile: async () => { throw new Error("must not reconcile"); },
+    verify: async () => { throw new Error("must not verify"); },
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory, "dev")).rejects.toThrow("no coincide con el entorno");
+    expect(discoveryCalls).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -248,6 +293,66 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
   }
 });
 
+test.each(["test", "qa"] as const)("deploy-sag CLI selecciona %s", async (environment) => {
+  const directory = await config(environment);
+  let receivedEnvironment: DeploymentEnvironment | null = null;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      undefined,
+      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      { deploy: async (_scope, _directory, received = "dev") => {
+        receivedEnvironment = received;
+        return { status: "verified", environment, idempotencyKey: "key", route: { ...route, target: { ...route.target, id: `openshift-${environment}`, environment } }, deployment: { id: "deployment-1", status: "succeeded", environment, target: `openshift-${environment}`, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
+      } },
+    ).run(["deploy-sag", "--issue", "157", "--environment", environment, "--working-directory", directory]);
+
+    expect(code).toBe(0);
+    expect(receivedEnvironment as DeploymentEnvironment | null).toBe(environment);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each(["ambiguous", "unverified"] as const)("deploy-sag CLI falla cerrado ante ruta %s", async (failure) => {
+  const directory = await config();
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => failure === "ambiguous" ? [route, { ...route, id: "route-other" }] : [route],
+    reconcile: async () => ({ record: { id: "deployment-1", status: "accepted" }, reconciled: false }),
+    verify: async () => ({ id: "deployment-1", status: "succeeded", environment: "dev", target: failure === "unverified" ? "other-target" : route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }),
+  };
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => errors.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      undefined,
+      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      new SagDeploymentService(systems),
+    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain(failure === "ambiguous" ? "ruta unica" : "estado DEV verificado");
+  } finally {
+    console.error = originalError;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticacion", async () => {
   const directory = await config();
   let attempts = 0;
@@ -278,7 +383,7 @@ test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticaci
   }
 });
 
-test.each(["adapter unavailable", "trigger failed", "verification failed"])("deploy-sag propaga el fallo de %s sin filtrar secretos", async (failure) => {
+test.each(["adapter unavailable", "ambiguous route", "trigger failed", "verification failed"])("deploy-sag propaga el fallo de %s sin filtrar secretos", async (failure) => {
   const directory = await config();
   const errors: string[] = [];
   const originalError = console.error;
@@ -314,7 +419,7 @@ test.each([
   ["production", ["deploy-sag", "--issue", "157", "--environment", "production"]],
   ["inline production", ["deploy-sag", "--issue", "157", "--environment=prod"]],
   ["duplicate environment", ["deploy-sag", "--issue", "157", "--environment", "dev", "--environment", "prod"]],
-  ["unsupported environment", ["deploy-sag", "--issue", "157", "--environment", "qa"]],
+  ["unsupported environment", ["deploy-sag", "--issue", "157", "--environment", "staging"]],
 ] as const)("deploy-sag rechaza %s antes de servicios", async (_name, args) => {
   let calls = 0;
   const code = await new LazyWorkflowCli(
