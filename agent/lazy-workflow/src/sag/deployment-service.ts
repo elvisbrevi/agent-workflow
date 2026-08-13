@@ -88,8 +88,11 @@ function requiredTextList(value: unknown, name: string): string[] {
 }
 
 function isProductionAlias(value: string): boolean {
-  const normalized = value.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
-  return /(^|[-_/:.= ?&#])(?:prod|production|prd|live)(?=$|[-_/:.= ?&#0-9])/i.test(normalized);
+  const normalized = value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+  return /(^|[-_/:.= ?&#])(?:prod|production|prd|live|primary|online)(?=$|[-_/:.= ?&#0-9])/i.test(normalized);
 }
 
 function rejectProductionIdentity(value: string, name: string): void {
