@@ -10,6 +10,7 @@ import {
   type TicketAttachment,
   type IntegratedPullRequest,
 } from "./ticket-info-service.ts";
+import type { InfrastructurePublication } from "../sag/infrastructure-service.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
@@ -111,6 +112,7 @@ export interface AutocodeAzureService {
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence(ticket: number, filePath: string): Promise<unknown>;
   waitForAccess(hu: number): Promise<void>;
+  publishInfrastructureFindings(hu: number, specification: { title: string; body: string }, tickets: Array<{ title: string; body: string }>): Promise<InfrastructurePublication>;
 }
 
 interface WorkItem {
@@ -238,6 +240,12 @@ function hasArtifactLink(item: WorkItem, expectedDecodedUri: string): boolean {
   );
 }
 
+function createdWorkItemId(output: string): number {
+  const id = (JSON.parse(output) as { id?: unknown }).id;
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) throw new Error("Azure no devolvio el work item creado");
+  return id;
+}
+
 export class AzureAutocodeService implements AutocodeAzureService {
   private readonly ticketInfoService: AzureTicketInfoService;
 
@@ -260,6 +268,37 @@ export class AzureAutocodeService implements AutocodeAzureService {
       assignedTo: item.fields?.["System.AssignedTo"],
       desarrollador: field(item, "Custom.Desarrollador1"),
     } satisfies HuInfoData);
+  }
+
+  async publishInfrastructureFindings(
+    hu: number,
+    specification: { title: string; body: string },
+    tickets: Array<{ title: string; body: string }>,
+  ): Promise<InfrastructurePublication> {
+    const parent = await this.getHuInfo(hu);
+    if (!parent.project?.trim()) throw new Error(`La HU ${hu} no tiene proyecto Azure verificable`);
+    const create = async (title: string, body: string): Promise<number> => {
+      const output = await this.az([
+        "boards", "work-item", "create", "--type", "Task", "--title", title,
+        "--fields", `System.Description=${body}`,
+        "--organization", ORGANIZATION, "--project", parent.project!, "--output", "json",
+      ]);
+      const id = createdWorkItemId(output);
+      await this.az([
+        "boards", "work-item", "relation", "add", "--id", `${id}`,
+        "--relation-type", "parent", "--target-id", `${hu}`,
+        "--organization", ORGANIZATION, "--output", "json",
+      ]);
+      const verified = await show(id, true, this.az);
+      if (!verified.relations?.some(({ rel, url }) => rel === "System.LinkTypes.Hierarchy-Reverse" && relationId(url) === hu)) {
+        throw new Error(`No se pudo verificar la relacion del work item ${id} con la HU ${hu}`);
+      }
+      return id;
+    };
+    const specificationId = await create(specification.title, `${specification.body}\n\nSource HU: ${hu}`);
+    const ticketIds: number[] = [];
+    for (const ticket of tickets) ticketIds.push(await create(ticket.title, `${ticket.body}\n\nSource HU: ${hu}\nSpecification: ${specificationId}`));
+    return { specification: specificationId, tickets: ticketIds };
   }
 
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
