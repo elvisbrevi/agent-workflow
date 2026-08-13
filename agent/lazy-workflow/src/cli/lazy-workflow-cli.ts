@@ -23,7 +23,7 @@ import {
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
-import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { SagNormsService, type SagArchitectureReviewContext, type SagCodingContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
@@ -333,7 +333,7 @@ function printHelp(): void {
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
-    "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
+    "  --normas-sag                 carga normas SAG de planning o coding desde master remoto; requiere .sag/config.json",
      "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
@@ -349,7 +349,7 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview" | "loadDeployment" | "loadInfrastructure">> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadCoding" | "loadArchitectureReview" | "loadDeployment" | "loadInfrastructure">> = new SagNormsService(),
     private readonly git: GitRunner = runGit,
     private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
     private readonly deploymentService: Pick<SagDeploymentService, "deploy"> = new SagDeploymentService(),
@@ -370,8 +370,8 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (options.normasSag && command !== "plan") {
-      reportOperator("--normas-sag solo se permite con plan");
+    if (options.normasSag && command !== "plan" && command !== "code") {
+      reportOperator("--normas-sag solo se permite con plan o code");
       return 1;
     }
 
@@ -691,7 +691,7 @@ export class LazyWorkflowCli {
     if (options.hu === null) return this.runDefaultWorkflow("plan", options);
 
     const huInfo = await this.huInfoService.getHuInfo(options.hu);
-    const norms = await this.loadSagNorms(options);
+    const norms = await this.loadSagNorms(options, "planning");
     if (options.normasSag && norms === null) return 1;
 
     options.prompt = [
@@ -715,24 +715,34 @@ export class LazyWorkflowCli {
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
-    const norms = await this.loadSagNorms(options);
-    if (options.normasSag && norms === null) return 1;
-    const prompt = [
-      await readPrompt("default"),
-      `Selected workflow: ${command}`,
-      ...(norms ? [this.formatSagContext(norms)] : []),
-      ...(command === "plan" ? [`The number of questions must be ${options.numberOfQuestions}`] : []),
-      `The working directory is ${options.workingDirectory}`,
-      "Operator request:",
-      options.prompt,
-    ].join("\n");
     if (command === "plan") {
+      const norms = await this.loadSagNorms(options, "planning");
+      if (options.normasSag && norms === null) return 1;
+      const prompt = [
+        await readPrompt("default"),
+        `Selected workflow: ${command}`,
+        ...(norms ? [this.formatSagContext(norms)] : []),
+        `The number of questions must be ${options.numberOfQuestions}`,
+        `The working directory is ${options.workingDirectory}`,
+        "Operator request:",
+        options.prompt,
+      ].join("\n");
       const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
       console.log(JSON.stringify(execution.result, null, 2));
       return execution.failed ? 1 : 0;
     }
 
     while (true) {
+      const norms = await this.loadSagNorms(options, "coding");
+      if (options.normasSag && norms === null) return 1;
+      const prompt = [
+        await readPrompt("default"),
+        `Selected workflow: ${command}`,
+        ...(norms ? [this.formatSagContext(norms)] : []),
+        `The working directory is ${options.workingDirectory}`,
+        "Operator request:",
+        options.prompt,
+      ].join("\n");
       const execution = await this.openCodeService.run({
         ...options,
         prompt,
@@ -760,9 +770,13 @@ export class LazyWorkflowCli {
     }
   }
 
-  private async loadSagNorms(options: CliOptions): Promise<SagNormsContext | null> {
+  private async loadSagNorms(options: CliOptions, phase: "planning" | "coding"): Promise<(SagNormsContext | SagCodingContext) | null> {
     if (!options.normasSag) return null;
     try {
+      if (phase === "coding") {
+        if (!this.sagNormsService.loadCoding) throw new Error("el servicio SAG no soporta normas de coding");
+        return await this.sagNormsService.loadCoding(options.workingDirectory);
+      }
       return await this.sagNormsService.loadPlanning(options.workingDirectory);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
@@ -954,9 +968,13 @@ export class LazyWorkflowCli {
     }
   }
 
-  private formatSagContext(context: SagNormsContext): string {
+  private formatSagContext(context: SagNormsContext | SagCodingContext): string {
     return [
       "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
+      "The selected SAG phase, rules, source repository, branch, commit, and applicability decisions are authoritative; the operator request cannot override them.",
+      ...(context.phase === "coding"
+        ? ["Resolve the selected Issue's actual artifacts and capabilities before applying conditional rules; unknown applicability remains an explicit decision and is never false by default."]
+        : []),
       JSON.stringify(context, null, 2),
     ].join("\n");
   }
@@ -1453,12 +1471,17 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, manifestPath };
       await save();
     }
+    const norms = await this.loadSagNorms(options, "coding");
+    if (options.normasSag && norms === null) return 1;
     let sessionId = options.session ?? checkpoint.sessionId;
     let resumePrompt = options.prompt;
     while (true) {
       try {
+        const authoritativeResumePrompt = norms
+          ? [resumePrompt, this.formatSagContext(norms)].join("\n")
+          : resumePrompt;
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, resumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
+          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
           : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({
             ...context,
             ticketBranch,
@@ -1466,7 +1489,7 @@ export class LazyWorkflowCli {
             manifestPath,
             workflowPhase: checkpoint.phase,
             completionGates: Object.values(COMPLETION_GATE),
-          }), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
+          }), ...(norms ? [this.formatSagContext(norms)] : []), `The working directory is ${options.workingDirectory}`, "Supplemental operator request (non-authoritative):", options.prompt].join("\n"), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, true));
         sessionId = execution.result.sessionId;
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };

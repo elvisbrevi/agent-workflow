@@ -19,6 +19,7 @@ const NORMATIVE_PATHS = {
   documentation: "/estandares/documentacion.md",
   integrations: "/estandares/integraciones.md",
   extraction: "/estandares/extraccion-documentos.md",
+  pullRequests: "/estandares/pull-requests.md",
   sonar: "/estandares/sonarqube.md",
 } as const;
 const ARCHITECTURE_GUIDANCE_PATHS = [
@@ -75,6 +76,17 @@ export interface SagNormsContext {
     significantChange: boolean | null;
     environment: string | null;
   };
+  selectedRules: SagNormSelection[];
+  needsDecision: string[];
+}
+
+export interface SagCodingContext {
+  phase: "coding";
+  sourceRepository: string;
+  branch: "master";
+  commit: string;
+  component: SagComponent;
+  explicitFacts: SagNormsContext["explicitFacts"];
   selectedRules: SagNormSelection[];
   needsDecision: string[];
 }
@@ -394,6 +406,97 @@ export class SagNormsService {
       explicitFacts,
       selectedRules,
       needsDecision: [...needsDecision, ...conditionalDecisions],
+    };
+  }
+
+  async loadCoding(workingDirectory: string): Promise<SagCodingContext> {
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
+    const componentPaths = COMPONENT_PATHS[component];
+    const paths = [
+      NORMATIVE_PATHS.common,
+      ...componentPaths,
+      NORMATIVE_PATHS.tracker,
+      NORMATIVE_PATHS.documentation,
+      NORMATIVE_PATHS.integrations,
+      NORMATIVE_PATHS.extraction,
+      NORMATIVE_PATHS.pullRequests,
+      NORMATIVE_PATHS.sonar,
+    ];
+    const snapshot = await this.source.load(paths);
+    if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
+
+    const content = (path: string): string => snapshot.files[path] ?? "";
+    const ids = (path: string, prefix: string): string[] => ruleIds(content(path), prefix);
+    const common = ids(NORMATIVE_PATHS.common, "com").filter((ruleId) => /^com-C[1-5]$/.test(ruleId));
+    const componentStructure = ids(componentPaths[0]!, component);
+    if (common.length < 5) throw new Error("la fuente SAG no contiene las normas comunes com-C1 a com-C5");
+    if (componentStructure.length === 0) throw new Error(`la fuente SAG no contiene normas para ${component}`);
+
+    const decisions = [...needsDecision];
+    const selectFamily = (
+      path: string,
+      prefix: string,
+      applies: boolean | null,
+      selectedBecause: string,
+    ): SagNormSelection[] => {
+      const familyRules = ids(path, prefix);
+      if (familyRules.length === 0 && applies !== false) throw new Error(`la fuente SAG no contiene normas para ${path}`);
+      if (applies === false) return [];
+      const applicability: SagNormSelection["applicability"] = applies === true ? "applicable" : "needs-decision";
+      if (applies === null) decisions.push(...familyRules.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`));
+      return this.select(familyRules, path, snapshot.commit, selectedBecause, applicability);
+    };
+    const includesFact = (values: string[] | null, names: string[]): boolean | null =>
+      values === null ? null : values.some((value) => names.includes(value));
+    const conditionalFamily = (path: string, prefix: string, applies: boolean | null): SagNormSelection[] =>
+      selectFamily(path, prefix, applies, `phase=coding; tipo=${component}; explicit artifact and capability facts select this family`);
+    const integration = includesFact(explicitFacts.artifacts, ["config", "secret", "consul"]);
+    const document = includesFact(explicitFacts.artifacts, ["document"]);
+    const documentProcessing = includesFact(explicitFacts.capabilities, ["document-processing"]);
+    const pullRequest = includesFact(explicitFacts.artifacts, ["pr", "pipeline", "release", "openshift"]);
+    const sonar = includesFact(explicitFacts.capabilities, ["sonar"]);
+    const tracker = explicitFacts.changeKind === null ? null : true;
+    const extraction = document === true || documentProcessing === true
+      ? true
+      : document === false && documentProcessing === false ? false : null;
+    const patternFamilies = ARCHITECTURE_FAMILIES.map((family) => this.architectureFamily(family, explicitFacts));
+    const patternRules = ids(componentPaths[1]!, component).flatMap((ruleId) => {
+      const applicability = this.ruleFamilyApplicability(
+        content(componentPaths[1]!),
+        ruleId,
+        [...ARCHITECTURE_FAMILIES],
+        patternFamilies,
+      );
+      if (applicability === "not-applicable") return [];
+      if (applicability === "needs-decision") decisions.push(`${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`);
+      return this.select(
+        [ruleId],
+        componentPaths[1]!,
+        snapshot.commit,
+        `phase=coding; tipo=${component}; rule-specific artifact and capability applicability=${applicability}`,
+        applicability,
+      );
+    });
+
+    return {
+      phase: "coding",
+      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      branch: "master",
+      commit: snapshot.commit,
+      component,
+      explicitFacts,
+      selectedRules: [
+        ...this.select(common, NORMATIVE_PATHS.common, snapshot.commit, "phase=coding; common coding and review rules", "applicable"),
+        ...this.select(ids(componentPaths[0]!, component), componentPaths[0]!, snapshot.commit, `phase=coding; tipo=${component} from .sag/config.json`, "applicable"),
+        ...patternRules,
+        ...conditionalFamily(NORMATIVE_PATHS.tracker, "seg", tracker),
+        ...conditionalFamily(NORMATIVE_PATHS.documentation, "doc", explicitFacts.significantChange),
+        ...conditionalFamily(NORMATIVE_PATHS.integrations, "int", integration),
+        ...conditionalFamily(NORMATIVE_PATHS.extraction, "ext", extraction),
+        ...conditionalFamily(NORMATIVE_PATHS.pullRequests, "pr", pullRequest),
+        ...conditionalFamily(NORMATIVE_PATHS.sonar, "sonar", sonar),
+      ],
+      needsDecision: decisions,
     };
   }
 
