@@ -32,6 +32,7 @@ lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory
 lazy-workflow plan --normas-sag --working-directory /path/to/repository
 lazy-workflow code --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
+lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
 lazy-workflow hu-info --hu 23438
@@ -84,6 +85,15 @@ Add `--normas-sag` to `plan` to load planning norms from the remote SAG
 records the resolved commit, source URLs, stable rule IDs, selection reasons,
 and applicability facts that need a decision. Missing or unreadable SAG
 context stops before OpenCode; plain `plan` never reads SAG sources.
+
+`deploy-sag` always loads delivery norms and requires exactly one explicit
+`--issue` or `--hu`. It reads an explicit `deployment` route from
+`.sag/config.json`, requires authenticated external discovery to confirm one
+pipeline v7, Release Definition, repository/base branch, and DEV target, then
+verifies the deployment result. DEV is the default and only supported
+environment in this slice; PROD and every production alias fail before any
+external mutation. Missing authentication, ambiguous routes, or unverifiable
+targets fail closed.
 Remote reads use the public canonical source or `AZURE_DEVOPS_EXT_PAT` when
 the source requires authentication; the token is never placed in prompts or
 logs.
