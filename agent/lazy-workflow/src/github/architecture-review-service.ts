@@ -66,7 +66,7 @@ function parseScope(output: string, issue: number): GitHubIssueScope {
   }
   return {
     number: issue,
-    title: value.title,
+    title: sanitizeTrackerText(value.title),
     body: sanitizeTrackerText(value.body),
     comments: (value.comments ?? []).map(({ body }) => sanitizeTrackerText(body ?? "")),
     state: value.state ?? "",
@@ -96,15 +96,15 @@ export class GitHubArchitectureReviewService implements ArchitectureReviewTracke
     workingDirectory: string,
   ): Promise<ArchitectureReviewPublication> {
     const spec = await this.createIssue(
-      `[Spec] ${specification.title}`,
-      `${specification.body}\n\nSource Issue: #${sourceIssue}`,
+      `[Spec] ${sanitizeTrackerText(specification.title)}`,
+      `${sanitizeTrackerText(specification.body)}\n\nSource Issue: #${sourceIssue}`,
       workingDirectory,
     );
     const publishedTickets: number[] = [];
     for (const ticket of tickets) {
       publishedTickets.push(await this.createIssue(
-        ticket.title,
-        `${ticket.body}\n\nSource Issue: #${sourceIssue}\nSpecification: #${spec}`,
+        sanitizeTrackerText(ticket.title),
+        `${sanitizeTrackerText(ticket.body)}\n\nSource Issue: #${sourceIssue}\nSpecification: #${spec}`,
         workingDirectory,
       ));
     }

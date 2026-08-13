@@ -24,7 +24,7 @@ import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundErro
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
-import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
+import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
@@ -85,6 +85,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence?(ticket: number, filePath: string): Promise<unknown>;
+  publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -708,6 +709,11 @@ export class LazyWorkflowCli {
           review.tickets!,
           options.workingDirectory,
         );
+      } else if (review.status === "findings" && options.hu !== null) {
+        if (!this.huInfoService.publishArchitectureFindings) {
+          throw new Error("el servicio Azure no expone publication verificada para architecture-review-sag");
+        }
+        publication = await this.huInfoService.publishArchitectureFindings(options.hu, review.specification!, review.tickets!);
       }
       console.log(JSON.stringify({
         ...result,

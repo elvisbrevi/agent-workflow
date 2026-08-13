@@ -552,6 +552,43 @@ test("architecture-review Azure usa la HU completa y conserva la ruta del tracke
   }
 });
 
+test("architecture-review Azure rechaza findings sin publication verificable", async () => {
+  const directory = await config();
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses-architecture-azure-findings",
+    part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"findings","summary":"finding","specification":{"title":"Fix","body":"body"},"tickets":[]}' },
+  }));
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => ({ id: 23438 }), waitForAccess: async () => undefined },
+      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+        phase: "architecture-review",
+        sourceRepository: "https://example.test/sag",
+        branch: "master",
+        commit: "review-commit",
+        component: "api",
+        explicitFacts: { changeKind: null, artifacts: null, capabilities: null, significantChange: null, environment: null },
+        reviewFamilies: [],
+        selectedRules: [],
+        guidance: [],
+        needsDecision: [],
+      }) },
+      async () => "",
+      reviewTracker,
+    ).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("architecture-review GitHub publica findings through the tracker boundary", async () => {
   const directory = await config();
   let published = false;
