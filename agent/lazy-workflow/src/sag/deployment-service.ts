@@ -6,6 +6,7 @@ export interface DeploymentScope {
   tracker: "azure" | "github";
   id: number;
   title: string;
+  source?: unknown;
 }
 
 export interface DeploymentProjectConfig {
@@ -18,7 +19,7 @@ export interface DeploymentProjectConfig {
     releaseDefinition: { id: string };
     openShift: { id: string; evidence: string };
     consul: { deployKey: string; requiredVariables: string[]; evidence: string };
-    target: { id: string; environment: DeploymentEnvironment };
+    target: { id: string; environment: DeploymentEnvironment; evidence: string };
   };
 }
 
@@ -30,7 +31,7 @@ export interface DeploymentRoute {
   releaseDefinition: { id: string };
   openShift: { id: string; evidence: string };
   consul: { deployKey: string; requiredVariables: string[]; evidence: string };
-  target: { id: string; environment: DeploymentEnvironment };
+  target: { id: string; environment: DeploymentEnvironment; evidence: string };
 }
 
 export interface DeploymentRecord {
@@ -85,6 +86,10 @@ function requiredTextList(value: unknown, name: string): string[] {
   return value.map((item) => item.trim());
 }
 
+function isProductionAlias(value: string): boolean {
+  return /(^|[-_/:])(?:prod|production|prd)(?:$|[-_/:])/i.test(value);
+}
+
 function parseConfig(value: unknown): DeploymentProjectConfig {
   if (!isRecord(value) || !isRecord(value.deployment)) {
     throw new Error(".sag/config.json requiere deployment para deploy-sag");
@@ -118,7 +123,9 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   }
   const adapter = adapterValue.command;
   if (pipeline.version !== "v7") throw new Error("deploy-sag requiere pipeline v7 explicito");
-  if (target.environment !== "dev") throw new Error("deploy-sag solo permite el destino DEV");
+  if (target.environment !== "dev" || isProductionAlias(requiredText(target.id, "deployment.route.target.id"))) {
+    throw new Error("deploy-sag solo permite el destino DEV");
+  }
   return {
     authentication: "operator",
     adapter: {
@@ -138,7 +145,11 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
         requiredVariables: requiredTextList(consul.requiredVariables, "deployment.route.consul.requiredVariables"),
         evidence: requiredText(consul.evidence, "deployment.route.consul.evidence"),
       },
-      target: { id: requiredText(target.id, "deployment.route.target.id"), environment: "dev" },
+      target: {
+        id: requiredText(target.id, "deployment.route.target.id"),
+        environment: "dev",
+        evidence: requiredText(target.evidence, "deployment.route.target.evidence"),
+      },
     },
   };
 }
@@ -159,7 +170,8 @@ function matchesConfiguredRoute(config: DeploymentProjectConfig, route: Deployme
     && JSON.stringify(route.consul.requiredVariables) === JSON.stringify(config.route.consul.requiredVariables)
     && route.consul.evidence === config.route.consul.evidence
     && route.target.id === config.route.target.id
-    && route.target.environment === config.route.target.environment;
+    && route.target.environment === config.route.target.environment
+    && route.target.evidence === config.route.target.evidence;
 }
 
 function validateRoute(route: DeploymentRoute): void {
@@ -170,7 +182,7 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.consul.deployKey.trim() || route.consul.requiredVariables.length === 0 || !route.consul.evidence.trim()) {
     throw new Error("la ruta no tiene Consul verificable");
   }
-  if (!route.target.id.trim() || route.target.environment !== "dev") {
+  if (!route.target.id.trim() || isProductionAlias(route.target.id) || route.target.environment !== "dev" || !route.target.evidence.trim()) {
     throw new Error("la ruta no tiene un destino DEV verificable");
   }
 }
@@ -270,7 +282,7 @@ export class SagDeploymentService {
     const idempotencyKey = `lazy-workflow:${scope.tracker}:${scope.id}:${routeKey(route)}`;
     const reconciliation = await systems.reconcile(config, route, idempotencyKey);
     const deployment = await systems.verify(config, route, reconciliation.record);
-    if (deployment.status !== "succeeded" || deployment.environment !== "dev"
+    if (deployment.id !== reconciliation.record.id || deployment.status !== "succeeded" || deployment.environment !== "dev"
       || deployment.target !== route.target.id || deployment.routeId !== route.id
       || !deployment.evidence
       || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"

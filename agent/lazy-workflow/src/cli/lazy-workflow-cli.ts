@@ -747,9 +747,11 @@ export class LazyWorkflowCli {
         : null;
       const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
       const scope: DeploymentScope = options.issue !== null
-        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}` }
-        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}` };
+        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}`, source: issueScope }
+        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}`, source: huScope };
       const context = await this.sagNormsService.loadDeployment(options.workingDirectory);
+      const verifiedContext = await this.sagNormsService.loadDeployment(options.workingDirectory);
+      if (context.commit !== verifiedContext.commit) throw new Error("la fuente SAG cambio durante la preparacion; ejecucion detenida");
       const deployment = await this.deploymentService.deploy(scope, options.workingDirectory, environment);
       console.log(JSON.stringify(sanitizeDeploymentOutput({
         deployment,

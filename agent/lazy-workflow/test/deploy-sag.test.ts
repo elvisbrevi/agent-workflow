@@ -14,7 +14,7 @@ const route: DeploymentRoute = {
   releaseDefinition: { id: "release-1" },
   openShift: { id: "openshift-dev", evidence: "openshift-observed" },
   consul: { deployKey: "project/deploy", requiredVariables: ["DATABASE_URL"], evidence: "consul-observed" },
-  target: { id: "openshift-dev", environment: "dev" },
+  target: { id: "openshift-dev", environment: "dev", evidence: "target-observed" },
 };
 
 const config = async (): Promise<string> => {
@@ -40,7 +40,7 @@ const config = async (): Promise<string> => {
 };
 
 const context: SagDeploymentContext = {
-  phase: "deployment",
+  phase: "delivery",
   sourceRepository: "https://example.test/sag",
   branch: "master",
   commit: "sag-commit",
@@ -89,7 +89,7 @@ test("las normas de deployment cargan familias de entrega y guidance trazable", 
 
   try {
     const loaded = await new SagNormsService(source).loadDeployment(directory);
-    expect(loaded.phase).toBe("deployment");
+    expect(loaded.phase).toBe("delivery");
     expect(loaded.commit).toBe("delivery-commit");
     expect(loaded.selectedRules.map(({ ruleId }) => ruleId)).toEqual([
       "com-G2", "api-R1", "api-R9", "doc-R1", "int-R1", "pr-R1", "seg-R1", "sonar-R1",
@@ -228,7 +228,9 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
       { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
       { deploy: async (receivedScope, receivedDirectory, environment) => {
         deploymentCalls += 1;
-        expect(receivedScope).toEqual({ ...scope, title: "scope" });
+        expect(receivedScope.id).toBe(scope.id);
+        expect(receivedScope.title).toBe("scope");
+        expect(receivedScope.source).toBeDefined();
         expect(receivedDirectory).toBe(directory);
         expect(environment).toBe("dev");
         return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };

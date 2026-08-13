@@ -95,7 +95,7 @@ inferred defaults):
       "releaseDefinition": { "id": "release-1" },
       "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
       "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
-      "target": { "id": "openshift-dev", "environment": "dev" }
+      "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
     }
   }
 }
