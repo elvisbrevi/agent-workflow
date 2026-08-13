@@ -386,7 +386,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "deploy-sag" && args.includes("--environment") && !options.environment?.trim()) {
-      reportOperator("deploy-sag requiere --environment <dev> cuando se proporciona --environment");
+       reportOperator("deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
       return 1;
     }
 
