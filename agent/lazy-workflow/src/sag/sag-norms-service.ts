@@ -571,6 +571,7 @@ export class SagNormsService {
     const integrationDecisions = integrationApplicable === undefined
       ? integrationRules.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por hechos de alcance`)
       : [];
+    const selectedIntegrationRules = integrationApplicable === false ? [] : integrationRules;
     return {
       phase: "infrastructure",
       sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
@@ -582,7 +583,7 @@ export class SagNormsService {
         ...this.select(["com-G1"], NORMATIVE_PATHS.common, snapshot.commit, "phase=infrastructure; common verification rule", "applicable"),
         ...this.select(componentRules[0]!.ids, componentRules[0]!.path, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
         ...this.select(componentRules[1]!.ids, componentRules[1]!.path, snapshot.commit, "phase=infrastructure; component cross-cutting applicability needs decision", "needs-decision"),
-        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration applicability is explicit", integrationApplicability),
+        ...this.select(selectedIntegrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; external configuration applicability is explicit", integrationApplicability),
       ],
       needsDecision: [...needsDecision, ...componentPatternDecisions, ...integrationDecisions],
     };

@@ -4,7 +4,14 @@ export interface InfrastructureScope {
   tracker: "azure" | "github";
   id: number;
   title: string;
-  source?: unknown;
+  source?: {
+    title?: string;
+    description?: string;
+    acceptanceCriteria?: string;
+    comments?: string[];
+    state?: string;
+    project?: string;
+  };
 }
 
 export interface InfrastructureProjectConfig {
@@ -165,8 +172,15 @@ export class ProcessInfrastructureSystems implements InfrastructureSystems {
     });
     child.stdin.write(JSON.stringify({ scope, configuration: config }));
     child.stdin.end();
-    const [exitCode, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-    if (exitCode !== 0) throw new Error(`adaptador de infraestructura fallo (exit ${exitCode})`);
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) {
+      if (isAuthenticationError(stderr)) throw new InfrastructureAuthenticationRequiredError();
+      throw new Error(`adaptador de infraestructura fallo (exit ${exitCode})`);
+    }
     try {
       const response = JSON.parse(stdout) as unknown;
       if (isRecord(response) && response.authenticationRequired === true) throw new InfrastructureAuthenticationRequiredError();
