@@ -51,7 +51,14 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
     expect(context.selectedRules[4]?.applicability).toBe("needs-decision");
     expect(context.selectedRules[1]?.source).toContain("version=GBmaster");
     expect(context.selectedRules[1]?.selectedBecause).toContain("tipo=api");
-    expect(context.needsDecision).toEqual(["change-kind", "artifacts", "capabilities", "significant-change"]);
+    expect(context.needsDecision).toEqual([
+      "change-kind",
+      "artifacts",
+      "capabilities",
+      "significant-change",
+      "api-R10: requiere decidir aplicabilidad por artefacto o capacidad",
+      "seg-R1: requiere decidir aplicabilidad por change-kind",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -68,6 +75,23 @@ test("normas SAG rechazan una configuracion ausente sin consultar la fuente", as
 
   await expect(service.loadPlanning(root)).rejects.toThrow(".sag/config.json");
   expect(sourceCalls).toBe(0);
+});
+
+test("los hechos parciales no convierten reglas condicionales en aplicables", async () => {
+  const directory = await config("api", {
+    cambio: "feature",
+    artefactos: ["source"],
+    capacidades: [],
+    cambioSignificativo: true,
+  });
+  try {
+    const context = await new SagNormsService(source()).loadPlanning(directory);
+    expect(context.selectedRules.find(({ ruleId }) => ruleId === "api-R10")?.applicability).toBe("needs-decision");
+    expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("needs-decision");
+    expect(context.needsDecision).toContain("api-R10: requiere decidir aplicabilidad por artefacto o capacidad");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("la fuente remota fija los archivos al commit unico de master", async () => {
