@@ -242,6 +242,7 @@ test.each([
   ["acronym route", { ...route, id: "PRODTarget" }],
   ["repository", { ...route, repository: "project.prod/repository" }],
   ["numeric pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod01" } }],
+  ["prd pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prd2" } }],
   ["base branch", { ...route, baseBranch: "production" }],
   ["pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod" } }],
   ["release", { ...route, releaseDefinition: { ...route.releaseDefinition, id: "release-live" } }],
