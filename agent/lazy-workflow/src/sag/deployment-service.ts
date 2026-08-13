@@ -198,12 +198,13 @@ export class ProcessDeploymentSystems implements DeploymentSystems {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    if (exitCode !== 0) throw new Error(`adaptador de deployment fallo (${sanitizeDeploymentText(stderr.trim() || `exit ${exitCode}`)})`);
+    if (exitCode !== 0) throw new Error(`adaptador de deployment fallo (exit ${exitCode})`);
     try {
       const response = JSON.parse(stdout) as unknown;
       if (isRecord(response) && response.authenticationRequired === true) throw new DeploymentAuthenticationRequiredError();
       return response;
     } catch (error) {
+      if (error instanceof DeploymentAuthenticationRequiredError) throw error;
       throw new Error(`adaptador de deployment devolvio JSON invalido (${error instanceof Error ? error.message : String(error)})`);
     }
   }
