@@ -20,7 +20,7 @@ function source(): SagNormSource {
       expect(paths).toEqual([
         "/estandares/comunes.md",
         "/estandares/api.md",
-        "/estandares/api-patrones.md",
+        "/estandares/api-adonis-patrones.md",
         "/estandares/seguimiento.md",
       ]);
       return {
@@ -28,7 +28,7 @@ function source(): SagNormSource {
         files: {
           "/estandares/comunes.md": "# com-G1\n",
           "/estandares/api.md": "# api-R1\n# api-R9\n",
-          "/estandares/api-patrones.md": "# api-R10\n",
+          "/estandares/api-adonis-patrones.md": "# api-R10\n",
           "/estandares/seguimiento.md": "# seg-R1\n",
         },
       };
@@ -106,7 +106,7 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
         expect(paths).toEqual([
           "/estandares/comunes.md",
           "/estandares/api.md",
-          "/estandares/api-patrones.md",
+          "/estandares/api-adonis-patrones.md",
           "/estandares/seguimiento.md",
           "/estandares/documentacion.md",
           "/estandares/integraciones.md",
@@ -118,7 +118,7 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
           files: {
             "/estandares/comunes.md": "com-G1",
             "/estandares/api.md": "api-R1",
-            "/estandares/api-patrones.md": "api-R9",
+            "/estandares/api-adonis-patrones.md": "api-R9",
             "/estandares/seguimiento.md": "seg-R1",
             "/estandares/documentacion.md": "doc-R1",
             "/estandares/integraciones.md": "int-R1",
@@ -134,9 +134,21 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
       artifacts: ["document", "config"],
       capabilities: ["document-processing", "sonar"],
       significantChange: true,
+      environment: "none",
     });
     expect(context.selectedRules.filter(({ ruleId }) => ["doc-R1", "int-R1", "ext-R1", "sonar-R1"].includes(ruleId))
       .every(({ applicability }) => applicability === "applicable")).toBeTrue();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("los valores de alcance fuera del vocabulario quedan como decision explicita", async () => {
+  const directory = await config("api", { capacidades: ["unknown-capability"] });
+  try {
+    const context = await new SagNormsService(source()).loadPlanning(directory);
+    expect(context.explicitFacts.capabilities).toBeNull();
+    expect(context.needsDecision).toContain("capabilities: contiene valores desconocidos");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
