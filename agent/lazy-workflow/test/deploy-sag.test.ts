@@ -239,6 +239,7 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
 test.each([
   ["route", { ...route, id: "production-route" }],
   ["camel-case route", { ...route, id: "openshiftProd" }],
+  ["acronym route", { ...route, id: "PRODTarget" }],
   ["repository", { ...route, repository: "project.prod/repository" }],
   ["numeric pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod01" } }],
   ["base branch", { ...route, baseBranch: "production" }],
@@ -250,6 +251,8 @@ test.each([
   ["Consul variable", { ...route, consul: { ...route.consul, requiredVariables: ["PROD_DATABASE_URL"] } }],
   ["Consul evidence", { ...route, consul: { ...route.consul, evidence: "prod-evidence" } }],
   ["target", { ...route, target: { ...route.target, id: "openshift-live" } }],
+  ["primary target", { ...route, target: { ...route.target, id: "openshift-primary" } }],
+  ["online target", { ...route, target: { ...route.target, id: "openshift-online" } }],
   ["target evidence", { ...route, target: { ...route.target, evidence: "live-evidence" } }],
 ] as const)("deploy-sag rechaza aliases PROD en la identidad de %s antes de reconciliar", async (kind, unsafeRoute) => {
   const directory = await config();
