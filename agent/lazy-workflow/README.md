@@ -14,6 +14,7 @@ lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory
 lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
 lazy-workflow architecture-review-sag --hu 23438 --working-directory /path/to/repository
+lazy-workflow infra-sag --issue 155 --working-directory /path/to/repository
 lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
 lazy-workflow plan --hu 23438 --working-directory /path/to/repository
 lazy-workflow hu-branch-info --hu 23438
@@ -78,6 +79,14 @@ verifies the external deployment state. DEV is the default and only supported
 environment in this slice. PROD and every production alias fail before
 external mutation; ambiguous or unverifiable routes fail closed. Repeated
 runs reconcile by route and scope identity rather than triggering a duplicate.
+
+`infra-sag` always loads infrastructure norms and requires exactly one explicit
+`--issue` or `--hu`. It verifies repository identity/base branch, Consul
+configuration, and explicitly declared database, pipeline, and Release
+Definition prerequisites through a read-only authenticated adapter and records
+the versioned config/Consul contracts used. Missing or
+unverifiable checks are published as corrective work, and the command never
+provisions infrastructure.
 
 The deployment configuration has this shape (identities are examples, not
 inferred defaults):

@@ -118,6 +118,18 @@ export interface SagDeploymentContext {
   needsDecision: string[];
 }
 
+export interface SagInfrastructureContext {
+  phase: "infrastructure";
+  sourceRepository: string;
+  branch: "master";
+  commit: string;
+  component: SagComponent;
+  explicitFacts: SagNormsContext["explicitFacts"];
+  selectedRules: SagNormSelection[];
+  guidance: Array<Omit<SagArchitectureGuidance, "classification"> & { classification: "I" }>;
+  needsDecision: string[];
+}
+
 export interface SagNormSourceSnapshot {
   commit: string;
   files: Record<string, string>;
@@ -538,6 +550,53 @@ export class SagNormsService {
       selectedRules,
       guidance,
       needsDecision: decisions,
+    };
+  }
+
+  async loadInfrastructure(workingDirectory: string): Promise<SagInfrastructureContext> {
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
+    const componentPaths = COMPONENT_PATHS[component];
+    const infrastructureGuidancePaths = [
+      "/config/README.md",
+      "/config/sag.config.schema.json",
+      "/scripts/lib/config.py",
+      "/scripts/lib/consul.py",
+    ] as const;
+    const paths = [NORMATIVE_PATHS.common, ...componentPaths, NORMATIVE_PATHS.integrations, ...infrastructureGuidancePaths];
+    const snapshot = await this.source.load(paths);
+    if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
+    const content = (path: string): string => snapshot.files[path] ?? "";
+    const common = ruleIds(content(NORMATIVE_PATHS.common), "com");
+    const componentRules = componentPaths.map((path) => ({ path, ids: ruleIds(content(path), component) }));
+    const integrationRules = ruleIds(content(NORMATIVE_PATHS.integrations), "int");
+    if (!common.includes("com-G1")) throw new Error("la fuente SAG no contiene la norma com-G1");
+    if (componentRules.every(({ ids }) => ids.length === 0)) throw new Error(`la fuente SAG no contiene normas para ${component}`);
+    if (!integrationRules.includes("int-R1")) throw new Error("la fuente SAG no contiene la norma int-R1");
+    const componentPatternDecisions = componentRules[1]!.ids.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`);
+    const integrationApplicability: SagNormSelection["applicability"] = "applicable";
+    const integrationDecisions: string[] = [];
+    const guidance = infrastructureGuidancePaths.map((path) => ({
+      classification: "I" as const,
+      path,
+      source: sourceUrl(path),
+      commit: snapshot.commit,
+      selectedBecause: "phase=infrastructure; versioned configuration or Consul implementation contract",
+    }));
+    return {
+      phase: "infrastructure",
+      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      branch: "master",
+      commit: snapshot.commit,
+      component,
+      explicitFacts,
+      selectedRules: [
+        ...this.select(["com-G1"], NORMATIVE_PATHS.common, snapshot.commit, "phase=infrastructure; common verification rule", "applicable"),
+        ...this.select(componentRules[0]!.ids, componentRules[0]!.path, snapshot.commit, `phase=infrastructure; tipo=${component} from .sag/config.json`, "applicable"),
+        ...this.select(componentRules[1]!.ids, componentRules[1]!.path, snapshot.commit, "phase=infrastructure; component cross-cutting applicability needs decision", "needs-decision"),
+        ...this.select(integrationRules, NORMATIVE_PATHS.integrations, snapshot.commit, "phase=infrastructure; Consul/configuration verification is in scope", integrationApplicability),
+      ],
+      guidance,
+      needsDecision: [...needsDecision, ...componentPatternDecisions, ...integrationDecisions],
     };
   }
 
