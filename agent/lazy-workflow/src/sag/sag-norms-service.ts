@@ -44,7 +44,7 @@ export interface SagNormsContext {
     artifacts: string[] | null;
     capabilities: string[] | null;
     significantChange: boolean | null;
-    environment: string;
+    environment: string | null;
   };
   selectedRules: SagNormSelection[];
   needsDecision: string[];
@@ -114,6 +114,7 @@ async function readConfig(workingDirectory: string): Promise<{
     ["artifacts", ["artifacts", "artefactos"]],
     ["capabilities", ["capabilities", "capacidades"]],
     ["significant-change", ["significantChange", "cambioSignificativo"]],
+    ["environment", ["environment", "entorno"]],
   ] as const;
   for (const [name, names] of facts) {
     const values = names.map((key) => value[key]).filter((candidate) => candidate !== undefined);
@@ -127,6 +128,10 @@ async function readConfig(workingDirectory: string): Promise<{
           throw new Error(`.sag/config.json: ${names[0]} debe ser booleano`);
         }
       } else if (name === "change-kind") {
+        if (typeof value[names[0]] !== "string" && typeof value[names[1]] !== "string") {
+          throw new Error(`.sag/config.json: ${names[0]} debe ser texto`);
+        }
+      } else if (name === "environment") {
         if (typeof value[names[0]] !== "string" && typeof value[names[1]] !== "string") {
           throw new Error(`.sag/config.json: ${names[0]} debe ser texto`);
         }
@@ -169,7 +174,7 @@ async function readConfig(workingDirectory: string): Promise<{
       artifacts: normalizeList(artifacts, ARTIFACTS, "artifacts"),
       capabilities: normalizeList(capabilities, CAPABILITIES, "capabilities"),
       significantChange: typeof significantChange === "boolean" ? significantChange : null,
-      environment: normalizeValue(environment, ENVIRONMENTS, "environment") ?? "none",
+      environment: normalizeValue(environment, ENVIRONMENTS, "environment"),
     },
   };
 }
@@ -237,15 +242,22 @@ export class SagNormsService {
         .map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por artefacto o capacidad`),
       ...tracker.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por change-kind`),
     ];
-    const selectedOptionalRules = optionalPaths.flatMap((path) => this.select(
-      ruleIds(snapshot.files[path] ?? "", path === NORMATIVE_PATHS.documentation ? "doc"
+    const selectedOptionalRules = optionalPaths.flatMap((path) => {
+      const prefix = path === NORMATIVE_PATHS.documentation ? "doc"
         : path === NORMATIVE_PATHS.integrations ? "int"
-          : path === NORMATIVE_PATHS.extraction ? "ext" : "sonar"),
-      path,
-      snapshot.commit,
-      "phase=planning; explicit .sag/config.json facts make this family applicable",
-      "applicable",
-    ));
+          : path === NORMATIVE_PATHS.extraction ? "ext" : "sonar";
+      const ids = ruleIds(snapshot.files[path] ?? "", prefix);
+      if (ids.length === 0) throw new Error(`la fuente SAG no contiene normas para ${path}`);
+      return this.select(
+        ids,
+        path,
+        snapshot.commit,
+        "phase=planning; explicit .sag/config.json facts make this family applicable",
+        "applicable",
+      );
+    });
+    const componentConditionalApplicability = explicitFacts.artifacts !== null && explicitFacts.capabilities !== null;
+    const trackerApplicability = explicitFacts.changeKind !== null;
 
     const selectedRules = [
       ...this.select(common.filter((id) => id === "com-G1"), NORMATIVE_PATHS.common, snapshot.commit, "phase=planning; common planning rule", "applicable"),
@@ -260,16 +272,20 @@ export class SagNormsService {
         ruleIds(snapshot.files[componentPaths[1]!] ?? "", component),
         componentPaths[1]!,
         snapshot.commit,
-        `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
-        "needs-decision",
+        componentConditionalApplicability
+          ? `phase=planning; tipo=${component}; artifact and capability facts are explicit`
+          : `phase=planning; tipo=${component}; rule-specific artifact/capability applicability needs decision`,
+        componentConditionalApplicability ? "applicable" : "needs-decision",
       ),
       ...selectedOptionalRules,
       ...this.select(
         tracker,
         NORMATIVE_PATHS.tracker,
         snapshot.commit,
-        "phase=planning; rule-specific change-kind applicability needs decision",
-        "needs-decision",
+        trackerApplicability
+          ? "phase=planning; change-kind is explicit"
+          : "phase=planning; rule-specific change-kind applicability needs decision",
+        trackerApplicability ? "applicable" : "needs-decision",
       ),
     ];
     return {

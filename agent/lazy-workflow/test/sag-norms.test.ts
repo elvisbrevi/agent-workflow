@@ -56,6 +56,7 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
       "artifacts",
       "capabilities",
       "significant-change",
+      "environment",
       "api-R10: requiere decidir aplicabilidad por artefacto o capacidad",
       "seg-R1: requiere decidir aplicabilidad por change-kind",
     ]);
@@ -86,7 +87,7 @@ test("los hechos parciales no convierten reglas condicionales en aplicables", as
   try {
     const context = await new SagNormsService(source()).loadPlanning(directory);
     expect(context.selectedRules.find(({ ruleId }) => ruleId === "api-R10")?.applicability).toBe("needs-decision");
-    expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("needs-decision");
+    expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("applicable");
     expect(context.needsDecision).toContain("api-R10: requiere decidir aplicabilidad por artefacto o capacidad");
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -134,7 +135,7 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
       artifacts: ["document", "config"],
       capabilities: ["document-processing", "sonar"],
       significantChange: true,
-      environment: "none",
+      environment: null,
     });
     expect(context.selectedRules.filter(({ ruleId }) => ["doc-R1", "int-R1", "ext-R1", "sonar-R1"].includes(ruleId))
       .every(({ applicability }) => applicability === "applicable")).toBeTrue();
