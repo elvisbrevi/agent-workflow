@@ -24,7 +24,7 @@ import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundErro
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
-import { SagDeploymentService, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
+import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
@@ -107,15 +107,17 @@ function errorMessage(error: unknown): string {
 }
 
 function deploymentErrorMessage(error: unknown): string {
-  return errorMessage(error)
-    .replace(/(authorization\s*:\s*bearer\s+|bearer\s+|(?:token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
+  return sanitizeDeploymentText(errorMessage(error));
 }
 
 function sanitizeDeploymentOutput(value: unknown): unknown {
   if (typeof value === "string") return deploymentErrorMessage(value);
   if (Array.isArray(value)) return value.map(sanitizeDeploymentOutput);
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, sanitizeDeploymentOutput(nested)]));
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+      key,
+      /authorization|token|password|secret|cookie|pat|api[-_ ]?key/i.test(key) ? "[REDACTED]" : sanitizeDeploymentOutput(nested),
+    ]));
   }
   return value;
 }
@@ -219,7 +221,9 @@ const TICKET_MUTATION_COMMANDS = new Set([
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] ?? null : null;
+  if (index >= 0) return args[index + 1] ?? null;
+  const inline = args.find((arg) => arg.startsWith(`${name}=`));
+  return inline?.slice(name.length + 1) ?? null;
 }
 
 function isValidHu(hu: number | null): hu is number {
@@ -723,7 +727,7 @@ export class LazyWorkflowCli {
     }
   }
 
-  private async runDeployment(options: CliOptions, environment: DeploymentEnvironment): Promise<number> {
+  private async runDeployment(options: CliOptions, environment: DeploymentEnvironment, authenticationRetried = false): Promise<number> {
     if (!this.sagNormsService.loadDeployment) {
       reportOperator("lazy-workflow: el servicio SAG no soporta deploy-sag");
       return 1;
@@ -745,6 +749,11 @@ export class LazyWorkflowCli {
       }), null, 2));
       return 0;
     } catch (error) {
+      if (error instanceof DeploymentAuthenticationRequiredError && options.hu !== null && !authenticationRetried) {
+        reportOperator(`Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
+        await this.huInfoService.waitForAccess(options.hu);
+        return this.runDeployment(options, environment, true);
+      }
       reportOperator(`lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
       return 1;
     }

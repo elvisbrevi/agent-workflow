@@ -490,7 +490,7 @@ export class SagNormsService {
         return "needs-decision";
       };
       let applies: boolean | null = null;
-      if (prefix === component) applies = true;
+      if (prefix === component) applies = path === componentPaths[0] ? true : null;
       else if (prefix === "doc") applies = explicitFacts.significantChange;
       else if (prefix === "int") applies = explicitFacts.artifacts === null
         ? null
@@ -513,6 +513,7 @@ export class SagNormsService {
     const selectedRules = [
       ...this.select(["com-G2"], NORMATIVE_PATHS.common, snapshot.commit, "phase=deployment; common delivery rule", "applicable"),
       ...selectDeliveryRules(componentPaths[0]!, component),
+      ...selectDeliveryRules(componentPaths[1]!, component),
       ...selectDeliveryRules(NORMATIVE_PATHS.documentation, "doc"),
       ...selectDeliveryRules(NORMATIVE_PATHS.integrations, "int"),
       ...selectDeliveryRules("/estandares/pull-requests.md", "pr"),
