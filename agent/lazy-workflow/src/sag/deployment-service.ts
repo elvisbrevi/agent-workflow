@@ -88,14 +88,14 @@ function requiredTextList(value: unknown, name: string): string[] {
 }
 
 function isProductionAlias(value: string): boolean {
-  return /(^|[-_/:])(?:prod|production|prd)(?:$|[-_/:])/i.test(value);
+  return /(^|[-_/:.])(?:prod|production|prd)(?=$|[-_/:.])/i.test(value);
 }
 
 function rejectProductionIdentity(value: string, name: string): void {
   if (isProductionAlias(value)) throw new Error(`deploy-sag no permite identidades PROD en ${name}`);
 }
 
-function validateNonProductionRoute(route: DeploymentProjectConfig["route"] | DeploymentRoute): void {
+function rejectProductionRouteIdentities(route: DeploymentProjectConfig["route"] | DeploymentRoute): void {
   const identities: Array<[string, string]> = [
     ["route", "id" in route ? route.id : ""],
     ["repository", route.repository],
@@ -106,6 +106,7 @@ function validateNonProductionRoute(route: DeploymentProjectConfig["route"] | De
     ["consul", route.consul.deployKey],
     ["target", route.target.id],
   ];
+  identities.push(...route.consul.requiredVariables.map((value, index) => [`consul.requiredVariables[${index}]`, value] as [string, string]));
   for (const [name, value] of identities) {
     if (value) rejectProductionIdentity(value, name);
   }
@@ -174,7 +175,8 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
       },
     },
   };
-  validateNonProductionRoute(config.route);
+  rejectProductionRouteIdentities(config.route);
+  config.adapter.command.forEach((value, index) => rejectProductionIdentity(value, `adapter.command[${index}]`));
   return config;
 }
 
@@ -209,7 +211,7 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.target.id.trim() || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
     throw new Error("la ruta no tiene un destino no productivo verificable");
   }
-  validateNonProductionRoute(route);
+  rejectProductionRouteIdentities(route);
 }
 
 export function sanitizeDeploymentText(value: string): string {

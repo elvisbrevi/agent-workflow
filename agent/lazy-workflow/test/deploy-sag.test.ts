@@ -238,14 +238,16 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
 
 test.each([
   ["route", { ...route, id: "production-route" }],
+  ["repository", { ...route, repository: "project.prod/repository" }],
   ["OpenShift", { ...route, openShift: { ...route.openShift, id: "openshift-prod" } }],
 ] as const)("deploy-sag rechaza aliases PROD en la identidad de %s antes de reconciliar", async (kind, unsafeRoute) => {
   const directory = await config();
   let reconcileCalls = 0;
-  if (kind === "OpenShift") {
+  if (kind === "OpenShift" || kind === "repository") {
     const path = `${directory}/.sag/config.json`;
-    const value = JSON.parse(await Bun.file(path).text()) as { deployment: { route: { openShift: { id: string } } } };
-    value.deployment.route.openShift.id = unsafeRoute.openShift.id;
+    const value = JSON.parse(await Bun.file(path).text()) as { deployment: { route: { repository: string; openShift: { id: string } } } };
+    if (kind === "OpenShift") value.deployment.route.openShift.id = unsafeRoute.openShift.id;
+    else value.deployment.route.repository = unsafeRoute.repository;
     await Bun.write(path, JSON.stringify(value));
   }
   const systems: DeploymentSystems = {
@@ -257,6 +259,27 @@ test.each([
   try {
     await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow(/PROD|produccion/i);
     expect(reconcileCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deploy-sag rechaza un comando de adapter PROD antes de descubrir rutas", async () => {
+  const directory = await config();
+  const path = `${directory}/.sag/config.json`;
+  const value = JSON.parse(await Bun.file(path).text()) as { deployment: { adapter: { command: string[] } } };
+  value.deployment.adapter.command[0] = ".sag/deploy-prod";
+  await Bun.write(path, JSON.stringify(value));
+  let discoveryCalls = 0;
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => { discoveryCalls += 1; return [route]; },
+    reconcile: async () => { throw new Error("must not reconcile"); },
+    verify: async () => { throw new Error("must not verify"); },
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow(/PROD|produccion/i);
+    expect(discoveryCalls).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
