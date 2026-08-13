@@ -88,7 +88,8 @@ function requiredTextList(value: unknown, name: string): string[] {
 }
 
 function isProductionAlias(value: string): boolean {
-  return /(^|[-_/:.])(?:prod|production|prd)(?=$|[-_/:.])/i.test(value);
+  return /(^|[-_/:.])(?:prod|production|prd|live|primary|online)(?=$|[-_/:.])/i.test(value)
+    || /^(?:prod|production|prd|live|primary|online)[A-Z]/i.test(value);
 }
 
 function rejectProductionIdentity(value: string, name: string): void {
@@ -103,8 +104,11 @@ function rejectProductionRouteIdentities(route: DeploymentProjectConfig["route"]
     ["pipeline", route.pipeline.id],
     ["releaseDefinition", route.releaseDefinition.id],
     ["openShift", route.openShift.id],
+    ["openShift.evidence", route.openShift.evidence],
     ["consul", route.consul.deployKey],
+    ["consul.evidence", route.consul.evidence],
     ["target", route.target.id],
+    ["target.evidence", route.target.evidence],
   ];
   identities.push(...route.consul.requiredVariables.map((value, index) => [`consul.requiredVariables[${index}]`, value] as [string, string]));
   for (const [name, value] of identities) {
@@ -316,9 +320,15 @@ export class SagDeploymentService {
       || deployment.target !== route.target.id || deployment.routeId !== route.id
       || !deployment.evidence
       || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"
-      || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
+     || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
        throw new Error(`el despliegue no tiene un estado ${environment.toUpperCase()} verificado`);
     }
+    rejectProductionIdentity(deployment.id, "deployment.id");
+    rejectProductionIdentity(deployment.target, "deployment.target");
+    rejectProductionIdentity(deployment.routeId, "deployment.routeId");
+    rejectProductionIdentity(deployment.evidence.openShift, "deployment.evidence.openShift");
+    rejectProductionIdentity(deployment.evidence.consul, "deployment.evidence.consul");
+    rejectProductionIdentity(deployment.evidence.target, "deployment.evidence.target");
     return {
       status: "verified",
       environment,
