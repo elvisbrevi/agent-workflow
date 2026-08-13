@@ -147,13 +147,44 @@ Select `com-G2`, applicable `pr-R*`, `doc-R*`, `int-R*`, `seg-R*`, and
 `sonar-R*`. Consult `/core/workflows/finalizar.md`,
 `/core/agents/despliegue-sag.md`, and versioned scripts only as `W`/`I` sources.
 Discover pipeline and release names from `.sag/config.json` and repository
-assets; execute only when exactly one route and target are verified. DEV is the
-default, TEST and QA require explicit selection, and PROD is always rejected.
+assets; execute only when exactly one route and target are verified. The first
+delivery slice executes DEV only; TEST and QA are reserved for the explicit
+follow-up slice, and PROD is always rejected.
 
 The RAG does not version the real pipeline v7, Release Definitions,
 `ARODeploy_V7`, deployed OpenShift manifests, or effective Consul payloads.
 Ambiguity or inability to inspect those systems must stop deployment rather
 than be replaced by inference.
+
+The first executable DEV route is declared under `deployment` in
+`.sag/config.json`:
+
+```json
+{
+  "tipo": "api",
+  "deployment": {
+    "authentication": "operator",
+    "adapter": { "command": [".sag/deploy-adapter"] },
+    "route": {
+      "repository": "project/repository",
+      "baseBranch": "main",
+      "pipeline": { "id": "pipeline-7", "version": "v7" },
+      "releaseDefinition": { "id": "release-1" },
+      "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
+      "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
+      "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
+    }
+  }
+}
+```
+
+The coordinator never treats these values as proof: the adapter is executed
+without a shell, must use operator authentication, return exactly one matching
+route, atomically reconcile the idempotency key, and verify the resulting
+OpenShift, Consul, and target state.
+Authentication continuation uses exit code 0 with
+`{"authenticationRequired":true}`; other nonzero adapter exits are terminal
+errors.
 
 ## Security and failure rules
 

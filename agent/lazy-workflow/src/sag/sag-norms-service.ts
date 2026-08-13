@@ -106,6 +106,18 @@ export interface SagArchitectureReviewContext {
   needsDecision: string[];
 }
 
+export interface SagDeploymentContext {
+  phase: "delivery";
+  sourceRepository: string;
+  branch: "master";
+  commit: string;
+  component: SagComponent;
+  explicitFacts: SagNormsContext["explicitFacts"];
+  selectedRules: SagNormSelection[];
+  guidance: SagArchitectureGuidance[];
+  needsDecision: string[];
+}
+
 export interface SagNormSourceSnapshot {
   commit: string;
   files: Record<string, string>;
@@ -430,6 +442,99 @@ export class SagNormsService {
       component,
       explicitFacts,
       reviewFamilies,
+      selectedRules,
+      guidance,
+      needsDecision: decisions,
+    };
+  }
+
+  async loadDeployment(workingDirectory: string): Promise<SagDeploymentContext> {
+    const { component, needsDecision, explicitFacts } = await readConfig(workingDirectory);
+    const componentPaths = COMPONENT_PATHS[component];
+    const paths = [
+      NORMATIVE_PATHS.common,
+      ...componentPaths,
+      NORMATIVE_PATHS.documentation,
+      NORMATIVE_PATHS.integrations,
+      "/estandares/pull-requests.md",
+      NORMATIVE_PATHS.tracker,
+      NORMATIVE_PATHS.sonar,
+      "/core/workflows/finalizar.md",
+      "/core/agents/despliegue-sag.md",
+    ];
+    const snapshot = await this.source.load(paths);
+    if (!snapshot.commit.trim()) throw new Error("la fuente SAG no devolvio un commit master");
+
+    const content = (path: string): string => snapshot.files[path] ?? "";
+    const ids = (path: string, prefix: string): string[] => ruleIds(content(path), prefix);
+    const required = [
+      [NORMATIVE_PATHS.common, "com", "com-G2"],
+      [componentPaths[0]!, component, `${component}-R1`],
+      [componentPaths[1]!, component, `${component}-R9`],
+      [NORMATIVE_PATHS.documentation, "doc", "doc-R1"],
+      [NORMATIVE_PATHS.integrations, "int", "int-R1"],
+      ["/estandares/pull-requests.md", "pr", "pr-R1"],
+      [NORMATIVE_PATHS.tracker, "seg", "seg-R1"],
+      [NORMATIVE_PATHS.sonar, "sonar", "sonar-R1"],
+    ] as const;
+    for (const [path, prefix, requiredId] of required) {
+      if (!ids(path, prefix).includes(requiredId)) throw new Error(`la fuente SAG no contiene la norma ${requiredId}`);
+    }
+
+    const decisions = [...needsDecision];
+    const selectDeliveryRules = (path: string, prefix: string): SagNormSelection[] => {
+      const ruleIdsForPath = ids(path, prefix);
+      const known = (value: boolean | null): SagNormSelection["applicability"] => {
+        if (value === false) return "applicable";
+        if (value === true) return "applicable";
+        decisions.push(`${prefix}: requiere decidir aplicabilidad por hechos de entrega`);
+        return "needs-decision";
+      };
+      let applies: boolean | null = null;
+      if (prefix === component) applies = path === componentPaths[0] ? true : null;
+      else if (prefix === "doc") applies = explicitFacts.significantChange;
+      else if (prefix === "int") applies = explicitFacts.artifacts === null
+        ? null
+        : explicitFacts.artifacts.some((artifact) => ["config", "secret", "consul"].includes(artifact));
+      else if (prefix === "pr") applies = explicitFacts.artifacts === null
+        ? null
+        : explicitFacts.artifacts.some((artifact) => ["pr", "pipeline", "release", "openshift"].includes(artifact));
+      else if (prefix === "seg") applies = explicitFacts.changeKind === null ? null : true;
+      else if (prefix === "sonar") applies = explicitFacts.capabilities === null ? null : explicitFacts.capabilities.includes("sonar");
+      if (applies === false) return [];
+      const applicability = known(applies);
+      return this.select(
+        ruleIdsForPath,
+        path,
+        snapshot.commit,
+        `phase=deployment; tipo=${component}; delivery rule family ${prefix}`,
+        applicability,
+      );
+    };
+    const selectedRules = [
+      ...this.select(["com-G2"], NORMATIVE_PATHS.common, snapshot.commit, "phase=deployment; common delivery rule", "applicable"),
+      ...selectDeliveryRules(componentPaths[0]!, component),
+      ...selectDeliveryRules(componentPaths[1]!, component),
+      ...selectDeliveryRules(NORMATIVE_PATHS.documentation, "doc"),
+      ...selectDeliveryRules(NORMATIVE_PATHS.integrations, "int"),
+      ...selectDeliveryRules("/estandares/pull-requests.md", "pr"),
+      ...selectDeliveryRules(NORMATIVE_PATHS.tracker, "seg"),
+      ...selectDeliveryRules(NORMATIVE_PATHS.sonar, "sonar"),
+    ];
+    const guidance = ["/core/workflows/finalizar.md", "/core/agents/despliegue-sag.md"].map((path) => ({
+      classification: "W" as const,
+      path,
+      source: sourceUrl(path),
+      commit: snapshot.commit,
+      selectedBecause: "phase=deployment; delivery guidance is separate from numbered norms",
+    }));
+    return {
+      phase: "delivery",
+      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      branch: "master",
+      commit: snapshot.commit,
+      component,
+      explicitFacts,
       selectedRules,
       guidance,
       needsDecision: decisions,

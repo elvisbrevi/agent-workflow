@@ -24,6 +24,7 @@ import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundErro
 import { reportOperator } from "../output/operator-output.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
@@ -41,6 +42,7 @@ type CliOptions = OpenCodeRunOptions & {
   realEffort: number;
   realEffortHours: number;
   expectedRevision: number;
+  environment: string | null;
   hasRealEffort: boolean;
   hasRealEffortHours: boolean;
   hasExpectedRevision: boolean;
@@ -102,6 +104,26 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function deploymentErrorMessage(error: unknown): string {
+  return sanitizeDeploymentText(errorMessage(error));
+}
+
+function isAuthenticationError(error: unknown): boolean {
+  return /(?:authentication|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(errorMessage(error));
+}
+
+function sanitizeDeploymentOutput(value: unknown): unknown {
+  if (typeof value === "string") return deploymentErrorMessage(value);
+  if (Array.isArray(value)) return value.map(sanitizeDeploymentOutput);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+      key,
+      /authorization|token|password|secret|cookie|pat|api[-_ ]?key/i.test(key) ? "[REDACTED]" : sanitizeDeploymentOutput(nested),
+    ]));
+  }
+  return value;
 }
 
 function containsMarker(text: string, marker: string): boolean {
@@ -203,7 +225,9 @@ const TICKET_MUTATION_COMMANDS = new Set([
 
 function optionValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] ?? null : null;
+  if (index >= 0) return args[index + 1] ?? null;
+  const inline = args.find((arg) => arg.startsWith(`${name}=`));
+  return inline?.slice(name.length + 1) ?? null;
 }
 
 function isValidHu(hu: number | null): hu is number {
@@ -238,6 +262,7 @@ function parseOptions(args: string[]): CliOptions {
     descriptionFile: optionValue(args, "--description-file"),
     state: optionValue(args, "--state"),
     expectedState: optionValue(args, "--expected-state"),
+    environment: optionValue(args, "--environment"),
     realEffort: Number(realEffort),
     realEffortHours: Number(realEffortHours),
     expectedRevision: Number(expectedRevision),
@@ -261,6 +286,8 @@ function printHelp(): void {
     "  lazy-workflow code --session <id> --prompt continue",
     "  lazy-workflow architecture-review-sag --hu <id> [options]",
     "  lazy-workflow architecture-review-sag --issue <id> [options]",
+    "  lazy-workflow deploy-sag --hu <id> [options]",
+    "  lazy-workflow deploy-sag --issue <id> [options]",
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
     "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
@@ -280,6 +307,7 @@ function printHelp(): void {
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
     "  --issue <id>                 alcance GitHub explicito para workflows SAG",
+    "  --environment <dev>          destino de deploy-sag; omitir usa DEV; PROD siempre esta prohibido",
     "  --session <id>",
     "  --model <model>",
     "  --variant <variant>",
@@ -302,6 +330,7 @@ function printHelp(): void {
     "  --number-of-questions <count>",
     "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
+    "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV y verifica el resultado; no infiere destinos",
     "  --working-directory <path>",
   ].join("\n"));
 }
@@ -314,14 +343,15 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview">> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview" | "loadDeployment">> = new SagNormsService(),
     private readonly git: GitRunner = runGit,
     private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
+    private readonly deploymentService: Pick<SagDeploymentService, "deploy"> = new SagDeploymentService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "architecture-review-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -338,8 +368,18 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (options.issue !== null && command !== "architecture-review-sag") {
-      reportOperator("--issue solo se permite con architecture-review-sag");
+    if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag") {
+      reportOperator("--issue solo se permite con architecture-review-sag o deploy-sag");
+      return 1;
+    }
+
+    if (options.environment !== null && command !== "deploy-sag") {
+      reportOperator("--environment solo se permite con deploy-sag");
+      return 1;
+    }
+
+    if (command === "deploy-sag" && args.includes("--environment") && !options.environment?.trim()) {
+      reportOperator("deploy-sag requiere --environment <dev> cuando se proporciona --environment");
       return 1;
     }
 
@@ -361,6 +401,36 @@ export class LazyWorkflowCli {
         return 1;
       }
       return this.runArchitectureReview(options);
+    }
+
+    if (command === "deploy-sag") {
+      const environmentFlags = args.filter((arg) => arg === "--environment" || arg.startsWith("--environment="));
+      if (environmentFlags.length > 1) {
+        reportOperator("deploy-sag no permite repetir --environment");
+        return 1;
+      }
+      if (options.hu !== null && options.issue !== null) {
+        reportOperator("deploy-sag no permite combinar --hu y --issue");
+        return 1;
+      }
+      if (options.hu === null && options.issue === null) {
+        reportOperator("deploy-sag requiere --hu <id> o --issue <id>");
+        return 1;
+      }
+      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
+        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
+        return 1;
+      }
+      const environment = options.environment?.trim().toLowerCase() ?? "dev";
+      if (environment !== "dev") {
+        reportOperator("deploy-sag solo permite DEV en esta version; PROD y sus aliases estan prohibidos");
+        return 1;
+      }
+      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+        reportOperator("deploy-sag no permite --session, --branch ni --base-branch");
+        return 1;
+      }
+      return this.runDeployment(options, "dev");
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
@@ -663,6 +733,41 @@ export class LazyWorkflowCli {
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
       return null;
+    }
+  }
+
+  private async runDeployment(options: CliOptions, environment: DeploymentEnvironment, authenticationRetried = false): Promise<number> {
+    if (!this.sagNormsService.loadDeployment) {
+      reportOperator("lazy-workflow: el servicio SAG no soporta deploy-sag");
+      return 1;
+    }
+    try {
+      const issueScope = options.issue !== null
+        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
+        : null;
+      const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
+      const scope: DeploymentScope = options.issue !== null
+        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}`, source: issueScope }
+        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}`, source: huScope };
+      const context = await this.sagNormsService.loadDeployment(options.workingDirectory);
+      const verifiedContext = await this.sagNormsService.loadDeployment(options.workingDirectory);
+      if (context.commit !== verifiedContext.commit) throw new Error("la fuente SAG cambio durante la preparacion; ejecucion detenida");
+      const deployment = await this.deploymentService.deploy(scope, options.workingDirectory, environment);
+      console.log(JSON.stringify(sanitizeDeploymentOutput({
+        deployment,
+        scope,
+        sag: context,
+      }), null, 2));
+      return 0;
+    } catch (error) {
+      if ((error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
+        && options.hu !== null && !authenticationRetried) {
+        reportOperator(`Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
+        await this.huInfoService.waitForAccess(options.hu);
+        return this.runDeployment(options, environment, true);
+      }
+      reportOperator(`lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
+      return 1;
     }
   }
 
