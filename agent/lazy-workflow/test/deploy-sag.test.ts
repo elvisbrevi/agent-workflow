@@ -236,6 +236,90 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
   }
 });
 
+test.each([
+  ["route", { ...route, id: "production-route" }],
+  ["camel-case route", { ...route, id: "openshiftProd" }],
+  ["acronym route", { ...route, id: "PRODTarget" }],
+  ["repository", { ...route, repository: "project.prod/repository" }],
+  ["numeric pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod01" } }],
+  ["prd pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prd2" } }],
+  ["base branch", { ...route, baseBranch: "production" }],
+  ["pipeline", { ...route, pipeline: { ...route.pipeline, id: "pipeline-prod" } }],
+  ["release", { ...route, releaseDefinition: { ...route.releaseDefinition, id: "release-live" } }],
+  ["OpenShift", { ...route, openShift: { ...route.openShift, id: "openshift-prod" } }],
+  ["OpenShift evidence", { ...route, openShift: { ...route.openShift, evidence: "production-evidence" } }],
+  ["Consul", { ...route, consul: { ...route.consul, deployKey: "project/live" } }],
+  ["Consul variable", { ...route, consul: { ...route.consul, requiredVariables: ["PROD_DATABASE_URL"] } }],
+  ["Consul evidence", { ...route, consul: { ...route.consul, evidence: "prod-evidence" } }],
+  ["target", { ...route, target: { ...route.target, id: "openshift-live" } }],
+  ["primary target", { ...route, target: { ...route.target, id: "openshift-primary" } }],
+  ["online target", { ...route, target: { ...route.target, id: "openshift-online" } }],
+  ["target evidence", { ...route, target: { ...route.target, evidence: "live-evidence" } }],
+] as const)("deploy-sag rechaza aliases PROD en la identidad de %s antes de reconciliar", async (kind, unsafeRoute) => {
+  const directory = await config();
+  let reconcileCalls = 0;
+  if (kind !== "route") {
+    const path = `${directory}/.sag/config.json`;
+    const value = JSON.parse(await Bun.file(path).text()) as {
+      deployment: { route: {
+        repository: string;
+        baseBranch: string;
+        pipeline: { id: string };
+        releaseDefinition: { id: string };
+        openShift: { id: string; evidence: string };
+        consul: { deployKey: string; requiredVariables: string[]; evidence: string };
+        target: { id: string; evidence: string };
+      } };
+    };
+    const configured = value.deployment.route;
+    if (kind === "repository") configured.repository = unsafeRoute.repository;
+    else if (kind === "base branch") configured.baseBranch = unsafeRoute.baseBranch;
+    else if (kind === "pipeline") configured.pipeline.id = unsafeRoute.pipeline.id;
+    else if (kind === "release") configured.releaseDefinition.id = unsafeRoute.releaseDefinition.id;
+    else if (kind === "OpenShift") configured.openShift.id = unsafeRoute.openShift.id;
+    else if (kind === "OpenShift evidence") configured.openShift.evidence = unsafeRoute.openShift.evidence;
+    else if (kind === "Consul") configured.consul.deployKey = unsafeRoute.consul.deployKey;
+    else if (kind === "Consul variable") configured.consul.requiredVariables = [...unsafeRoute.consul.requiredVariables];
+    else if (kind === "Consul evidence") configured.consul.evidence = unsafeRoute.consul.evidence;
+    else if (kind === "target") configured.target.id = unsafeRoute.target.id;
+    else if (kind === "target evidence") configured.target.evidence = unsafeRoute.target.evidence;
+    await Bun.write(path, JSON.stringify(value));
+  }
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => [unsafeRoute as DeploymentRoute],
+    reconcile: async () => { reconcileCalls += 1; throw new Error("must not reconcile production route"); },
+    verify: async () => { throw new Error("must not verify"); },
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow(/PROD|produccion/i);
+    expect(reconcileCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deploy-sag rechaza un comando de adapter PROD antes de descubrir rutas", async () => {
+  const directory = await config();
+  const path = `${directory}/.sag/config.json`;
+  const value = JSON.parse(await Bun.file(path).text()) as { deployment: { adapter: { command: string[] } } };
+  value.deployment.adapter.command = [".sag/deploy-adapter", "--environment=prod01"];
+  await Bun.write(path, JSON.stringify(value));
+  let discoveryCalls = 0;
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => { discoveryCalls += 1; return [route]; },
+    reconcile: async () => { throw new Error("must not reconcile"); },
+    verify: async () => { throw new Error("must not verify"); },
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow(/PROD|produccion/i);
+    expect(discoveryCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("deploy-sag rechaza un resultado no verificado", async () => {
   const directory = await config();
   const systems: DeploymentSystems = {
