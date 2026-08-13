@@ -107,7 +107,7 @@ export interface SagArchitectureReviewContext {
 }
 
 export interface SagDeploymentContext {
-  phase: "deployment";
+  phase: "delivery";
   sourceRepository: string;
   branch: "master";
   commit: string;
@@ -529,7 +529,7 @@ export class SagNormsService {
       selectedBecause: "phase=deployment; delivery guidance is separate from numbered norms",
     }));
     return {
-      phase: "deployment",
+      phase: "delivery",
       sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
       branch: "master",
       commit: snapshot.commit,
