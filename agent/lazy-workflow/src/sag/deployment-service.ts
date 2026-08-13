@@ -293,7 +293,7 @@ export class SagDeploymentService {
       || !deployment.evidence
       || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"
       || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
-      throw new Error("el despliegue no tiene un estado DEV verificado");
+       throw new Error(`el despliegue no tiene un estado ${environment.toUpperCase()} verificado`);
     }
     return {
       status: "verified",
