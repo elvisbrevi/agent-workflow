@@ -17,7 +17,6 @@ require one explicit `--issue` and do not drain the queue. `infra-sag` initially
 verifies prerequisites and publishes missing work without provisioning,
 `architecture-review-sag` reports rather than repairs and publishes a spec plus
 corrective tickets, and `deploy-sag` discovers an unambiguous repository route,
-defaults to DEV in the initial slice, reserves TEST/QA for explicit follow-up
-work, and rejects PROD. Deployment does not depend on a prior
+defaults to DEV, accepts explicit TEST/QA targets, and rejects PROD. Deployment does not depend on a prior
 architecture-review receipt, and credentials may be used from the operator
 environment but are never requested as prompt content or persisted.
