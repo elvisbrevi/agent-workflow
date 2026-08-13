@@ -483,10 +483,25 @@ export class SagNormsService {
     const decisions = [...needsDecision];
     const selectDeliveryRules = (path: string, prefix: string): SagNormSelection[] => {
       const ruleIdsForPath = ids(path, prefix);
-      const applicability = explicitFacts.environment === null ? "needs-decision" : "applicable";
-      if (applicability === "needs-decision") {
+      const known = (value: boolean | null): SagNormSelection["applicability"] => {
+        if (value === false) return "applicable";
+        if (value === true) return "applicable";
         decisions.push(`${prefix}: requiere decidir aplicabilidad por hechos de entrega`);
-      }
+        return "needs-decision";
+      };
+      let applies: boolean | null = null;
+      if (prefix === component) applies = true;
+      else if (prefix === "doc") applies = explicitFacts.significantChange;
+      else if (prefix === "int") applies = explicitFacts.artifacts === null
+        ? null
+        : explicitFacts.artifacts.some((artifact) => ["config", "secret", "consul"].includes(artifact));
+      else if (prefix === "pr") applies = explicitFacts.artifacts === null
+        ? null
+        : explicitFacts.artifacts.some((artifact) => ["pr", "pipeline", "release", "openshift"].includes(artifact));
+      else if (prefix === "seg") applies = explicitFacts.changeKind === null ? null : true;
+      else if (prefix === "sonar") applies = explicitFacts.capabilities === null ? null : explicitFacts.capabilities.includes("sonar");
+      if (applies === false) return [];
+      const applicability = known(applies);
       return this.select(
         ruleIdsForPath,
         path,

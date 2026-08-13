@@ -111,6 +111,15 @@ function deploymentErrorMessage(error: unknown): string {
     .replace(/(authorization\s*:\s*bearer\s+|bearer\s+|(?:token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
 }
 
+function sanitizeDeploymentOutput(value: unknown): unknown {
+  if (typeof value === "string") return deploymentErrorMessage(value);
+  if (Array.isArray(value)) return value.map(sanitizeDeploymentOutput);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, sanitizeDeploymentOutput(nested)]));
+  }
+  return value;
+}
+
 function containsMarker(text: string, marker: string): boolean {
   return text.split(/\r?\n/).some((line) => line.trim() === marker);
 }
@@ -729,16 +738,11 @@ export class LazyWorkflowCli {
         : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}` };
       const context = await this.sagNormsService.loadDeployment(options.workingDirectory);
       const deployment = await this.deploymentService.deploy(scope, options.workingDirectory, environment);
-      console.log(JSON.stringify({
+      console.log(JSON.stringify(sanitizeDeploymentOutput({
         deployment,
         scope,
-        sag: {
-          sourceRepository: context.sourceRepository,
-          branch: context.branch,
-          commit: context.commit,
-          phase: context.phase,
-        },
-      }, null, 2));
+        sag: context,
+      }), null, 2));
       return 0;
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);

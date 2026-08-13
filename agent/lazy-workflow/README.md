@@ -87,16 +87,24 @@ inferred defaults):
   "tipo": "api",
   "deployment": {
     "authentication": "operator",
+    "adapter": { "command": [".sag/deploy-adapter"] },
     "route": {
       "repository": "project/repository",
       "baseBranch": "main",
       "pipeline": { "id": "pipeline-7", "version": "v7" },
       "releaseDefinition": { "id": "release-1" },
-      "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
+      "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
+      "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
+      "target": { "id": "openshift-dev", "environment": "dev" }
     }
   }
 }
 ```
+
+The adapter is executed without a shell and receives JSON on stdin with
+`--operation discover|reconcile|verify`. It must use operator authentication,
+return exactly one route for `discover`, atomically reconcile the idempotency
+key, and return independently verified OpenShift, Consul, and target evidence.
 
 ## Azure HU workflows
 
