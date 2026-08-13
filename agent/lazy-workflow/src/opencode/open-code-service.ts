@@ -1,5 +1,6 @@
 import { OpenCodeResult, type OpenCodeEventData } from "./open-code-result.ts";
-import { reportOperator } from "../output/operator-output.ts";
+import { getDefaultReporter } from "../output/operator-output.ts";
+import type { Reporter } from "../output/reporter.ts";
 
 export interface OpenCodeRunOptions {
   model: string;
@@ -58,8 +59,9 @@ const spawnOpenCode: OpenCodeSpawner = (command, options) => {
 };
 
 const loginInstructionPattern = /(?:please\s+run|run|ejecuta|execute).{0,40}\baz\s+login\b/i;
-const HEARTBEAT_INTERVAL_MS = 30_000;
 const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not exist|no existe)|(?:not found|does not exist|no existe).*(?:session|sesion|sesión)/i;
+const SPINNER_RESTART_MS = 2_000;
+const SPINNER_TEXT = "OpenCode ejecutándose";
 
 function renderEvent(line: string): string {
   try {
@@ -86,6 +88,21 @@ function renderEvent(line: string): string {
   } catch {
     return line;
   }
+}
+
+function parseEvent(line: string): OpenCodeEventData | null {
+  try {
+    return JSON.parse(line) as OpenCodeEventData;
+  } catch {
+    return null;
+  }
+}
+
+function eventSeverity(event: OpenCodeEventData | null): "debug" | "info" {
+  if (event && (event.type === "reasoning" || event.type === "tool_use" || event.part?.type === "tool")) {
+    return "debug";
+  }
+  return "info";
 }
 
 function requiresAzureLogin(line: string): boolean {
@@ -187,7 +204,7 @@ async function readLines(
 export class OpenCodeService {
   constructor(
     private readonly spawn: OpenCodeSpawner = spawnOpenCode,
-    private readonly report: (message: string) => void = reportOperator,
+    private readonly reporter: Reporter = getDefaultReporter(),
     private readonly shutdownGraceMs = 5_000,
   ) {}
 
@@ -233,21 +250,46 @@ export class OpenCodeService {
     workingDirectory?: string,
     terminalMarker?: string,
   ): Promise<OpenCodeExecution> {
-    this.report(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
+    this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
     const child = this.spawn(command, { cwd: workingDirectory });
-    let lastEventAt = Date.now();
+    let spinner: ReturnType<Reporter["start"]> | null = this.reporter.start(SPINNER_TEXT);
+    let restartTimer: ReturnType<typeof setTimeout> | null = null;
+    const stopSpinner = () => {
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+      if (spinner) {
+        this.reporter.stop(spinner);
+        spinner = null;
+      }
+    };
+    const scheduleSpinner = () => {
+      if (restartTimer || spinner) return;
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        if (!spinner) spinner = this.reporter.start(SPINNER_TEXT);
+      }, SPINNER_RESTART_MS);
+    };
+    const emitEvent = (line: string) => {
+      const event = parseEvent(line);
+      const rendered = renderEvent(line);
+      if (eventSeverity(event) === "debug") {
+        this.reporter.debug(rendered);
+      } else {
+        this.reporter.info(rendered);
+      }
+    };
     const reportStdout = (line: string) => {
-      lastEventAt = Date.now();
-      this.report(renderEvent(line));
+      stopSpinner();
+      emitEvent(line);
+      scheduleSpinner();
     };
     const reportStderr = (line: string) => {
-      lastEventAt = Date.now();
-      this.report(`OpenCode stderr: ${line}`);
+      stopSpinner();
+      this.reporter.info(`OpenCode stderr: ${line}`);
+      scheduleSpinner();
     };
-    const heartbeat = setInterval(() => {
-      const elapsed = Math.round((Date.now() - lastEventAt) / 1000);
-      this.report(`OpenCode sigue ejecutándose; sin eventos hace ${elapsed}s.`);
-    }, HEARTBEAT_INTERVAL_MS);
 
     try {
       const stderrAbort = new AbortController();
@@ -288,7 +330,7 @@ export class OpenCodeService {
         failed: exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived,
       };
     } finally {
-      clearInterval(heartbeat);
+      stopSpinner();
     }
   }
 
