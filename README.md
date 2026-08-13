@@ -90,11 +90,10 @@ context stops before OpenCode; plain `plan` never reads SAG sources.
 `deploy-sag` always loads delivery norms and requires exactly one explicit
 `--issue` or `--hu`. It reads an explicit `deployment` route from
 `.sag/config.json`, requires authenticated external discovery to confirm one
-pipeline v7, Release Definition, repository/base branch, and DEV target, then
-verifies the deployment result. DEV is the default and only supported
-environment in this slice; PROD and every production alias fail before any
-external mutation. Missing authentication, ambiguous routes, or unverifiable
-targets fail closed.
+pipeline v7, Release Definition, repository/base branch, and the selected
+DEV, TEST, or QA target, then verifies the deployment result. DEV is the
+default; PROD and every production alias fail before any external mutation.
+Missing authentication, ambiguous routes, or unverifiable targets fail closed.
 
 `infra-sag` always loads infrastructure norms and requires exactly one explicit
 `--issue` or `--hu`. It verifies repository/base branch, Consul variables, and

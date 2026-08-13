@@ -74,11 +74,11 @@ SAG workflow.
 `deploy-sag` always loads delivery norms and requires exactly one explicit
 `--issue` or `--hu`. It reads the explicit `deployment` route in
 `.sag/config.json`, asks an authenticated external adapter to verify one
-pipeline v7, Release Definition, repository/base branch, and DEV target, then
-verifies the external deployment state. DEV is the default and only supported
-environment in this slice. PROD and every production alias fail before
-external mutation; ambiguous or unverifiable routes fail closed. Repeated
-runs reconcile by route and scope identity rather than triggering a duplicate.
+pipeline v7, Release Definition, repository/base branch, and the selected
+DEV, TEST, or QA target, then verifies the external deployment state. DEV is
+the default. PROD and every production alias fail before external mutation;
+ambiguous or unverifiable routes fail closed. Repeated runs reconcile by
+environment, route, and scope identity rather than triggering a duplicate.
 
 `infra-sag` always loads infrastructure norms and requires exactly one explicit
 `--issue` or `--hu`. It verifies repository identity/base branch, Consul

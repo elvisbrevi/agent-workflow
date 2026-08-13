@@ -312,7 +312,7 @@ function printHelp(): void {
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
     "  --issue <id>                 alcance GitHub explicito para workflows SAG",
-    "  --environment <dev>          destino de deploy-sag; omitir usa DEV; PROD siempre esta prohibido",
+    "  --environment <dev|test|qa>  destino de deploy-sag; omitir usa DEV; PROD siempre esta prohibido",
     "  --session <id>",
     "  --model <model>",
     "  --variant <variant>",
@@ -336,7 +336,7 @@ function printHelp(): void {
     "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
      "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
-    "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV y verifica el resultado; no infiere destinos",
+    "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
     "  --working-directory <path>",
   ].join("\n"));
 }
@@ -386,7 +386,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "deploy-sag" && args.includes("--environment") && !options.environment?.trim()) {
-      reportOperator("deploy-sag requiere --environment <dev> cuando se proporciona --environment");
+       reportOperator("deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
       return 1;
     }
 
@@ -456,15 +456,15 @@ export class LazyWorkflowCli {
         return 1;
       }
       const environment = options.environment?.trim().toLowerCase() ?? "dev";
-      if (environment !== "dev") {
-        reportOperator("deploy-sag solo permite DEV en esta version; PROD y sus aliases estan prohibidos");
+      if (environment !== "dev" && environment !== "test" && environment !== "qa") {
+        reportOperator("deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
         return 1;
       }
       if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
         reportOperator("deploy-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
-      return this.runDeployment(options, "dev");
+      return this.runDeployment(options, environment);
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
