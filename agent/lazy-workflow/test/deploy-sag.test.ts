@@ -311,6 +311,7 @@ test.each([
   ["missing environment", ["deploy-sag", "--issue", "157", "--environment"]],
   ["production", ["deploy-sag", "--issue", "157", "--environment", "production"]],
   ["inline production", ["deploy-sag", "--issue", "157", "--environment=prod"]],
+  ["duplicate environment", ["deploy-sag", "--issue", "157", "--environment", "dev", "--environment", "prod"]],
   ["unsupported environment", ["deploy-sag", "--issue", "157", "--environment", "qa"]],
 ] as const)("deploy-sag rechaza %s antes de servicios", async (_name, args) => {
   let calls = 0;

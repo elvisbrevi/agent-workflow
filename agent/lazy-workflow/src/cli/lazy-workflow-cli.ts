@@ -110,6 +110,10 @@ function deploymentErrorMessage(error: unknown): string {
   return sanitizeDeploymentText(errorMessage(error));
 }
 
+function isAuthenticationError(error: unknown): boolean {
+  return /(?:authentication|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(errorMessage(error));
+}
+
 function sanitizeDeploymentOutput(value: unknown): unknown {
   if (typeof value === "string") return deploymentErrorMessage(value);
   if (Array.isArray(value)) return value.map(sanitizeDeploymentOutput);
@@ -400,6 +404,11 @@ export class LazyWorkflowCli {
     }
 
     if (command === "deploy-sag") {
+      const environmentFlags = args.filter((arg) => arg === "--environment" || arg.startsWith("--environment="));
+      if (environmentFlags.length > 1) {
+        reportOperator("deploy-sag no permite repetir --environment");
+        return 1;
+      }
       if (options.hu !== null && options.issue !== null) {
         reportOperator("deploy-sag no permite combinar --hu y --issue");
         return 1;
@@ -749,7 +758,8 @@ export class LazyWorkflowCli {
       }), null, 2));
       return 0;
     } catch (error) {
-      if (error instanceof DeploymentAuthenticationRequiredError && options.hu !== null && !authenticationRetried) {
+      if ((error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
+        && options.hu !== null && !authenticationRetried) {
         reportOperator(`Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
         await this.huInfoService.waitForAccess(options.hu);
         return this.runDeployment(options, environment, true);

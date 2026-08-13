@@ -176,7 +176,7 @@ function validateRoute(route: DeploymentRoute): void {
 }
 
 export function sanitizeDeploymentText(value: string): string {
-  return value.replace(/(authorization\s*:\s*(?:basic|bearer)\s+|(?:token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
+  return value.replace(/(authorization\s*:\s*(?:basic|bearer)\s+|bearer\s+|(?:access[-_ ]?token|token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
 }
 
 type AdapterOperation = "discover" | "reconcile" | "verify";
