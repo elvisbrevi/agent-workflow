@@ -236,6 +236,32 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
   }
 });
 
+test.each([
+  ["route", { ...route, id: "production-route" }],
+  ["OpenShift", { ...route, openShift: { ...route.openShift, id: "openshift-prod" } }],
+] as const)("deploy-sag rechaza aliases PROD en la identidad de %s antes de reconciliar", async (kind, unsafeRoute) => {
+  const directory = await config();
+  let reconcileCalls = 0;
+  if (kind === "OpenShift") {
+    const path = `${directory}/.sag/config.json`;
+    const value = JSON.parse(await Bun.file(path).text()) as { deployment: { route: { openShift: { id: string } } } };
+    value.deployment.route.openShift.id = unsafeRoute.openShift.id;
+    await Bun.write(path, JSON.stringify(value));
+  }
+  const systems: DeploymentSystems = {
+    discoverRoutes: async () => [unsafeRoute],
+    reconcile: async () => { reconcileCalls += 1; throw new Error("must not reconcile production route"); },
+    verify: async () => { throw new Error("must not verify"); },
+  };
+
+  try {
+    await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow(/PROD|produccion/i);
+    expect(reconcileCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("deploy-sag rechaza un resultado no verificado", async () => {
   const directory = await config();
   const systems: DeploymentSystems = {
