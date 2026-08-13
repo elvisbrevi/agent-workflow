@@ -470,6 +470,7 @@ export class SagNormsService {
     const required = [
       [NORMATIVE_PATHS.common, "com", "com-G2"],
       [componentPaths[0]!, component, `${component}-R1`],
+      [componentPaths[1]!, component, `${component}-R9`],
       [NORMATIVE_PATHS.documentation, "doc", "doc-R1"],
       [NORMATIVE_PATHS.integrations, "int", "int-R1"],
       ["/estandares/pull-requests.md", "pr", "pr-R1"],

@@ -147,8 +147,9 @@ Select `com-G2`, applicable `pr-R*`, `doc-R*`, `int-R*`, `seg-R*`, and
 `sonar-R*`. Consult `/core/workflows/finalizar.md`,
 `/core/agents/despliegue-sag.md`, and versioned scripts only as `W`/`I` sources.
 Discover pipeline and release names from `.sag/config.json` and repository
-assets; execute only when exactly one route and target are verified. DEV is the
-default, TEST and QA require explicit selection, and PROD is always rejected.
+assets; execute only when exactly one route and target are verified. The first
+delivery slice executes DEV only; TEST and QA are reserved for the explicit
+follow-up slice, and PROD is always rejected.
 
 The RAG does not version the real pipeline v7, Release Definitions,
 `ARODeploy_V7`, deployed OpenShift manifests, or effective Consul payloads.
@@ -160,16 +161,19 @@ The first executable DEV route is declared under `deployment` in
 
 ```json
 {
-  "authentication": "operator",
-  "adapter": { "command": [".sag/deploy-adapter"] },
-  "route": {
-    "repository": "project/repository",
-    "baseBranch": "main",
-    "pipeline": { "id": "pipeline-7", "version": "v7" },
-    "releaseDefinition": { "id": "release-1" },
-    "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
-    "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
-    "target": { "id": "openshift-dev", "environment": "dev" }
+  "tipo": "api",
+  "deployment": {
+    "authentication": "operator",
+    "adapter": { "command": [".sag/deploy-adapter"] },
+    "route": {
+      "repository": "project/repository",
+      "baseBranch": "main",
+      "pipeline": { "id": "pipeline-7", "version": "v7" },
+      "releaseDefinition": { "id": "release-1" },
+      "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
+      "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
+      "target": { "id": "openshift-dev", "environment": "dev" }
+    }
   }
 }
 ```
