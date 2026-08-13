@@ -246,20 +246,26 @@ export class SagNormsService {
           : path === NORMATIVE_PATHS.extraction ? "ext" : "sonar";
       const ids = ruleIds(snapshot.files[path] ?? "", prefix);
       if (ids.length === 0) throw new Error(`la fuente SAG no contiene normas para ${path}`);
+      const artifactIntegration = explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret");
+      const artifactDocument = explicitFacts.artifacts?.includes("document");
+      const capabilityDocument = explicitFacts.capabilities?.includes("document-processing");
+      const capabilitySonar = explicitFacts.capabilities?.includes("sonar");
+      const knownFalse = path === NORMATIVE_PATHS.documentation
+        ? explicitFacts.significantChange === false
+        : path === NORMATIVE_PATHS.integrations
+          ? artifactIntegration === false
+          : path === NORMATIVE_PATHS.extraction
+            ? artifactDocument === false && capabilityDocument === false
+            : capabilitySonar === false;
+      if (knownFalse) return [];
       const applicable = path === NORMATIVE_PATHS.documentation
         ? explicitFacts.significantChange === true && explicitFacts.environment !== null
         : path === NORMATIVE_PATHS.integrations
-          ? explicitFacts.artifacts?.some((artifact) => artifact === "config" || artifact === "secret") === true && explicitFacts.environment !== null
+          ? artifactIntegration === true && explicitFacts.environment !== null
           : path === NORMATIVE_PATHS.extraction
-            ? (explicitFacts.artifacts?.includes("document") || explicitFacts.capabilities?.includes("document-processing")) === true && explicitFacts.environment !== null
-            : explicitFacts.capabilities?.includes("sonar") === true && explicitFacts.environment !== null;
-      const unknown = path === NORMATIVE_PATHS.documentation
-        ? explicitFacts.significantChange === null || explicitFacts.environment === null
-        : path === NORMATIVE_PATHS.integrations
-          ? explicitFacts.artifacts === null || explicitFacts.environment === null
-          : path === NORMATIVE_PATHS.extraction
-            ? explicitFacts.artifacts === null || explicitFacts.capabilities === null || explicitFacts.environment === null
-            : explicitFacts.capabilities === null || explicitFacts.environment === null;
+            ? (artifactDocument === true || capabilityDocument === true) && explicitFacts.environment !== null
+            : capabilitySonar === true && explicitFacts.environment !== null;
+      const unknown = !applicable;
       if (unknown) {
         conditionalDecisions.push(...ids.map((ruleId) => `${ruleId}: requiere decidir aplicabilidad por hechos de alcance`));
       }

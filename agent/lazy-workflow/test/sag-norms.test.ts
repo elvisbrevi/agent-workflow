@@ -168,6 +168,22 @@ test("los valores de alcance fuera del vocabulario quedan como decision explicit
   }
 });
 
+test("los hechos negativos omiten familias que no aplican", async () => {
+  const directory = await config("api", {
+    cambio: "bugfix",
+    artefactos: [],
+    capacidades: [],
+    cambioSignificativo: false,
+    entorno: "none",
+  });
+  try {
+    const context = await new SagNormsService(source()).loadPlanning(directory);
+    expect(context.selectedRules.some(({ ruleId }) => ["doc-R1", "int-R1", "ext-R1", "sonar-R1"].includes(ruleId))).toBeFalse();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("la fuente remota fija los archivos al commit unico de master", async () => {
   const requests: Array<{ url: string; authorization: string | null }> = [];
   const remote = new RemoteSagNormSource(async (input, init) => {
