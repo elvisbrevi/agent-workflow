@@ -774,8 +774,8 @@ test("OpenCode solo detecta az login para flujos Azure y conserva la sesion", as
 });
 
 test("OpenCode transmite eventos y usa el working directory solicitado", async () => {
-  const reports: string[] = [];
-  let spawnOptions: { cwd?: string } | undefined;
+  const infoLines: string[] = [];
+  const debugLines: string[] = [];
   const output = [
     JSON.stringify({ type: "session", sessionID: "ses_visible" }),
     JSON.stringify({
@@ -783,10 +783,21 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
       sessionID: "ses_visible",
       part: { type: "tool", tool: "bash", state: { status: "completed", input: { command: "git status --short" } } },
     }),
+    JSON.stringify({ type: "step_start", sessionID: "ses_visible", part: { type: "step", reason: "agent" } }),
+    JSON.stringify({ type: "step_finish", sessionID: "ses_visible", part: { type: "step", reason: "stop" } }),
     JSON.stringify({ type: "reasoning", sessionID: "ses_visible", part: { type: "reasoning", text: "Revisando árbol" } }),
     JSON.stringify({ type: "text", sessionID: "ses_visible", part: { type: "text", text: "avance" } }),
   ].join("\n");
-  const service = new OpenCodeService((_, options) => {
+  let spawnOptions: { cwd?: string } | undefined;
+  const reporter = {
+    info: (message: string) => infoLines.push(message),
+    warn: () => undefined,
+    error: () => undefined,
+    debug: (message: string) => debugLines.push(message),
+    start: () => ({ stop: () => undefined }),
+    stop: () => undefined,
+  };
+  const service = new OpenCodeService((_command, options) => {
     spawnOptions = options;
     return {
       stdout: new Blob([output]).stream(),
@@ -794,7 +805,7 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
       exited: Promise.resolve(0),
       kill: () => undefined,
     };
-  }, (message) => reports.push(message));
+  }, reporter as never);
 
   const result = await service.run({
     model: "provider/model",
@@ -806,10 +817,14 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
 
   expect(result.result.text).toBe("avance");
   expect(spawnOptions).toEqual({ cwd: "/repo/objetivo" });
-  expect(reports).toContain('OpenCode [sesión ses_visible] herramienta bash (completed): "git status --short"');
-  expect(reports).toContain("OpenCode [sesión ses_visible] razonando: Revisando árbol");
-  expect(reports).toContain("OpenCode [sesión ses_visible]: avance");
-  expect(reports).toContain("OpenCode stderr: transport listo");
+  expect(infoLines).toContain("OpenCode [sesión ses_visible] inició un paso");
+  expect(infoLines).toContain("OpenCode [sesión ses_visible] terminó un paso (stop)");
+  expect(infoLines).toContain("OpenCode [sesión ses_visible]: avance");
+  expect(infoLines).toContain("OpenCode stderr: transport listo");
+  expect(infoLines.find((line) => line.includes("razonando"))).toBeUndefined();
+  expect(infoLines.find((line) => line.includes("herramienta bash"))).toBeUndefined();
+  expect(debugLines.some((line) => line.includes("razonando: Revisando árbol"))).toBeTrue();
+  expect(debugLines.some((line) => line.includes('herramienta bash (completed): "git status --short"'))).toBeTrue();
 });
 
 test("OpenCode termina al recibir el marcador aunque stdout permanezca abierto", async () => {
