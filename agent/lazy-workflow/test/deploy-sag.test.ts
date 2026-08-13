@@ -12,7 +12,9 @@ const route: DeploymentRoute = {
   baseBranch: "main",
   pipeline: { id: "pipeline-7", version: "v7" },
   releaseDefinition: { id: "release-1" },
-  target: { id: "openshift-dev", environment: "dev", evidence: "target-observed" },
+  openShift: { id: "openshift-dev", evidence: "openshift-observed" },
+  consul: { deployKey: "project/deploy", requiredVariables: ["DATABASE_URL"], evidence: "consul-observed" },
+  target: { id: "openshift-dev", environment: "dev" },
 };
 
 const config = async (): Promise<string> => {
@@ -27,6 +29,8 @@ const config = async (): Promise<string> => {
         baseBranch: route.baseBranch,
         pipeline: route.pipeline,
         releaseDefinition: route.releaseDefinition,
+        openShift: route.openShift,
+        consul: route.consul,
         target: route.target,
       },
     },
@@ -107,20 +111,15 @@ test("deploy-sag ejecuta una ruta unica y verifica el estado externo", async () 
       calls.push("discover");
       return [route];
     },
-    findExisting: async (_route, key) => {
+    reconcile: async (_config, _route, key) => {
       expect(key).toContain("github:157");
-      calls.push("find");
-      return null;
+      calls.push("reconcile");
+      return { record: { id: "deployment-1", status: "accepted" }, reconciled: false };
     },
-    trigger: async (_route, key) => {
-      expect(key).toContain("github:157");
-      calls.push("trigger");
-      return { id: "deployment-1", status: "accepted" };
-    },
-    verify: async (_route, record) => {
+    verify: async (_config, _route, record) => {
       expect(record.status).toBe("accepted");
       calls.push("verify");
-      return { id: record.id, status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id };
+      return { id: record.id, status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } };
     },
   };
 
@@ -131,7 +130,7 @@ test("deploy-sag ejecuta una ruta unica y verifica el estado externo", async () 
       reconciled: false,
       deployment: { id: "deployment-1", status: "succeeded" },
     });
-    expect(calls).toEqual(["discover", "find", "trigger", "verify"]);
+    expect(calls).toEqual(["discover", "reconcile", "verify"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -139,12 +138,11 @@ test("deploy-sag ejecuta una ruta unica y verifica el estado externo", async () 
 
 test("deploy-sag reconcilia una ejecucion existente sin duplicar el trigger", async () => {
   const directory = await config();
-  let triggerCalls = 0;
+  let reconcileCalls = 0;
   const systems: DeploymentSystems = {
     discoverRoutes: async () => [route],
-    findExisting: async () => ({ id: "deployment-existing", status: "accepted" }),
-    trigger: async () => { triggerCalls += 1; return { id: "unexpected", status: "accepted" }; },
-    verify: async (_route, record) => ({ id: record.id, status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id }),
+    reconcile: async () => { reconcileCalls += 1; return { record: { id: "deployment-existing", status: "accepted" }, reconciled: true }; },
+    verify: async (_config, _route, record) => ({ id: record.id, status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }),
   };
 
   try {
@@ -152,7 +150,7 @@ test("deploy-sag reconcilia una ejecucion existente sin duplicar el trigger", as
       reconciled: true,
       deployment: { id: "deployment-existing" },
     });
-    expect(triggerCalls).toBe(0);
+    expect(reconcileCalls).toBe(1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -160,17 +158,16 @@ test("deploy-sag reconcilia una ejecucion existente sin duplicar el trigger", as
 
 test("deploy-sag falla cerrado con rutas ambiguas y no muta el sistema", async () => {
   const directory = await config();
-  let triggerCalls = 0;
+  let reconcileCalls = 0;
   const systems: DeploymentSystems = {
     discoverRoutes: async () => [route, { ...route, id: "route-other" }],
-    findExisting: async () => { throw new Error("must not reconcile ambiguous route"); },
-    trigger: async () => { triggerCalls += 1; throw new Error("must not trigger"); },
+    reconcile: async () => { reconcileCalls += 1; throw new Error("must not reconcile ambiguous route"); },
     verify: async () => { throw new Error("must not verify"); },
   };
 
   try {
     await expect(new SagDeploymentService(systems).deploy(scope, directory)).rejects.toThrow("ruta unica");
-    expect(triggerCalls).toBe(0);
+    expect(reconcileCalls).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -181,8 +178,7 @@ test("deploy-sag rechaza una ruta externa que no coincide con la configuracion",
   let reconciliationCalls = 0;
   const systems: DeploymentSystems = {
     discoverRoutes: async () => [{ ...route, target: { ...route.target, id: "openshift-other" } }],
-    findExisting: async () => { reconciliationCalls += 1; return null; },
-    trigger: async () => { throw new Error("must not trigger"); },
+    reconcile: async () => { reconciliationCalls += 1; throw new Error("must not reconcile"); },
     verify: async () => { throw new Error("must not verify"); },
   };
 
@@ -198,9 +194,8 @@ test("deploy-sag rechaza un resultado no verificado", async () => {
   const directory = await config();
   const systems: DeploymentSystems = {
     discoverRoutes: async () => [route],
-    findExisting: async () => null,
-    trigger: async () => ({ id: "deployment-1", status: "accepted" }),
-    verify: async () => ({ id: "deployment-1", status: "succeeded", environment: "dev", target: "other-target", routeId: route.id }),
+    reconcile: async () => ({ record: { id: "deployment-1", status: "accepted" }, reconciled: false }),
+    verify: async () => ({ id: "deployment-1", status: "succeeded", environment: "dev", target: "other-target", routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }),
   };
 
   try {
@@ -235,7 +230,7 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
         expect(receivedScope).toEqual({ ...scope, title: "scope" });
         expect(receivedDirectory).toBe(directory);
         expect(environment).toBe("dev");
-        return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id }, reconciled: false };
+        return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
       } },
     ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
 

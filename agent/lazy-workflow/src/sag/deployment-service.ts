@@ -10,12 +10,15 @@ export interface DeploymentScope {
 
 export interface DeploymentProjectConfig {
   authentication: "operator";
+  adapter: { command: string[] };
   route: {
     repository: string;
     baseBranch: string;
     pipeline: { id: string; version: "v7" };
     releaseDefinition: { id: string };
-    target: { id: string; environment: DeploymentEnvironment; evidence: string };
+    openShift: { id: string; evidence: string };
+    consul: { deployKey: string; requiredVariables: string[]; evidence: string };
+    target: { id: string; environment: DeploymentEnvironment };
   };
 }
 
@@ -25,7 +28,9 @@ export interface DeploymentRoute {
   baseBranch: string;
   pipeline: { id: string; version: "v7" };
   releaseDefinition: { id: string };
-  target: { id: string; environment: DeploymentEnvironment; evidence: string };
+  openShift: { id: string; evidence: string };
+  consul: { deployKey: string; requiredVariables: string[]; evidence: string };
+  target: { id: string; environment: DeploymentEnvironment };
 }
 
 export interface DeploymentRecord {
@@ -39,13 +44,13 @@ export interface VerifiedDeployment {
   environment: DeploymentEnvironment;
   target: string;
   routeId: string;
+  evidence: { openShift: string; consul: string; target: string };
 }
 
 export interface DeploymentSystems {
   discoverRoutes(config: DeploymentProjectConfig, scope: DeploymentScope): Promise<DeploymentRoute[]>;
-  findExisting(route: DeploymentRoute, idempotencyKey: string): Promise<DeploymentRecord | null>;
-  trigger(route: DeploymentRoute, idempotencyKey: string): Promise<DeploymentRecord>;
-  verify(route: DeploymentRoute, record: DeploymentRecord): Promise<VerifiedDeployment>;
+  reconcile(config: DeploymentProjectConfig, route: DeploymentRoute, idempotencyKey: string): Promise<{ record: DeploymentRecord; reconciled: boolean }>;
+  verify(config: DeploymentProjectConfig, route: DeploymentRoute, record: DeploymentRecord): Promise<VerifiedDeployment>;
 }
 
 export interface DeploymentResult {
@@ -66,6 +71,13 @@ function requiredText(value: unknown, name: string): string {
   return value.trim();
 }
 
+function requiredTextList(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error(`.sag/config.json requiere ${name} como lista de textos`);
+  }
+  return value.map((item) => item.trim());
+}
+
 function parseConfig(value: unknown): DeploymentProjectConfig {
   if (!isRecord(value) || !isRecord(value.deployment)) {
     throw new Error(".sag/config.json requiere deployment para deploy-sag");
@@ -80,34 +92,51 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   }
   const pipelineValue = routeValue.pipeline;
   const releaseDefinitionValue = routeValue.releaseDefinition;
+  const openShiftValue = routeValue.openShift;
+  const consulValue = routeValue.consul;
   const targetValue = routeValue.target;
-  if (!isRecord(pipelineValue) || !isRecord(releaseDefinitionValue) || !isRecord(targetValue)) {
+  if (!isRecord(pipelineValue) || !isRecord(releaseDefinitionValue) || !isRecord(openShiftValue)
+    || !isRecord(consulValue) || !isRecord(targetValue)) {
     throw new Error(".sag/config.json requiere una ruta deployment completa");
   }
   const route = routeValue;
   const pipeline = pipelineValue;
   const releaseDefinition = releaseDefinitionValue;
+  const openShift = openShiftValue;
+  const consul = consulValue;
   const target = targetValue;
+  const adapterValue = deployment.adapter;
+  const adapter = isRecord(adapterValue) && Array.isArray(adapterValue.command) ? adapterValue.command : null;
   if (pipeline.version !== "v7") throw new Error("deploy-sag requiere pipeline v7 explicito");
   if (target.environment !== "dev") throw new Error("deploy-sag solo permite el destino DEV");
   return {
     authentication: "operator",
+    adapter: {
+      command: adapter !== null
+        ? requiredTextList(adapter, "deployment.adapter.command")
+        : [".sag/deploy-adapter"],
+    },
     route: {
       repository: requiredText(route.repository, "deployment.route.repository"),
       baseBranch: requiredText(route.baseBranch, "deployment.route.baseBranch"),
       pipeline: { id: requiredText(pipeline.id, "deployment.route.pipeline.id"), version: "v7" },
       releaseDefinition: { id: requiredText(releaseDefinition.id, "deployment.route.releaseDefinition.id") },
-      target: {
-        id: requiredText(target.id, "deployment.route.target.id"),
-        environment: "dev",
-        evidence: requiredText(target.evidence, "deployment.route.target.evidence"),
+      openShift: {
+        id: requiredText(openShift.id, "deployment.route.openShift.id"),
+        evidence: requiredText(openShift.evidence, "deployment.route.openShift.evidence"),
       },
+      consul: {
+        deployKey: requiredText(consul.deployKey, "deployment.route.consul.deployKey"),
+        requiredVariables: requiredTextList(consul.requiredVariables, "deployment.route.consul.requiredVariables"),
+        evidence: requiredText(consul.evidence, "deployment.route.consul.evidence"),
+      },
+      target: { id: requiredText(target.id, "deployment.route.target.id"), environment: "dev" },
     },
   };
 }
 
 function routeKey(route: DeploymentRoute): string {
-  return [route.repository, route.baseBranch, route.pipeline.id, route.releaseDefinition.id, route.target.id].join("/");
+  return JSON.stringify([route.repository, route.baseBranch, route.pipeline.id, route.releaseDefinition.id, route.openShift.id, route.consul.deployKey, route.target.id]);
 }
 
 function matchesConfiguredRoute(config: DeploymentProjectConfig, route: DeploymentRoute): boolean {
@@ -116,6 +145,9 @@ function matchesConfiguredRoute(config: DeploymentProjectConfig, route: Deployme
     && route.pipeline.id === config.route.pipeline.id
     && route.pipeline.version === config.route.pipeline.version
     && route.releaseDefinition.id === config.route.releaseDefinition.id
+    && route.openShift.id === config.route.openShift.id
+    && route.consul.deployKey === config.route.consul.deployKey
+    && JSON.stringify(route.consul.requiredVariables) === JSON.stringify(config.route.consul.requiredVariables)
     && route.target.id === config.route.target.id
     && route.target.environment === config.route.target.environment;
 }
@@ -124,31 +156,88 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.id.trim() || !route.repository.trim() || !route.baseBranch.trim()) throw new Error("la ruta de despliegue no tiene identidad completa");
   if (!route.pipeline.id.trim() || route.pipeline.version !== "v7") throw new Error("la ruta no tiene un pipeline v7 verificable");
   if (!route.releaseDefinition.id.trim()) throw new Error("la ruta no tiene Release Definition verificable");
-  if (!route.target.id.trim() || route.target.environment !== "dev" || !route.target.evidence.trim()) {
+  if (!route.openShift.id.trim() || !route.openShift.evidence.trim()) throw new Error("la ruta no tiene OpenShift verificable");
+  if (!route.consul.deployKey.trim() || route.consul.requiredVariables.length === 0 || !route.consul.evidence.trim()) {
+    throw new Error("la ruta no tiene Consul verificable");
+  }
+  if (!route.target.id.trim() || route.target.environment !== "dev") {
     throw new Error("la ruta no tiene un destino DEV verificable");
   }
 }
 
-class UnconfiguredDeploymentSystems implements DeploymentSystems {
-  async discoverRoutes(_config: DeploymentProjectConfig, _scope: DeploymentScope): Promise<DeploymentRoute[]> {
-    throw new Error("no hay un adaptador de despliegue autenticado configurado");
+function sanitize(value: string): string {
+  return value.replace(/(authorization\s*:\s*(?:basic|bearer)\s+|(?:token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
+}
+
+type AdapterOperation = "discover" | "reconcile" | "verify";
+
+export class ProcessDeploymentSystems implements DeploymentSystems {
+  constructor(private readonly workingDirectory: string) {}
+
+  private async invoke(config: DeploymentProjectConfig, operation: AdapterOperation, payload: unknown): Promise<unknown> {
+    const child = Bun.spawn([...config.adapter.command, "--operation", operation], {
+      cwd: this.workingDirectory,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    child.stdin.write(JSON.stringify(payload));
+    child.stdin.end();
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(`adaptador de deployment fallo (${sanitize(stderr.trim() || `exit ${exitCode}`)})`);
+    try {
+      return JSON.parse(stdout);
+    } catch (error) {
+      throw new Error(`adaptador de deployment devolvio JSON invalido (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
 
-  async findExisting(_route: DeploymentRoute, _idempotencyKey: string): Promise<DeploymentRecord | null> {
-    throw new Error("no hay un adaptador de despliegue autenticado configurado");
+  async discoverRoutes(config: DeploymentProjectConfig, scope: DeploymentScope): Promise<DeploymentRoute[]> {
+    const response = await this.invoke(config, "discover", { scope, route: config.route });
+    const routes = Array.isArray(response) ? response : isRecord(response) ? response.routes : null;
+    if (!Array.isArray(routes)) throw new Error("adaptador de deployment no devolvio rutas");
+    return routes as DeploymentRoute[];
   }
 
-  async trigger(_route: DeploymentRoute, _idempotencyKey: string): Promise<DeploymentRecord> {
-    throw new Error("no hay un adaptador de despliegue autenticado configurado");
+  async reconcile(config: DeploymentProjectConfig, route: DeploymentRoute, idempotencyKey: string): Promise<{ record: DeploymentRecord; reconciled: boolean }> {
+    const response = await this.invoke(config, "reconcile", { route, idempotencyKey });
+    if (!isRecord(response) || !isRecord(response.record) || typeof response.reconciled !== "boolean") {
+      throw new Error("adaptador de deployment no devolvio una reconciliacion verificable");
+    }
+    const record = response.record;
+    if (typeof record.id !== "string" || typeof record.status !== "string") throw new Error("adaptador de deployment devolvio un registro invalido");
+    return { record: { id: record.id, status: record.status }, reconciled: response.reconciled };
   }
 
-  async verify(_route: DeploymentRoute, _record: DeploymentRecord): Promise<VerifiedDeployment> {
-    throw new Error("no hay un adaptador de despliegue autenticado configurado");
+  async verify(config: DeploymentProjectConfig, route: DeploymentRoute, record: DeploymentRecord): Promise<VerifiedDeployment> {
+    const response = await this.invoke(config, "verify", { route, record });
+    if (!isRecord(response) || typeof response.id !== "string" || response.status !== "succeeded"
+      || response.environment !== "dev" || typeof response.target !== "string" || typeof response.routeId !== "string"
+      || !isRecord(response.evidence)
+      || typeof response.evidence.openShift !== "string" || typeof response.evidence.consul !== "string" || typeof response.evidence.target !== "string") {
+      throw new Error("adaptador de deployment devolvio un estado no verificable");
+    }
+    return {
+      id: response.id,
+      status: "succeeded",
+      environment: "dev",
+      target: response.target,
+      routeId: response.routeId,
+      evidence: {
+        openShift: response.evidence.openShift,
+        consul: response.evidence.consul,
+        target: response.evidence.target,
+      },
+    };
   }
 }
 
 export class SagDeploymentService {
-  constructor(private readonly systems: DeploymentSystems = new UnconfiguredDeploymentSystems()) {}
+  constructor(private readonly systems: DeploymentSystems | null = null) {}
 
   async deploy(scope: DeploymentScope, workingDirectory: string, environment: DeploymentEnvironment = "dev"): Promise<DeploymentResult> {
     if (environment !== "dev") throw new Error("deploy-sag solo permite DEV en esta version");
@@ -159,17 +248,20 @@ export class SagDeploymentService {
       throw new Error(`no se pudo leer .sag/config.json (${error instanceof Error ? error.message : String(error)})`);
     }
     const config = parseConfig(raw);
-    const routes = await this.systems.discoverRoutes(config, scope);
+    const systems = this.systems ?? new ProcessDeploymentSystems(workingDirectory);
+    const routes = await systems.discoverRoutes(config, scope);
     if (routes.length !== 1) throw new Error(`deploy-sag requiere una ruta unica; se encontraron ${routes.length}`);
     const route = routes[0]!;
     validateRoute(route);
     if (!matchesConfiguredRoute(config, route)) throw new Error("la ruta externa no coincide con la ruta explicita del proyecto");
     const idempotencyKey = `lazy-workflow:${scope.tracker}:${scope.id}:${routeKey(route)}`;
-    const existing = await this.systems.findExisting(route, idempotencyKey);
-    const record = existing ?? await this.systems.trigger(route, idempotencyKey);
-    const deployment = await this.systems.verify(route, record);
+    const reconciliation = await systems.reconcile(config, route, idempotencyKey);
+    const deployment = await systems.verify(config, route, reconciliation.record);
     if (deployment.status !== "succeeded" || deployment.environment !== "dev"
-      || deployment.target !== route.target.id || deployment.routeId !== route.id) {
+      || deployment.target !== route.target.id || deployment.routeId !== route.id
+      || !deployment.evidence
+      || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"
+      || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
       throw new Error("el despliegue no tiene un estado DEV verificado");
     }
     return {
@@ -178,7 +270,7 @@ export class SagDeploymentService {
       idempotencyKey,
       route,
       deployment,
-      reconciled: existing !== null,
+      reconciled: reconciliation.reconciled,
     };
   }
 }

@@ -161,18 +161,23 @@ The first executable DEV route is declared under `deployment` in
 ```json
 {
   "authentication": "operator",
+  "adapter": { "command": [".sag/deploy-adapter"] },
   "route": {
     "repository": "project/repository",
     "baseBranch": "main",
     "pipeline": { "id": "pipeline-7", "version": "v7" },
     "releaseDefinition": { "id": "release-1" },
-    "target": { "id": "openshift-dev", "environment": "dev", "evidence": "authoritative-target-evidence" }
+    "openShift": { "id": "openshift-dev", "evidence": "authoritative-openshift-evidence" },
+    "consul": { "deployKey": "project/deploy", "requiredVariables": ["DATABASE_URL"], "evidence": "authoritative-consul-evidence" },
+    "target": { "id": "openshift-dev", "environment": "dev" }
   }
 }
 ```
 
-The coordinator never treats these values as proof: an authenticated external
-adapter must return exactly one matching route and verify the resulting state.
+The coordinator never treats these values as proof: the adapter is executed
+without a shell, must use operator authentication, return exactly one matching
+route, atomically reconcile the idempotency key, and verify the resulting
+OpenShift, Consul, and target state.
 
 ## Security and failure rules
 
