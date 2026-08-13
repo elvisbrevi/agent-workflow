@@ -88,7 +88,7 @@ function requiredTextList(value: unknown, name: string): string[] {
 }
 
 function isProductionAlias(value: string): boolean {
-  return /(^|[-_/:.])(?:prod|production|prd|live|primary|online)(?=$|[-_/:.])/i.test(value)
+  return /(^|[-_/:.= ?&#])(?:prod|production|prd|live|primary|online)(?=$|[-_/:.= ?&#])/i.test(value)
     || /^(?:prod|production|prd|live|primary|online)[A-Z]/i.test(value);
 }
 
