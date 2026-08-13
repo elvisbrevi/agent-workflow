@@ -91,6 +91,26 @@ function isProductionAlias(value: string): boolean {
   return /(^|[-_/:])(?:prod|production|prd)(?:$|[-_/:])/i.test(value);
 }
 
+function rejectProductionIdentity(value: string, name: string): void {
+  if (isProductionAlias(value)) throw new Error(`deploy-sag no permite identidades PROD en ${name}`);
+}
+
+function validateNonProductionRoute(route: DeploymentProjectConfig["route"] | DeploymentRoute): void {
+  const identities: Array<[string, string]> = [
+    ["route", "id" in route ? route.id : ""],
+    ["repository", route.repository],
+    ["baseBranch", route.baseBranch],
+    ["pipeline", route.pipeline.id],
+    ["releaseDefinition", route.releaseDefinition.id],
+    ["openShift", route.openShift.id],
+    ["consul", route.consul.deployKey],
+    ["target", route.target.id],
+  ];
+  for (const [name, value] of identities) {
+    if (value) rejectProductionIdentity(value, name);
+  }
+}
+
 function parseConfig(value: unknown): DeploymentProjectConfig {
   if (!isRecord(value) || !isRecord(value.deployment)) {
     throw new Error(".sag/config.json requiere deployment para deploy-sag");
@@ -128,8 +148,7 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   if (typeof target.environment !== "string" || !DEPLOYMENT_ENVIRONMENTS.includes(target.environment as DeploymentEnvironment)) {
     throw new Error("deploy-sag requiere un destino DEV, TEST o QA explicito");
   }
-  if (isProductionAlias(targetId)) throw new Error("deploy-sag no permite destinos PROD ni aliases de produccion");
-  return {
+  const config: DeploymentProjectConfig = {
     authentication: "operator",
     adapter: {
       command: requiredTextList(adapter, "deployment.adapter.command"),
@@ -155,6 +174,8 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
       },
     },
   };
+  validateNonProductionRoute(config.route);
+  return config;
 }
 
 function routeKey(route: DeploymentRoute): string {
@@ -185,9 +206,10 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.consul.deployKey.trim() || route.consul.requiredVariables.length === 0 || !route.consul.evidence.trim()) {
     throw new Error("la ruta no tiene Consul verificable");
   }
-  if (!route.target.id.trim() || isProductionAlias(route.target.id) || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
+  if (!route.target.id.trim() || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
     throw new Error("la ruta no tiene un destino no productivo verificable");
   }
+  validateNonProductionRoute(route);
 }
 
 export function sanitizeDeploymentText(value: string): string {
