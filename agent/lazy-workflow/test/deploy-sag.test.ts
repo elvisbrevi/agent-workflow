@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import { SagDeploymentService, type DeploymentRoute, type DeploymentSystems } from "../src/sag/deployment-service.ts";
+import { DeploymentAuthenticationRequiredError, SagDeploymentService, type DeploymentRoute, type DeploymentSystems } from "../src/sag/deployment-service.ts";
 import { SagNormsService, type SagDeploymentContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-deploy-${crypto.randomUUID()}`;
@@ -24,6 +24,7 @@ const config = async (): Promise<string> => {
     tipo: "api",
     deployment: {
       authentication: "operator",
+      adapter: { command: [".sag/deploy-adapter"] },
       route: {
         repository: route.repository,
         baseBranch: route.baseBranch,
@@ -91,7 +92,7 @@ test("las normas de deployment cargan familias de entrega y guidance trazable", 
     expect(loaded.phase).toBe("deployment");
     expect(loaded.commit).toBe("delivery-commit");
     expect(loaded.selectedRules.map(({ ruleId }) => ruleId)).toEqual([
-      "com-G2", "api-R1", "doc-R1", "int-R1", "pr-R1", "seg-R1", "sonar-R1",
+      "com-G2", "api-R1", "api-R9", "doc-R1", "int-R1", "pr-R1", "seg-R1", "sonar-R1",
     ]);
     expect(loaded.guidance.map(({ path, classification }) => [path, classification])).toEqual([
       ["/core/workflows/finalizar.md", "W"],
@@ -245,12 +246,71 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
   }
 });
 
+test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticacion", async () => {
+  const directory = await config();
+  let attempts = 0;
+  let waits = 0;
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => ({ id: 23438, title: "HU deployment" }), waitForAccess: async () => { waits += 1; } },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      undefined,
+      undefined,
+      { deploy: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new DeploymentAuthenticationRequiredError();
+        return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: true };
+      } },
+    ).run(["deploy-sag", "--hu", "23438", "--working-directory", directory]);
+
+    expect(code).toBe(0);
+    expect(attempts).toBe(2);
+    expect(waits).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each(["adapter unavailable", "trigger failed", "verification failed"])("deploy-sag propaga el fallo de %s sin filtrar secretos", async (failure) => {
+  const directory = await config();
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => errors.push(values.join(" "));
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      undefined,
+      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      { deploy: async () => { throw new Error(`${failure}; token: fixture-secret`); } },
+    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain(failure);
+    expect(errors.join("\n")).not.toContain("fixture-secret");
+  } finally {
+    console.error = originalError;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test.each([
   ["missing scope", ["deploy-sag"]],
   ["conflicting scope", ["deploy-sag", "--hu", "23438", "--issue", "157"]],
   ["invalid issue", ["deploy-sag", "--issue", "abc"]],
   ["missing environment", ["deploy-sag", "--issue", "157", "--environment"]],
   ["production", ["deploy-sag", "--issue", "157", "--environment", "production"]],
+  ["inline production", ["deploy-sag", "--issue", "157", "--environment=prod"]],
   ["unsupported environment", ["deploy-sag", "--issue", "157", "--environment", "qa"]],
 ] as const)("deploy-sag rechaza %s antes de servicios", async (_name, args) => {
   let calls = 0;

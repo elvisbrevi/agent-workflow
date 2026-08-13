@@ -62,6 +62,13 @@ export interface DeploymentResult {
   reconciled: boolean;
 }
 
+export class DeploymentAuthenticationRequiredError extends Error {
+  constructor() {
+    super("el adaptador de deployment requiere autenticacion del operador");
+    this.name = "DeploymentAuthenticationRequiredError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -106,15 +113,16 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   const consul = consulValue;
   const target = targetValue;
   const adapterValue = deployment.adapter;
-  const adapter = isRecord(adapterValue) && Array.isArray(adapterValue.command) ? adapterValue.command : null;
+  if (!isRecord(adapterValue) || !Array.isArray(adapterValue.command)) {
+    throw new Error(".sag/config.json requiere deployment.adapter.command explicito");
+  }
+  const adapter = adapterValue.command;
   if (pipeline.version !== "v7") throw new Error("deploy-sag requiere pipeline v7 explicito");
   if (target.environment !== "dev") throw new Error("deploy-sag solo permite el destino DEV");
   return {
     authentication: "operator",
     adapter: {
-      command: adapter !== null
-        ? requiredTextList(adapter, "deployment.adapter.command")
-        : [".sag/deploy-adapter"],
+      command: requiredTextList(adapter, "deployment.adapter.command"),
     },
     route: {
       repository: requiredText(route.repository, "deployment.route.repository"),
@@ -146,8 +154,10 @@ function matchesConfiguredRoute(config: DeploymentProjectConfig, route: Deployme
     && route.pipeline.version === config.route.pipeline.version
     && route.releaseDefinition.id === config.route.releaseDefinition.id
     && route.openShift.id === config.route.openShift.id
+    && route.openShift.evidence === config.route.openShift.evidence
     && route.consul.deployKey === config.route.consul.deployKey
     && JSON.stringify(route.consul.requiredVariables) === JSON.stringify(config.route.consul.requiredVariables)
+    && route.consul.evidence === config.route.consul.evidence
     && route.target.id === config.route.target.id
     && route.target.environment === config.route.target.environment;
 }
@@ -165,7 +175,7 @@ function validateRoute(route: DeploymentRoute): void {
   }
 }
 
-function sanitize(value: string): string {
+export function sanitizeDeploymentText(value: string): string {
   return value.replace(/(authorization\s*:\s*(?:basic|bearer)\s+|(?:token|password|secret|cookie|pat|api[-_ ]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
 }
 
@@ -188,9 +198,11 @@ export class ProcessDeploymentSystems implements DeploymentSystems {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    if (exitCode !== 0) throw new Error(`adaptador de deployment fallo (${sanitize(stderr.trim() || `exit ${exitCode}`)})`);
+    if (exitCode !== 0) throw new Error(`adaptador de deployment fallo (${sanitizeDeploymentText(stderr.trim() || `exit ${exitCode}`)})`);
     try {
-      return JSON.parse(stdout);
+      const response = JSON.parse(stdout) as unknown;
+      if (isRecord(response) && response.authenticationRequired === true) throw new DeploymentAuthenticationRequiredError();
+      return response;
     } catch (error) {
       throw new Error(`adaptador de deployment devolvio JSON invalido (${error instanceof Error ? error.message : String(error)})`);
     }
