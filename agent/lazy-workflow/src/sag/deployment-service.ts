@@ -88,7 +88,35 @@ function requiredTextList(value: unknown, name: string): string[] {
 }
 
 function isProductionAlias(value: string): boolean {
-  return /(^|[-_/:])(?:prod|production|prd)(?:$|[-_/:])/i.test(value);
+  const normalized = value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+  return /(^|[-_/:.= ?&#])(?:prod|production|prd|live|primary|online)(?=$|[-_/:.= ?&#0-9])/i.test(normalized);
+}
+
+function rejectProductionIdentity(value: string, name: string): void {
+  if (isProductionAlias(value)) throw new Error(`deploy-sag no permite identidades PROD en ${name}`);
+}
+
+function rejectProductionRouteIdentities(route: DeploymentProjectConfig["route"] | DeploymentRoute): void {
+  const identities: Array<[string, string]> = [
+    ["route", "id" in route ? route.id : ""],
+    ["repository", route.repository],
+    ["baseBranch", route.baseBranch],
+    ["pipeline", route.pipeline.id],
+    ["releaseDefinition", route.releaseDefinition.id],
+    ["openShift", route.openShift.id],
+    ["openShift.evidence", route.openShift.evidence],
+    ["consul", route.consul.deployKey],
+    ["consul.evidence", route.consul.evidence],
+    ["target", route.target.id],
+    ["target.evidence", route.target.evidence],
+  ];
+  identities.push(...route.consul.requiredVariables.map((value, index) => [`consul.requiredVariables[${index}]`, value] as [string, string]));
+  for (const [name, value] of identities) {
+    if (value) rejectProductionIdentity(value, name);
+  }
 }
 
 function parseConfig(value: unknown): DeploymentProjectConfig {
@@ -128,8 +156,7 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
   if (typeof target.environment !== "string" || !DEPLOYMENT_ENVIRONMENTS.includes(target.environment as DeploymentEnvironment)) {
     throw new Error("deploy-sag requiere un destino DEV, TEST o QA explicito");
   }
-  if (isProductionAlias(targetId)) throw new Error("deploy-sag no permite destinos PROD ni aliases de produccion");
-  return {
+  const config: DeploymentProjectConfig = {
     authentication: "operator",
     adapter: {
       command: requiredTextList(adapter, "deployment.adapter.command"),
@@ -155,6 +182,9 @@ function parseConfig(value: unknown): DeploymentProjectConfig {
       },
     },
   };
+  rejectProductionRouteIdentities(config.route);
+  config.adapter.command.forEach((value, index) => rejectProductionIdentity(value, `adapter.command[${index}]`));
+  return config;
 }
 
 function routeKey(route: DeploymentRoute): string {
@@ -185,9 +215,10 @@ function validateRoute(route: DeploymentRoute): void {
   if (!route.consul.deployKey.trim() || route.consul.requiredVariables.length === 0 || !route.consul.evidence.trim()) {
     throw new Error("la ruta no tiene Consul verificable");
   }
-  if (!route.target.id.trim() || isProductionAlias(route.target.id) || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
+  if (!route.target.id.trim() || !DEPLOYMENT_ENVIRONMENTS.includes(route.target.environment) || !route.target.evidence.trim()) {
     throw new Error("la ruta no tiene un destino no productivo verificable");
   }
+  rejectProductionRouteIdentities(route);
 }
 
 export function sanitizeDeploymentText(value: string): string {
@@ -292,9 +323,15 @@ export class SagDeploymentService {
       || deployment.target !== route.target.id || deployment.routeId !== route.id
       || !deployment.evidence
       || typeof deployment.evidence.openShift !== "string" || typeof deployment.evidence.consul !== "string" || typeof deployment.evidence.target !== "string"
-      || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
+     || !deployment.evidence.openShift.trim() || !deployment.evidence.consul.trim() || !deployment.evidence.target.trim()) {
        throw new Error(`el despliegue no tiene un estado ${environment.toUpperCase()} verificado`);
     }
+    rejectProductionIdentity(deployment.id, "deployment.id");
+    rejectProductionIdentity(deployment.target, "deployment.target");
+    rejectProductionIdentity(deployment.routeId, "deployment.routeId");
+    rejectProductionIdentity(deployment.evidence.openShift, "deployment.evidence.openShift");
+    rejectProductionIdentity(deployment.evidence.consul, "deployment.evidence.consul");
+    rejectProductionIdentity(deployment.evidence.target, "deployment.evidence.target");
     return {
       status: "verified",
       environment,
