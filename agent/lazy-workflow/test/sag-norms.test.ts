@@ -46,6 +46,9 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
     expect(context.component).toBe("api");
     expect(context.selectedRules.map(({ ruleId }) => ruleId)).toEqual(["com-G1", "api-R1", "api-R9", "api-R10", "seg-R1"]);
     expect(context.selectedRules.every((rule) => rule.classification === "N" && rule.commit === context.commit)).toBeTrue();
+    expect(context.selectedRules[1]?.applicability).toBe("applicable");
+    expect(context.selectedRules[3]?.applicability).toBe("needs-decision");
+    expect(context.selectedRules[4]?.applicability).toBe("needs-decision");
     expect(context.selectedRules[1]?.source).toContain("version=GBmaster");
     expect(context.selectedRules[1]?.selectedBecause).toContain("tipo=api");
     expect(context.needsDecision).toEqual(["change-kind", "artifacts", "capabilities", "significant-change"]);
