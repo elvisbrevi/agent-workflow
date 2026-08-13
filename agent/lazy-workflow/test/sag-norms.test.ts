@@ -22,6 +22,10 @@ function source(): SagNormSource {
         "/estandares/api.md",
         "/estandares/api-adonis-patrones.md",
         "/estandares/seguimiento.md",
+        "/estandares/documentacion.md",
+        "/estandares/integraciones.md",
+        "/estandares/extraccion-documentos.md",
+        "/estandares/sonarqube.md",
       ]);
       return {
         commit: "commit-master-123",
@@ -30,6 +34,10 @@ function source(): SagNormSource {
           "/estandares/api.md": "# api-R1\n# api-R9\n",
           "/estandares/api-adonis-patrones.md": "# api-R10\n",
           "/estandares/seguimiento.md": "# seg-R1\n",
+          "/estandares/documentacion.md": "# doc-R1\n",
+          "/estandares/integraciones.md": "# int-R1\n",
+          "/estandares/extraccion-documentos.md": "# ext-R1\n",
+          "/estandares/sonarqube.md": "# sonar-R1\n",
         },
       };
     },
@@ -44,7 +52,7 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
     expect(context.commit).toBe("commit-master-123");
     expect(context.branch).toBe("master");
     expect(context.component).toBe("api");
-    expect(context.selectedRules.map(({ ruleId }) => ruleId)).toEqual(["com-G1", "api-R1", "api-R9", "api-R10", "seg-R1"]);
+    expect(context.selectedRules.map(({ ruleId }) => ruleId)).toEqual(["com-G1", "api-R1", "api-R9", "api-R10", "doc-R1", "int-R1", "ext-R1", "sonar-R1", "seg-R1"]);
     expect(context.selectedRules.every((rule) => rule.classification === "N" && rule.commit === context.commit)).toBeTrue();
     expect(context.selectedRules[1]?.applicability).toBe("applicable");
     expect(context.selectedRules[3]?.applicability).toBe("needs-decision");
@@ -59,6 +67,10 @@ test("plan selecciona normas por fase y componente y conserva decisiones descono
       "environment",
       "api-R10: requiere decidir aplicabilidad por artefacto o capacidad",
       "seg-R1: requiere decidir aplicabilidad por change-kind",
+      "doc-R1: requiere decidir aplicabilidad por hechos de alcance",
+      "int-R1: requiere decidir aplicabilidad por hechos de alcance",
+      "ext-R1: requiere decidir aplicabilidad por hechos de alcance",
+      "sonar-R1: requiere decidir aplicabilidad por hechos de alcance",
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -87,7 +99,7 @@ test("los hechos parciales no convierten reglas condicionales en aplicables", as
   try {
     const context = await new SagNormsService(source()).loadPlanning(directory);
     expect(context.selectedRules.find(({ ruleId }) => ruleId === "api-R10")?.applicability).toBe("needs-decision");
-    expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("applicable");
+    expect(context.selectedRules.find(({ ruleId }) => ruleId === "seg-R1")?.applicability).toBe("needs-decision");
     expect(context.needsDecision).toContain("api-R10: requiere decidir aplicabilidad por artefacto o capacidad");
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -100,6 +112,7 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
     artefactos: ["document", "config"],
     capacidades: ["document-processing", "sonar"],
     cambioSignificativo: true,
+    entorno: "none",
   });
   try {
     const context = await new SagNormsService({
@@ -135,7 +148,7 @@ test("los hechos explicitos seleccionan familias documentales aplicables", async
       artifacts: ["document", "config"],
       capabilities: ["document-processing", "sonar"],
       significantChange: true,
-      environment: null,
+      environment: "none",
     });
     expect(context.selectedRules.filter(({ ruleId }) => ["doc-R1", "int-R1", "ext-R1", "sonar-R1"].includes(ruleId))
       .every(({ applicability }) => applicability === "applicable")).toBeTrue();
@@ -200,6 +213,10 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
         "/estandares/bff.md",
         "/estandares/bff-patrones.md",
         "/estandares/seguimiento.md",
+        "/estandares/documentacion.md",
+        "/estandares/integraciones.md",
+        "/estandares/extraccion-documentos.md",
+        "/estandares/sonarqube.md",
       ]);
       return {
         commit: "bff-commit",
@@ -208,6 +225,10 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
           "/estandares/bff.md": "bff-R1",
           "/estandares/bff-patrones.md": "bff-R9",
           "/estandares/seguimiento.md": "seg-R1",
+          "/estandares/documentacion.md": "doc-R1",
+          "/estandares/integraciones.md": "int-R1",
+          "/estandares/extraccion-documentos.md": "ext-R1",
+          "/estandares/sonarqube.md": "sonar-R1",
         },
       };
     },
