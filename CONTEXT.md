@@ -88,3 +88,40 @@ When an HU planning run encounters an `az login --use-device-code` request,
 lazy-workflow preserves the OpenCode session, waits for Azure access, and
 resumes that same session once with `continue`.
 _Avoid_: automatic credential capture
+
+**SAG norms context**:
+An optional, phase-selected view of the engineering norms in the remote
+`sag.desarrollo.ia.rag` `master` branch. A run records the resolved commit and
+stops when the source cannot be read; summaries and procedural guidance do not
+replace the identified normative rules.
+_Avoid_: local SAG checkout, implicit SAG compliance
+
+**SAG-scoped workflow**:
+A workflow whose purpose and name are tied to SAG norms. Unlike `plan` and
+`code`, it always loads SAG norms and has no non-SAG mode.
+_Avoid_: generic workflow with implicit norms
+
+**SAG infrastructure verification run**:
+A tracker-scoped `infra-sag` run that verifies development prerequisites such
+as repository, Consul configuration, and database availability without
+provisioning them. Missing or unverifiable prerequisites become corrective
+work in the source tracker.
+_Avoid_: infrastructure provisioning run
+
+**SAG architecture review run**:
+A tracker-scoped `architecture-review-sag` run that reviews the completed scope
+against applicable SAG architecture and design norms without correcting code.
+Findings are synthesized into a specification and corrective tickets in the
+source tracker.
+_Avoid_: implementation run, automatic remediation
+
+**SAG deployment run**:
+A tracker-scoped `deploy-sag` run that discovers one unambiguous repository
+deployment route and may execute it for DEV by default or explicit TEST/QA.
+PROD and ambiguous or unverifiable deployment routes fail closed.
+_Avoid_: production deployment, guessed pipeline
+
+**SAG source scope**:
+The complete Azure HU selected by `--hu`, or the single GitHub Issue selected
+by `--issue`, used by a SAG-scoped workflow for context and publication.
+_Avoid_: Azure child ticket, GitHub queue drain
