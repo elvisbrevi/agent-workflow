@@ -22,11 +22,13 @@ import {
 } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator } from "../output/operator-output.ts";
-import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
-import { SagNormsService, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { SagNormsService, type SagArchitectureReviewContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
+import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 
 type CliOptions = OpenCodeRunOptions & {
   hu: number | null;
+  issue: number | null;
   branch: string | null;
   baseBranch: string | null;
   ticket: number | null;
@@ -83,6 +85,7 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence?(ticket: number, filePath: string): Promise<unknown>;
+  publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -103,6 +106,28 @@ function errorMessage(error: unknown): string {
 
 function containsMarker(text: string, marker: string): boolean {
   return text.split(/\r?\n/).some((line) => line.trim() === marker);
+}
+
+interface ArchitectureReviewResult {
+  status: "clean" | "findings";
+  summary: string;
+  specification?: { title: string; body: string };
+  tickets?: Array<{ title: string; body: string }>;
+}
+
+function parseArchitectureReviewResult(text: string): ArchitectureReviewResult {
+  const marker = "ARCHITECTURE_REVIEW_RESULT";
+  const lines = text.split(/\r?\n/);
+  const markerLine = lines.findIndex((line) => line.trim() === marker);
+  if (markerLine < 0) throw new Error(`OpenCode no devolvio ${marker}`);
+  const result = JSON.parse(lines.slice(markerLine + 1).join("\n").trim()) as ArchitectureReviewResult;
+  if ((result.status !== "clean" && result.status !== "findings") || typeof result.summary !== "string") {
+    throw new Error("resultado de architecture-review-sag invalido");
+  }
+  if (result.status === "findings" && (!result.specification || typeof result.specification.title !== "string" || typeof result.specification.body !== "string" || !Array.isArray(result.tickets))) {
+    throw new Error("architecture-review-sag reporto hallazgos sin specification o tickets");
+  }
+  return result;
 }
 
 const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
@@ -185,12 +210,13 @@ function isValidHu(hu: number | null): hu is number {
   return hu !== null && Number.isInteger(hu) && hu > 0;
 }
 
-function readPrompt(name: "default" | "autoplan" | "autocode"): Promise<string> {
+function readPrompt(name: "default" | "autoplan" | "autocode" | "architecture-review-sag"): Promise<string> {
   return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
 }
 
 function parseOptions(args: string[]): CliOptions {
   const hu = optionValue(args, "--hu");
+  const issue = optionValue(args, "--issue");
   const ticket = optionValue(args, "--ticket");
   const realEffort = optionValue(args, "--real-effort");
   const realEffortHours = optionValue(args, "--real-effort-hh");
@@ -202,6 +228,7 @@ function parseOptions(args: string[]): CliOptions {
     session: optionValue(args, "--session"),
     prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
     hu: args.includes("--hu") ? Number(hu) : null,
+    issue: args.includes("--issue") ? Number(issue) : null,
     branch: optionValue(args, "--branch"),
     baseBranch: optionValue(args, "--base-branch"),
     ticket: args.includes("--ticket") ? Number(ticket) : null,
@@ -232,6 +259,8 @@ function printHelp(): void {
     "  lazy-workflow code [options]",
     "  lazy-workflow code --hu <id> [options]",
     "  lazy-workflow code --session <id> --prompt continue",
+    "  lazy-workflow architecture-review-sag --hu <id> [options]",
+    "  lazy-workflow architecture-review-sag --issue <id> [options]",
     "  lazy-workflow hu-info --hu <id>",
     "  lazy-workflow hu-branch-info --hu <id>",
     "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
@@ -250,6 +279,7 @@ function printHelp(): void {
     "",
     "Options:",
     "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
+    "  --issue <id>                 alcance GitHub explicito para workflows SAG",
     "  --session <id>",
     "  --model <model>",
     "  --variant <variant>",
@@ -271,6 +301,7 @@ function printHelp(): void {
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  --number-of-questions <count>",
     "  --normas-sag                 carga normas SAG de planning desde master remoto; requiere .sag/config.json",
+    "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  --working-directory <path>",
   ].join("\n"));
 }
@@ -283,12 +314,14 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadArchitectureReview">> = new SagNormsService(),
+    private readonly git: GitRunner = runGit,
+    private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
     const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
+    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "architecture-review-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
       printHelp();
       return 1;
     }
@@ -303,6 +336,31 @@ export class LazyWorkflowCli {
     if (options.normasSag && command !== "plan") {
       reportOperator("--normas-sag solo se permite con plan");
       return 1;
+    }
+
+    if (options.issue !== null && command !== "architecture-review-sag") {
+      reportOperator("--issue solo se permite con architecture-review-sag");
+      return 1;
+    }
+
+    if (command === "architecture-review-sag") {
+      if (options.hu !== null && options.issue !== null) {
+        reportOperator("architecture-review-sag no permite combinar --hu y --issue");
+        return 1;
+      }
+      if (options.hu === null && options.issue === null) {
+        reportOperator("architecture-review-sag requiere --hu <id> o --issue <id>");
+        return 1;
+      }
+      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
+        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
+        return 1;
+      }
+      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+        reportOperator("architecture-review-sag no permite --session, --branch ni --base-branch");
+        return 1;
+      }
+      return this.runArchitectureReview(options);
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
@@ -608,9 +666,83 @@ export class LazyWorkflowCli {
     }
   }
 
+  private async runArchitectureReview(options: CliOptions): Promise<number> {
+    if (!this.sagNormsService.loadArchitectureReview) {
+      reportOperator("lazy-workflow: el servicio SAG no soporta architecture-review-sag");
+      return 1;
+    }
+    try {
+      const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      if (initialStatus.trim()) throw new Error("el repositorio tiene cambios sin guardar; la revision no mutara un arbol sucio");
+      const issueScope = options.issue !== null
+        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
+        : null;
+      const scope = options.hu !== null
+        ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
+        : { tracker: "github", issue: issueScope };
+      const context = await this.sagNormsService.loadArchitectureReview(options.workingDirectory);
+      const prompt = [
+        await readPrompt("architecture-review-sag"),
+        `Selected workflow: architecture-review-sag`,
+        `Review scope: ${JSON.stringify(scope)}`,
+        this.formatArchitectureReviewContext(context),
+        `The working directory is ${options.workingDirectory}`,
+        "Supplemental operator request (non-authoritative):",
+        options.prompt,
+      ].join("\n");
+      const execution = await this.openCodeService.run({ ...options, prompt, session: null }, options.hu !== null);
+      let result = execution.result;
+      if (execution.azureLoginRequired && options.hu !== null) {
+        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        await this.huInfoService.waitForAccess(options.hu);
+        result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
+      }
+      const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
+      if (execution.failed) return 1;
+      const review = parseArchitectureReviewResult(result.text);
+      let publication: ArchitectureReviewPublication | null = null;
+      if (review.status === "findings" && issueScope !== null) {
+        publication = await this.githubTracker.publishFindings(
+          issueScope.number,
+          review.specification!,
+          review.tickets!,
+          options.workingDirectory,
+        );
+      } else if (review.status === "findings" && options.hu !== null) {
+        if (!this.huInfoService.publishArchitectureFindings) {
+          throw new Error("el servicio Azure no expone publication verificada para architecture-review-sag");
+        }
+        publication = await this.huInfoService.publishArchitectureFindings(options.hu, review.specification!, review.tickets!);
+      }
+      console.log(JSON.stringify({
+        ...result,
+        architectureReview: {
+          status: review.status,
+          summary: review.summary,
+          sourceRepository: context.sourceRepository,
+          branch: context.branch,
+          commit: context.commit,
+          publication,
+        },
+      }, null, 2));
+      return 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`);
+      return 1;
+    }
+  }
+
   private formatSagContext(context: SagNormsContext): string {
     return [
       "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
+      JSON.stringify(context, null, 2),
+    ].join("\n");
+  }
+
+  private formatArchitectureReviewContext(context: SagArchitectureReviewContext): string {
+    return [
+      "SAG architecture review context (traceable retrieval metadata; read numbered norms and guidance from the listed sources):",
       JSON.stringify(context, null, 2),
     ].join("\n");
   }
