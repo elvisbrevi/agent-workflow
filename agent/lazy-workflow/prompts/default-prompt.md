@@ -14,8 +14,9 @@ The coordinator supplies the selected workflow and the operator request below.
   `/ponytail`, and `/tdd`. Run `/code-review`, repair actionable findings, and
   validate again. The coordinator owns the surrounding delivery lifecycle
   (push, pull request, merge, closure, branch cleanup, parent reconciliation).
-  Only after that lifecycle completes, print the exact marker `TICKET_COMPLETED`,
-  then print the exact marker `WORKFLOW_STEP_FINISHED`.
+  When the local implementation, validation, review, commit, and manifest are
+  complete, print the exact marker `IMPLEMENTATION_READY` and stop. Do not
+  declare remote delivery complete.
 
   Forbidden in `code`:
   - selecting, refreshing, or replacing the fixed issue
@@ -23,7 +24,8 @@ The coordinator supplies the selected workflow and the operator request below.
   - pull-request creation, merge, close, or reopen
   - mutating the issue (assignees, labels, comments, state)
   - closing or reconciling parent or epic issues
-  - printing `QUEUE_EMPTY` or `QUEUE_BLOCKED` markers
+  - printing `QUEUE_EMPTY`, `QUEUE_BLOCKED`, `TICKET_COMPLETED`, or
+    `WORKFLOW_STEP_FINISHED` markers
 
   The coordinator will start a fresh session for the next eligible issue.
 - For future workflows, follow the named workflow and operator request while
