@@ -6,6 +6,8 @@ export interface CliOptions {
   command: string;
   model: string;
   variant: string;
+  hasModel: boolean;
+  hasVariant: boolean;
   session: string | null;
   prompt: string;
   hu: number | null;
@@ -172,7 +174,7 @@ export function buildCli(): CliParser {
 
     if (captured) return captured;
 
-    return { kind: "options", options: readOptions(command, argv) };
+    return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1)) };
   };
 }
 
@@ -235,7 +237,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
 }
 
-function readOptions(command: string, argv: unknown): CliOptions {
+function readOptions(command: string, argv: unknown, rawArgs: string[]): CliOptions {
   const parsed = argv as Record<string, unknown>;
   const asNumber = (key: string): number | null => {
     const value = parsed[key];
@@ -250,6 +252,8 @@ function readOptions(command: string, argv: unknown): CliOptions {
     command,
     model: asString("model") ?? DEFAULT_MODEL,
     variant: asString("variant") ?? DEFAULT_VARIANT,
+    hasModel: rawArgs.some((arg) => arg === "--model" || arg.startsWith("--model=")),
+    hasVariant: rawArgs.some((arg) => arg === "--variant" || arg.startsWith("--variant=")),
     session: asString("session"),
     prompt: asString("prompt") ?? DEFAULT_PROMPT,
     hu: asNumber("hu"),

@@ -179,6 +179,35 @@ describe("OpenCodeService reporter routing", () => {
     expect(captured.info).toContain("OpenCode stderr: línea de error");
   });
 
+  test("resume aplica solo los overrides de modelo proporcionados", async () => {
+    const commands: string[][] = [];
+    const service = new OpenCodeService((command) => {
+      commands.push(command);
+      return {
+        stdout: new Blob([jsonEvent({ type: "text", sessionID: "ses_resume", part: { type: "text", text: "ok" } })]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      };
+    });
+
+    await service.resume("ses_resume", "continue", undefined, undefined, {
+      model: "openai/gpt-5.6-luna",
+      variant: "high",
+    });
+    await service.resume("ses_resume");
+
+    expect(commands[0]).toEqual([
+      "opencode", "run", "--auto", "--session", "ses_resume",
+      "--model", "openai/gpt-5.6-luna", "--variant", "high",
+      "--format", "json", "--thinking", "continue",
+    ]);
+    expect(commands[1]).toEqual([
+      "opencode", "run", "--auto", "--session", "ses_resume",
+      "--format", "json", "--thinking", "continue",
+    ]);
+  });
+
   test("no emite el heartbeat 'sin eventos hace Xs' aunque el run sea largo", async () => {
     const { reporter, captured } = captureReporter(false);
     const output = [
