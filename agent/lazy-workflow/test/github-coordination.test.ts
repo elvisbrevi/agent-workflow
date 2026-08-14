@@ -121,7 +121,7 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(state.phases).toEqual(["selected", "started", "implementing"]);
+  expect(state.phases).toEqual(["selected", "selected", "started", "implementing"]);
   expect(state.current).toBeNull();
   expect(events.slice(0, 3)).toEqual(["select", "write:selected", "claim"]);
   expect(state.lockAcquires).toBe(1);
@@ -149,7 +149,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     undefined,
     {
       selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
-      readIssueDetail: async () => fakeSelectedIssue(178),
+      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
     },
     state.store,
     state.lock,
@@ -183,7 +183,7 @@ for (const phase of GITHUB_DELIVERY_PHASES) {
       undefined,
       {
         selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
-        readIssueDetail: async () => fakeSelectedIssue(178),
+        reconcileClaimedIssue: async () => fakeSelectedIssue(178),
       },
       state.store,
       state.lock,
