@@ -143,6 +143,9 @@ export interface AutocodeAzureService {
   setDescription(ticket: number, filePath: string): Promise<unknown>;
   setState(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
   setEffort(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
+  setHuState(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
+  getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
+  hasOpenDeliveryChildren(hu: number): Promise<boolean>;
   linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -411,6 +414,18 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   setEffort(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown> {
     return this.ticketInfoService.setEffort(ticket, realEffort, realEffortHours, expectedRevision);
+  }
+
+  setHuState(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }> {
+    return this.ticketInfoService.setHuState(hu, desiredState, expectedState, expectedRevision);
+  }
+
+  getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>> {
+    return this.ticketInfoService.getHuChildren(hu);
+  }
+
+  hasOpenDeliveryChildren(hu: number): Promise<boolean> {
+    return this.ticketInfoService.hasOpenDeliveryChildren(hu);
   }
 
   linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown> {

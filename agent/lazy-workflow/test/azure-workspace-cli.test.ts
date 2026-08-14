@@ -3,8 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpath } from "node:fs/promises";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import type { AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const hu = 192;
@@ -37,7 +36,10 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   const realpathA = await realpath(pathA);
   const realpathB = await realpath(pathB);
   const prepared: Array<{ hu: number; repositories: Array<{ path: string }> }> = [];
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches"> = {
+  const ticketBranch = `refs/heads/ticket/51`;
+  let currentTicketState = "En progreso";
+  let currentHuState = "En Desarrollo";
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => {
@@ -61,21 +63,106 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
         ],
       };
     },
-    prepareWorkspaceTicketBranches: async () => {
-      throw new Error("must not be called");
+    prepareWorkspaceTicketBranches: async () => ({
+      hu,
+      ticket: 51,
+      integrationBranch,
+      ticketBranch,
+      anchor: {
+        workingDirectory: realpathA,
+        remote: remoteUrlA,
+        repository: repoA,
+        project: teamProject,
+        projectId,
+        repositoryId: repoAId,
+      },
+      ticketBranchAnchor: realpathA,
+      units: [
+        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+      ],
+    }),
+    createOrReusePullRequest: async () => ({ pullRequest: 1, mergeCommit: "merge-1" }),
+    checkoutTicketBranch: async () => undefined,
+    pushTicketBranch: async () => undefined,
+    linkPullRequest: async () => ({ hu, ticket: 51, pullRequest: 1, mergeCommit: "merge-1" }),
+    linkCommit: async () => ({ ticket: 51, pullRequest: 1, mergeCommit: "merge-1", artifactLink: "vstfs:///Git/Commit/x" }),
+    getTicketInfo: async () => ({
+      hu: { id: hu, title: "HU" },
+      ticket: { id: 51, type: "Task" as const, title: "Ticket", state: currentTicketState, revision: 4 },
+      branch: ticketBranch,
+      integrationBranch,
+      effort: { estimated: 1, real: 1, realHours: 1 },
+      pullRequests: [],
+      canonicalPullRequest: null,
+      mergeCommit: null,
+      attachments: [],
+      completionEvidence: null,
+      gates: { satisfied: [], unmet: [] },
+    }),
+    setEffort: async () => undefined,
+    setState: async (id: number, desiredState: string) => {
+      if (id === 51) currentTicketState = desiredState;
+      if (id === hu) currentHuState = desiredState;
+      return { ticket: id, state: desiredState, revision: 5 };
     },
+    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
+    readCompletionManifest: async () => ({
+      ticket: 51,
+      ticketBranch,
+      commit: "a".repeat(40),
+      validation: [{ command: "bun test", result: "passed" }],
+      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
+    }),
+    validateCompletionManifest: async () => undefined,
+    getBranch: async () => ({ hu, ticket: 51, branch: ticketBranch, integrationBranch }),
+    validateEvidenceFile: async () => undefined,
+    addAttachment: async () => ({ ticket: 51, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
+    setEvidence: async () => undefined,
+    getState: async (id: number) => {
+      if (id === 51) return { ticket: id, state: currentTicketState, revision: 4 };
+      if (id === hu) return { ticket: id, state: currentHuState, revision: 7 };
+      throw new Error(`unexpected ${id}`);
+    },
+    getEffort: async () => ({ ticket: 51, effort: { estimated: 1, real: 1, realHours: 1 } }),
+    validateEvidence: async () => undefined,
+    setHuState: async (id: number, desiredState: string) => {
+      currentHuState = desiredState;
+      return { hu: id, state: desiredState, revision: 8 };
+    },
+    hasOpenDeliveryChildren: async () => false,
+    getAutocodeContextForTicket: async () => null,
+    getTicket: async () => ({ id: 51, type: "Task" as const }),
+    getDescription: async () => ({ ticket: 51, description: null }),
+    getAttachments: async () => ({ ticket: 51, attachments: [] }),
+    getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
+    validateDirectTicketContext: async () => undefined,
   };
   const git: GitRunner = async (args, directory) => {
     if (args[0] === "remote" && args[1] === "get-url") {
       return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
     }
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return directory;
+    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return `${directory}/.git`;
+    if (args[0] === "rev-parse" && args[1] === "HEAD") return "a".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "status") return "";
     return "";
   };
   const cli = new LazyWorkflowCli(
     azureBoundary,
-    undefined,
+    {
+      run: async () => {
+        await Bun.write(join(realpathA, "lazy-workflow/completion-manifest.json"), "{}");
+        await Bun.write(join(realpathB, "lazy-workflow/completion-manifest.json"), "{}");
+        return {
+          result: { text: "IMPLEMENTATION_READY", sessionId: "ses", failed: false } as never,
+          azureLoginRequired: false,
+          failed: false,
+        };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
     undefined,
     undefined,
     undefined,
@@ -85,7 +172,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   );
 
   try {
-    const exit = await cli.run(["code", "--hu", `${hu}`, "--base-branch", "main", "--working-directory", `${pathA}, ${pathB}`]);
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `51`, "--base-branch", "main", "--working-directory", `${pathA}, ${pathB}`]);
     expect(exit).toBe(0);
     expect(prepared).toHaveLength(1);
     expect(prepared[0]!.hu).toBe(hu);
