@@ -115,7 +115,9 @@ branches, enforce Azure completion gates, or clean Azure ticket branches.
 delivers exactly one eligible issue in a fresh OpenCode session, closes that
 session after `TICKET_COMPLETED`, and repeats. A final fresh session returns
 `QUEUE_EMPTY` and stops the command. `WORKFLOW_STEP_FINISHED` closes every
-provider session. There is no GitHub checkpoint or coordinator adapter.
+provider session. A repository-scoped GitHub checkpoint and lock preserve a
+fixed interrupted issue; startup resumes an active checkpointed session or
+stops with `RECONCILIATION_REQUIRED` rather than selecting replacement work.
 
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or

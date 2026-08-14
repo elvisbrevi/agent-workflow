@@ -39,12 +39,12 @@ export interface GitHubCheckpointStore {
 
 const FILE_NAME = "lazy-workflow/github-code-checkpoint.json";
 
-function isBranch(value: string | null): boolean {
-  return value === null || (/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value) && !value.includes("//"));
+function isBranch(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value) && !value.includes("//"));
 }
 
-function isCommit(value: string | null): boolean {
-  return value === null || /^[0-9a-f]{40,64}$/i.test(value);
+function isCommit(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value));
 }
 
 function isReceipt(value: unknown): value is GitHubDeliveryReceipt {
@@ -79,13 +79,14 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     && Number.isInteger(checkpoint.issue)
     && (checkpoint.issue ?? 0) > 0
     && GITHUB_DELIVERY_PHASES.includes(checkpoint.phase as GitHubDeliveryPhase)
-    && isBranch(checkpoint.branch ?? null)
+    && isBranch(checkpoint.branch)
     && (checkpoint.sessionId === null
       || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
-    && isCommit(checkpoint.commit ?? null)
+    && isCommit(checkpoint.commit)
     && (pullRequest === null || (typeof pullRequest === "number" && Number.isInteger(pullRequest) && pullRequest > 0))
     && typeof checkpoint.receipts === "object"
     && checkpoint.receipts !== null
+    && !Array.isArray(checkpoint.receipts)
     && Object.values(checkpoint.receipts).every(isReceipt);
 }
 

@@ -30,6 +30,8 @@ test("valida el checkpoint GitHub sin aceptar transcriptos o credenciales", () =
   expect(isGitHubDeliveryCheckpoint(checkpoint())).toBeTrue();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), token: "secret" })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), receipts: { selected: { verifiedAt: "now", token: "secret" } } })).toBeFalse();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), branch: undefined })).toBeFalse();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), receipts: [] })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), sessionId: "ses\nsecret" })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), phase: "unknown" })).toBeFalse();
 });
