@@ -60,9 +60,9 @@ export async function checkoutGitBranch(
   const status = await git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
   if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se cambiará a la rama del ticket");
   const current = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-  if (current === branch) return;
   await git(["fetch", "origin", `+${branchRef}:refs/remotes/origin/${branch}`], workingDirectory);
   const local = await git(["branch", "--list", branch], workingDirectory);
+  if (current === branch && !local.trim()) throw new Error(`La rama activa ${branchRef} no tiene una referencia local verificable`);
   if (local.trim()) {
     const localSha = (await git(["rev-parse", `refs/heads/${branch}^{commit}`], workingDirectory)).trim();
     const remoteSha = (await git(["rev-parse", `refs/remotes/origin/${branch}^{commit}`], workingDirectory)).trim();
@@ -82,6 +82,7 @@ export class GitTicketBranchCleaner {
     ticketBranchRef: string,
     integrationBranchRef: string,
     workingDirectory: string,
+    expectedRemoteCommit?: string,
   ): Promise<void> {
     const ticketBranch = branchName(ticketBranchRef);
     const integrationBranch = branchName(integrationBranchRef);
@@ -114,7 +115,17 @@ export class GitTicketBranchCleaner {
 
     const remoteBranch = await this.git(["ls-remote", "--heads", "origin", ticketBranchRef], workingDirectory);
     if (remoteBranch.trim()) {
-      await this.git(["push", "origin", "--delete", ticketBranch], workingDirectory);
+      const remoteCommit = remoteBranch.trim().split(/\s+/)[0];
+      if (expectedRemoteCommit && remoteCommit !== expectedRemoteCommit) {
+        throw new Error(`La rama remota ${ticketBranchRef} cambió antes de eliminarse`);
+      }
+      await this.git([
+        "push",
+        "origin",
+        ...(expectedRemoteCommit ? [`--force-with-lease=refs/heads/${ticketBranch}:${expectedRemoteCommit}`] : []),
+        "--delete",
+        ticketBranch,
+      ], workingDirectory);
     }
   }
 }
