@@ -112,9 +112,11 @@ branches, enforce Azure completion gates, or clean Azure ticket branches.
 `--branch` and `--base-branch` are rejected in this GitHub scope.
 
 `plan` remains a one-shot planning-only workflow. `code` refreshes GitHub,
-delivers exactly one eligible issue in a fresh OpenCode session, and coordinates
+delivers each eligible issue in its own fresh OpenCode session, and coordinates
 delivery from `IMPLEMENTATION_READY` through verified merge, issue closure,
-parent reconciliation, and branch cleanup. The coordinator emits
+parent reconciliation, and branch cleanup. After each verified delivery it
+re-selects the next eligible issue in the same run until the queue is empty or
+blocked. The coordinator emits
 `TICKET_COMPLETED` followed by `WORKFLOW_STEP_FINISHED` only after those gates
 pass; the provider cannot declare delivery or queue outcomes. A repository-
 scoped GitHub checkpoint and lock preserve a fixed interrupted issue; startup

@@ -78,9 +78,10 @@ bun run main.ts plan --prompt "plan the requested GitHub work" --working-directo
 ```
 
 Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
-tools. `code` delivers exactly one eligible GitHub issue per fresh OpenCode
-session; the coordinator emits `TICKET_COMPLETED` and
-`WORKFLOW_STEP_FINISHED` only after verified delivery. Add `--hu <ID>` to select
+tools. `code` delivers each eligible GitHub issue in its own fresh OpenCode
+session and re-selects the next until the queue is empty or blocked; the
+coordinator emits `TICKET_COMPLETED` and
+`WORKFLOW_STEP_FINISHED` only after each verified delivery. Add `--hu <ID>` to select
 the existing Azure planning or delivery workflow.
 
 If a canonical GitHub PR conflicts with its base, `code` fixes the exact base
