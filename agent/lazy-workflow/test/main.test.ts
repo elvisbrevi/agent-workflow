@@ -1288,6 +1288,17 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
     { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
     store,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
   ).run(["code", "--session", "ses-otro", "--prompt", "continue"]);
 
   expect(code).toBe(1);
@@ -1300,6 +1311,17 @@ test("code --session rechaza una sesión sin checkpoint sin tocar Azure", async 
     { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
     { read: async () => null, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
   ).run(["code", "--session", "ses-missing", "--prompt", "continue"]);
 
   expect(code).toBe(1);

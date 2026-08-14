@@ -1081,29 +1081,50 @@ export class LazyWorkflowCli {
       this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
     }
+    if (!lockAlreadyHeld) {
+      const release = await lock.acquire(options.workingDirectory);
+      try {
+        return await this.runGitHubRecovery(options, checkpoint, true);
+      } finally {
+        await release();
+      }
+    }
+    try {
+      const recoveryCheckpoint = await store.read(options.workingDirectory);
+      if (!recoveryCheckpoint || recoveryCheckpoint.issue !== checkpoint.issue) {
+        this.reportGitHubReconciliationRequired(checkpoint);
+        return 1;
+      }
+      if (this.githubDelivery) {
+        if (!recoveryCheckpoint.branch || !recoveryCheckpoint.baseBranch) {
+          throw new Error("el checkpoint GitHub no contiene la rama fijada");
+        }
+        await this.githubDelivery.verifyRepository?.(recoveryCheckpoint.repository, options.workingDirectory);
+        await this.githubDelivery.checkoutBranch?.(recoveryCheckpoint.branch, recoveryCheckpoint.baseBranch, options.workingDirectory);
+        await this.githubDelivery.verifyBranch?.(recoveryCheckpoint.branch, recoveryCheckpoint.baseBranch, options.workingDirectory);
+      }
+    } catch (error) {
+      const preserved = await store.read(options.workingDirectory).catch(() => checkpoint) ?? checkpoint;
+      this.reportGitHubReconciliationRequired(preserved);
+      reportOperator(`lazy-workflow: no se pudo preparar la rama fijada del Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
+      return 1;
+    }
     if (this.githubDelivery && checkpoint.sessionId === null && checkpoint.phase === "started") {
       try {
-        let liveCheckpoint = await store.read(options.workingDirectory);
+        const liveCheckpoint = await store.read(options.workingDirectory);
         const readIssue = (queue.reconcileClaimedIssue ?? queue.readIssueDetail)?.bind(queue);
         if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || !readIssue) {
           this.reportGitHubReconciliationRequired(checkpoint);
           return 1;
         }
-        let branch = liveCheckpoint.branch;
-        let manifestPath = liveCheckpoint.manifestPath;
-        let baseBranch = liveCheckpoint.baseBranch;
+        const branch = liveCheckpoint.branch;
+        const manifestPath = liveCheckpoint.manifestPath;
+        const baseBranch = liveCheckpoint.baseBranch;
         if (!branch || !manifestPath || !baseBranch) {
-          const prepared = await this.githubDelivery.prepareBranch(liveCheckpoint.issue, options.workingDirectory);
-          branch = prepared.branch;
-          manifestPath = prepared.manifestPath;
-          baseBranch = prepared.baseBranch;
-          liveCheckpoint = { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "started", sessionId: null };
-          await store.write(liveCheckpoint, options.workingDirectory);
+          throw new Error("el checkpoint GitHub no contiene la rama y el manifest fijados");
         }
         const issue = await readIssue(liveCheckpoint.issue, options.workingDirectory);
         const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
-        await this.githubDelivery.verifyRepository?.(liveCheckpoint.repository, options.workingDirectory);
-        await this.githubDelivery.verifyBranch?.(branch, baseBranch, options.workingDirectory);
         if (await Bun.file(manifestPath).exists()) {
           await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "implementation-ready", sessionId: null });
           console.log(TICKET_COMPLETED_MARKER);
