@@ -1,9 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import chalk from "chalk";
-import { Writable } from "node:stream";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { createReporter, type Reporter, type ReporterStream } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 
@@ -11,51 +9,33 @@ beforeAll(() => {
   chalk.level = 1;
 });
 
-type Captured = {
-  info: string[];
-  warn: string[];
-  error: string[];
-  debug: string[];
-};
+type CapturedMessage = { level: "info" | "warn" | "error" | "debug"; message: string };
 
-const captureStream = (): { stream: ReporterStream; captured: Captured } => {
-  const captured: Captured = { info: [], warn: [], error: [], debug: [] };
-  const stream = new Writable({
-    write(chunk, _encoding, callback) {
-      const text = chunk.toString();
-      const stripped = text.replace(/\u001b\[[0-9;]*m/g, "").replace(/\n$/, "");
-      const match = stripped.match(/^[^\s]+(\s|$)/);
-      const icon = match ? match[0].trimEnd() : "";
-      const rest = stripped.replace(/^[^\s]+\s?/, "");
-      if (icon === "ℹ") captured.info.push(rest);
-      else if (icon === "⚠") captured.warn.push(rest);
-      else if (icon === "✗") captured.error.push(rest);
-      else if (icon === "·") captured.debug.push(rest);
-      callback();
+const captureStream = (): { stream: ReporterStream; captured: CapturedMessage[] } => {
+  const captured: CapturedMessage[] = [];
+  const stream = {
+    write(chunk: string): void {
+      const stripped = chunk.replace(/\u001b\[[0-9;]*m/g, "").replace(/\n$/, "");
+      const match = stripped.match(/^([ℹ⚠✗·])\s?(.*)$/s);
+      if (!match) return;
+      const iconToLevel = { "ℹ": "info", "⚠": "warn", "✗": "error", "·": "debug" } as const;
+      captured.push({ level: iconToLevel[match[1] as keyof typeof iconToLevel], message: match[2] ?? "" });
     },
-  }) as unknown as ReporterStream;
+  };
   return { stream, captured };
 };
 
-const buildReporter = (verbose: boolean, quiet = false, noColor = true): { reporter: Reporter; captured: Captured } => {
+const buildReporter = (verbose: boolean, quiet = false): { reporter: Reporter; captured: CapturedMessage[] } => {
   const { stream, captured } = captureStream();
-  const reporter = createReporter({ verbose, quiet, noColor, stream });
+  const reporter = createReporter({ verbose, quiet, noColor: true, stream });
   return { reporter, captured };
-};
-
-const installReporter = (reporter: Reporter): void => {
-  setDefaultReporter(reporter);
-};
-
-const restoreReporter = (): void => {
-  setDefaultReporter(createReporter({ verbose: false, noColor: true }));
 };
 
 const jsonEvent = (event: Record<string, unknown>): string => JSON.stringify(event);
 
 const buildDeliveryEvents = (sessionId: string): string[] => [
   jsonEvent({ type: "session", sessionID: sessionId }),
-  jsonEvent({ type: "reasoning", sessionID: sessionId, part: { type: "reasoning", text: "Analizando cambios pendientes" } }),
+  jsonEvent({ type: "reasoning", sessionID: sessionId, part: { type: "reasoning", text: "Analyzing pending changes" } }),
   jsonEvent({
     type: "tool_use",
     sessionID: sessionId,
@@ -76,23 +56,28 @@ const buildDeliveryEvents = (sessionId: string): string[] => [
   jsonEvent({ type: "text", sessionID: sessionId, part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } }),
 ];
 
-const countOperatorLines = (captured: Captured): number =>
-  captured.info.length + captured.warn.length + captured.error.length + captured.debug.length;
+const countByLevel = (captured: CapturedMessage[]) => ({
+  total: captured.length,
+  info: captured.filter((entry) => entry.level === "info").length,
+  warn: captured.filter((entry) => entry.level === "warn").length,
+  error: captured.filter((entry) => entry.level === "error").length,
+  debug: captured.filter((entry) => entry.level === "debug").length,
+});
 
-const silentHu = {
+const noAzureBoundary = {
   getHuInfo: async () => { throw new Error("must not use Azure"); },
   waitForAccess: async () => undefined,
 };
 
 const runCodeWith = (events: string[], verbose = false, quiet = false) => {
   const capture = buildReporter(verbose, quiet);
-  installReporter(capture.reporter);
+  setDefaultReporter(capture.reporter);
   const queueEmptyEvents = [
     jsonEvent({ type: "session", sessionID: "ses_empty" }),
     jsonEvent({ type: "text", sessionID: "ses_empty", part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" } }),
   ];
   let spawnCount = 0;
-  const spawnFor = (lines: string[]) => () => ({
+  const spawnWithEvents = (lines: string[]) => () => ({
     stdout: new Blob([lines.join("\n")]).stream(),
     stderr: new Blob([]).stream(),
     exited: Promise.resolve(0),
@@ -100,10 +85,10 @@ const runCodeWith = (events: string[], verbose = false, quiet = false) => {
   });
   const service = new OpenCodeService(() => {
     spawnCount += 1;
-    return spawnCount === 1 ? spawnFor(events)() : spawnFor(queueEmptyEvents)();
+    return spawnCount === 1 ? spawnWithEvents(events)() : spawnWithEvents(queueEmptyEvents)();
   }, capture.reporter, 100);
   const cli = new LazyWorkflowCli(
-    silentHu,
+    noAzureBoundary,
     { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
   );
   return cli
@@ -122,70 +107,108 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
   afterEach(() => {
     if (originalNoColor === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = originalNoColor;
-    restoreReporter();
+    setDefaultReporter(createReporter({ verbose: false, noColor: true }));
   });
 
-  test("default mode produce entre 5 y 15 lineas para una entrega tipica", async () => {
+  test("default mode produces between 5 and 15 lines for a typical delivery", async () => {
     const events = buildDeliveryEvents("ses_default");
     const { code, captured } = await runCodeWith(events);
 
     expect(code).toBe(0);
-    const total = countOperatorLines(captured);
-    expect(total).toBeGreaterThanOrEqual(5);
-    expect(total).toBeLessThanOrEqual(15);
-    expect(captured.debug).toEqual([]);
-    expect(captured.error).toEqual([]);
-    expect(captured.info.some((line) => line.includes("TICKET_COMPLETED"))).toBeTrue();
-    expect(captured.info.some((line) => line.includes("inició un paso"))).toBeTrue();
-    expect(captured.info.some((line) => line.includes("terminó un paso"))).toBeTrue();
+    const counts = countByLevel(captured);
+    expect(counts.total).toBeGreaterThanOrEqual(5);
+    expect(counts.total).toBeLessThanOrEqual(15);
+    expect(counts.debug).toBe(0);
+    expect(counts.error).toBe(0);
+    expect(captured.some((entry) => entry.message.includes("TICKET_COMPLETED"))).toBeTrue();
+    expect(captured.some((entry) => entry.message.includes("inició un paso"))).toBeTrue();
+    expect(captured.some((entry) => entry.message.includes("terminó un paso"))).toBeTrue();
   });
 
-  test("--verbose reproduce el stream completo: reasoning y tool_use visibles como debug", async () => {
+  test("--verbose reproduces the full event stream: reasoning and tool_use visible as debug", async () => {
     const events = buildDeliveryEvents("ses_verbose");
     const { code, captured } = await runCodeWith(events, true);
 
     expect(code).toBe(0);
-    expect(captured.debug.some((line) => line.includes("razonando: Analizando cambios pendientes"))).toBeTrue();
-    expect(captured.debug.some((line) => line.includes("herramienta bash"))).toBeTrue();
-    expect(captured.debug.some((line) => line.includes("herramienta read"))).toBeTrue();
-    expect(captured.debug.some((line) => line.includes("herramienta edit"))).toBeTrue();
-    expect(captured.debug.length).toBeGreaterThanOrEqual(4);
-    expect(captured.info.length).toBeGreaterThanOrEqual(3);
+    expect(captured.some((entry) => entry.level === "debug" && entry.message.includes("razonando: Analyzing pending changes"))).toBeTrue();
+    expect(captured.some((entry) => entry.level === "debug" && entry.message.includes("herramienta bash"))).toBeTrue();
+    expect(captured.some((entry) => entry.level === "debug" && entry.message.includes("herramienta read"))).toBeTrue();
+    expect(captured.some((entry) => entry.level === "debug" && entry.message.includes("herramienta edit"))).toBeTrue();
+    const counts = countByLevel(captured);
+    expect(counts.debug).toBeGreaterThanOrEqual(4);
+    expect(counts.info).toBeGreaterThanOrEqual(3);
   });
 
-  test("--verbose nunca reduce el volumen respecto al modo default", async () => {
-    const eventsDefault = buildDeliveryEvents("ses_compare_default");
-    const eventsVerbose = buildDeliveryEvents("ses_compare_verbose");
-    const { captured: defaultCaptured } = await runCodeWith(eventsDefault);
-    const { captured: verboseCaptured } = await runCodeWith(eventsVerbose, true);
+  test("--verbose never reduces volume relative to default mode", async () => {
+    const { captured: defaultCaptured } = await runCodeWith(buildDeliveryEvents("ses_compare_default"));
+    const { captured: verboseCaptured } = await runCodeWith(buildDeliveryEvents("ses_compare_verbose"), true);
 
-    const defaultTotal = countOperatorLines(defaultCaptured);
-    const verboseTotal = countOperatorLines(verboseCaptured);
-    expect(defaultTotal).toBeGreaterThanOrEqual(5);
-    expect(defaultTotal).toBeLessThanOrEqual(15);
-    expect(verboseTotal).toBeGreaterThan(defaultTotal);
+    const defaultCounts = countByLevel(defaultCaptured);
+    const verboseCounts = countByLevel(verboseCaptured);
+    expect(defaultCounts.total).toBeGreaterThanOrEqual(5);
+    expect(defaultCounts.total).toBeLessThanOrEqual(15);
+    expect(verboseCounts.total).toBeGreaterThan(defaultCounts.total);
   });
 
-  test("--quiet silencia el run exitoso sin emitir lineas", async () => {
-    const events = buildDeliveryEvents("ses_quiet");
-    const { code, captured } = await runCodeWith(events, false, true);
+  test("--quiet silences a successful run and emits zero lines", async () => {
+    const { code, captured } = await runCodeWith(buildDeliveryEvents("ses_quiet"), false, true);
 
     expect(code).toBe(0);
-    expect(captured.info).toEqual([]);
-    expect(captured.warn).toEqual([]);
-    expect(captured.debug).toEqual([]);
-    expect(captured.error).toEqual([]);
-    expect(countOperatorLines(captured)).toBe(0);
+    expect(captured).toEqual([]);
   });
 
-  test("--quiet preserva las llamadas a error() del Reportador aunque silencia info y warn", () => {
+  test("--quiet preserves Reporter error() calls while silencing info and warn", () => {
     const { reporter, captured } = buildReporter(false, true);
-    reporter.error("lazy-workflow: fallo critico");
-    reporter.info("oculto");
-    reporter.warn("oculto");
+    reporter.error("lazy-workflow: critical failure");
+    reporter.info("hidden");
+    reporter.warn("hidden");
 
-    expect(captured.error).toEqual(["lazy-workflow: fallo critico"]);
-    expect(captured.info).toEqual([]);
-    expect(captured.warn).toEqual([]);
+    expect(captured.filter((entry) => entry.level === "error")).toEqual([
+      { level: "error", message: "lazy-workflow: critical failure" },
+    ]);
+    expect(captured.filter((entry) => entry.level === "info")).toEqual([]);
+    expect(captured.filter((entry) => entry.level === "warn")).toEqual([]);
+  });
+
+  test("GitHub-only code run never touches the Azure boundary across all verbosity modes", async () => {
+    let azureCalls = 0;
+    const trackingBoundary = {
+      getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
+      waitForAccess: async () => { azureCalls += 1; },
+    };
+    const queueEmptyEvents = [
+      jsonEvent({ type: "session", sessionID: "ses_empty" }),
+      jsonEvent({ type: "text", sessionID: "ses_empty", part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" } }),
+    ];
+    const spawnWithEvents = (lines: string[]) => () => ({
+      stdout: new Blob([lines.join("\n")]).stream(),
+      stderr: new Blob([]).stream(),
+      exited: Promise.resolve(0),
+      kill: () => undefined,
+    });
+    const events = buildDeliveryEvents("ses_boundary");
+
+    for (const [verbose, quiet] of [[false, false], [true, false], [false, true]] as const) {
+      const capture = buildReporter(verbose, quiet);
+      setDefaultReporter(capture.reporter);
+      let spawnCount = 0;
+      const service = new OpenCodeService(() => {
+        spawnCount += 1;
+        return spawnCount === 1 ? spawnWithEvents(events)() : spawnWithEvents(queueEmptyEvents)();
+      }, capture.reporter, 100);
+      const cli = new LazyWorkflowCli(
+        trackingBoundary,
+        { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
+      );
+      const code = await cli.run([
+        "code",
+        ...(verbose ? ["--verbose"] : []),
+        ...(quiet ? ["--quiet"] : []),
+        "--working-directory",
+        "/repo",
+      ]);
+      expect(code).toBe(0);
+    }
+    expect(azureCalls).toBe(0);
   });
 });
