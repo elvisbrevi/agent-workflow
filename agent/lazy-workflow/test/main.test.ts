@@ -13,6 +13,8 @@ import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.t
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
+import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
+import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
@@ -479,11 +481,11 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
       sessionID: "ses_issue_2",
       part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
     })),
-    OpenCodeResult.fromJsonLines(JSON.stringify({
-      type: "text",
-      sessionID: "ses_empty",
-      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
-    })),
+  ];
+  const outcomes: ManagedQueueOutcome[] = [
+    fakeSelectedOutcome(201),
+    fakeSelectedOutcome(202),
+    { kind: "empty" },
   ];
 
   const code = await new LazyWorkflowCli(
@@ -494,7 +496,7 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
     {
       run: async (options, detectAzure) => {
         calls.push({ options, detectAzure });
-        return { result: results.shift()!, azureLoginRequired: false };
+        return { result: results.shift() ?? OpenCodeResult.fromJsonLines(""), azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
@@ -505,22 +507,116 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
     },
     undefined,
     { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter(outcomes),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(calls).toHaveLength(3);
-  expect(calls.map(({ options }) => options.session)).toEqual([null, null, null]);
+  expect(calls).toHaveLength(2);
+  expect(calls.map(({ options }) => options.session)).toEqual([null, null]);
   expect(calls.map(({ options }) => options.terminalMarker)).toEqual([
-    "WORKFLOW_STEP_FINISHED",
     "WORKFLOW_STEP_FINISHED",
     "WORKFLOW_STEP_FINISHED",
   ]);
   expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
   expect(calls[0]?.options.prompt).toContain("TICKET_COMPLETED");
-  expect(calls[0]?.options.prompt).toContain("QUEUE_EMPTY");
+  expect(calls[0]?.options.prompt).toContain("do not print QUEUE_EMPTY");
+  expect(calls[0]?.options.prompt).toContain("Coordinator-fixed issue context");
+  expect(calls[0]?.options.prompt).toContain("\"number\":201");
+  expect(calls[0]?.options.prompt).toContain("\"body of #201\"");
   expect(azureCalls).toBe(0);
   expect(checkpointCalls).toBe(0);
   expect(cleanupCalls).toBe(0);
+});
+
+test("code sin HU imprime QUEUE_BLOCKED sin iniciar OpenCode cuando la cola tiene issues no elegibles", async () => {
+  let openCodeCalls = 0;
+  const outcomes: ManagedQueueOutcome[] = [
+    {
+      kind: "blocked",
+      reasons: [
+        { number: 100, title: "feat(lazy-workflow): assigned", reasons: ["assigned"] },
+        { number: 101, title: "[Spec] Planning note", reasons: ["epic-or-spec"] },
+      ],
+    },
+  ];
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    queueAdapter(outcomes),
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(openCodeCalls).toBe(0);
+  expect(output[0]).toContain("QUEUE_BLOCKED");
+  expect(output[0]).toContain("\"number\": 100");
+  expect(output[0]).toContain("\"number\": 101");
+});
+
+test("code sin HU imprime QUEUE_EMPTY y termina sin iniciar OpenCode", async () => {
+  let openCodeCalls = 0;
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (...values: unknown[]) => output.push(values.join(" "));
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    queueAdapter([{ kind: "empty" }]),
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(openCodeCalls).toBe(0);
+  expect(output[0]).toContain("QUEUE_EMPTY");
 });
 
 test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async () => {
@@ -542,6 +638,18 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
       },
       resume: async () => { throw new Error("must not resume"); },
     },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201)]),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
@@ -560,11 +668,6 @@ test("code sin HU avanza cuando el marcador llega en un segundo evento de texto 
       sessionID: "ses_split_1",
       part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
     })),
-    OpenCodeResult.fromJsonLines(JSON.stringify({
-      type: "text",
-      sessionID: "ses_split_empty",
-      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
-    })),
   ];
 
   const code = await new LazyWorkflowCli(
@@ -576,10 +679,22 @@ test("code sin HU avanza cuando el marcador llega en un segundo evento de texto 
       },
       resume: async () => { throw new Error("must not resume"); },
     },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(calls).toEqual(["run", "run"]);
+  expect(calls).toEqual(["run"]);
 });
 
 test("code sin HU ignora un marcador conversacional dentro de un solo evento de texto", async () => {
@@ -598,6 +713,18 @@ test("code sin HU ignora un marcador conversacional dentro de un solo evento de 
       },
       resume: async () => { throw new Error("must not resume"); },
     },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201)]),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
@@ -616,11 +743,6 @@ test("code sin HU no avanza dos veces cuando el marcador llega duplicado en even
       sessionID: "ses_dup_1",
       part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
     })),
-    OpenCodeResult.fromJsonLines(JSON.stringify({
-      type: "text",
-      sessionID: "ses_dup_empty",
-      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
-    })),
   ];
 
   const code = await new LazyWorkflowCli(
@@ -632,10 +754,22 @@ test("code sin HU no avanza dos veces cuando el marcador llega duplicado en even
       },
       resume: async () => { throw new Error("must not resume"); },
     },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(calls).toEqual(["run", "run"]);
+  expect(calls).toEqual(["run"]);
 });
 
 test.each([

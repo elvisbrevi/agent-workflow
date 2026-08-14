@@ -4,6 +4,7 @@ import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { createReporter, type Reporter, type ReporterStream } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
+import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -72,24 +73,28 @@ const noAzureBoundary = {
 const runCodeWith = (events: string[], verbose = false, quiet = false) => {
   const capture = buildReporter(verbose, quiet);
   setDefaultReporter(capture.reporter);
-  const queueEmptyEvents = [
-    jsonEvent({ type: "session", sessionID: "ses_empty" }),
-    jsonEvent({ type: "text", sessionID: "ses_empty", part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" } }),
-  ];
-  let spawnCount = 0;
   const spawnWithEvents = (lines: string[]) => () => ({
     stdout: new Blob([lines.join("\n")]).stream(),
     stderr: new Blob([]).stream(),
     exited: Promise.resolve(0),
     kill: () => undefined,
   });
-  const service = new OpenCodeService(() => {
-    spawnCount += 1;
-    return spawnCount === 1 ? spawnWithEvents(events)() : spawnWithEvents(queueEmptyEvents)();
-  }, capture.reporter, 100);
+  const service = new OpenCodeService(() => spawnWithEvents(events)(), capture.reporter, 100);
   const cli = new LazyWorkflowCli(
     noAzureBoundary,
     { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
   );
   return cli
     .run(["code", ...(verbose ? ["--verbose"] : []), ...(quiet ? ["--quiet"] : []), "--working-directory", "/repo"])
@@ -176,10 +181,6 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
       getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { azureCalls += 1; },
     };
-    const queueEmptyEvents = [
-      jsonEvent({ type: "session", sessionID: "ses_empty" }),
-      jsonEvent({ type: "text", sessionID: "ses_empty", part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" } }),
-    ];
     const spawnWithEvents = (lines: string[]) => () => ({
       stdout: new Blob([lines.join("\n")]).stream(),
       stderr: new Blob([]).stream(),
@@ -191,14 +192,22 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
     for (const [verbose, quiet] of [[false, false], [true, false], [false, true]] as const) {
       const capture = buildReporter(verbose, quiet);
       setDefaultReporter(capture.reporter);
-      let spawnCount = 0;
-      const service = new OpenCodeService(() => {
-        spawnCount += 1;
-        return spawnCount === 1 ? spawnWithEvents(events)() : spawnWithEvents(queueEmptyEvents)();
-      }, capture.reporter, 100);
+      const service = new OpenCodeService(() => spawnWithEvents(events)(), capture.reporter, 100);
       const cli = new LazyWorkflowCli(
         trackingBoundary,
         { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
       );
       const code = await cli.run([
         "code",
