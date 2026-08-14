@@ -17,6 +17,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   const events: string[] = [];
   let prompt = "";
   const git: GitRunner = async (args, directory) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";

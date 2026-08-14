@@ -5,7 +5,7 @@ import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 export interface WorkspaceRepository {
   path: string;
   remote: string;
-  githubRepository: string | null;
+  providerIdentity: string | null;
 }
 
 export interface WorkspaceScope {
@@ -21,11 +21,6 @@ export function parseWorkingDirectoryList(value: string): string[] {
     throw new Error("--working-directory no permite entradas vacías");
   }
   return entries;
-}
-
-function githubRepository(remote: string): string | null {
-  const value = remote.trim().replace(/\.git$/, "");
-  return value.match(/(?:github\.com[/:])([^/]+\/[^/]+)$/i)?.[1] ?? null;
 }
 
 function commonParent(paths: string[]): string {
@@ -49,6 +44,7 @@ function isWithin(parent: string, child: string): boolean {
 export async function normalizeWorkspaceScope(
   workingDirectory: string,
   git: GitRunner = runGit,
+  providerIdentity: (remote: string) => string | null = () => null,
 ): Promise<WorkspaceScope> {
   const requested = parseWorkingDirectoryList(workingDirectory);
   const repositories: WorkspaceRepository[] = [];
@@ -72,7 +68,7 @@ export async function normalizeWorkspaceScope(
     if (!remote) throw new Error(`el repositorio no tiene remote origin: ${canonicalRoot}`);
     const status = await git(["status", "--porcelain", "--untracked-files=all"], canonicalRoot);
     if (status.trim()) throw new Error(`el repositorio tiene cambios sin guardar: ${canonicalRoot}`);
-    repositories.push({ path: canonicalRoot, remote, githubRepository: githubRepository(remote) });
+    repositories.push({ path: canonicalRoot, remote, providerIdentity: providerIdentity(remote) });
   }
 
   const roots = repositories.map(({ path }) => path);

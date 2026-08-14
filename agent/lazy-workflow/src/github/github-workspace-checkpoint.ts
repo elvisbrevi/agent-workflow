@@ -20,6 +20,7 @@ export interface GitHubWorkspaceUnit {
   baseBranch: string | null;
   manifestPath: string;
   changed: boolean | null;
+  startingCommit: string;
   commit: string | null;
   pullRequest: number | null;
   mergeCommit: string | null;
@@ -38,6 +39,7 @@ export interface GitHubWorkspaceCheckpoint {
   repositories: Array<{ path: string; remote: string; repository: string }>;
   units: GitHubWorkspaceUnit[];
   receipts: Record<string, { verifiedAt: string }>;
+  intent: { effect: string; target: string } | null;
 }
 
 const FILE_NAME = "github-workspace-code-checkpoint.json";
@@ -64,6 +66,7 @@ function validUnit(value: unknown): value is GitHubWorkspaceUnit {
     && (unit.baseBranch === null || validRef(unit.baseBranch))
     && typeof unit.manifestPath === "string"
     && (unit.changed === null || typeof unit.changed === "boolean")
+    && /^[0-9a-f]{40,64}$/i.test(unit.startingCommit ?? "")
     && validCommit(unit.commit)
     && (unit.pullRequest === null || (typeof unit.pullRequest === "number" && Number.isInteger(unit.pullRequest) && unit.pullRequest > 0))
     && validCommit(unit.mergeCommit)
@@ -87,7 +90,8 @@ export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWork
     && repositories.every((entry) => typeof entry?.path === "string" && typeof entry.remote === "string" && typeof entry.repository === "string" && entry.path.length > 0 && entry.remote.length > 0 && entry.repository.length > 0)
     && Array.isArray(units) && units.length <= repositories.length
     && units.every(validUnit)
-    && validReceipts(checkpoint.receipts);
+    && validReceipts(checkpoint.receipts)
+    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string" && checkpoint.intent.effect.length > 0 && checkpoint.intent.target.length > 0));
 }
 
 export class GitHubWorkspaceCheckpointStore {
