@@ -602,6 +602,7 @@ export class LazyWorkflowCli {
         if (/ENOENT|posix_spawn ['"]git['"]/.test(errorMessage(error))) {
           githubRecovery = null;
         } else {
+          console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER }, null, 2));
           reportOperator(`lazy-workflow: no se pudo leer el checkpoint GitHub (${errorMessage(error)}); ejecucion detenida.`);
           return 1;
         }
@@ -685,6 +686,12 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
+        if (checkpoint.sessionId) {
+          const unlock = release;
+          release = null;
+          await unlock();
+          return this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint);
+        }
         this.reportGitHubReconciliationRequired(checkpoint);
         return 1;
       }
@@ -720,6 +727,7 @@ export class LazyWorkflowCli {
       }
 
       const issue = queueOutcome.issue;
+      const receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 1,
@@ -731,7 +739,7 @@ export class LazyWorkflowCli {
           sessionId,
           commit: null,
           pullRequest: null,
-          receipts: {},
+          receipts,
         }, options.workingDirectory);
       };
       await saveCheckpoint("selected");
@@ -801,11 +809,16 @@ export class LazyWorkflowCli {
     const store = this.githubCheckpointStore;
     const lock = this.githubRepositoryLock;
     if (!store || !lock || !checkpoint.sessionId || options.session !== checkpoint.sessionId) {
-      if (checkpoint.sessionId !== options.session) reportOperator("lazy-workflow: la sesión GitHub no coincide con el checkpoint fijado.");
+      if (checkpoint.sessionId !== options.session) {
+        console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: checkpoint.issue, phase: checkpoint.phase }, null, 2));
+        reportOperator("lazy-workflow: la sesión GitHub no coincide con el checkpoint fijado.");
+      }
       else this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
     }
-    if (!this.githubManagedQueue.readIssueDetail) {
+    const reconcileClaimedIssue = this.githubManagedQueue.reconcileClaimedIssue
+      ?? this.githubManagedQueue.readIssueDetail;
+    if (!reconcileClaimedIssue) {
       this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
     }
@@ -818,7 +831,7 @@ export class LazyWorkflowCli {
         this.reportGitHubReconciliationRequired(checkpoint);
         return 1;
       }
-      const issue = await this.githubManagedQueue.readIssueDetail(liveCheckpoint.issue, options.workingDirectory);
+      const issue = await reconcileClaimedIssue(liveCheckpoint.issue, options.workingDirectory);
       if (issue.number !== liveCheckpoint.issue) throw new Error("el checkpoint GitHub no coincide con el issue recuperado");
       const result = await this.openCodeService.resume(
         liveCheckpoint.sessionId,
@@ -836,7 +849,7 @@ export class LazyWorkflowCli {
       await store.clear(options.workingDirectory);
       return 0;
     } catch (error) {
-      await store.write({ ...checkpoint, phase: "reconciling", sessionId: null }, options.workingDirectory);
+      await store.write({ ...checkpoint, phase: "reconciling" }, options.workingDirectory);
       reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
       return 1;
     } finally {

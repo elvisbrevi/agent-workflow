@@ -137,7 +137,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     },
     state.store,
     state.lock,
-  ).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
+  ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(selections).toBe(0);

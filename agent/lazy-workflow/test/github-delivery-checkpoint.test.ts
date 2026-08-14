@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  GITHUB_DELIVERY_PHASES,
   GitHubDeliveryCheckpointStore,
   isGitHubDeliveryCheckpoint,
   type GitHubDeliveryCheckpoint,
@@ -28,9 +29,16 @@ function checkpoint(): GitHubDeliveryCheckpoint {
 test("valida el checkpoint GitHub sin aceptar transcriptos o credenciales", () => {
   expect(isGitHubDeliveryCheckpoint(checkpoint())).toBeTrue();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), token: "secret" })).toBeFalse();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), receipts: { selected: { verifiedAt: "now", token: "secret" } } })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), sessionId: "ses\nsecret" })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), phase: "unknown" })).toBeFalse();
 });
+
+for (const phase of GITHUB_DELIVERY_PHASES) {
+  test(`acepta la fase GitHub ${phase}`, () => {
+    expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), phase })).toBeTrue();
+  });
+}
 
 test("guarda y recupera el checkpoint GitHub desde la metadata del repositorio", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-github-checkpoint-"));
