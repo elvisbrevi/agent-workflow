@@ -116,6 +116,22 @@ starting OpenCode. The operator prompt is not a branch-management interface.
   unchanged when `--working-directory` is a single path.
 _Avoid_: Azure HU planning run
 
+**Azure workspace delivery checkpoint**:
+The aggregate record kept in the workspace state directory that fixes the HU,
+the ticket, the normalized repository list with its declared order and remote
+identities, the accumulated active duration, and one unit per repository. It is
+the only authority on which repositories were already delivered, so recovery
+resumes the same run instead of restarting or reselecting work.
+_Avoid_: per-repository Azure checkpoints, restarting a partial delivery
+
+**Delivery receipt**:
+The verified record that a repository's external delivery effect already
+happened. A repository unit carrying one is reused as-is rather than repeated,
+and a repository unit without one stays pending. Aggregate completion, the
+ticket transition to `Done`, and the HU transition require a receipt for every
+changed repository.
+_Avoid_: rollback or revert pull requests after a partial merge
+
 **Azure workspace branch topology**:
 The resolved HU and ticket branch layout across the declared participant
 repositories, including the anchor repository that owns the single native
