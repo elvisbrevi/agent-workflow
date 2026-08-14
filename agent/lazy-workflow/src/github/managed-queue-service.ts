@@ -120,6 +120,7 @@ export function orderEligibleManagedIssues(issues: ManagedIssue[]): ManagedIssue
 
 export interface GitHubManagedQueueAdapter {
   selectAndClaimEligibleIssue(workingDirectory: string): Promise<ManagedQueueOutcome>;
+  readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
 }
 
 export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
@@ -187,7 +188,7 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       labels: parsed.labels ?? [],
       assignees: parsed.assignees ?? [],
       createdAt: parsed.createdAt,
-      blockedBy: parsed.blockedBy ?? { nodes: [] },
+      blockedBy: { nodes: parsed.blockedBy?.nodes ?? [] },
       body: parsed.body ?? "",
       comments: (parsed.comments ?? []).map(({ body }) => body ?? ""),
     };
