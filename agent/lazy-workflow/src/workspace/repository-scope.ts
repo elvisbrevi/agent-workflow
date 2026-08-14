@@ -45,6 +45,7 @@ export async function normalizeWorkspaceScope(
   workingDirectory: string,
   git: GitRunner = runGit,
   providerIdentity: (remote: string) => string | null = () => null,
+  requireClean = true,
 ): Promise<WorkspaceScope> {
   const requested = parseWorkingDirectoryList(workingDirectory);
   const repositories: WorkspaceRepository[] = [];
@@ -66,8 +67,10 @@ export async function normalizeWorkspaceScope(
     seen.add(canonicalRoot);
     const remote = (await git(["remote", "get-url", "origin"], canonicalRoot)).trim();
     if (!remote) throw new Error(`el repositorio no tiene remote origin: ${canonicalRoot}`);
-    const status = await git(["status", "--porcelain", "--untracked-files=all"], canonicalRoot);
-    if (status.trim()) throw new Error(`el repositorio tiene cambios sin guardar: ${canonicalRoot}`);
+    if (requireClean) {
+      const status = await git(["status", "--porcelain", "--untracked-files=all"], canonicalRoot);
+      if (status.trim()) throw new Error(`el repositorio tiene cambios sin guardar: ${canonicalRoot}`);
+    }
     repositories.push({ path: canonicalRoot, remote, providerIdentity: providerIdentity(remote) });
   }
 

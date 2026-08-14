@@ -790,12 +790,15 @@ export class LazyWorkflowCli {
     let scope: WorkspaceScope;
     const releases: Array<() => Promise<void>> = [];
     try {
-      scope = await this.workspaceScope(options);
+      scope = await normalizeWorkspaceScope(options.workingDirectory, this.git, githubRepositoryFromRemote, false);
+      if (scope.repositories.some(({ providerIdentity }) => providerIdentity === null)) throw new Error("todos los repositorios del alcance deben tener un remote GitHub");
+      for (const repository of scope.repositories) await this.githubDelivery?.verifyRepository?.(repository.providerIdentity!, repository.path);
       if (this.githubRepositoryLock) {
         for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
       }
       const existing = await this.githubWorkspaceCheckpoint.read(scope.stateDirectory);
       if (existing) return this.resumeWorkspaceCode(options, scope, existing);
+      scope = await this.workspaceScope(options);
       const anchor = scope.repositories[0];
       if (!anchor?.providerIdentity) throw new Error("el primer repositorio no tiene identidad GitHub");
       const selection = await this.githubManagedQueue.selectEligibleIssue?.(anchor.path);
@@ -806,9 +809,8 @@ export class LazyWorkflowCli {
       if (selection.repository.nameWithOwner !== anchor.providerIdentity) {
         throw new Error("el Issue seleccionado no pertenece al primer repositorio del workspace");
       }
-      const issue = this.githubManagedQueue.claimSelectedIssue
-        ? await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path)
-        : selection.issue as SelectedManagedIssue;
+      if (!this.githubManagedQueue.claimSelectedIssue) throw new Error("el coordinador workspace no puede verificar el claim del Issue");
+      const issue = await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path);
       return this.deliverWorkspaceCode(options, scope, issue, null);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo coordinar la entrega workspace (${errorMessage(error)})`);
@@ -908,8 +910,11 @@ export class LazyWorkflowCli {
     if (!delivery) throw new Error("el coordinador GitHub no está habilitado");
     const changed: GitHubWorkspaceUnit[] = [];
     for (const unit of checkpoint.units) {
-      if (await Bun.file(unit.manifestPath).exists()) {
+      if (checkpoint.receipts[`cleanup:${unit.path}`]) {
+        changed.push({ ...unit, changed: true, phase: "cleaning" });
+      } else if (await Bun.file(unit.manifestPath).exists()) {
         const manifest = await delivery.readManifest(unit.manifestPath, unit.path);
+        if (manifest.issue !== checkpoint.issue || manifest.branch !== unit.branch) throw new Error(`el manifest de ${unit.path} no coincide con el Issue o la rama fijados`);
         changed.push({ ...unit, changed: true, commit: manifest.commit, phase: "implementation-ready", receipts: { ...unit.receipts, manifest: { verifiedAt: new Date().toISOString() } } });
       } else {
         const status = await this.git(["status", "--porcelain", "--untracked-files=all"], unit.path);
@@ -919,7 +924,13 @@ export class LazyWorkflowCli {
         changed.push({ ...unit, changed: false, phase: "cleaning" });
       }
     }
-    if (!changed.some(({ changed: hasChanges }) => hasChanges)) throw new Error("el workspace no contiene cambios entregables");
+    if (!changed.some(({ changed: hasChanges }) => hasChanges)) {
+      for (const unit of changed) {
+        if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
+        await delivery.cleanupBranch(unit.branch, unit.baseBranch, unit.startingCommit, unit.path);
+      }
+      throw new Error("el workspace no contiene cambios entregables");
+    }
     checkpoint = { ...checkpoint, phase: "integrating", units: changed };
     await save();
     const effect = async (name: string, target: string, action: () => Promise<void>): Promise<void> => {
@@ -944,7 +955,7 @@ export class LazyWorkflowCli {
       }
       let pullRequest = unit.pullRequest;
       if (!pullRequest) {
-        await effect(`pull-request:${unit.path}`, unit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, unit.branch, unit.baseBranch!, unit.commit!, unit.path)).number; });
+        await effect(`pull-request:${unit.path}`, unit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, unit.branch, unit.baseBranch!, unit.commit!, unit.path, false)).number; });
         checkpoint = { ...checkpoint, units: checkpoint.units.map((candidate) => candidate.path === unit.path ? { ...candidate, pullRequest: pullRequest!, receipts: { ...candidate.receipts, "pull-request": { verifiedAt: new Date().toISOString() } } } : candidate) };
         await save();
       }
@@ -961,7 +972,7 @@ export class LazyWorkflowCli {
       await save();
     }
     const first = delivered[0]!;
-    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path));
+    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, first.path));
     for (const unit of changed) {
       if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
       const commit = unit.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], unit.path)).trim();
