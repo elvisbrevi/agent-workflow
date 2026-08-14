@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import type { AzurePullRequestTarget } from "../src/azure/autocode-service.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const hu = 23438;
@@ -54,9 +55,11 @@ function staticGit(): GitRunner {
 interface AzureWorkspaceHarness {
   events: string[];
   huStateCalls: Array<{ desiredState: string; expectedState: string }>;
-  prLinkCalls: Array<{ pullRequest: number }>;
-  commitLinkCalls: Array<{ pullRequest: number }>;
+  prLinkCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }>;
+  commitLinkCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }>;
+  prCreateCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }>;
   ticketStateCalls: Array<{ desiredState: string }>;
+  effortCalls: Array<{ realEffort: number; realEffortHours: number; expectedRevision: number }>;
   setupCli(overrides?: Partial<AzureBoundary>): Promise<{ cli: LazyWorkflowCli; pathA: string; pathB: string }>;
   cleanup(): Promise<void>;
 }
@@ -66,24 +69,30 @@ function createHarness(options: {
   huChildren?: Array<{ id: number; type: string; state: string }>;
   linkPullRequestFails?: boolean;
   huTransitionFails?: boolean;
+  elapsedMs?: number;
 } = {}): AzureWorkspaceHarness {
   const events: string[] = [];
   const huStateCalls: Array<{ desiredState: string; expectedState: string }> = [];
-  const prLinkCalls: Array<{ pullRequest: number }> = [];
-  const commitLinkCalls: Array<{ pullRequest: number }> = [];
+  const prLinkCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }> = [];
+  const commitLinkCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }> = [];
+  const prCreateCalls: Array<{ pullRequest: number; target?: AzurePullRequestTarget }> = [];
   const ticketStateCalls: Array<{ desiredState: string }> = [];
+  const effortCalls: Array<{ realEffort: number; realEffortHours: number; expectedRevision: number }> = [];
   const huChildren = options.huChildren ?? [];
   let prCounter = 0;
   let root: string | null = null;
   let currentTicketState = "En progreso";
   let currentHuState = options.huState ?? "En Desarrollo";
+  let currentTicketRevision = 4;
 
   const harness: AzureWorkspaceHarness = {
     events,
     huStateCalls,
     prLinkCalls,
     commitLinkCalls,
+    prCreateCalls,
     ticketStateCalls,
+    effortCalls,
     async setupCli(overrides = {}) {
       root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-"));
       const pathA = await seedRepo(root, repoA, remoteUrlA);
@@ -107,7 +116,7 @@ const azureBoundary: AzureBoundary = {
         getCompletedTicketBranch: async () => ticketBranch,
         getTicketInfo: async (_huId, ticketId) => ({
           hu: { id: _huId, title: "HU" },
-          ticket: { id: ticketId, type: "Task" as const, title: "Ticket", state: currentTicketState, revision: 4 },
+          ticket: { id: ticketId, type: "Task" as const, title: "Ticket", state: currentTicketState, revision: currentTicketRevision },
           branch: ticketBranch,
           integrationBranch,
           effort: { estimated: 1, real: 1, realHours: 1 },
@@ -133,9 +142,10 @@ const azureBoundary: AzureBoundary = {
         }),
         validateCompletionManifest: async () => undefined,
         getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
-        createOrReusePullRequest: async () => {
+        createOrReusePullRequest: async (_huId, _ticketId, target?: AzurePullRequestTarget) => {
           prCounter += 1;
           const pullRequest = prCounter;
+          prCreateCalls.push({ pullRequest, target });
           events.push(`pr:${pullRequest}`);
           return { pullRequest, mergeCommit: `merge-${pullRequest}` };
         },
@@ -145,7 +155,7 @@ const azureBoundary: AzureBoundary = {
         getTicket: async (id: number) => ({ id, type: "Task" as const }),
         getDescription: async () => ({ ticket, description: null }),
         getState: async (id: number) => {
-          if (id === ticket) return { ticket: id, state: currentTicketState, revision: 4 };
+          if (id === ticket) return { ticket: id, state: currentTicketState, revision: currentTicketRevision };
           if (id === hu) return { ticket: id, state: currentHuState, revision: 7 };
           throw new Error(`unexpected state for ${id}`);
         },
@@ -156,6 +166,7 @@ const azureBoundary: AzureBoundary = {
         setState: async (id: number, desiredState: string) => {
           if (id === ticket) {
             currentTicketState = desiredState;
+            currentTicketRevision += 1;
             ticketStateCalls.push({ desiredState });
           }
           if (id === hu) {
@@ -163,18 +174,21 @@ const azureBoundary: AzureBoundary = {
             huStateCalls.push({ desiredState, expectedState: options.huState ?? "En Desarrollo" });
           }
           events.push(`state:${id}:${desiredState}`);
-          return { ticket: id, state: desiredState, revision: 5 };
+          return { ticket: id, state: desiredState, revision: id === ticket ? currentTicketRevision : 5 };
         },
-        setEffort: async () => undefined,
-        linkPullRequest: async (_huId, ticketId, pullRequest: number) => {
+        setEffort: async (_ticketId, realEffort: number, realEffortHours: number, expectedRevision: number) => {
+          effortCalls.push({ realEffort, realEffortHours, expectedRevision });
+          return undefined;
+        },
+        linkPullRequest: async (_huId, ticketId, pullRequest: number, target?: AzurePullRequestTarget) => {
           events.push(`link-pr:${pullRequest}`);
           if (options.linkPullRequestFails && pullRequest === 2) throw new Error("native PR association failed");
-          prLinkCalls.push({ pullRequest });
+          prLinkCalls.push({ pullRequest, target });
           return { hu: _huId, ticket: ticketId, pullRequest, mergeCommit: `merge-${pullRequest}` };
         },
-        linkCommit: async (ticketId: number, pullRequest: number) => {
+        linkCommit: async (ticketId: number, pullRequest: number, target?: AzurePullRequestTarget) => {
           events.push(`link-commit:${pullRequest}`);
-          commitLinkCalls.push({ pullRequest });
+          commitLinkCalls.push({ pullRequest, target });
           return { ticket: ticketId, pullRequest, mergeCommit: `merge-${pullRequest}`, artifactLink: "vstfs:///Git/Commit/x" };
         },
         addAttachment: async (id: number) => ({ ticket: id, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
@@ -207,7 +221,7 @@ const azureBoundary: AzureBoundary = {
           units: repositories.map((repository) => ({
             path: repository.path,
             remote: repository.remote,
-            repository: repoA,
+            repository: basename(repository.path),
             project: teamProject,
             integrationBranch,
             ticketBranch: null,
@@ -233,7 +247,7 @@ const azureBoundary: AzureBoundary = {
           units: repositories.map((repository) => ({
             path: repository.path,
             remote: repository.remote,
-            repository: repoA,
+            repository: basename(repository.path),
             project: teamProject,
             integrationBranch,
             ticketBranch,
@@ -245,6 +259,9 @@ const azureBoundary: AzureBoundary = {
         ...overrides,
       };
 
+      let ticks = 0;
+      const elapsedMs = options.elapsedMs ?? 0;
+      const clock = { now: () => (ticks++ === 0 ? 0 : elapsedMs) };
       const cli = new LazyWorkflowCli(
         azureBoundary,
         {
@@ -263,7 +280,7 @@ const azureBoundary: AzureBoundary = {
         undefined,
         undefined,
         undefined,
-        undefined,
+        clock,
         undefined,
         staticGit(),
         undefined,
@@ -302,6 +319,54 @@ test("deliverAzureWorkspaceTicket associates every changed-repository PR and mer
   expect(harness.ticketStateCalls.map((entry) => entry.desiredState)).toContain("Done");
   expect(harness.huStateCalls).toHaveLength(1);
   expect(harness.huStateCalls[0]).toEqual({ desiredState: "Desarrollo Terminado", expectedState: "En Desarrollo" });
+});
+
+test("deliverAzureWorkspaceTicket creates each PR against its own Azure repository in declared order", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.project)).toEqual([teamProject, teamProject]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.source)).toEqual([ticketBranch, ticketBranch]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.target)).toEqual([integrationBranch, integrationBranch]);
+  expect(harness.prLinkCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
+  expect(harness.commitLinkCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
+});
+
+test("deliverAzureWorkspaceTicket accrues real effort from the measured active duration", async () => {
+  const harness = createHarness({ elapsedMs: 3_600_000 });
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.effortCalls).toHaveLength(1);
+  expect(harness.effortCalls[0]!.realEffort).toBe(2);
+  expect(harness.effortCalls[0]!.realEffortHours).toBe(2);
+});
+
+test("deliverAzureWorkspaceTicket sets effort with the revision observed after setState(Done)", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.ticketStateCalls.map(({ desiredState }) => desiredState)).toEqual(["Done"]);
+  expect(harness.effortCalls).toHaveLength(1);
+  expect(harness.effortCalls[0]!.expectedRevision).toBe(5);
 });
 
 test("deliverAzureWorkspaceTicket blocks HU transition when a direct child remains open", async () => {

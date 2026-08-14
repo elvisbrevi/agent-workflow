@@ -184,6 +184,47 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
   expect(commands.some((args) => args[2] === "update" && args.includes("completed"))).toBeTrue();
 });
 
+test("coordinator creates the pull request in the participant repository, not the ticket's linked one", async () => {
+  const commands: string[][] = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    commands.push(args);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+      pullRequestId: 77,
+      status: "active",
+      mergeStatus: "notSet",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      repository: { id: "participant-repository", project: { id: "participant-project" } },
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 77,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "participant-merge" },
+      repository: { id: "participant-repository", project: { id: "participant-project" } },
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.createOrReusePullRequest(23438, 51, {
+    project: "participant-project",
+    repository: "participant-repository",
+    source: "refs/heads/ticket/51",
+    target: "refs/heads/hu/23438",
+  })).resolves.toEqual({ pullRequest: 77, mergeCommit: "participant-merge" });
+
+  const create = commands.find((args) => args[2] === "create");
+  expect(create).toBeDefined();
+  expect(create![create!.indexOf("--repository") + 1]).toBe("participant-repository");
+  expect(create![create!.indexOf("--project") + 1]).toBe("participant-project");
+  expect(create![create!.indexOf("--target-branch") + 1]).toBe("refs/heads/hu/23438");
+  expect(commands.some((args) => args[0] === "boards")).toBeFalse();
+});
+
 test("ticket-info falls back for PR listing and native association without crossing repositories", async () => {
   const commands: string[][] = [];
   const service = new AzureTicketInfoService(async (args) => {

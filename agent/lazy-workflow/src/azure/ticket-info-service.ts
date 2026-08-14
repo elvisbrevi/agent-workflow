@@ -96,6 +96,17 @@ export interface IntegratedPullRequest {
   mergeCommit: string;
 }
 
+/**
+ * Participant repository a delivery effect must act on. Without it the repository is derived from
+ * the ticket's own Branch ArtifactLink, which only ever names one repository.
+ */
+export interface AzurePullRequestTarget {
+  readonly project: string;
+  readonly repository: string;
+  readonly source: string;
+  readonly target: string;
+}
+
 export interface TicketAttachment {
   name?: string;
   url?: string;
@@ -265,6 +276,14 @@ function hasTicketNumber(ref: string | undefined, ticket: number): boolean {
   return new RegExp(`(?:^|[/_.-])${ticket}(?:$|[/_.-])`).test(ref.slice("refs/heads/".length));
 }
 
+function commitArtifactLinks(item: WorkItem): string[] {
+  return (item.relations ?? [])
+    .filter(({ rel, attributes, url }) => rel === "ArtifactLink" && (
+      attributes?.name === "Fixed in Commit" || url?.includes("vstfs:///Git/Commit/")
+    ))
+    .map(({ url }) => url ?? "");
+}
+
 function fixedCommit(item: WorkItem): FixedCommitLink | null {
   const links = (item.relations ?? [])
     .filter(({ rel, attributes, url }) => rel === "ArtifactLink" && (
@@ -283,8 +302,24 @@ function fixedCommit(item: WorkItem): FixedCommitLink | null {
     return { project: match[1]!, repository: match[2]!, commit: match[3]! };
   });
   const unique = [...new Map(commits.map((commit) => [`${commit.project}/${commit.repository}/${commit.commit}`, commit])).values()];
-  if (unique.length > 1) throw new Error("existen multiples Fixed in Commit ArtifactLink distintos");
+  if (unique.length > 1) {
+    // Multi-repository delivery links one commit per repository; Custom.URLCommit names the primary.
+    const primary = text(item, "Custom.URLCommit");
+    const designated = unique.find((commit) =>
+      `vstfs:///Git/Commit/${encodeURIComponent(`${commit.project}/${commit.repository}/${commit.commit}`)}` === primary
+    );
+    if (!designated) throw new Error("existen multiples Fixed in Commit ArtifactLink distintos");
+    return designated;
+  }
   return unique[0] ?? null;
+}
+
+function participantIntegration(participant: AzurePullRequestTarget): { ref: string; project: string; repository: string } {
+  return { ref: participant.target, project: participant.project, repository: participant.repository };
+}
+
+function participantSource(participant: AzurePullRequestTarget): { ref: string; project: string; repository: string } {
+  return { ref: participant.source, project: participant.project, repository: participant.repository };
 }
 
 function sanitizeError(error: unknown): string {
@@ -397,9 +432,10 @@ export class AzureTicketInfoService {
     return resolve(commonDirectory, "lazy-workflow/completion-manifest.json");
   }
 
-  async createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
+  async createOrReusePullRequest(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<IntegratedPullRequest> {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
+    if (participant) return this.integratePullRequestIn(hu, ticket, participant);
     const info = await this.getTicketInfo(hu, ticket);
     const valid = info.pullRequests.filter((pr) =>
       pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === info.integrationBranch
@@ -454,6 +490,27 @@ export class AzureTicketInfoService {
     await this.completePullRequest(created.id, integration.project, integration.repository);
     const verified = await this.readPullRequest(created.id, integration.project, integration.repository);
     this.validatePullRequest(verified, ticket, integration, ticketBranch);
+    return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
+  }
+
+  private async integratePullRequestIn(hu: number, ticket: number, participant: AzurePullRequestTarget): Promise<IntegratedPullRequest> {
+    const { project, repository, source, target } = participant;
+    const exact = (candidates: TicketPullRequest[]): TicketPullRequest[] =>
+      candidates.filter((pr) => pr.source === source && pr.target === target);
+    const completed = exact(await this.readPullRequests(ticket, project, target, project, repository, source))
+      .filter((pr) => pr.status === "completed" && pr.mergeStatus === "succeeded");
+    if (completed.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR completados en ${repository}`);
+    if (completed.length === 1) {
+      const pr = completed[0]!;
+      if (!pr.mergeCommit) throw new Error(`El PR ${pr.id} no tiene commit de merge verificable`);
+      return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
+    }
+    const active = exact(await this.readPullRequests(ticket, project, target, project, repository, source, "active"));
+    if (active.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos en ${repository}`);
+    const pullRequest = active[0] ?? await this.createPullRequest(project, repository, source, target, ticket, hu);
+    await this.completePullRequest(pullRequest.id, project, repository);
+    const verified = await this.readPullRequest(pullRequest.id, project, repository);
+    this.validatePullRequest(verified, ticket, { ref: target, project, repository }, { ref: source, project, repository });
     return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
   }
 
@@ -866,6 +923,7 @@ export class AzureTicketInfoService {
     hu: number,
     ticket: number,
     pullRequestId: number,
+    participant?: AzurePullRequestTarget,
   ): Promise<{ hu: number; ticket: number; pullRequest: number; mergeCommit: string }> {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
@@ -879,8 +937,8 @@ export class AzureTicketInfoService {
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
     await this.readDirectParent(ticket, item);
 
-    const integration = uniqueBranch(parent);
-    const ticketBranch = uniqueBranch(item);
+    const integration = participant ? participantIntegration(participant) : uniqueBranch(parent);
+    const ticketBranch = participant ? participantSource(participant) : uniqueBranch(item);
     if (!integration.ref) throw new Error(`La HU ${hu} no tiene una rama de integración vinculada`);
     if (!ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene una rama vinculada`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
@@ -913,14 +971,15 @@ export class AzureTicketInfoService {
   async linkCommit(
     ticket: number,
     pullRequestId: number,
+    participant?: AzurePullRequestTarget,
   ): Promise<{ ticket: number; pullRequest: number; mergeCommit: string; artifactLink: string }> {
     positiveId(ticket, "El ticket");
     positiveId(pullRequestId, "El pull request");
 
     const item = await this.readWorkItemValidated(ticket);
     const parent = await this.readDirectParent(ticket, item);
-    const integration = uniqueBranch(parent);
-    const ticketBranch = uniqueBranch(item);
+    const integration = participant ? participantIntegration(participant) : uniqueBranch(parent);
+    const ticketBranch = participant ? participantSource(participant) : uniqueBranch(item);
     if (!integration.ref || !ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene ramas de integración y entrega verificables`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integración de su HU`);
@@ -940,17 +999,25 @@ export class AzureTicketInfoService {
     }
     const project = pullRequest.projectId;
     const repository = pullRequest.repositoryId;
-    const artifactLink = `vstfs:///Git/Commit/${encodeURIComponent(`${project}/${repository}/${pullRequest.mergeCommit}`)}`;
-    const existing = fixedCommit(item);
-    if (existing && (
-      existing.project !== project || existing.repository !== repository || existing.commit !== pullRequest.mergeCommit
-    )) throw new Error(`El ticket ${ticket} ya tiene un Fixed in Commit distinto; conflicto`);
+    const mergeCommit = pullRequest.mergeCommit;
+    if (!mergeCommit) throw new Error(`El PR ${pullRequestId} no tiene commit de merge verificable`);
+    const artifactLink = `vstfs:///Git/Commit/${encodeURIComponent(`${project}/${repository}/${mergeCommit}`)}`;
     const existingCommitUrl = text(item, "Custom.URLCommit");
-    if (existingCommitUrl && existingCommitUrl !== artifactLink) {
-      throw new Error(`El ticket ${ticket} ya tiene una URL de commit distinta; conflicto`);
+    const alreadyLinked = commitArtifactLinks(item).includes(artifactLink);
+    // A ticket delivered across repositories carries one commit link per repository; the first one
+    // delivered stays the primary (Custom.URLCommit) and the rest are added alongside it.
+    const secondary = !!participant && !alreadyLinked && !!existingCommitUrl && existingCommitUrl !== artifactLink;
+    if (!secondary) {
+      const existing = fixedCommit(item);
+      if (existing && (
+        existing.project !== project || existing.repository !== repository || existing.commit !== mergeCommit
+      )) throw new Error(`El ticket ${ticket} ya tiene un Fixed in Commit distinto; conflicto`);
+      if (existingCommitUrl && existingCommitUrl !== artifactLink) {
+        throw new Error(`El ticket ${ticket} ya tiene una URL de commit distinta; conflicto`);
+      }
     }
 
-    if (!existing) {
+    if (!alreadyLinked) {
       await this.patchWorkItem(item, [
         { op: "test", path: "/rev", value: item.rev },
         {
@@ -958,20 +1025,19 @@ export class AzureTicketInfoService {
           path: "/relations/-",
           value: { rel: "ArtifactLink", url: artifactLink, attributes: { name: "Fixed in Commit" } },
         },
-        { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
+        ...(secondary ? [] : [{ op: "add", path: "/fields/Custom.URLCommit", value: artifactLink }]),
       ]);
-    } else if (!text(item, "Custom.URLCommit")) {
+    } else if (!secondary && !existingCommitUrl) {
       await this.patchWorkItem(item, [
         { op: "test", path: "/rev", value: item.rev },
         { op: "add", path: "/fields/Custom.URLCommit", value: artifactLink },
       ]);
     }
 
-    const verified = fixedCommit(await this.readWorkItem(ticket));
-    if (!verified || verified.project !== project || verified.repository !== repository || verified.commit !== pullRequest.mergeCommit) {
+    if (!commitArtifactLinks(await this.readWorkItem(ticket)).includes(artifactLink)) {
       throw new Error(`No se pudo verificar el Fixed in Commit del PR ${pullRequestId}`);
     }
-    return { ticket, pullRequest: pullRequestId, mergeCommit: pullRequest.mergeCommit, artifactLink };
+    return { ticket, pullRequest: pullRequestId, mergeCommit, artifactLink };
   }
 
   async addAttachment(
