@@ -307,6 +307,18 @@ OpenCode. The HU and ticket are restored from the repository checkpoint, so no
 bun run main.ts code --session <session-id> --prompt continue
 ```
 
+The same recovery path can continue the preserved GitHub or Azure session with
+an explicitly selected model:
+
+```bash
+bun run main.ts code --session <session-id> \
+  --model openai/gpt-5.6-luna --variant high --prompt continue
+```
+
+Only explicitly supplied `--model` and `--variant` values override the existing
+session. Omitted values remain unchanged. This does not recover a session
+removed with `opencode session delete`.
+
 Recovery and sessionless reconciliation first reacquire the HU's native Branch
 link through the deterministic branch service, then rebuild the pinned ticket
 context. A recovered ticket already in `Done` is verified and reconciled before

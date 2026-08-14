@@ -134,6 +134,16 @@ To recover the exact interrupted ticket from its repository checkpoint:
 bun run main.ts code --session <session-id> --prompt continue
 ```
 
+To continue that preserved session with another model, add explicit overrides:
+
+```bash
+bun run main.ts code --session <session-id> --model openai/gpt-5.6-luna --variant high --prompt continue
+```
+
+Omitting `--model` or `--variant` leaves that setting unchanged in the existing
+OpenCode session. A session removed with `opencode session delete` cannot be
+recovered this way.
+
 Recovery first reacquires and verifies the HU's native integration-branch link
 before rebuilding the pinned ticket context. Stable missing or conflicting
 branch state stops once and preserves the checkpoint; rerun the same command

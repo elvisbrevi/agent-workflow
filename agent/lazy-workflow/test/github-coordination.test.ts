@@ -139,6 +139,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   const { azure, openCode } = services();
   let selections = 0;
   let resumes = 0;
+  let resumeOverrides: unknown;
   const queue = {
     issue: fakeSelectedIssue(178),
     selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
@@ -149,7 +150,11 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   };
   const code = await new LazyWorkflowCli(
     azure,
-    { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
+      resumes += 1;
+      resumeOverrides = overrides;
+      return openCode.resume();
+    } },
     undefined,
     undefined,
     undefined,
@@ -164,11 +169,15 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     queue,
     state.store,
     state.lock,
-  ).run(["code", "--working-directory", "/repo"]);
+  ).run([
+    "code", "--working-directory", "/repo",
+    "--model", "openai/gpt-5.6-luna", "--variant", "high",
+  ]);
 
   expect(code).toBe(1);
   expect(selections).toBe(0);
   expect(resumes).toBe(1);
+  expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
   expect(state.current?.issue).toBe(178);
   expect(state.current?.phase).toBe("implementing");
 });
