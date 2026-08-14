@@ -63,6 +63,9 @@ export interface AzureWorkspaceBranchUnit {
   remote: string;
   repository: string;
   project: string;
+  /** Azure GUIDs; identity comparisons against pull-request payloads use these, never the names. */
+  repositoryId: string;
+  projectId: string;
   integrationBranch: string;
   ticketBranch: string | null;
   integrationBranchCreated: boolean;
@@ -789,6 +792,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
         path: identity.workingDirectory,
         remote: identity.remote,
         repository: identity.repository,
+        repositoryId: identity.repositoryId,
+        projectId: identity.projectId,
         project: identity.project,
         integrationBranch,
         ticketBranch: null,
@@ -884,6 +889,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
         path: identity.workingDirectory,
         remote: identity.remote,
         repository: identity.repository,
+        repositoryId: identity.repositoryId,
+        projectId: identity.projectId,
         project: identity.project,
         integrationBranch,
         ticketBranch,

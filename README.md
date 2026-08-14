@@ -184,8 +184,16 @@ bun run main.ts hu-branch-set --hu 23438 --branch feature/hu-23438 \
   --base-branch main --working-directory /path/to/repository
 ```
 
+To deliver one unit of work across several repositories, pass a comma-separated
+list; the declared order is the delivery order and a single path keeps the
+existing single-repository behavior:
+
+```bash
+lazy-workflow code --working-directory /path/to/repo-a,/path/to/repo-b
+```
+
 See [the agent README](agent/lazy-workflow/README.md) for behavior and
-structure.
+structure, including workspace state, serial execution and recovery.
 
 ## Repository documentation
 

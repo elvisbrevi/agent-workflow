@@ -1,5 +1,6 @@
-import { mkdir, rename, unlink } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { areReceipts, isBranchRef, WorkspaceCheckpointStore } from "../workspace/workspace-checkpoint-store.ts";
 
 export const GITHUB_WORKSPACE_PHASES = [
   "selected",
@@ -48,18 +49,11 @@ export interface GitHubWorkspaceCheckpoint {
 
 const FILE_NAME = "github-workspace-code-checkpoint.json";
 
-function validRef(value: unknown): value is string {
-  return typeof value === "string" && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value) && !value.includes("..") && !value.includes("//");
-}
 
 function validCommit(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value));
 }
 
-function validReceipts(value: unknown): value is Record<string, { verifiedAt: string }> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.values(value).every((receipt) => typeof receipt === "object" && receipt !== null && Object.keys(receipt).length === 1 && typeof receipt.verifiedAt === "string" && Number.isFinite(Date.parse(receipt.verifiedAt)));
-}
 
 function validEvidence(value: unknown): value is Array<{ path: string; sha256: string }> {
   return Array.isArray(value) && value.every((entry) =>
@@ -73,8 +67,8 @@ function validUnit(value: unknown): value is GitHubWorkspaceUnit {
   return typeof unit.path === "string"
     && typeof unit.remote === "string" && unit.remote.length > 0
     && typeof unit.repository === "string"
-    && validRef(unit.branch)
-    && (unit.baseBranch === null || validRef(unit.baseBranch))
+    && isBranchRef(unit.branch)
+    && (unit.baseBranch === null || isBranchRef(unit.baseBranch))
     && typeof unit.manifestPath === "string"
     && (unit.changed === null || typeof unit.changed === "boolean")
     && /^[0-9a-f]{40,64}$/i.test(unit.startingCommit ?? "")
@@ -83,7 +77,7 @@ function validUnit(value: unknown): value is GitHubWorkspaceUnit {
     && (unit.pullRequest === null || (typeof unit.pullRequest === "number" && Number.isInteger(unit.pullRequest) && unit.pullRequest > 0))
     && validCommit(unit.mergeCommit)
     && GITHUB_WORKSPACE_PHASES.includes(unit.phase as GitHubWorkspacePhase)
-    && validReceipts(unit.receipts);
+    && areReceipts(unit.receipts);
 }
 
 export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWorkspaceCheckpoint {
@@ -96,13 +90,13 @@ export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWork
     && Number.isInteger(checkpoint.issue) && (checkpoint.issue ?? 0) > 0
     && GITHUB_WORKSPACE_PHASES.includes(checkpoint.phase as GitHubWorkspacePhase)
     && (checkpoint.sessionId === null || typeof checkpoint.sessionId === "string")
-    && validRef(checkpoint.branch)
+    && isBranchRef(checkpoint.branch)
     && typeof checkpoint.parentDirectory === "string" && checkpoint.parentDirectory.length > 0
     && Array.isArray(repositories) && repositories.length > 0
     && repositories.every((entry) => typeof entry?.path === "string" && typeof entry.remote === "string" && typeof entry.repository === "string" && entry.path.length > 0 && entry.remote.length > 0 && entry.repository.length > 0)
     && Array.isArray(units) && units.length <= repositories.length
     && units.every(validUnit)
-    && validReceipts(checkpoint.receipts)
+    && areReceipts(checkpoint.receipts)
     && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string" && checkpoint.intent.effect.length > 0 && checkpoint.intent.target.length > 0))
     && (checkpoint.reconciliation === undefined || checkpoint.reconciliation === null || (
       typeof checkpoint.reconciliation === "object"
@@ -127,7 +121,7 @@ export function isGitHubWorkspaceManifest(value: unknown): value is GitHubWorksp
   if (typeof value !== "object" || value === null) return false;
   const manifest = value as Partial<GitHubWorkspaceManifest>;
   return Number.isInteger(manifest.issue) && (manifest.issue ?? 0) > 0
-    && validRef(manifest.branch)
+    && isBranchRef(manifest.branch)
     && Array.isArray(manifest.repositories) && manifest.repositories.length > 0
     && manifest.repositories.every(validUnit)
     && typeof manifest.summary === "string" && manifest.summary.trim().length > 0
@@ -147,33 +141,8 @@ export async function writeGitHubWorkspaceManifest(manifest: GitHubWorkspaceMani
   if (!isGitHubWorkspaceManifest(written)) throw new Error("El manifest agregado del workspace no se pudo verificar tras escribirse");
 }
 
-export class GitHubWorkspaceCheckpointStore {
-  private path(stateDirectory: string): string {
-    return resolve(stateDirectory, FILE_NAME);
-  }
-
-  async read(stateDirectory: string): Promise<GitHubWorkspaceCheckpoint | null> {
-    const path = this.path(stateDirectory);
-    if (!await Bun.file(path).exists()) return null;
-    const value: unknown = await Bun.file(path).json();
-    if (!isGitHubWorkspaceCheckpoint(value)) throw new Error("Checkpoint GitHub workspace inválido; no se sobrescribirá");
-    return value;
-  }
-
-  async write(checkpoint: GitHubWorkspaceCheckpoint, stateDirectory: string): Promise<void> {
-    if (!isGitHubWorkspaceCheckpoint(checkpoint)) throw new Error("Checkpoint GitHub workspace inválido");
-    const path = this.path(stateDirectory);
-    await mkdir(dirname(path), { recursive: true });
-    const temporaryPath = `${path}.tmp-${process.pid}`;
-    await Bun.write(temporaryPath, `${JSON.stringify(checkpoint)}\n`);
-    await rename(temporaryPath, path);
-  }
-
-  async clear(stateDirectory: string): Promise<void> {
-    try {
-      await unlink(this.path(stateDirectory));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
+export class GitHubWorkspaceCheckpointStore extends WorkspaceCheckpointStore<GitHubWorkspaceCheckpoint> {
+  protected readonly fileName = FILE_NAME;
+  protected readonly label = "GitHub workspace";
+  protected isCheckpoint = isGitHubWorkspaceCheckpoint;
 }

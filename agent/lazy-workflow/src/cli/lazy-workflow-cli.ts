@@ -13,6 +13,7 @@ import {
 } from "../azure/autocode-service.ts";
 import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
+import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -132,6 +133,11 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** ADR 0009: active duration in hours, rounded upward to a quarter, never below one quarter. */
+function activeEffortHours(activeDurationMs: number): number {
+  return Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
 }
 
 function revisionOf(result: unknown): number | null {
@@ -338,6 +344,7 @@ export class LazyWorkflowCli {
     githubRepositoryLock?: GitHubRepositoryLockBoundary,
     githubDelivery?: GitHubDeliveryAdapter,
     githubParentReconciliation?: GitHubParentReconciliationAdapter,
+    private readonly azureWorkspaceCheckpoint: AzureWorkspaceCheckpointStore = new AzureWorkspaceCheckpointStore(),
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -827,9 +834,30 @@ export class LazyWorkflowCli {
     const hu = options.hu;
     const boundary = this.huInfoService;
     const startedAt = this.clock.now();
+    let scope: WorkspaceScope;
+    let checkpoint: AzureWorkspaceCheckpoint | null;
+    try {
+      scope = await this.azureWorkspaceScope(options);
+      checkpoint = await this.azureWorkspaceCheckpoint.read(scope.stateDirectory);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
+    if (options.session !== null && (!checkpoint || checkpoint.sessionId !== options.session)) {
+      reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
+      return 1;
+    }
+    // Fail closed before any external effect: the recovered scope must be the same repositories,
+    // in the same order, with the same remotes, for the same HU and ticket.
+    if (checkpoint) {
+      const mismatch = this.azureWorkspaceScopeMismatch(checkpoint, scope, hu, ticket);
+      if (mismatch) {
+        reportOperator(`lazy-workflow: ${mismatch}; ejecución detenida.`);
+        return 1;
+      }
+    }
     try {
       await boundary.validateDirectTicketContext!(hu, ticket);
-      const scope = await this.azureWorkspaceScope(options);
       const topology = await this.huInfoService.prepareWorkspaceBranches({
         hu,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
@@ -841,28 +869,137 @@ export class LazyWorkflowCli {
         integrationBranch: topology.integrationBranch,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
       });
-      const prompt = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
-      const execution = await this.openCodeService.run({
-        ...options,
-        workingDirectory: scope.parentDirectory,
-        prompt,
-        session: null,
-        terminalMarker: IMPLEMENTATION_READY_MARKER,
-      }, true);
-      if (execution.failed) {
-        reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
-        return 1;
+      if (checkpoint) {
+        const drift = this.azureWorkspaceTopologyMismatch(checkpoint, topology, ticketTopology);
+        if (drift) {
+          reportOperator(`lazy-workflow: ${drift}; ejecución detenida.`);
+          return 1;
+        }
       }
-      const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
-      if (!terminal) {
-        reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
-        return 1;
+      let phaseStart = startedAt;
+      const accrue = (): number => {
+        const now = this.clock.now();
+        const elapsed = Math.max(0, now - phaseStart);
+        phaseStart = now;
+        return elapsed;
+      };
+      if (!checkpoint) {
+        // Write the intent before the first external effect so a crashed session is recoverable.
+        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology);
+        await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       }
-      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, Math.max(0, this.clock.now() - startedAt));
+      if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
+        const resuming = checkpoint.sessionId;
+        const session = resuming
+          ? { ...await this.openCodeService.resume(resuming, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
+          : await this.runAzureWorkspaceSession(options, scope, topology, ticketTopology);
+        const terminal = !session.failed && containsMarker(session.text, IMPLEMENTATION_READY_MARKER);
+        checkpoint = {
+          ...checkpoint,
+          phase: terminal ? "implementation-ready" : "implementing",
+          sessionId: terminal ? null : (session.sessionId ?? resuming),
+          activeDurationMs: checkpoint.activeDurationMs + accrue(),
+        };
+        await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        if (session.failed) return 1;
+        if (!terminal) {
+          reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          return 1;
+        }
+      }
+      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+  }
+
+  private async runAzureWorkspaceSession(
+    options: CliOptions,
+    scope: WorkspaceScope,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): Promise<{ text: string; sessionId: string | null; failed: boolean }> {
+    const prompt = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
+    const execution = await this.openCodeService.run({
+      ...options,
+      workingDirectory: scope.parentDirectory,
+      prompt,
+      session: null,
+      terminalMarker: IMPLEMENTATION_READY_MARKER,
+    }, true);
+    if (execution.failed) {
+      reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+    }
+    return { text: execution.result.text, sessionId: execution.result.sessionId ?? null, failed: !!execution.failed };
+  }
+
+  private azureWorkspaceScopeMismatch(
+    checkpoint: AzureWorkspaceCheckpoint,
+    scope: WorkspaceScope,
+    hu: number,
+    ticket: number,
+  ): string | null {
+    if (checkpoint.hu !== hu || checkpoint.ticket !== ticket) {
+      return `el checkpoint workspace Azure pertenece a la HU ${checkpoint.hu} y al ticket ${checkpoint.ticket}`;
+    }
+    if (checkpoint.repositories.length !== scope.repositories.length) {
+      return "el checkpoint workspace Azure declara otra cantidad de repositorios";
+    }
+    const drifted = scope.repositories.find((repository, index) =>
+      repository.path !== checkpoint.repositories[index]?.path
+      || repository.remote !== checkpoint.repositories[index]?.remote
+    );
+    if (drifted) return `el repositorio ${drifted.path} no coincide con la identidad remota del checkpoint workspace Azure`;
+    return null;
+  }
+
+  /** The resolved branches and per-repository Azure identity must still be the checkpointed ones. */
+  private azureWorkspaceTopologyMismatch(
+    checkpoint: AzureWorkspaceCheckpoint,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): string | null {
+    if (checkpoint.integrationBranch !== topology.integrationBranch) {
+      return `la rama de integración cambió respecto del checkpoint workspace Azure (${checkpoint.integrationBranch})`;
+    }
+    const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${checkpoint.ticket}`;
+    if (checkpoint.ticketBranch !== ticketBranch) {
+      return `la rama del ticket cambió respecto del checkpoint workspace Azure (${checkpoint.ticketBranch})`;
+    }
+    for (const unit of checkpoint.units) {
+      const resolved = ticketTopology.units.find(({ path }) => path === unit.path);
+      if (!resolved) return `el repositorio ${unit.path} del checkpoint workspace Azure ya no pertenece al alcance`;
+      if (resolved.repository !== unit.repository || resolved.project !== unit.project) {
+        return `el repositorio ${unit.path} cambió de identidad Azure respecto del checkpoint workspace`;
+      }
+    }
+    return null;
+  }
+
+  private createAzureWorkspaceCheckpoint(
+    hu: number,
+    ticket: number,
+    scope: WorkspaceScope,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): AzureWorkspaceCheckpoint {
+    return {
+      schemaVersion: 1,
+      workflow: "azure-workspace-code",
+      hu,
+      ticket,
+      phase: "started",
+      sessionId: null,
+      integrationBranch: topology.integrationBranch,
+      ticketBranch: ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`,
+      parentDirectory: scope.parentDirectory,
+      activeDurationMs: 0,
+      repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+      units: [],
+      receipts: {},
+      intent: null,
+    };
   }
 
   private async azureWorkspacePrompt(
@@ -898,8 +1035,11 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
-    activeDurationMs: number,
+    initial: AzureWorkspaceCheckpoint,
+    accrue: () => number,
   ): Promise<number> {
+    let checkpoint = initial;
+    const save = async (): Promise<void> => { await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory); };
     const integrationBranch = topology.integrationBranch;
     const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`;
     const ticketBranchAnchor = ticketTopology.ticketBranchAnchor ?? topology.anchor.workingDirectory;
@@ -936,6 +1076,29 @@ export class LazyWorkflowCli {
       return 1;
     }
 
+    const checkpointUnit = (path: string): AzureWorkspaceCheckpointUnit | undefined =>
+      checkpoint.units.find((candidate) => candidate.path === path);
+    checkpoint = {
+      ...checkpoint,
+      phase: "integrating",
+      units: units.map((unit) => {
+        const identity = azureIdentity.get(unit.path);
+        const existing = checkpointUnit(unit.path);
+        return {
+          path: unit.path,
+          remote: identity?.remote ?? existing?.remote ?? "",
+          repository: identity?.repository ?? existing?.repository ?? "",
+          project: identity?.project ?? existing?.project ?? "",
+          changed: unit.changed,
+          commit: unit.commit ?? null,
+          pullRequest: existing?.pullRequest ?? null,
+          mergeCommit: existing?.mergeCommit ?? null,
+          receipts: existing?.receipts ?? {},
+        };
+      }),
+    };
+    await save();
+
     const delivered: Array<{ path: string; commit: string; pullRequest: number; mergeCommit: string }> = [];
     for (const unit of changedUnits) {
       const commit = unit.commit!;
@@ -944,12 +1107,23 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: el repositorio ${unit.path} no tiene identidad Azure en la topología; ejecución detenida.`);
         return 1;
       }
+      // Azure GUIDs, not names: `az` accepts either, but pull-request payloads only ever carry the
+      // GUIDs that the identity checks compare against.
       const participant: AzurePullRequestTarget = {
-        project: identity.project,
-        repository: identity.repository,
+        project: identity.projectId,
+        repository: identity.repositoryId,
         source: identity.ticketBranch ?? ticketBranch,
         target: identity.integrationBranch,
       };
+      const recorded = checkpointUnit(unit.path);
+      // A verified receipt means the PR was created, associated and merged for this repository on
+      // an earlier run; reuse it instead of creating a second pull request.
+      if (recorded?.receipts.delivery && recorded.pullRequest && recorded.mergeCommit) {
+        delivered.push({ path: unit.path, commit, pullRequest: recorded.pullRequest, mergeCommit: recorded.mergeCommit });
+        continue;
+      }
+      checkpoint = { ...checkpoint, intent: { effect: "azure-delivery", target: unit.path } };
+      await save();
       try {
         await boundary.checkoutTicketBranch!(ticketBranch, unit.path);
         await boundary.pushTicketBranch!(ticketBranch, unit.path);
@@ -959,7 +1133,17 @@ export class LazyWorkflowCli {
         await boundary.linkPullRequest!(hu, ticket, pullRequest, participant);
         await boundary.linkCommit!(ticket, pullRequest, participant);
         delivered.push({ path: unit.path, commit, pullRequest, mergeCommit });
+        checkpoint = {
+          ...checkpoint,
+          intent: null,
+          units: checkpoint.units.map((candidate) => candidate.path === unit.path
+            ? { ...candidate, pullRequest, mergeCommit, receipts: { ...candidate.receipts, delivery: { verifiedAt: new Date(this.clock.now()).toISOString() } } }
+            : candidate),
+        };
+        await save();
       } catch (error) {
+        // Fail closed: later repositories stay pending and no merge is rolled back or reverted.
+        await save();
         reportOperator(`lazy-workflow: no se pudo entregar el repositorio ${unit.path} (${errorMessage(error)}); ejecución detenida.`);
         return 1;
       }
@@ -972,7 +1156,6 @@ export class LazyWorkflowCli {
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
     const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
-    const activeHours = Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
     const ticketStateBefore = await boundary.getState!(ticket);
 
     for (const evidence of completionManifest.evidence) {
@@ -1010,8 +1193,15 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    const targetReal = baselineReal + activeHours;
-    const targetRealHours = baselineRealHours + activeHours;
+    // The ticket and the HU only move once every changed repository carries a verified receipt.
+    const pending = checkpoint.units.filter((unit) => unit.changed && !unit.receipts.delivery);
+    if (pending.length > 0) {
+      reportOperator(`lazy-workflow: quedan repositorios sin entregar (${pending.map(({ path }) => path).join(", ")}); ejecución detenida.`);
+      return 1;
+    }
+    checkpoint = { ...checkpoint, phase: "completing" };
+    await save();
+
     let effortRevision = finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0;
     if (finalInfo.ticket.state !== "Done") {
       const currentState = await boundary.getState!(ticket);
@@ -1019,7 +1209,14 @@ export class LazyWorkflowCli {
       // The state change advances the work item revision; setEffort must test against the new one.
       effortRevision = revisionOf(done) ?? (await boundary.getState!(ticket)).revision ?? effortRevision;
     }
-    await boundary.setEffort!(ticket, targetReal, targetRealHours, effortRevision);
+    // Effort is cumulative and published exactly once: a receipt stops a rerun from adding the
+    // accrued hours on top of the value it already published.
+    if (!checkpoint.receipts.effort) {
+      const activeHours = activeEffortHours(checkpoint.activeDurationMs + accrue());
+      await boundary.setEffort!(ticket, baselineReal + activeHours, baselineRealHours + activeHours, effortRevision);
+      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, effort: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
+      await save();
+    }
 
     const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
     if (verifyAfter.ticket.state !== "Done") {
@@ -1047,6 +1244,27 @@ export class LazyWorkflowCli {
       }
     }
 
+    checkpoint = { ...checkpoint, phase: "cleaning" };
+    await save();
+    // Repositories that produced no changes still had a ticket branch created for them.
+    const cleaned: string[] = [];
+    const uncleaned: string[] = [];
+    for (const unit of units.filter(({ changed }) => !changed)) {
+      if (checkpoint.receipts[`cleanup:${unit.path}`]) {
+        cleaned.push(unit.path);
+        continue;
+      }
+      try {
+        await this.ticketBranchCleaner.deleteTicketBranch(ticketBranch, integrationBranch, unit.path);
+        cleaned.push(unit.path);
+        checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, [`cleanup:${unit.path}`]: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
+        await save();
+      } catch (error) {
+        uncleaned.push(unit.path);
+        reportOperator(`lazy-workflow: no se pudo limpiar la rama del ticket en ${unit.path} (${errorMessage(error)})`);
+      }
+    }
+
     const summary = {
       hu: hu,
       ticket: ticket,
@@ -1054,11 +1272,14 @@ export class LazyWorkflowCli {
       ticketBranch,
       ticketBranchAnchor,
       delivered: delivered.map((entry) => ({ path: entry.path, pullRequest: entry.pullRequest, mergeCommit: entry.mergeCommit })),
+      cleaned,
+      uncleaned,
       ticketState: "Done",
       huState: huTransitionApplied ? "Desarrollo Terminado" : (huState.state ?? "En Desarrollo"),
-      clean: true,
+      clean: uncleaned.length === 0,
     };
     console.log(JSON.stringify(summary, null, 2));
+    if (uncleaned.length === 0) await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
     return 0;
   }
 
@@ -2771,7 +2992,7 @@ export class LazyWorkflowCli {
         await save();
         if (!checkpoint.receipts["ticket-effort"]) {
           const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket!) : { revision: checkpoint.azureRevision };
-          const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+          const activeHours = activeEffortHours(checkpoint.activeDurationMs);
           await runRecoveryEffect(
             "ticket-effort",
             `${checkpoint.effortBaseline.real + activeHours}/${checkpoint.effortBaseline.realHours + activeHours}`,
@@ -2967,7 +3188,7 @@ export class LazyWorkflowCli {
               await save();
 
               const currentState = await this.huInfoService.getState!(ticket);
-              const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+              const activeHours = activeEffortHours(checkpoint.activeDurationMs);
               const targetReal = effortBaseline.real + activeHours;
               const targetRealHours = effortBaseline.realHours + activeHours;
               if (!checkpoint.receipts["ticket-effort"]) {
