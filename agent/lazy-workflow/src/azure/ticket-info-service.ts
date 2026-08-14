@@ -314,12 +314,11 @@ function fixedCommit(item: WorkItem): FixedCommitLink | null {
   return unique[0] ?? null;
 }
 
-function participantIntegration(participant: AzurePullRequestTarget): { ref: string; project: string; repository: string } {
-  return { ref: participant.target, project: participant.project, repository: participant.repository };
-}
-
-function participantSource(participant: AzurePullRequestTarget): { ref: string; project: string; repository: string } {
-  return { ref: participant.source, project: participant.project, repository: participant.repository };
+function participantBranch(
+  participant: AzurePullRequestTarget,
+  side: "source" | "target",
+): { ref: string; project: string; repository: string } {
+  return { ref: participant[side], project: participant.project, repository: participant.repository };
 }
 
 function sanitizeError(error: unknown): string {
@@ -937,8 +936,8 @@ export class AzureTicketInfoService {
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
     await this.readDirectParent(ticket, item);
 
-    const integration = participant ? participantIntegration(participant) : uniqueBranch(parent);
-    const ticketBranch = participant ? participantSource(participant) : uniqueBranch(item);
+    const integration = participant ? participantBranch(participant, "target") : uniqueBranch(parent);
+    const ticketBranch = participant ? participantBranch(participant, "source") : uniqueBranch(item);
     if (!integration.ref) throw new Error(`La HU ${hu} no tiene una rama de integración vinculada`);
     if (!ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene una rama vinculada`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
@@ -978,8 +977,8 @@ export class AzureTicketInfoService {
 
     const item = await this.readWorkItemValidated(ticket);
     const parent = await this.readDirectParent(ticket, item);
-    const integration = participant ? participantIntegration(participant) : uniqueBranch(parent);
-    const ticketBranch = participant ? participantSource(participant) : uniqueBranch(item);
+    const integration = participant ? participantBranch(participant, "target") : uniqueBranch(parent);
+    const ticketBranch = participant ? participantBranch(participant, "source") : uniqueBranch(item);
     if (!integration.ref || !ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene ramas de integración y entrega verificables`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integración de su HU`);
@@ -1006,7 +1005,7 @@ export class AzureTicketInfoService {
     const alreadyLinked = commitArtifactLinks(item).includes(artifactLink);
     // A ticket delivered across repositories carries one commit link per repository; the first one
     // delivered stays the primary (Custom.URLCommit) and the rest are added alongside it.
-    const secondary = !!participant && !alreadyLinked && !!existingCommitUrl && existingCommitUrl !== artifactLink;
+    const secondary = !!participant && !!existingCommitUrl && existingCommitUrl !== artifactLink;
     if (!secondary) {
       const existing = fixedCommit(item);
       if (existing && (
@@ -1034,8 +1033,15 @@ export class AzureTicketInfoService {
       ]);
     }
 
-    if (!commitArtifactLinks(await this.readWorkItem(ticket)).includes(artifactLink)) {
+    const verifiedItem = await this.readWorkItem(ticket);
+    if (!commitArtifactLinks(verifiedItem).includes(artifactLink)) {
       throw new Error(`No se pudo verificar el Fixed in Commit del PR ${pullRequestId}`);
+    }
+    if (!secondary) {
+      const verified = fixedCommit(verifiedItem);
+      if (!verified || verified.project !== project || verified.repository !== repository || verified.commit !== mergeCommit) {
+        throw new Error(`No se pudo verificar el Fixed in Commit del PR ${pullRequestId}`);
+      }
     }
     return { ticket, pullRequest: pullRequestId, mergeCommit, artifactLink };
   }

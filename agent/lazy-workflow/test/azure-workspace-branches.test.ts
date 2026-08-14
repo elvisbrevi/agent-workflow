@@ -370,6 +370,13 @@ test("prepareWorkspaceBranches escribe el Branch ArtifactLink cuando la rama exi
   expect(topology.anchor.workingDirectory).toBe("/repo/a");
   expect(topology.units[0]!.integrationBranchCreated).toBe(false);
   expect(topology.units[1]!.integrationBranchCreated).toBe(true);
+  // Delivery effects compare identity against pull-request payloads, which only carry GUIDs.
+  expect(topology.units.map(({ repositoryId }) => repositoryId)).toEqual([
+    topology.anchor.repositoryId,
+    expect.any(String),
+  ]);
+  expect(topology.units.every(({ projectId }) => projectId === topology.anchor.projectId)).toBeTrue();
+  expect(topology.units.every(({ repository, repositoryId }) => repository !== repositoryId)).toBeTrue();
 });
 
 test("prepareWorkspaceTicketBranches crea la rama del ticket en cada participante y ancla el primer repositorio", async () => {
