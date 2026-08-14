@@ -98,7 +98,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   validateEvidence?(ticket: number, filePath: string): Promise<void>;
   prepareWorkspaceBranches?(options: { hu: number; repositories: readonly AzureWorkspaceRepositoryInput[]; baseBranch?: string | null; integrationBranch?: string }): Promise<AzureWorkspaceBranchTopology>;
   prepareWorkspaceTicketBranches?(options: { hu: number; ticket: number; integrationBranch: string; repositories: readonly AzureWorkspaceRepositoryInput[]; ticketBranch?: string; ticketBranchAnchor?: string | null }): Promise<AzureWorkspaceBranchTopology>;
-  linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, workingDirectory: string): Promise<unknown>;
+  linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, candidates: readonly string[]): Promise<unknown>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -1017,7 +1017,6 @@ export class LazyWorkflowCli {
       `Coordinator-fixed ticket: ${options.ticket}`,
       `Coordinator-fixed integration branch: ${topology.integrationBranch}`,
       `Coordinator-fixed ticket branch: ${ticketTopology.ticketBranch ?? null}`,
-      `Coordinator-fixed ticket branch anchor: ${ticketTopology.ticketBranchAnchor ?? topology.anchor.workingDirectory}`,
       `Workspace parent directory: ${scope.parentDirectory}`,
       "Ordered participant repositories:",
       ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
@@ -1070,25 +1069,14 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    // Azure allows the ticket exactly one native Branch ArtifactLink, and it must name the primary
-    // implementation repository: the first declared repository that actually changed. Manifest
-    // presence is what makes a repository changed, so the primary is only knowable here — and it
-    // must be linked before manifest validation, which compares the manifest against that link.
-    const primaryRepository = checkpoint.primaryRepository ?? changedUnits[0]!.path;
-    try {
-      await boundary.linkTicketBranch!(hu, ticket, ticketBranch, primaryRepository);
-    } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo fijar la rama primaria del ticket en ${primaryRepository} (${errorMessage(error)}); ejecución detenida.`);
-      return 1;
-    }
-    checkpoint = { ...checkpoint, primaryRepository };
-    await save();
-
+    // Verify every manifest before anything is pinned: the ticket's Branch ArtifactLink is
+    // permanent, so an unverified manifest must never be able to name the primary repository.
+    // The coordinator's own fixed ticket branch stands in for the not-yet-written link.
     for (const unit of changedUnits) {
       try {
         const manifest = await boundary.readCompletionManifest!(unit.manifestPath, unit.path);
         const info = await boundary.getTicketInfo!(hu, ticket);
-        await boundary.validateCompletionManifest!(manifest, info, ticket, unit.path);
+        await boundary.validateCompletionManifest!(manifest, { ...info, branch: ticketBranch }, ticket, unit.path);
         unit.manifest = manifest;
         unit.commit = manifest.commit;
       } catch (error) {
@@ -1096,6 +1084,23 @@ export class LazyWorkflowCli {
         return 1;
       }
     }
+
+    // Azure allows the ticket exactly one native Branch ArtifactLink and it must name the primary
+    // implementation repository: the first declared repository that actually changed. An existing
+    // link stays authoritative, so the boundary reports which repository the ticket ended up on.
+    let primaryRepository: string;
+    try {
+      const candidates = checkpoint.primaryRepository
+        ? [checkpoint.primaryRepository, ...changedUnits.map(({ path }) => path)]
+        : changedUnits.map(({ path }) => path);
+      const linked = await boundary.linkTicketBranch!(hu, ticket, ticketBranch, candidates);
+      primaryRepository = (linked as { workingDirectory?: string }).workingDirectory ?? candidates[0]!;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo fijar la rama primaria del ticket (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
+    checkpoint = { ...checkpoint, primaryRepository };
+    await save();
 
     const checkpointUnit = (path: string): AzureWorkspaceCheckpointUnit | undefined =>
       checkpoint.units.find((candidate) => candidate.path === path);

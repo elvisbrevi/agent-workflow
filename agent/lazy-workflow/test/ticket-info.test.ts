@@ -140,6 +140,36 @@ test("ticket-info resolves the delivery repository from the ticket branch, not t
   expect(list![list!.indexOf("--repository") + 1]).toBe("primary-repo-id");
 });
 
+test("getBranch reports a ticket branch anchored in a different repository than the HU branch", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Team" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Fanchor-repo-id%2FGBhu%2F23438", attributes: { name: "Branch" } },
+      ],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 51,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Fprimary-repo-id%2FGBticket%2F51", attributes: { name: "Branch" } },
+      ],
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  // ticket-branch-info must stay readable for a ticket delivered across repositories.
+  await expect(service.getBranch(23438, 51)).resolves.toEqual({
+    hu: 23438,
+    ticket: 51,
+    branch: "refs/heads/ticket/51",
+    integrationBranch: "refs/heads/hu/23438",
+  });
+});
+
 test("ticket-info does not infer a canonical PR without native association", async () => {
   const service = new AzureTicketInfoService(async (args) => {
     if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({

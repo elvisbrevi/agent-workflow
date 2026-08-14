@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { AzureWorkspaceCheckpoint } from "../src/azure/azure-workspace-checkpoint.ts";
 import {
   createAzureWorkspaceHarness,
@@ -238,6 +238,42 @@ test("azure workspace delivery records the primary repository in the checkpoint"
     await harness.cleanup();
   }
   expect(preserved).not.toBeNull();
+});
+
+test("azure workspace delivery does not pin the ticket branch on a repository whose manifest fails verification", async () => {
+  const harness = createAzureWorkspaceHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      validateCompletionManifest: async (_manifest, _info, _ticketId, workingDirectory: string) => {
+        if (basename(workingDirectory) === repoA) throw new Error("manifest obsoleto");
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  // Pinning is permanent, so it must never happen on the strength of an unverified manifest.
+  expect(harness.ticketBranchLinks).toHaveLength(0);
+  expect(harness.prCreateCalls).toHaveLength(0);
+});
+
+test("azure workspace delivery treats an existing ticket Branch ArtifactLink as authoritative", async () => {
+  const harness = createAzureWorkspaceHarness({ resolvedPrimary: repoB });
+  let exit = -1;
+  let cleared: AzureWorkspaceCheckpoint | null = null;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+    cleared = await harness.readCheckpoint();
+  } finally {
+    await harness.cleanup();
+  }
+  // Both repositories changed, so repo-a would be picked; the ticket is already linked to repo-b.
+  expect(exit).toBe(0);
+  expect(harness.ticketBranchLinks).toEqual([repoB]);
+  expect(cleared).toBeNull();
 });
 
 test("azure workspace delivery cleans the ticket branch of repositories without changes", async () => {
