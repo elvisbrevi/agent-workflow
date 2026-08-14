@@ -39,6 +39,11 @@ export type ManagedQueueOutcome =
   | { kind: "blocked"; reasons: ManagedQueueBlockEntry[] }
   | { kind: "selected"; issue: SelectedManagedIssue; repository: GitHubRepositoryContext };
 
+export type ManagedQueueSelection =
+  | { kind: "empty" }
+  | { kind: "blocked"; reasons: ManagedQueueBlockEntry[] }
+  | { kind: "candidate"; issue: ManagedIssue; repository: GitHubRepositoryContext };
+
 export interface GitHubRepositoryContext {
   nameWithOwner: string;
 }
@@ -120,6 +125,11 @@ export function orderEligibleManagedIssues(issues: ManagedIssue[]): ManagedIssue
 
 export interface GitHubManagedQueueAdapter {
   selectAndClaimEligibleIssue(workingDirectory: string): Promise<ManagedQueueOutcome>;
+  verifyRepository?(workingDirectory: string): Promise<GitHubRepositoryContext>;
+  selectEligibleIssue?(workingDirectory: string): Promise<ManagedQueueSelection>;
+  claimSelectedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
+  readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
+  reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
 }
 
 export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
@@ -187,10 +197,38 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       labels: parsed.labels ?? [],
       assignees: parsed.assignees ?? [],
       createdAt: parsed.createdAt,
-      blockedBy: parsed.blockedBy ?? { nodes: [] },
+      blockedBy: { nodes: parsed.blockedBy?.nodes ?? [] },
       body: parsed.body ?? "",
       comments: (parsed.comments ?? []).map(({ body }) => body ?? ""),
     };
+  }
+
+  async reconcileClaimedIssue(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue> {
+    const identity = await this.verifyAuthentication(workingDirectory);
+    const issue = await this.readIssueDetail(issueNumber, workingDirectory);
+    const assignees = assigneeLogins(issue);
+    const eligibilityAfterClaim = evaluateEligibility(issue).filter((reason) => reason !== "assigned");
+    if (assignees.length !== 1
+      || assignees[0] !== identity.login
+      || eligibilityAfterClaim.length > 0) {
+      throw new Error(`el Issue #${issueNumber} ya no conserva el claim GitHub verificable`);
+    }
+    return issue;
+  }
+
+  async selectEligibleIssue(workingDirectory: string): Promise<ManagedQueueSelection> {
+    await this.verifyAuthentication(workingDirectory);
+    const repository = await this.verifyRepository(workingDirectory);
+    const classification = classifyQueueIssues(await this.listManagedIssues(workingDirectory));
+    const candidate = orderEligibleManagedIssues(classification.eligible)[0];
+    if (candidate) return { kind: "candidate", issue: candidate, repository };
+    if (classification.managed.length === 0) return { kind: "empty" };
+    return { kind: "blocked", reasons: classification.blocked };
+  }
+
+  async claimSelectedIssue(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue> {
+    await this.claimIssue(issueNumber, workingDirectory);
+    return this.reconcileClaimedIssue(issueNumber, workingDirectory);
   }
 
   async claimIssue(issueNumber: number, workingDirectory: string): Promise<void> {
