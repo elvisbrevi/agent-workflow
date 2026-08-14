@@ -148,6 +148,53 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
   expect(state.lockReleases).toBe(1);
 });
 
+test("el coordinador continúa con la siguiente issue elegible hasta vaciar la cola", async () => {
+  const state = boundaries();
+  const { azure, openCode } = services();
+  const pending = [178, 179];
+  let claims = 0;
+  let runs = 0;
+  const queue = {
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    async selectEligibleIssue() {
+      const next = pending[0];
+      if (next === undefined) return { kind: "empty" as const };
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(next), repository: { nameWithOwner: "owner/repo" } };
+    },
+    async claimSelectedIssue() {
+      claims += 1;
+      return fakeSelectedIssue(pending.shift()!);
+    },
+  };
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  let code: number;
+  try {
+    code = await new LazyWorkflowCli(
+      azure,
+      { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+      undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      queue,
+      state.store,
+      state.lock,
+    ).run(["code", "--working-directory", "/repo"]);
+  } finally {
+    console.log = original;
+  }
+
+  expect(code).toBe(0);
+  expect(claims).toBe(2);
+  expect(runs).toBe(2);
+  expect(logs.filter((line) => line === "TICKET_COMPLETED")).toHaveLength(2);
+  expect(logs.filter((line) => line === "QUEUE_EMPTY")).toHaveLength(1);
+  expect(logs.at(-1)).toBe("WORKFLOW_STEP_FINISHED");
+  expect(state.current).toBeNull();
+  expect(state.lockAcquires).toBe(1);
+  expect(state.lockReleases).toBe(1);
+});
+
 test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   const state = boundaries(checkpoint("ses_178"));
   const { azure, openCode } = services();

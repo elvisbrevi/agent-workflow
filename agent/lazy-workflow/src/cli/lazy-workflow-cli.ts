@@ -1159,182 +1159,92 @@ export class LazyWorkflowCli {
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
     const queue = this.githubManagedQueue;
-    let queueOutcome: ManagedQueueOutcome;
-    let checkpointWasWritten = false;
-    let receipts: GitHubDeliveryCheckpoint["receipts"] = { "issue-claim": { verifiedAt: new Date().toISOString() } };
-    if (store && queue.selectEligibleIssue && queue.claimSelectedIssue) {
-      const selection = await queue.selectEligibleIssue(options.workingDirectory);
-      if (selection.kind === "candidate") {
-        receipts = {};
-        await store.write({
-          schemaVersion: 1,
-          workflow: "github-code",
-          repository: selection.repository.nameWithOwner,
-          issue: selection.issue.number,
-          phase: "selected",
-          branch: null,
-          sessionId: null,
-          commit: null,
-          pullRequest: null,
-          receipts,
-        }, options.workingDirectory);
-        checkpointWasWritten = true;
-        try {
-          const claimedIssue = await queue.claimSelectedIssue(selection.issue.number, options.workingDirectory);
-          queueOutcome = { kind: "selected", issue: claimedIssue, repository: selection.repository };
-        } catch (error) {
-          console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: selection.issue.number, phase: "selected" }, null, 2));
-          reportOperator(`lazy-workflow: no se pudo verificar el claim del Issue #${selection.issue.number} (${errorMessage(error)}); checkpoint conservado.`);
-          return 1;
+    // Deliver every eligible issue in one run: on completion, re-select the next.
+    // Empty/blocked queue or any failure returns and exits the loop.
+    while (true) {
+      let queueOutcome: ManagedQueueOutcome;
+      let checkpointWasWritten = false;
+      let receipts: GitHubDeliveryCheckpoint["receipts"] = { "issue-claim": { verifiedAt: new Date().toISOString() } };
+      if (store && queue.selectEligibleIssue && queue.claimSelectedIssue) {
+        const selection = await queue.selectEligibleIssue(options.workingDirectory);
+        if (selection.kind === "candidate") {
+          receipts = {};
+          await store.write({
+            schemaVersion: 1,
+            workflow: "github-code",
+            repository: selection.repository.nameWithOwner,
+            issue: selection.issue.number,
+            phase: "selected",
+            branch: null,
+            sessionId: null,
+            commit: null,
+            pullRequest: null,
+            receipts,
+          }, options.workingDirectory);
+          checkpointWasWritten = true;
+          try {
+            const claimedIssue = await queue.claimSelectedIssue(selection.issue.number, options.workingDirectory);
+            queueOutcome = { kind: "selected", issue: claimedIssue, repository: selection.repository };
+          } catch (error) {
+            console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: selection.issue.number, phase: "selected" }, null, 2));
+            reportOperator(`lazy-workflow: no se pudo verificar el claim del Issue #${selection.issue.number} (${errorMessage(error)}); checkpoint conservado.`);
+            return 1;
+          }
+          receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
+          await store.write({
+            schemaVersion: 1,
+            workflow: "github-code",
+            repository: selection.repository.nameWithOwner,
+            issue: selection.issue.number,
+            phase: "selected",
+            branch: null,
+            sessionId: null,
+            commit: null,
+            pullRequest: null,
+            receipts,
+          }, options.workingDirectory);
+        } else {
+          queueOutcome = selection;
         }
-        receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
-        await store.write({
-          schemaVersion: 1,
-          workflow: "github-code",
-          repository: selection.repository.nameWithOwner,
-          issue: selection.issue.number,
-          phase: "selected",
-          branch: null,
-          sessionId: null,
-          commit: null,
-          pullRequest: null,
-          receipts,
-        }, options.workingDirectory);
       } else {
-        queueOutcome = selection;
+        queueOutcome = await queue.selectAndClaimEligibleIssue(options.workingDirectory);
       }
-    } else {
-      queueOutcome = await queue.selectAndClaimEligibleIssue(options.workingDirectory);
-    }
-    if (queueOutcome.kind === "empty") {
-      console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
-      console.log(QUEUE_EMPTY_MARKER);
-      console.log(WORKFLOW_STEP_FINISHED_MARKER);
-      reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
-      return 0;
-    }
-    if (queueOutcome.kind === "blocked") {
-      const summary = queueOutcome.reasons.map(({ number, title, reasons }) =>
-        `- #${number} ${title}: ${reasons.join(", ")}`
-      ).join("\n");
-      console.log(JSON.stringify({ outcome: QUEUE_BLOCKED_MARKER, reasons: queueOutcome.reasons }, null, 2));
-      console.log(QUEUE_BLOCKED_MARKER);
-      console.log(WORKFLOW_STEP_FINISHED_MARKER);
-      reportOperator(`lazy-workflow: la cola gestionada tiene issues no elegibles:\n${summary}`);
-      return 0;
-    }
+      if (queueOutcome.kind === "empty") {
+        console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
+        console.log(QUEUE_EMPTY_MARKER);
+        console.log(WORKFLOW_STEP_FINISHED_MARKER);
+        reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
+        return 0;
+      }
+      if (queueOutcome.kind === "blocked") {
+        const summary = queueOutcome.reasons.map(({ number, title, reasons }) =>
+          `- #${number} ${title}: ${reasons.join(", ")}`
+        ).join("\n");
+        console.log(JSON.stringify({ outcome: QUEUE_BLOCKED_MARKER, reasons: queueOutcome.reasons }, null, 2));
+        console.log(QUEUE_BLOCKED_MARKER);
+        console.log(WORKFLOW_STEP_FINISHED_MARKER);
+        reportOperator(`lazy-workflow: la cola gestionada tiene issues no elegibles:\n${summary}`);
+        return 0;
+      }
 
-    const issue = queueOutcome.issue;
-    const repository = queueOutcome.repository;
-    let branch: string | null = null;
-    let baseBranch: string | null = null;
-    let manifestPath: string | null = null;
-    let commit: string | null = null;
-    let pullRequest: number | null = null;
-    let mergeCommit: string | null = null;
-    let intent: GitHubDeliveryCheckpoint["intent"] = null;
-    const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
-      if (store) await store.write({
-        schemaVersion: 1,
-        workflow: "github-code",
-        repository: repository.nameWithOwner,
-        issue: issue.number,
-        phase,
-        branch,
-        sessionId,
-        commit,
-        pullRequest,
-        receipts,
-        baseBranch,
-        manifestPath,
-        mergeCommit,
-        intent,
-      }, options.workingDirectory);
-    };
-    if (!checkpointWasWritten) await saveCheckpoint("selected");
-    if (this.githubDelivery) {
-      try {
-        const prepared = await this.githubDelivery.prepareBranch(issue.number, options.workingDirectory);
-        branch = prepared.branch;
-        baseBranch = prepared.baseBranch;
-        manifestPath = prepared.manifestPath;
-        await saveCheckpoint("started");
-      } catch (error) {
-        await saveCheckpoint("started");
-        reportOperator(`lazy-workflow: no se pudo preparar la rama del Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`);
-        return 1;
-      }
-    }
-    const prompt = this.githubDelivery && branch && manifestPath
-      ? await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms)
-      : [
-        await readPrompt("default"),
-        "Selected workflow: code",
-        `Coordinator-fixed repository: ${queueOutcome.repository.nameWithOwner}`,
-        "Coordinator-fixed issue context:",
-        JSON.stringify({
-          number: issue.number,
-          title: issue.title,
-          state: issue.state,
-          labels: issue.labels.map(({ name }) => name).filter(Boolean),
-          assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
-          createdAt: issue.createdAt,
-          body: issue.body,
-          comments: issue.comments,
-        }),
-        ...(norms ? [this.formatSagContext(norms)] : []),
-        `The working directory is ${options.workingDirectory}`,
-        "Operator request:",
-        options.prompt,
-      ].join("\n");
-    if (!this.githubDelivery) await saveCheckpoint("started");
-    let execution;
-    try {
-      execution = await this.openCodeService.run({
-        ...options,
-        prompt,
-        session: null,
-        terminalMarker: IMPLEMENTATION_READY_MARKER,
-      }, false);
-    } catch (error) {
-      await saveCheckpoint("reconciling");
-      reportOperator(`lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`);
-      return 1;
-    }
-    const result = execution.result;
-    console.log(JSON.stringify(result, null, 2));
-    const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
-    await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
-    if (execution.failed) {
-      this.reportGitHubReconciliationRequired({
-        schemaVersion: 1,
-        workflow: "github-code",
-        repository: repository.nameWithOwner,
-        issue: issue.number,
-        phase: "reconciling",
-        branch: null,
-        sessionId: terminal ? null : result.sessionId,
-        commit: null,
-        pullRequest: null,
-        receipts,
-      });
-      return 1;
-    }
-
-    if (this.githubDelivery) {
-      if (!terminal) {
-        reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
-        return 1;
-      }
-      try {
-        await this.completeGitHubDelivery(options, {
+      const issue = queueOutcome.issue;
+      const repository = queueOutcome.repository;
+      let branch: string | null = null;
+      let baseBranch: string | null = null;
+      let manifestPath: string | null = null;
+      let commit: string | null = null;
+      let pullRequest: number | null = null;
+      let mergeCommit: string | null = null;
+      let intent: GitHubDeliveryCheckpoint["intent"] = null;
+      const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
+        if (store) await store.write({
           schemaVersion: 1,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
-          phase: "implementation-ready",
+          phase,
           branch,
-          sessionId: null,
+          sessionId,
           commit,
           pullRequest,
           receipts,
@@ -1342,23 +1252,116 @@ export class LazyWorkflowCli {
           manifestPath,
           mergeCommit,
           intent,
-        });
-        console.log(TICKET_COMPLETED_MARKER);
-        console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        return 0;
+        }, options.workingDirectory);
+      };
+      if (!checkpointWasWritten) await saveCheckpoint("selected");
+      if (this.githubDelivery) {
+        try {
+          const prepared = await this.githubDelivery.prepareBranch(issue.number, options.workingDirectory);
+          branch = prepared.branch;
+          baseBranch = prepared.baseBranch;
+          manifestPath = prepared.manifestPath;
+          await saveCheckpoint("started");
+        } catch (error) {
+          await saveCheckpoint("started");
+          reportOperator(`lazy-workflow: no se pudo preparar la rama del Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`);
+          return 1;
+        }
+      }
+      const prompt = this.githubDelivery && branch && manifestPath
+        ? await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms)
+        : [
+          await readPrompt("default"),
+          "Selected workflow: code",
+          `Coordinator-fixed repository: ${queueOutcome.repository.nameWithOwner}`,
+          "Coordinator-fixed issue context:",
+          JSON.stringify({
+            number: issue.number,
+            title: issue.title,
+            state: issue.state,
+            labels: issue.labels.map(({ name }) => name).filter(Boolean),
+            assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
+            createdAt: issue.createdAt,
+            body: issue.body,
+            comments: issue.comments,
+          }),
+          ...(norms ? [this.formatSagContext(norms)] : []),
+          `The working directory is ${options.workingDirectory}`,
+          "Operator request:",
+          options.prompt,
+        ].join("\n");
+      if (!this.githubDelivery) await saveCheckpoint("started");
+      let execution;
+      try {
+        execution = await this.openCodeService.run({
+          ...options,
+          prompt,
+          session: null,
+          terminalMarker: IMPLEMENTATION_READY_MARKER,
+        }, false);
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo completar determinísticamente el Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`);
+        await saveCheckpoint("reconciling");
+        reportOperator(`lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`);
         return 1;
       }
+      const result = execution.result;
+      console.log(JSON.stringify(result, null, 2));
+      const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
+      await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
+      if (execution.failed) {
+        this.reportGitHubReconciliationRequired({
+          schemaVersion: 1,
+          workflow: "github-code",
+          repository: repository.nameWithOwner,
+          issue: issue.number,
+          phase: "reconciling",
+          branch: null,
+          sessionId: terminal ? null : result.sessionId,
+          commit: null,
+          pullRequest: null,
+          receipts,
+        });
+        return 1;
+      }
+
+      if (this.githubDelivery) {
+        if (!terminal) {
+          reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          return 1;
+        }
+        try {
+          await this.completeGitHubDelivery(options, {
+            schemaVersion: 1,
+            workflow: "github-code",
+            repository: repository.nameWithOwner,
+            issue: issue.number,
+            phase: "implementation-ready",
+            branch,
+            sessionId: null,
+            commit,
+            pullRequest,
+            receipts,
+            baseBranch,
+            manifestPath,
+            mergeCommit,
+            intent,
+          });
+          console.log(TICKET_COMPLETED_MARKER);
+          console.log(WORKFLOW_STEP_FINISHED_MARKER);
+          continue;
+        } catch (error) {
+          reportOperator(`lazy-workflow: no se pudo completar determinísticamente el Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`);
+          return 1;
+        }
+      }
+      if (!terminal) {
+        reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+        return 1;
+      }
+      if (store) await store.clear(options.workingDirectory);
+      console.log(TICKET_COMPLETED_MARKER);
+      console.log(WORKFLOW_STEP_FINISHED_MARKER);
     }
-    if (!terminal) {
-      reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
-      return 1;
-    }
-    if (store) await store.clear(options.workingDirectory);
-    console.log(TICKET_COMPLETED_MARKER);
-    console.log(WORKFLOW_STEP_FINISHED_MARKER);
-    return 0;
   }
 
   private async buildGitHubDeliveryPrompt(

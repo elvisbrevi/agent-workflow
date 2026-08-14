@@ -201,7 +201,7 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
       selectEligibleIssue: async () => {
         selections += 1;
-        if (selections > 1) throw new Error("must not select a second issue");
+        if (selections > 1) return { kind: "empty" };
         return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
       },
       claimSelectedIssue: async () => fakeSelectedIssue(179),
@@ -212,7 +212,7 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(selections).toBe(1);
+  expect(selections).toBe(2);
   expect(calls).toEqual(["prepare-branch", "read-manifest", "push", "pull-request", "merge", "close-issue", "cleanup"]);
   expect(current).toBeNull();
 });
