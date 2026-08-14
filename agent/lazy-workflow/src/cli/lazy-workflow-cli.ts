@@ -28,7 +28,11 @@ import { SagNormsService, type SagArchitectureReviewContext, type SagCodingConte
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
-import { GitHubManagedQueueService, type GitHubManagedQueueAdapter } from "../github/managed-queue-service.ts";
+import {
+  GitHubManagedQueueService,
+  type GitHubManagedQueueAdapter,
+  type ManagedQueueOutcome,
+} from "../github/managed-queue-service.ts";
 import {
   GitHubDeliveryCheckpointStore,
   type GitHubCheckpointStore,
@@ -712,7 +716,41 @@ export class LazyWorkflowCli {
     while (true) {
       const norms = await this.loadSagNorms(options, "coding");
       if (options.normasSag && norms === null) return 1;
-      const queueOutcome = await this.githubManagedQueue.selectAndClaimEligibleIssue(options.workingDirectory);
+      const selectEligibleIssue = this.githubManagedQueue.selectEligibleIssue;
+      const claimSelectedIssue = this.githubManagedQueue.claimSelectedIssue;
+      let queueOutcome: ManagedQueueOutcome;
+      let checkpointWasWritten = false;
+      let receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
+      if (store && selectEligibleIssue && claimSelectedIssue) {
+        const selection = await selectEligibleIssue(options.workingDirectory);
+        if (selection.kind === "candidate") {
+          await store.write({
+            schemaVersion: 1,
+            workflow: "github-code",
+            repository: selection.repository.nameWithOwner,
+            issue: selection.issue.number,
+            phase: "selected",
+            branch: null,
+            sessionId: null,
+            commit: null,
+            pullRequest: null,
+            receipts,
+          }, options.workingDirectory);
+          checkpointWasWritten = true;
+          try {
+            const claimedIssue = await claimSelectedIssue(selection.issue.number, options.workingDirectory);
+            queueOutcome = { kind: "selected", issue: claimedIssue, repository: selection.repository };
+          } catch (error) {
+            console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: selection.issue.number, phase: "selected" }, null, 2));
+            reportOperator(`lazy-workflow: no se pudo verificar el claim del Issue #${selection.issue.number} (${errorMessage(error)}); checkpoint conservado.`);
+            return 1;
+          }
+        } else {
+          queueOutcome = selection;
+        }
+      } else {
+        queueOutcome = await this.githubManagedQueue.selectAndClaimEligibleIssue(options.workingDirectory);
+      }
       if (queueOutcome.kind === "empty") {
         console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
         reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
@@ -728,12 +766,12 @@ export class LazyWorkflowCli {
       }
 
       const issue = queueOutcome.issue;
-      const receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
+      const repository = queueOutcome.repository;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 1,
           workflow: "github-code",
-          repository: queueOutcome.repository.nameWithOwner,
+          repository: repository.nameWithOwner,
           issue: issue.number,
           phase,
           branch: null,
@@ -743,7 +781,7 @@ export class LazyWorkflowCli {
           receipts,
         }, options.workingDirectory);
       };
-      await saveCheckpoint("selected");
+      if (!checkpointWasWritten) await saveCheckpoint("selected");
       const prompt = [
         await readPrompt("default"),
         `Selected workflow: code`,
@@ -858,8 +896,10 @@ export class LazyWorkflowCli {
     } catch (error) {
       const reread = await store.read(options.workingDirectory).catch(() => null);
       const currentCheckpoint = reread ?? checkpoint;
-      await store.write({ ...currentCheckpoint, phase: "reconciling" }, options.workingDirectory);
-      this.reportGitHubReconciliationRequired(currentCheckpoint);
+      const sessionId = error instanceof OpenCodeSessionNotFoundError ? null : currentCheckpoint.sessionId;
+      const reconciledCheckpoint = { ...currentCheckpoint, phase: "reconciling" as const, sessionId };
+      await store.write(reconciledCheckpoint, options.workingDirectory);
+      this.reportGitHubReconciliationRequired(reconciledCheckpoint);
       reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${currentCheckpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
       return 1;
     } finally {
