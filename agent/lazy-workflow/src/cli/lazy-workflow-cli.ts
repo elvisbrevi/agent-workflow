@@ -50,6 +50,12 @@ import {
 } from "../github/github-parent-reconciliation-service.ts";
 import { GitHubRepositoryLockService, type GitHubRepositoryLockBoundary } from "../github/github-repository-lock.ts";
 import {
+  GitHubWorkspaceCheckpointStore,
+  type GitHubWorkspaceCheckpoint,
+  type GitHubWorkspaceUnit,
+} from "../github/github-workspace-checkpoint.ts";
+import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
+import {
   buildCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
@@ -262,6 +268,7 @@ export class LazyWorkflowCli {
   private readonly githubRepositoryLock: GitHubRepositoryLockBoundary | null;
   private readonly githubDelivery: GitHubDeliveryAdapter | null;
   private readonly githubParentReconciliation: GitHubParentReconciliationAdapter | null;
+  private readonly githubWorkspaceCheckpoint = new GitHubWorkspaceCheckpointStore();
 
   constructor(
     private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
@@ -318,6 +325,20 @@ export class LazyWorkflowCli {
     if (options.verbose && options.quiet) {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");
       return 1;
+    }
+
+    if (options.workingDirectory.includes(",")) {
+      if (options.hu !== null) {
+        reportOperator("el alcance multi-repositorio GitHub no permite --hu");
+        return 1;
+      }
+      if (command !== "plan" && command !== "code") {
+        reportOperator("--working-directory CSV solo se permite con plan o code");
+        return 1;
+      }
+      return command === "plan"
+        ? this.runWorkspacePlan(options)
+        : this.runWorkspaceCode(options);
     }
 
     if (options.normasSag && command !== "plan" && command !== "code") {
@@ -698,6 +719,225 @@ export class LazyWorkflowCli {
     }
 
     return this.runDefaultCodeWorkflow(options);
+  }
+
+  private async workspaceScope(options: CliOptions): Promise<WorkspaceScope> {
+    const scope = await normalizeWorkspaceScope(options.workingDirectory, this.git);
+    if (scope.repositories.some(({ githubRepository }) => githubRepository === null)) {
+      throw new Error("todos los repositorios del alcance deben tener un remote GitHub");
+    }
+    return scope;
+  }
+
+  private async workspacePrompt(
+    options: CliOptions,
+    scope: WorkspaceScope,
+    issue: SelectedManagedIssue | null,
+    units: GitHubWorkspaceUnit[] = [],
+  ): Promise<string> {
+    return [
+      await readPrompt("default"),
+      "Selected workflow: code",
+      ...(issue ? ["Coordinator-fixed issue context:", JSON.stringify({
+        number: issue.number,
+        title: issue.title,
+        state: issue.state,
+        labels: issue.labels.map(({ name }) => name).filter(Boolean),
+        assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
+        createdAt: issue.createdAt,
+        body: issue.body,
+        comments: issue.comments,
+      })] : []),
+      `Workspace parent directory: ${scope.parentDirectory}`,
+      "Ordered participant repositories:",
+      ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
+      ...(units.length > 0 ? ["Immutable delivery paths:", ...units.map(({ path, branch, manifestPath }) => `${path}: branch ${branch}, manifest ${manifestPath}`)] : []),
+      "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
+      "Work through repositories serially in the declared order, committing each changed repository independently.",
+      `The working directory is ${scope.parentDirectory}`,
+      "Operator request:",
+      options.prompt,
+    ].join("\n");
+  }
+
+  private async runWorkspacePlan(options: CliOptions): Promise<number> {
+    try {
+      const scope = await this.workspaceScope(options);
+      const prompt = [
+        await readPrompt("default"),
+        "Selected workflow: plan",
+        `Workspace parent directory: ${scope.parentDirectory}`,
+        "Ordered participant repositories:",
+        ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
+        `The working directory is ${scope.parentDirectory}`,
+        "Operator request:",
+        options.prompt,
+      ].join("\n");
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, false);
+      console.log(JSON.stringify(execution.result, null, 2));
+      return execution.failed ? 1 : 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`);
+      return 1;
+    }
+  }
+
+  private async runWorkspaceCode(options: CliOptions): Promise<number> {
+    let scope: WorkspaceScope;
+    const releases: Array<() => Promise<void>> = [];
+    try {
+      scope = await this.workspaceScope(options);
+      if (this.githubRepositoryLock) {
+        for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
+      }
+      const existing = await this.githubWorkspaceCheckpoint.read(scope.stateDirectory);
+      if (existing) return this.resumeWorkspaceCode(options, scope, existing);
+      const anchor = scope.repositories[0];
+      if (!anchor?.githubRepository) throw new Error("el primer repositorio no tiene identidad GitHub");
+      const selection = await this.githubManagedQueue.selectEligibleIssue?.(anchor.path);
+      if (!selection || selection.kind !== "candidate") {
+        reportOperator(selection?.kind === "blocked" ? "lazy-workflow: la cola workspace tiene issues no elegibles" : "lazy-workflow: no quedan issues GitHub elegibles");
+        return selection?.kind === "blocked" ? 0 : 1;
+      }
+      if (selection.repository.nameWithOwner !== anchor.githubRepository) {
+        throw new Error("el Issue seleccionado no pertenece al primer repositorio del workspace");
+      }
+      const issue = this.githubManagedQueue.claimSelectedIssue
+        ? await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path)
+        : selection.issue as SelectedManagedIssue;
+      return this.deliverWorkspaceCode(options, scope, issue, null);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo coordinar la entrega workspace (${errorMessage(error)})`);
+      return 1;
+    } finally {
+      for (const release of releases.reverse()) await release();
+    }
+  }
+
+  private async resumeWorkspaceCode(options: CliOptions, scope: WorkspaceScope, checkpoint: GitHubWorkspaceCheckpoint): Promise<number> {
+    const expected = scope.repositories.map(({ path, remote, githubRepository }) => ({ path, remote, repository: githubRepository }));
+    if (JSON.stringify(expected) !== JSON.stringify(checkpoint.repositories)
+      || checkpoint.units.some((unit, index) => unit.path !== expected[index]?.path || unit.repository !== expected[index]?.repository)) {
+      reportOperator("lazy-workflow: el checkpoint workspace no coincide con el alcance declarado; ejecución detenida.");
+      return 1;
+    }
+    if (checkpoint.sessionId) {
+      try {
+        const result = await this.openCodeService.resume(checkpoint.sessionId, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER);
+        console.log(JSON.stringify(result, null, 2));
+        if (!containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) return 1;
+        checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
+        await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo reanudar el workspace (${errorMessage(error)})`);
+        return 1;
+      }
+    }
+    return this.deliverWorkspaceCode(options, scope, null, checkpoint);
+  }
+
+  private async deliverWorkspaceCode(
+    options: CliOptions,
+    scope: WorkspaceScope,
+    issue: SelectedManagedIssue | null,
+    existing: GitHubWorkspaceCheckpoint | null,
+  ): Promise<number> {
+    const anchor = scope.repositories[0];
+    if (!anchor?.githubRepository) throw new Error("el primer repositorio no tiene identidad GitHub");
+    let checkpoint = existing;
+    let units = checkpoint?.units ?? [];
+    const issueNumber = issue?.number ?? checkpoint?.issue;
+    if (!issueNumber) throw new Error("falta el Issue fijado para el workspace");
+    if (!checkpoint) {
+      checkpoint = {
+        schemaVersion: 1,
+        workflow: "github-workspace-code",
+        issue: issueNumber,
+        phase: "selected",
+        sessionId: null,
+        branch: `refs/heads/issue/${issueNumber}`,
+        parentDirectory: scope.parentDirectory,
+        repositories: scope.repositories.map(({ path, remote, githubRepository }) => ({ path, remote, repository: githubRepository! })),
+        units: [],
+        receipts: {},
+      };
+      await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+    }
+    if (checkpoint.units.length < scope.repositories.length) {
+      units = checkpoint.units;
+      for (const repository of scope.repositories.slice(units.length)) {
+        const prepared = await this.githubDelivery?.prepareBranch(issueNumber, repository.path);
+        if (!prepared) throw new Error("el coordinador GitHub no expone preparación de ramas");
+        units = [...units, { path: repository.path, repository: repository.githubRepository!, branch: prepared.branch, baseBranch: prepared.baseBranch, manifestPath: prepared.manifestPath, changed: null, commit: null, pullRequest: null, mergeCommit: null, phase: "started", receipts: {} }];
+        checkpoint = { ...checkpoint, phase: "started", units };
+        await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+      }
+      checkpoint = { ...checkpoint, phase: "started", branch: units[0]!.branch, units };
+    }
+    if (checkpoint.phase === "selected") {
+      checkpoint = { ...checkpoint, phase: "started" };
+      await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+    }
+    const save = async (): Promise<void> => { await this.githubWorkspaceCheckpoint.write(checkpoint!, scope.stateDirectory); };
+    if (checkpoint.phase === "implementing" && !checkpoint.sessionId) {
+      throw new Error("el checkpoint workspace no conserva una sesión reanudable");
+    }
+    if (checkpoint.phase === "started" && !checkpoint.sessionId) {
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt: await this.workspacePrompt(options, scope, issue, units), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+      console.log(JSON.stringify(execution.result, null, 2));
+      const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
+      checkpoint = { ...checkpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId };
+      await save();
+      if (execution.failed || !terminal) return 1;
+    }
+    return this.integrateWorkspaceCode(scope, checkpoint, save);
+  }
+
+  private async integrateWorkspaceCode(
+    scope: WorkspaceScope,
+    initial: GitHubWorkspaceCheckpoint,
+    save: () => Promise<void>,
+  ): Promise<number> {
+    let checkpoint = initial;
+    const delivery = this.githubDelivery;
+    if (!delivery) throw new Error("el coordinador GitHub no está habilitado");
+    const changed: GitHubWorkspaceUnit[] = [];
+    for (const unit of checkpoint.units) {
+      if (await Bun.file(unit.manifestPath).exists()) {
+        const manifest = await delivery.readManifest(unit.manifestPath, unit.path);
+        changed.push({ ...unit, changed: true, commit: manifest.commit, phase: "implementation-ready", receipts: { ...unit.receipts, manifest: { verifiedAt: new Date().toISOString() } } });
+      } else {
+        const status = await this.git(["status", "--porcelain", "--untracked-files=all"], unit.path);
+        if (status.trim()) throw new Error(`OpenCode dejó cambios sin commitear en ${unit.path}`);
+        changed.push({ ...unit, changed: false, phase: "cleaning" });
+      }
+    }
+    if (!changed.some(({ changed: hasChanges }) => hasChanges)) throw new Error("el workspace no contiene cambios entregables");
+    checkpoint = { ...checkpoint, phase: "integrating", units: changed };
+    await save();
+    const delivered: GitHubWorkspaceUnit[] = [];
+    for (const unit of changed.filter(({ changed: hasChanges }) => hasChanges)) {
+      if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
+      await delivery.pushCommit(unit.branch, unit.commit!, unit.path);
+      const pullRequest = await delivery.createOrReusePullRequest(checkpoint.issue, unit.branch, unit.baseBranch, unit.commit!, unit.path);
+      const merged = await delivery.mergePullRequest(pullRequest.number, checkpoint.issue, unit.branch, unit.baseBranch, unit.commit!, unit.path);
+      delivered.push({ ...unit, pullRequest: pullRequest.number, mergeCommit: merged.mergeCommit, phase: "reconciling", receipts: { ...unit.receipts, push: { verifiedAt: new Date().toISOString() }, merge: { verifiedAt: new Date().toISOString() } } });
+      checkpoint = { ...checkpoint, units: checkpoint.units.map((candidate) => candidate.path === unit.path ? delivered.at(-1)! : candidate) };
+      await save();
+    }
+    const first = delivered[0]!;
+    await delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path);
+    for (const unit of changed) {
+      if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
+      const commit = unit.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], unit.path)).trim();
+      await delivery.cleanupBranch(unit.branch, unit.baseBranch, commit, unit.path);
+    }
+    checkpoint = { ...checkpoint, phase: "cleaning", units: checkpoint.units.map((unit) => ({ ...unit, phase: "cleaning", receipts: { ...unit.receipts, cleanup: { verifiedAt: new Date().toISOString() } } })) };
+    await save();
+    await Bun.write(`${scope.stateDirectory}/github-workspace-manifest.json`, `${JSON.stringify({ issue: checkpoint.issue, branch: checkpoint.branch, repositories: checkpoint.units, summary: `${delivered.length} repositorios entregados`, clean: true }, null, 2)}\n`);
+    await this.githubParentReconciliation?.reconcileParents(checkpoint.issue, scope.repositories[0]!.path);
+    await this.githubWorkspaceCheckpoint.clear(scope.stateDirectory);
+    return 0;
   }
 
   private async runDefaultCodeWorkflow(options: CliOptions): Promise<number> {
