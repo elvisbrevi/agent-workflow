@@ -696,7 +696,10 @@ export class LazyWorkflowCli {
     }
 
     if (command === "code") {
-      if (githubRecovery) return this.runGitHubRecovery(options, githubRecovery);
+      if (githubRecovery) {
+        const code = await this.runGitHubRecovery(options, githubRecovery);
+        return code === 0 ? this.continueQueueAfterRecovery(options, false) : code;
+      }
       if (recoveringAzureCode || options.hu !== null) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
     }
@@ -1210,14 +1213,16 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
+        let code: number;
         if (checkpoint.sessionId) {
-          return this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
+          code = await this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
+        } else if (this.githubDelivery && ["started", "implementation-ready", "integrating", "conflict-resolving", "reconciling", "cleaning"].includes(checkpoint.phase)) {
+          code = await this.runGitHubRecovery(options, checkpoint, true);
+        } else {
+          this.reportGitHubReconciliationRequired(checkpoint);
+          return 1;
         }
-        if (this.githubDelivery && ["started", "implementation-ready", "integrating", "conflict-resolving", "reconciling", "cleaning"].includes(checkpoint.phase)) {
-          return this.runGitHubRecovery(options, checkpoint, true);
-        }
-        this.reportGitHubReconciliationRequired(checkpoint);
-        return 1;
+        return code === 0 ? this.continueQueueAfterRecovery(options, true) : code;
       }
       await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
       return this.runDefaultCodeWorkflowLoop(options, store);
@@ -1227,6 +1232,25 @@ export class LazyWorkflowCli {
       return 1;
     } finally {
       if (release) await release();
+    }
+  }
+
+  // After recovery delivers the pinned issue and clears the checkpoint, keep
+  // draining the queue so one run delivers every eligible issue. lockHeld=true
+  // when the caller already holds the repository lock (non-reentrant).
+  private async continueQueueAfterRecovery(options: CliOptions, lockHeld: boolean): Promise<number> {
+    const store = this.githubCheckpointStore;
+    const lock = this.githubRepositoryLock;
+    const drain = async (): Promise<number> => {
+      await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
+      return this.runDefaultCodeWorkflowLoop(options, store ?? null);
+    };
+    if (lockHeld || !store || !lock) return drain();
+    const release = await lock.acquire(options.workingDirectory);
+    try {
+      return await drain();
+    } finally {
+      await release();
     }
   }
 
