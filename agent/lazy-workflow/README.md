@@ -414,6 +414,15 @@ HU moved from `En Desarrollo` to `Desarrollo Terminado` — only after every
 required repository unit and every tracker gate is verified. GitHub parent
 reconciliation and the Azure HU transition never run on a partial delivery.
 
+**Azure primary repository.** A ticket carries exactly one native Branch
+ArtifactLink. The coordinator prepares the ticket branch in every participant
+repository but writes that link only after the session finishes, to the first
+repository in declared order that produced a completion manifest. That primary
+repository need not be the HU's anchor; its pull request and merge commit are
+where the ticket's completion gates are read, and the other changed
+repositories stay correlated through their own native PR and merge-commit
+associations. The choice is recorded in the checkpoint so recovery reuses it.
+
 **Recovery.** Rerun the same command to resume an interrupted workspace run.
 Recovery requires the exact same normalized repository list, in the same
 declared order, with the same remote identities, and — for Azure — the same HU

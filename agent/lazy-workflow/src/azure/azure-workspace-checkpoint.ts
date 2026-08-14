@@ -34,6 +34,8 @@ export interface AzureWorkspaceCheckpoint {
   ticketBranch: string;
   parentDirectory: string;
   activeDurationMs: number;
+  /** Repository owning the ticket's single native Branch ArtifactLink; the first changed one. */
+  primaryRepository?: string | null;
   repositories: Array<{ path: string; remote: string }>;
   units: AzureWorkspaceCheckpointUnit[];
   receipts: Record<string, { verifiedAt: string }>;
@@ -69,6 +71,8 @@ export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorksp
     && isBranchRef(checkpoint.ticketBranch)
     && typeof checkpoint.parentDirectory === "string" && checkpoint.parentDirectory.length > 0
     && typeof checkpoint.activeDurationMs === "number" && Number.isFinite(checkpoint.activeDurationMs) && checkpoint.activeDurationMs >= 0
+    && (checkpoint.primaryRepository === undefined || checkpoint.primaryRepository === null
+      || (typeof checkpoint.primaryRepository === "string" && checkpoint.primaryRepository.length > 0))
     && Array.isArray(repositories) && repositories.length > 0
     && repositories.every((entry) => typeof entry?.path === "string" && entry.path.length > 0
       && typeof entry.remote === "string" && entry.remote.length > 0)

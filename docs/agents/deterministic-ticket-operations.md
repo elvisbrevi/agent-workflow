@@ -101,11 +101,16 @@ indentation. Missing required evidence keeps the ticket incomplete.
 2. `selected`: refresh Azure, select one eligible direct child, and persist its
    identity plus effort baseline.
 3. `started`: use `ticket-state-set` for `En progreso`; create and link the exact
-   ticket branch from the verified HU branch.
+   ticket branch from the verified HU branch. In a multi-repository workspace the
+   branch is created in every participant but the single native Branch
+   ArtifactLink is deferred to step 5, because it must name the primary
+   repository — the first declared repository that actually changed.
 4. `implementing`: start one OpenCode session with immutable HU, ticket, branch,
    and evidence-output context. OpenCode cannot select tickets or mutate Azure.
 5. `implementation-ready`: OpenCode emits `IMPLEMENTATION_READY` and the
-   validated completion manifest; the session is closed.
+   validated completion manifest; the session is closed. A multi-repository
+   workspace resolves its primary repository here and links the ticket branch
+   there before validating any manifest.
 6. `integrating`: the coordinator pushes the exact branch, creates or reuses one
    PR, completes it, and persists PR/merge receipts before the next effect.
 7. `evidencing`: upload missing digest-identified attachments, publish readable

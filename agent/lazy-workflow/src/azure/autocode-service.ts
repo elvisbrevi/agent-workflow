@@ -822,6 +822,46 @@ export class AzureAutocodeService implements AutocodeAzureService {
     };
   }
 
+  /**
+   * Commits the ticket's single native Branch ArtifactLink to one participant repository. Branch
+   * preparation cannot do this: the primary repository is the first one that actually changes, and
+   * that is only known once the implementation session has produced its completion manifests.
+   */
+  async linkTicketBranch(hu: number, ticket: number, ticketBranch: string, candidates: readonly string[]): Promise<{ ticket: number; branch: string; workingDirectory: string }> {
+    if (!Number.isInteger(hu) || hu <= 0) throw new Error(`La HU debe ser un entero positivo: ${hu}`);
+    if (!Number.isInteger(ticket) || ticket <= 0) throw new Error(`El ticket debe ser un entero positivo: ${ticket}`);
+    if (candidates.length === 0) throw new Error(`El ticket ${ticket} no tiene repositorios candidatos para su rama primaria`);
+    const parent = await show(hu, true, this.az);
+    const isDirectChild = (parent.relations ?? []).some((relation) =>
+      relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === ticket
+    );
+    if (!isDirectChild) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
+    const branch = normalizeBranch(ticketBranch).ref;
+    const identities = await Promise.all(candidates.map(async (path) => this.resolveRepositoryIdentity({
+      path,
+      remote: (await this.git(["remote", "get-url", "origin"], path)).trim(),
+    })));
+    const existing = uniqueBranchLinks(await show(ticket, true, this.az))[0] ?? null;
+    if (existing) {
+      // An existing link is authoritative: report the repository it already names rather than
+      // moving it, and fail closed when it names none of the candidates.
+      const owner = identities.find(({ projectId, repositoryId }) =>
+        existing.project === projectId && existing.repository === repositoryId
+      );
+      if (!owner || existing.ref !== branch) {
+        throw new Error(`El ticket ${ticket} ya tiene una rama vinculada distinta; conflicto`);
+      }
+      return { ticket, branch, workingDirectory: owner.workingDirectory };
+    }
+    const identity = identities[0]!;
+    await this.linkTicketBranchArtifact({ hu, ticket, identity, ticketBranch: branch });
+    const verified = uniqueBranchLinks(await show(ticket, true, this.az))[0] ?? null;
+    if (!verified || verified.ref !== branch || verified.repository !== identity.repositoryId) {
+      throw new Error(`No se pudo verificar la rama vinculada del ticket ${ticket}`);
+    }
+    return { ticket, branch, workingDirectory: identity.workingDirectory };
+  }
+
   async prepareWorkspaceTicketBranches(options: {
     hu: number;
     ticket: number;
@@ -905,15 +945,6 @@ export class AzureAutocodeService implements AutocodeAzureService {
     anchorUnit.ticketBranchAnchor = anchor.workingDirectory;
     for (const unit of units) {
       if (unit.path !== anchor.workingDirectory) unit.ticketBranchAnchor = anchor.workingDirectory;
-    }
-
-    if (!existingTicketLink) {
-      await this.linkTicketBranchArtifact({
-        hu: options.hu,
-        ticket: options.ticket,
-        identity: anchor,
-        ticketBranch,
-      });
     }
 
     return {
