@@ -27,6 +27,14 @@ default Reporter. The Reporter is the abstraction; `operator-output` is
 the seam name and the legacy entry point.
 _Avoid_: new direct `console.log` calls, new top-level log helpers
 
+**Terminal protocol marker**:
+An exact machine-readable workflow token such as `TICKET_COMPLETED` or
+`WORKFLOW_STEP_FINISHED`. CLI coordination writes these tokens directly to
+stdout because reporter decoration, filtering, or severity would break their
+control-plane contract. Human-readable results and diagnostics still use the
+Reporter.
+_Avoid_: routing operator prose through stdout protocol output
+
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
 repository's GitHub conventions and never uses Azure coordination; `plan` runs

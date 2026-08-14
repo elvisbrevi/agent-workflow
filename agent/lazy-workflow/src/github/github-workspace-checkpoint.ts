@@ -7,6 +7,7 @@ export const GITHUB_WORKSPACE_PHASES = [
   "implementing",
   "implementation-ready",
   "integrating",
+  "conflict-resolving",
   "reconciling",
   "cleaning",
 ] as const;
@@ -40,6 +41,7 @@ export interface GitHubWorkspaceCheckpoint {
   units: GitHubWorkspaceUnit[];
   receipts: Record<string, { verifiedAt: string }>;
   intent: { effect: string; target: string } | null;
+  reconciliation?: { path: string; pullRequest: number; originalCommit: string; baseCommit: string } | null;
 }
 
 const FILE_NAME = "github-workspace-code-checkpoint.json";
@@ -91,7 +93,16 @@ export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWork
     && Array.isArray(units) && units.length <= repositories.length
     && units.every(validUnit)
     && validReceipts(checkpoint.receipts)
-    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string" && checkpoint.intent.effect.length > 0 && checkpoint.intent.target.length > 0));
+    && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && typeof checkpoint.intent.effect === "string" && typeof checkpoint.intent.target === "string" && checkpoint.intent.effect.length > 0 && checkpoint.intent.target.length > 0))
+    && (checkpoint.reconciliation === undefined || checkpoint.reconciliation === null || (
+      typeof checkpoint.reconciliation === "object"
+      && typeof checkpoint.reconciliation.path === "string"
+      && checkpoint.reconciliation.path.length > 0
+      && Number.isInteger(checkpoint.reconciliation.pullRequest)
+      && checkpoint.reconciliation.pullRequest > 0
+      && /^[0-9a-f]{40,64}$/i.test(checkpoint.reconciliation.originalCommit)
+      && /^[0-9a-f]{40,64}$/i.test(checkpoint.reconciliation.baseCommit)
+    ));
 }
 
 export class GitHubWorkspaceCheckpointStore {

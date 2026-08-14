@@ -127,6 +127,14 @@ Git operation, missing branch, or branch unavailable to the current worktree
 stops recovery before OpenCode or queue access. Recovery never creates, guesses,
 resets, or force-switches a branch.
 
+When GitHub reports a canonical PR as conflicting with its base, the
+coordinator fetches and fixes the exact base commit, then starts a conflict-only
+OpenCode session for the same Issue, branch, PR and repository. Delivery
+continues only after the new manifest is clean and its commit contains both the
+original implementation and fixed base commits. Interrupted reconciliation is
+checkpointed and resumes without selecting another Issue; this applies to
+single-repository and workspace delivery.
+
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
 `nextjs`; it never infers the component from source layout. OpenCode receives
