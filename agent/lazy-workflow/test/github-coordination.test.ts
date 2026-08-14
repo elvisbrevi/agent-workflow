@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
-import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
+import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 
@@ -145,3 +145,36 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   expect(state.current?.issue).toBe(178);
   expect(state.current?.phase).toBe("implementing");
 });
+
+for (const phase of GITHUB_DELIVERY_PHASES) {
+  test(`la recuperación conserva el issue fijado en fase ${phase}`, async () => {
+    const state = boundaries({ ...checkpoint("ses_178"), phase });
+    const { azure, openCode } = services();
+    let selections = 0;
+    const code = await new LazyWorkflowCli(
+      azure,
+      openCode,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
+        readIssueDetail: async () => fakeSelectedIssue(178),
+      },
+      state.store,
+      state.lock,
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(1);
+    expect(selections).toBe(0);
+    expect(state.current?.issue).toBe(178);
+  });
+}
