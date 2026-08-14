@@ -28,6 +28,7 @@ import { SagNormsService, type SagArchitectureReviewContext, type SagCodingConte
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
+import { GitHubManagedQueueService, type GitHubManagedQueueAdapter } from "../github/managed-queue-service.ts";
 import {
   buildCli,
   type CliOptions as ParsedCliOptions,
@@ -181,6 +182,7 @@ function requireVerifiedCompletion(
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
+const QUEUE_BLOCKED_MARKER = "QUEUE_BLOCKED";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
@@ -249,6 +251,7 @@ export class LazyWorkflowCli {
     private readonly infrastructureService: Pick<SagInfrastructureService, "verify"> = new SagInfrastructureService(),
     private readonly cliParser: CliParser = buildCli(),
     private readonly createReporterFn: typeof createReporter = createReporter,
+    private readonly githubManagedQueue: GitHubManagedQueueAdapter = new GitHubManagedQueueService(),
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -633,12 +636,45 @@ export class LazyWorkflowCli {
       return execution.failed ? 1 : 0;
     }
 
+    return this.runDefaultCodeWorkflow(options);
+  }
+
+  private async runDefaultCodeWorkflow(options: CliOptions): Promise<number> {
     while (true) {
       const norms = await this.loadSagNorms(options, "coding");
       if (options.normasSag && norms === null) return 1;
+      const queueOutcome = await this.githubManagedQueue.selectAndClaimEligibleIssue(options.workingDirectory);
+      if (queueOutcome.kind === "empty") {
+        console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
+        reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
+        return 0;
+      }
+      if (queueOutcome.kind === "blocked") {
+        const summary = queueOutcome.reasons.map(({ number, title, reasons }) =>
+          `- #${number} ${title}: ${reasons.join(", ")}`
+        ).join("\n");
+        console.log(JSON.stringify({ outcome: QUEUE_BLOCKED_MARKER, reasons: queueOutcome.reasons }, null, 2));
+        reportOperator(`lazy-workflow: la cola gestionada tiene issues no elegibles:\n${summary}`);
+        return 0;
+      }
+
+      const issue = queueOutcome.issue;
       const prompt = [
         await readPrompt("default"),
-        `Selected workflow: ${command}`,
+        `Selected workflow: code`,
+        `Coordinator-fixed repository: ${queueOutcome.repository.nameWithOwner}`,
+        `Coordinator-fixed issue context:`,
+        JSON.stringify({
+          number: issue.number,
+          title: issue.title,
+          state: issue.state,
+          labels: issue.labels.map(({ name }) => name).filter(Boolean),
+          assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
+          createdAt: issue.createdAt,
+          body: issue.body,
+          comments: issue.comments,
+        }),
+        `The coordinator owns queue outcomes; do not print ${QUEUE_EMPTY_MARKER} or ${QUEUE_BLOCKED_MARKER}.`,
         ...(norms ? [this.formatSagContext(norms)] : []),
         `The working directory is ${options.workingDirectory}`,
         "Operator request:",
@@ -658,15 +694,9 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${WORKFLOW_STEP_FINISHED_MARKER}.`);
         return 1;
       }
-      const ticketCompleted = containsMarker(result.text, TICKET_COMPLETED_MARKER);
-      const queueEmpty = containsMarker(result.text, QUEUE_EMPTY_MARKER);
-      if (ticketCompleted === queueEmpty) {
-        reportOperator(`lazy-workflow: la sesión GitHub debe terminar con exactamente ${TICKET_COMPLETED_MARKER} o ${QUEUE_EMPTY_MARKER}.`);
+      if (!containsMarker(result.text, TICKET_COMPLETED_MARKER)) {
+        reportOperator(`lazy-workflow: la sesión GitHub debe terminar con ${TICKET_COMPLETED_MARKER}.`);
         return 1;
-      }
-      if (queueEmpty) {
-        reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
-        return 0;
       }
     }
   }
