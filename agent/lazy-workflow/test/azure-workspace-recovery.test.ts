@@ -8,7 +8,9 @@ import {
   remoteUrlA,
   remoteUrlB,
   repoA,
+  repoAId,
   repoB,
+  repoBId,
   teamProject,
   ticket,
   ticketBranch,
@@ -163,12 +165,12 @@ test("azure workspace recovery reuses a verified delivery receipt instead of cre
   }
   expect(exit).toBe(0);
   expect(harness.events).not.toContain("opencode:run");
-  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoB]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoBId]);
   expect(harness.ticketStateCalls.map(({ desiredState }) => desiredState)).toEqual(["Done"]);
 });
 
 test("azure workspace delivery leaves later repositories pending and preserves the checkpoint on failure", async () => {
-  const harness = createAzureWorkspaceHarness({ pullRequestFailsIn: repoB });
+  const harness = createAzureWorkspaceHarness({ pullRequestFailsIn: repoBId });
   let exit = -1;
   let preserved: AzureWorkspaceCheckpoint | null = null;
   try {
@@ -179,7 +181,7 @@ test("azure workspace delivery leaves later repositories pending and preserves t
     await harness.cleanup();
   }
   expect(exit).toBe(1);
-  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoA]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoAId]);
   expect(harness.ticketStateCalls).toHaveLength(0);
   expect(harness.huStateCalls).toHaveLength(0);
   expect(preserved).not.toBeNull();
@@ -202,7 +204,7 @@ test("azure workspace delivery cleans the ticket branch of repositories without 
     await harness.cleanup();
   }
   expect(exit).toBe(0);
-  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoA]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoAId]);
   expect(harness.deletedTicketBranches).toEqual([`${repoB}:${ticketBranch}`]);
   expect(cleared).toBeNull();
 });

@@ -135,6 +135,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** ADR 0009: active duration in hours, rounded upward to a quarter, never below one quarter. */
+function activeEffortHours(activeDurationMs: number): number {
+  return Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
+}
+
 function revisionOf(result: unknown): number | null {
   const revision = (result as { revision?: unknown } | null)?.revision;
   return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
@@ -864,27 +869,45 @@ export class LazyWorkflowCli {
         integrationBranch: topology.integrationBranch,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
       });
-      checkpoint = checkpoint ?? this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology);
+      if (checkpoint) {
+        const drift = this.azureWorkspaceTopologyMismatch(checkpoint, topology, ticketTopology);
+        if (drift) {
+          reportOperator(`lazy-workflow: ${drift}; ejecución detenida.`);
+          return 1;
+        }
+      }
+      let phaseStart = startedAt;
+      const accrue = (): number => {
+        const now = this.clock.now();
+        const elapsed = Math.max(0, now - phaseStart);
+        phaseStart = now;
+        return elapsed;
+      };
+      if (!checkpoint) {
+        // Write the intent before the first external effect so a crashed session is recoverable.
+        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology);
+        await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+      }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
         const resuming = checkpoint.sessionId;
         const session = resuming
-          ? await this.openCodeService.resume(resuming, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options))
+          ? { ...await this.openCodeService.resume(resuming, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
           : await this.runAzureWorkspaceSession(options, scope, topology, ticketTopology);
-        if (session === null) return 1;
-        const terminal = containsMarker(session.text, IMPLEMENTATION_READY_MARKER);
+        const terminal = !session.failed && containsMarker(session.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
           ...checkpoint,
           phase: terminal ? "implementation-ready" : "implementing",
           sessionId: terminal ? null : (session.sessionId ?? resuming),
-          activeDurationMs: checkpoint.activeDurationMs + Math.max(0, this.clock.now() - startedAt),
+          activeDurationMs: checkpoint.activeDurationMs + accrue(),
         };
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        if (session.failed) return 1;
         if (!terminal) {
           reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
           return 1;
         }
       }
-      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, checkpoint);
+      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
@@ -896,7 +919,7 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
-  ): Promise<{ text: string; sessionId: string | null } | null> {
+  ): Promise<{ text: string; sessionId: string | null; failed: boolean }> {
     const prompt = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
     const execution = await this.openCodeService.run({
       ...options,
@@ -907,9 +930,8 @@ export class LazyWorkflowCli {
     }, true);
     if (execution.failed) {
       reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
-      return null;
     }
-    return { text: execution.result.text, sessionId: execution.result.sessionId ?? null };
+    return { text: execution.result.text, sessionId: execution.result.sessionId ?? null, failed: !!execution.failed };
   }
 
   private azureWorkspaceScopeMismatch(
@@ -929,6 +951,29 @@ export class LazyWorkflowCli {
       || repository.remote !== checkpoint.repositories[index]?.remote
     );
     if (drifted) return `el repositorio ${drifted.path} no coincide con la identidad remota del checkpoint workspace Azure`;
+    return null;
+  }
+
+  /** The resolved branches and per-repository Azure identity must still be the checkpointed ones. */
+  private azureWorkspaceTopologyMismatch(
+    checkpoint: AzureWorkspaceCheckpoint,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): string | null {
+    if (checkpoint.integrationBranch !== topology.integrationBranch) {
+      return `la rama de integración cambió respecto del checkpoint workspace Azure (${checkpoint.integrationBranch})`;
+    }
+    const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${checkpoint.ticket}`;
+    if (checkpoint.ticketBranch !== ticketBranch) {
+      return `la rama del ticket cambió respecto del checkpoint workspace Azure (${checkpoint.ticketBranch})`;
+    }
+    for (const unit of checkpoint.units) {
+      const resolved = ticketTopology.units.find(({ path }) => path === unit.path);
+      if (!resolved) return `el repositorio ${unit.path} del checkpoint workspace Azure ya no pertenece al alcance`;
+      if (resolved.repository !== unit.repository || resolved.project !== unit.project) {
+        return `el repositorio ${unit.path} cambió de identidad Azure respecto del checkpoint workspace`;
+      }
+    }
     return null;
   }
 
@@ -991,9 +1036,9 @@ export class LazyWorkflowCli {
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
     initial: AzureWorkspaceCheckpoint,
+    accrue: () => number,
   ): Promise<number> {
     let checkpoint = initial;
-    const activeDurationMs = checkpoint.activeDurationMs;
     const save = async (): Promise<void> => { await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory); };
     const integrationBranch = topology.integrationBranch;
     const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`;
@@ -1062,9 +1107,11 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: el repositorio ${unit.path} no tiene identidad Azure en la topología; ejecución detenida.`);
         return 1;
       }
+      // Azure GUIDs, not names: `az` accepts either, but pull-request payloads only ever carry the
+      // GUIDs that the identity checks compare against.
       const participant: AzurePullRequestTarget = {
-        project: identity.project,
-        repository: identity.repository,
+        project: identity.projectId,
+        repository: identity.repositoryId,
         source: identity.ticketBranch ?? ticketBranch,
         target: identity.integrationBranch,
       };
@@ -1109,7 +1156,6 @@ export class LazyWorkflowCli {
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
     const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
-    const activeHours = Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
     const ticketStateBefore = await boundary.getState!(ticket);
 
     for (const evidence of completionManifest.evidence) {
@@ -1156,8 +1202,6 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "completing" };
     await save();
 
-    const targetReal = baselineReal + activeHours;
-    const targetRealHours = baselineRealHours + activeHours;
     let effortRevision = finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0;
     if (finalInfo.ticket.state !== "Done") {
       const currentState = await boundary.getState!(ticket);
@@ -1165,7 +1209,14 @@ export class LazyWorkflowCli {
       // The state change advances the work item revision; setEffort must test against the new one.
       effortRevision = revisionOf(done) ?? (await boundary.getState!(ticket)).revision ?? effortRevision;
     }
-    await boundary.setEffort!(ticket, targetReal, targetRealHours, effortRevision);
+    // Effort is cumulative and published exactly once: a receipt stops a rerun from adding the
+    // accrued hours on top of the value it already published.
+    if (!checkpoint.receipts.effort) {
+      const activeHours = activeEffortHours(checkpoint.activeDurationMs + accrue());
+      await boundary.setEffort!(ticket, baselineReal + activeHours, baselineRealHours + activeHours, effortRevision);
+      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, effort: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
+      await save();
+    }
 
     const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
     if (verifyAfter.ticket.state !== "Done") {
@@ -1197,14 +1248,19 @@ export class LazyWorkflowCli {
     await save();
     // Repositories that produced no changes still had a ticket branch created for them.
     const cleaned: string[] = [];
+    const uncleaned: string[] = [];
     for (const unit of units.filter(({ changed }) => !changed)) {
-      if (checkpoint.receipts[`cleanup:${unit.path}`]) continue;
+      if (checkpoint.receipts[`cleanup:${unit.path}`]) {
+        cleaned.push(unit.path);
+        continue;
+      }
       try {
         await this.ticketBranchCleaner.deleteTicketBranch(ticketBranch, integrationBranch, unit.path);
         cleaned.push(unit.path);
         checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, [`cleanup:${unit.path}`]: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
         await save();
       } catch (error) {
+        uncleaned.push(unit.path);
         reportOperator(`lazy-workflow: no se pudo limpiar la rama del ticket en ${unit.path} (${errorMessage(error)})`);
       }
     }
@@ -1217,12 +1273,13 @@ export class LazyWorkflowCli {
       ticketBranchAnchor,
       delivered: delivered.map((entry) => ({ path: entry.path, pullRequest: entry.pullRequest, mergeCommit: entry.mergeCommit })),
       cleaned,
+      uncleaned,
       ticketState: "Done",
       huState: huTransitionApplied ? "Desarrollo Terminado" : (huState.state ?? "En Desarrollo"),
-      clean: true,
+      clean: uncleaned.length === 0,
     };
     console.log(JSON.stringify(summary, null, 2));
-    await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
+    if (uncleaned.length === 0) await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
     return 0;
   }
 
@@ -2935,7 +2992,7 @@ export class LazyWorkflowCli {
         await save();
         if (!checkpoint.receipts["ticket-effort"]) {
           const state = this.huInfoService.getState ? await this.huInfoService.getState(checkpoint.ticket!) : { revision: checkpoint.azureRevision };
-          const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+          const activeHours = activeEffortHours(checkpoint.activeDurationMs);
           await runRecoveryEffect(
             "ticket-effort",
             `${checkpoint.effortBaseline.real + activeHours}/${checkpoint.effortBaseline.realHours + activeHours}`,
@@ -3131,7 +3188,7 @@ export class LazyWorkflowCli {
               await save();
 
               const currentState = await this.huInfoService.getState!(ticket);
-              const activeHours = Math.max(0.25, Math.ceil(checkpoint.activeDurationMs / 900_000) / 4);
+              const activeHours = activeEffortHours(checkpoint.activeDurationMs);
               const targetReal = effortBaseline.real + activeHours;
               const targetRealHours = effortBaseline.realHours + activeHours;
               if (!checkpoint.receipts["ticket-effort"]) {

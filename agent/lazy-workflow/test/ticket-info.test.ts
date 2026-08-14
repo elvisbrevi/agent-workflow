@@ -195,7 +195,7 @@ test("coordinator creates the pull request in the participant repository, not th
       mergeStatus: "notSet",
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
-      repository: { id: "participant-repository", project: { id: "participant-project" } },
+      repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
@@ -205,22 +205,22 @@ test("coordinator creates the pull request in the participant repository, not th
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "participant-merge" },
-      repository: { id: "participant-repository", project: { id: "participant-project" } },
+      repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
     });
     throw new Error(`unexpected command: ${args.join(" ")}`);
   });
 
   await expect(service.createOrReusePullRequest(23438, 51, {
-    project: "participant-project",
-    repository: "participant-repository",
+    project: "participant-project-id",
+    repository: "participant-repository-id",
     source: "refs/heads/ticket/51",
     target: "refs/heads/hu/23438",
   })).resolves.toEqual({ pullRequest: 77, mergeCommit: "participant-merge" });
 
   const create = commands.find((args) => args[2] === "create");
   expect(create).toBeDefined();
-  expect(create![create!.indexOf("--repository") + 1]).toBe("participant-repository");
-  expect(create![create!.indexOf("--project") + 1]).toBe("participant-project");
+  expect(create![create!.indexOf("--repository") + 1]).toBe("participant-repository-id");
+  expect(create![create!.indexOf("--project") + 1]).toBe("participant-project-id");
   expect(create![create!.indexOf("--target-branch") + 1]).toBe("refs/heads/hu/23438");
   expect(commands.some((args) => args[0] === "boards")).toBeFalse();
 });
@@ -377,6 +377,69 @@ test("commit linking is idempotent and rejects a conflicting native commit", asy
   await expect(service.linkCommit(51, 99)).resolves.toEqual(expect.objectContaining({
     artifactLink: "vstfs:///Git/Commit/project-id%2Frepository-id%2Fmerge-commit",
   }));
+});
+
+test("linking a participant merge commit is idempotent and keeps the primary Fixed in Commit", async () => {
+  const primary = "vstfs:///Git/Commit/project-id%2Frepository-id%2Fprimary-merge";
+  const participantLink = "vstfs:///Git/Commit/participant-project-id%2Fparticipant-repository-id%2Fparticipant-merge";
+  let patches = 0;
+  let linked = false;
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "Custom.URLCommit": primary },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        { rel: "ArtifactLink", url: primary, attributes: { name: "Fixed in Commit" } },
+        ...(linked ? [{ rel: "ArtifactLink", url: participantLink, attributes: { name: "Fixed in Commit" } }] : []),
+      ],
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 77,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "participant-merge" },
+      repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
+      pullRequestId: 77,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeCommit: { commitId: "participant-merge" },
+      repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
+    }]);
+    if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([51]);
+    if (args[0] === "rest" && args.includes("patch")) {
+      patches += 1;
+      linked = true;
+      return "{}";
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  const participant = {
+    project: "participant-project-id",
+    repository: "participant-repository-id",
+    source: "refs/heads/ticket/51",
+    target: "refs/heads/hu/23438",
+  };
+  await expect(service.linkCommit(51, 77, participant)).resolves.toEqual(expect.objectContaining({
+    artifactLink: participantLink,
+  }));
+  await expect(service.linkCommit(51, 77, participant)).resolves.toEqual(expect.objectContaining({
+    artifactLink: participantLink,
+  }));
+  expect(patches).toBe(1);
 });
 
 test("attachment validation records a digest and retries by digest", async () => {

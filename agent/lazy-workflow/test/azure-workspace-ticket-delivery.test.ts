@@ -9,9 +9,12 @@ import {
   integrationBranch,
   remoteUrlA,
   repoA,
+  repoAId,
   repoB,
+  repoBId,
   seedRepo,
   staticGit,
+  projectId,
   teamProject,
   ticket,
   ticketBranch,
@@ -46,12 +49,12 @@ test("deliverAzureWorkspaceTicket creates each PR against its own Azure reposito
     await harness.cleanup();
   }
   expect(exit).toBe(0);
-  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
-  expect(harness.prCreateCalls.map(({ target }) => target?.project)).toEqual([teamProject, teamProject]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoAId, repoBId]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.project)).toEqual([projectId, projectId]);
   expect(harness.prCreateCalls.map(({ target }) => target?.source)).toEqual([ticketBranch, ticketBranch]);
   expect(harness.prCreateCalls.map(({ target }) => target?.target)).toEqual([integrationBranch, integrationBranch]);
-  expect(harness.prLinkCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
-  expect(harness.commitLinkCalls.map(({ target }) => target?.repository)).toEqual([repoA, repoB]);
+  expect(harness.prLinkCalls.map(({ target }) => target?.repository)).toEqual([repoAId, repoBId]);
+  expect(harness.commitLinkCalls.map(({ target }) => target?.repository)).toEqual([repoAId, repoBId]);
 });
 
 test("deliverAzureWorkspaceTicket accrues real effort from the measured active duration", async () => {

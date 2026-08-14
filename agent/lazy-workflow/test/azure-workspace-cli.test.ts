@@ -58,8 +58,8 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
         },
         ticketBranchAnchor: null,
         units: [
-          { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
-          { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+          { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+          { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
         ],
       };
     },
@@ -78,8 +78,8 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       },
       ticketBranchAnchor: realpathA,
       units: [
-        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
-        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
       ],
     }),
     createOrReusePullRequest: async () => ({ pullRequest: 1, mergeCommit: "merge-1" }),
