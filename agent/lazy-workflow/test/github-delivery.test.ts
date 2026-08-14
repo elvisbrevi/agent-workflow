@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
@@ -215,6 +215,72 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
   expect(selections).toBe(2);
   expect(calls).toEqual(["prepare-branch", "read-manifest", "push", "pull-request", "merge", "close-issue", "cleanup"]);
   expect(current).toBeNull();
+});
+
+test("la entrega completada elimina el manifest para que no contamine el siguiente issue", async () => {
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-manifest-cleanup-"));
+  const manifestPath = join(root, "github-completion-manifest.json");
+  writeFileSync(manifestPath, JSON.stringify({ issue: 179, branch: "refs/heads/issue/179", commit: "a".repeat(40) }));
+  let selections = 0;
+  let current: GitHubDeliveryCheckpoint | null = null;
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (checkpoint) => { current = checkpoint; },
+    clear: async () => { current = null; },
+  };
+  const manifest: GitHubReadyManifest = {
+    issue: 179,
+    branch: "refs/heads/issue/179",
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "passed" }],
+    clean: true,
+    summary: "implemented",
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async () => ({ branch: manifest.branch, baseBranch: "refs/heads/main", manifestPath }),
+    readManifest: async () => manifest,
+    pushCommit: async () => undefined,
+    createOrReusePullRequest: async () => ({ number: 201 }),
+    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
+    closeIssue: async () => undefined,
+    cleanupBranch: async () => undefined,
+  };
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      { run: async () => execution(), resume: async () => execution().result },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
+        selectEligibleIssue: async () => {
+          selections += 1;
+          if (selections > 1) return { kind: "empty" };
+          return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+        },
+        claimSelectedIssue: async () => fakeSelectedIssue(179),
+      },
+      store,
+      { acquire: async () => async () => undefined },
+      delivery,
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(0);
+    expect(current).toBeNull();
+    expect(existsSync(manifestPath)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("recupera una entrega sessionless desde el límite de merge sin ejecutar OpenCode", async () => {
