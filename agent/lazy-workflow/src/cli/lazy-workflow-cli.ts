@@ -98,6 +98,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   validateEvidence?(ticket: number, filePath: string): Promise<void>;
   prepareWorkspaceBranches?(options: { hu: number; repositories: readonly AzureWorkspaceRepositoryInput[]; baseBranch?: string | null; integrationBranch?: string }): Promise<AzureWorkspaceBranchTopology>;
   prepareWorkspaceTicketBranches?(options: { hu: number; ticket: number; integrationBranch: string; repositories: readonly AzureWorkspaceRepositoryInput[]; ticketBranch?: string; ticketBranchAnchor?: string | null }): Promise<AzureWorkspaceBranchTopology>;
+  linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, workingDirectory: string): Promise<unknown>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -826,7 +827,8 @@ export class LazyWorkflowCli {
       || !this.huInfoService.setHuState || !this.huInfoService.hasOpenDeliveryChildren
       || !this.huInfoService.getAutocodeContextForTicket || !this.huInfoService.getTicket
       || !this.huInfoService.getDescription || !this.huInfoService.getAttachments
-      || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext) {
+      || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext
+      || !this.huInfoService.linkTicketBranch) {
       reportOperator("El servicio Azure no expone todas las primitivas de entrega workspace");
       return 1;
     }
@@ -1059,21 +1061,40 @@ export class LazyWorkflowCli {
         units.push({ path: repository.path, manifestPath, changed: false });
         continue;
       }
-      try {
-        const manifest = await boundary.readCompletionManifest!(manifestPath, repository.path);
-        const info = await boundary.getTicketInfo!(hu, ticket);
-        await boundary.validateCompletionManifest!(manifest, info, ticket, repository.path);
-        units.push({ path: repository.path, manifestPath, manifest, commit: manifest.commit, changed: true });
-      } catch (error) {
-        reportOperator(`lazy-workflow: el manifest de ${repository.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
-        return 1;
-      }
+      units.push({ path: repository.path, manifestPath, changed: true });
     }
 
     const changedUnits = units.filter((unit) => unit.changed);
     if (changedUnits.length === 0) {
       reportOperator("lazy-workflow: el workspace no contiene cambios entregables; ejecución detenida.");
       return 1;
+    }
+
+    // Azure allows the ticket exactly one native Branch ArtifactLink, and it must name the primary
+    // implementation repository: the first declared repository that actually changed. Manifest
+    // presence is what makes a repository changed, so the primary is only knowable here — and it
+    // must be linked before manifest validation, which compares the manifest against that link.
+    const primaryRepository = checkpoint.primaryRepository ?? changedUnits[0]!.path;
+    try {
+      await boundary.linkTicketBranch!(hu, ticket, ticketBranch, primaryRepository);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo fijar la rama primaria del ticket en ${primaryRepository} (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
+    checkpoint = { ...checkpoint, primaryRepository };
+    await save();
+
+    for (const unit of changedUnits) {
+      try {
+        const manifest = await boundary.readCompletionManifest!(unit.manifestPath, unit.path);
+        const info = await boundary.getTicketInfo!(hu, ticket);
+        await boundary.validateCompletionManifest!(manifest, info, ticket, unit.path);
+        unit.manifest = manifest;
+        unit.commit = manifest.commit;
+      } catch (error) {
+        reportOperator(`lazy-workflow: el manifest de ${unit.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
     }
 
     const checkpointUnit = (path: string): AzureWorkspaceCheckpointUnit | undefined =>

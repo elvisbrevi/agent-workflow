@@ -822,6 +822,34 @@ export class AzureAutocodeService implements AutocodeAzureService {
     };
   }
 
+  /**
+   * Commits the ticket's single native Branch ArtifactLink to one participant repository. Branch
+   * preparation cannot do this: the primary repository is the first one that actually changes, and
+   * that is only known once the implementation session has produced its completion manifests.
+   */
+  async linkTicketBranch(hu: number, ticket: number, ticketBranch: string, workingDirectory: string): Promise<{ ticket: number; branch: string; workingDirectory: string }> {
+    if (!Number.isInteger(hu) || hu <= 0) throw new Error(`La HU debe ser un entero positivo: ${hu}`);
+    if (!Number.isInteger(ticket) || ticket <= 0) throw new Error(`El ticket debe ser un entero positivo: ${ticket}`);
+    const branch = normalizeBranch(ticketBranch).ref;
+    const identity = await this.resolveRepositoryIdentity({
+      path: workingDirectory,
+      remote: (await this.git(["remote", "get-url", "origin"], workingDirectory)).trim(),
+    });
+    const existing = uniqueBranchLinks(await show(ticket, true, this.az))[0] ?? null;
+    if (existing) {
+      if (existing.ref !== branch || existing.repository !== identity.repositoryId || existing.project !== identity.projectId) {
+        throw new Error(`El ticket ${ticket} ya tiene una rama vinculada distinta; conflicto`);
+      }
+      return { ticket, branch, workingDirectory: identity.workingDirectory };
+    }
+    await this.linkTicketBranchArtifact({ hu, ticket, identity, ticketBranch: branch });
+    const verified = uniqueBranchLinks(await show(ticket, true, this.az))[0] ?? null;
+    if (!verified || verified.ref !== branch || verified.repository !== identity.repositoryId) {
+      throw new Error(`No se pudo verificar la rama vinculada del ticket ${ticket}`);
+    }
+    return { ticket, branch, workingDirectory: identity.workingDirectory };
+  }
+
   async prepareWorkspaceTicketBranches(options: {
     hu: number;
     ticket: number;
@@ -905,15 +933,6 @@ export class AzureAutocodeService implements AutocodeAzureService {
     anchorUnit.ticketBranchAnchor = anchor.workingDirectory;
     for (const unit of units) {
       if (unit.path !== anchor.workingDirectory) unit.ticketBranchAnchor = anchor.workingDirectory;
-    }
-
-    if (!existingTicketLink) {
-      await this.linkTicketBranchArtifact({
-        hu: options.hu,
-        ticket: options.ticket,
-        identity: anchor,
-        ticketBranch,
-      });
     }
 
     return {

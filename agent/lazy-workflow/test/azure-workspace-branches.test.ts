@@ -379,6 +379,27 @@ test("prepareWorkspaceBranches escribe el Branch ArtifactLink cuando la rama exi
   expect(topology.units.every(({ repository, repositoryId }) => repository !== repositoryId)).toBeTrue();
 });
 
+test("prepareWorkspaceTicketBranches no fija el Branch ArtifactLink primario del ticket", async () => {
+  const fixture = workspaceFixture();
+  await fixture.service.prepareWorkspaceBranches({
+    hu,
+    repositories: fixture.repositories,
+    baseBranch,
+  });
+
+  await fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  });
+
+  // The primary repository is the first one that actually changes, which is unknown until the
+  // implementation session has run.
+  expect(fixture.patchBodies.find(({ body }) => JSON.stringify(body).includes("ticket%2F193"))).toBeUndefined();
+});
+
 test("prepareWorkspaceTicketBranches crea la rama del ticket en cada participante y ancla el primer repositorio", async () => {
   const fixture = workspaceFixture();
   await fixture.service.prepareWorkspaceBranches({
@@ -401,6 +422,21 @@ test("prepareWorkspaceTicketBranches crea la rama del ticket en cada participant
   expect(topology.units.map(({ ticketBranch: branch }) => branch)).toEqual([ticketBranch, ticketBranch]);
   expect(topology.units.every(({ ticketBranchCreated }) => ticketBranchCreated)).toBe(true);
   expect(topology.units.every(({ ticketBranchAnchor }) => ticketBranchAnchor === "/repo/a")).toBe(true);
+});
+
+test("linkTicketBranch fija el Branch ArtifactLink primario en el repositorio indicado", async () => {
+  const fixture = workspaceFixture();
+  await fixture.service.prepareWorkspaceBranches({ hu, repositories: fixture.repositories, baseBranch });
+  await fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  });
+
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+
   const ticketLink = fixture.patchBodies.find(({ body }) => JSON.stringify(body).includes("ticket%2F193"));
   expect(ticketLink).toBeDefined();
   expect(ticketLink!.body).toEqual([
@@ -408,9 +444,30 @@ test("prepareWorkspaceTicketBranches crea la rama del ticket en cada participant
     {
       op: "add",
       path: "/relations/-",
-      value: { rel: "ArtifactLink", url: ticketBranchUri(repoA), attributes: { name: "Branch" } },
+      value: { rel: "ArtifactLink", url: ticketBranchUri(repoB), attributes: { name: "Branch" } },
     },
   ]);
+});
+
+test("linkTicketBranch es idempotente y rechaza mover un enlace ya fijado a otro repositorio", async () => {
+  const fixture = workspaceFixture();
+  await fixture.service.prepareWorkspaceBranches({ hu, repositories: fixture.repositories, baseBranch });
+  await fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  });
+
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+  const patchesAfterFirst = fixture.patchBodies.length;
+
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+  expect(fixture.patchBodies).toHaveLength(patchesAfterFirst);
+
+  await expect(fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/a"))
+    .rejects.toThrow("ya tiene una rama vinculada distinta");
 });
 
 test("prepareWorkspaceTicketBranches falla cuando el ticket no existe", async () => {

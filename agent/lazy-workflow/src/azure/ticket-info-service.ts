@@ -543,18 +543,20 @@ export class AzureTicketInfoService {
 
     const integrationBranch = uniqueBranch(parent);
     const ticketBranch = uniqueBranch(item);
-    if (ticketBranch.ref && (
-      ticketBranch.project !== integrationBranch.project
-      || ticketBranch.repository !== integrationBranch.repository
-    )) {
-      throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
+    if (ticketBranch.ref && ticketBranch.project !== integrationBranch.project) {
+      throw new Error(`La rama del ticket ${ticket} no coincide con el proyecto de la rama de integracion de la HU`);
     }
+    // The ticket's own branch names its primary implementation repository. In a multi-repository
+    // delivery that is the first repository that changed, which need not be the HU's anchor; the
+    // integration branch carries the same name in every participant, so only the repository moves.
+    const deliveryProject = ticketBranch.project ?? integrationBranch.project;
+    const deliveryRepository = ticketBranch.repository ?? integrationBranch.repository;
     const pullRequests = await this.readPullRequests(
       ticket,
-      integrationBranch.project ?? text(parent, "System.TeamProject"),
+      deliveryProject ?? text(parent, "System.TeamProject"),
       integrationBranch.ref,
-      integrationBranch.project,
-      integrationBranch.repository,
+      deliveryProject,
+      deliveryRepository,
       ticketBranch.ref,
     );
     const validPullRequests = pullRequests.filter((pullRequest) =>
