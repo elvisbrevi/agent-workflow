@@ -9,6 +9,7 @@ import {
   type TicketInfo,
   type TicketAttachment,
   type IntegratedPullRequest,
+  type AzurePullRequestTarget,
 } from "./ticket-info-service.ts";
 import type { InfrastructurePublication } from "../sag/infrastructure-service.ts";
 
@@ -84,6 +85,8 @@ export interface AzureWorkspaceRepositoryInput {
   readonly remote: string;
 }
 
+export type { AzurePullRequestTarget } from "./ticket-info-service.ts";
+
 export const COMPLETION_GATE = {
   pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
@@ -126,7 +129,7 @@ export interface AutocodeAzureService {
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo>;
   getCompletionManifestPath(workingDirectory: string): Promise<string>;
-  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest>;
+  createOrReusePullRequest(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<IntegratedPullRequest>;
   validateDirectTicketContext(hu: number, ticket: number): Promise<void>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
@@ -146,8 +149,8 @@ export interface AutocodeAzureService {
   setHuState(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
   getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
   hasOpenDeliveryChildren(hu: number): Promise<boolean>;
-  linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
-  linkCommit(ticket: number, pullRequest: number): Promise<unknown>;
+  linkPullRequest(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
+  linkCommit(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence(ticket: number, filePath: string): Promise<unknown>;
   waitForAccess(hu: number): Promise<void>;
@@ -348,8 +351,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.getCompletionManifestPath(workingDirectory);
   }
 
-  createOrReusePullRequest(hu: number, ticket: number): Promise<IntegratedPullRequest> {
-    return this.ticketInfoService.createOrReusePullRequest(hu, ticket);
+  createOrReusePullRequest(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<IntegratedPullRequest> {
+    return this.ticketInfoService.createOrReusePullRequest(hu, ticket, participant);
   }
 
   validateDirectTicketContext(hu: number, ticket: number): Promise<void> {
@@ -428,12 +431,12 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.hasOpenDeliveryChildren(hu);
   }
 
-  linkPullRequest(hu: number, ticket: number, pullRequest: number): Promise<unknown> {
-    return this.ticketInfoService.linkPullRequest(hu, ticket, pullRequest);
+  linkPullRequest(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown> {
+    return this.ticketInfoService.linkPullRequest(hu, ticket, pullRequest, participant);
   }
 
-  linkCommit(ticket: number, pullRequest: number): Promise<unknown> {
-    return this.ticketInfoService.linkCommit(ticket, pullRequest);
+  linkCommit(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown> {
+    return this.ticketInfoService.linkCommit(ticket, pullRequest, participant);
   }
 
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown> {
