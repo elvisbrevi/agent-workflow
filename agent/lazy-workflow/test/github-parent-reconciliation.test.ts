@@ -42,10 +42,10 @@ function runnerFor(replies: Map<string, string[]>, calls: string[][]): (args: st
 
 test("reconciles a closed child through its native parent and verifies the closure", async () => {
   const calls: string[][] = [];
-  const children = [issue(176, "CLOSED", 175), issue(177, "CLOSED", 175)];
+  const children = [issue(176, "CLOSED", 175), issue(177, "CLOSED", 175), issue(180, "CLOSED", 175)];
   const replies = new Map<string, string[]>([
     ["repo", [JSON.stringify({ nameWithOwner: "owner/repo" })]],
-    ["issue:180", [page({ repository: { issue: issueData(issue(180, "OPEN", 175)) } })]],
+    ["issue:180", [page({ repository: { issue: issueData(issue(180, "CLOSED", 175)) } })]],
     ["issue:175", [page({ repository: { issue: issueData(issue(175, "OPEN", null, children)) } }), page({ repository: { issue: issueData(issue(175, "CLOSED", null, children)) } })]],
     ["blocked:180", [page({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } })]],
     ["blocked:175", [page({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } }), page({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } })]],
@@ -65,7 +65,7 @@ test("leaves a parent open when a native child relation conflicts", async () => 
   const replies = new Map<string, string[]>([
     ["repo", [JSON.stringify({ nameWithOwner: "owner/repo" })]],
     ["issue:180", [page({ repository: { issue: issueData(issue(180, "OPEN", 175)) } })]],
-    ["issue:175", [page({ repository: { issue: issueData(issue(175, "OPEN", null, [issue(176, "CLOSED", 999)])) } })]],
+    ["issue:175", [page({ repository: { issue: issueData(issue(175, "OPEN", null, [issue(176, "CLOSED", 175)])) } })]],
     ["blocked:180", [page({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } })]],
     ["blocked:175", [page({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } })]],
   ]);

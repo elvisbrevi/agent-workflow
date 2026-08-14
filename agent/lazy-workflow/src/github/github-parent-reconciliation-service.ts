@@ -220,9 +220,14 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     repository: { owner: string; name: string },
     workingDirectory: string,
     path: Set<number>,
+    expectedChild: number | null,
   ): Promise<void> {
     if (path.has(parent.number)) throw new Error(`La jerarquía GitHub contiene un ciclo en el Issue #${parent.number}`);
     path.add(parent.number);
+
+    if (expectedChild !== null && !parent.subIssues.some(({ number }) => number === expectedChild)) {
+      throw new Error(`La jerarquía nativa del Issue #${parent.number} es ambigua`);
+    }
 
     if (parent.state === "OPEN") {
       if (parent.subIssues.length === 0) return;
@@ -249,7 +254,7 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     }
 
     if (parent.parent) {
-      await this.reconcileParent(await this.readIssue(parent.parent.number, repository, workingDirectory), repository, workingDirectory, path);
+      await this.reconcileParent(await this.readIssue(parent.parent.number, repository, workingDirectory), repository, workingDirectory, path, parent.number);
     }
   }
 
@@ -258,7 +263,7 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     const repository = await this.repository(workingDirectory);
     const current = await this.readIssue(issue, repository, workingDirectory);
     if (current.parent) {
-      await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set());
+      await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set(), current.number);
     }
   }
 
@@ -267,9 +272,9 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     for (const issue of await this.openIssues(repository, workingDirectory)) {
       const current = await this.readIssue(issue, repository, workingDirectory);
       if (current.subIssues.length > 0) {
-        await this.reconcileParent(current, repository, workingDirectory, new Set());
+        await this.reconcileParent(current, repository, workingDirectory, new Set(), null);
       } else if (current.parent) {
-        await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set());
+        await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set(), current.number);
       }
     }
   }
