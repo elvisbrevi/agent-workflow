@@ -23,6 +23,8 @@ const SUPPORTED_STATES = new Set([
   "Done",
   "Closed",
   "Removed",
+  "En Desarrollo",
+  "Desarrollo Terminado",
 ]);
 const STATE_TRANSITIONS: Record<string, readonly string[]> = {
   New: ["Active", "En progreso", "In Progress", "Removed"],
@@ -33,7 +35,17 @@ const STATE_TRANSITIONS: Record<string, readonly string[]> = {
   Done: ["Done"],
   Closed: ["Closed"],
   Removed: ["Removed"],
+  "En Desarrollo": ["Desarrollo Terminado"],
+  "Desarrollo Terminado": ["Desarrollo Terminado"],
 };
+
+const HU_OPEN_DELIVERY_STATES = new Set([
+  "New",
+  "Active",
+  "En progreso",
+  "In Progress",
+  "Resolved",
+]);
 
 const COMPLETION_FIELDS = [
   "Custom.CompletionEvidence",
@@ -671,6 +683,67 @@ export class AzureTicketInfoService {
     return { ticket, state: desiredState, revision: workItemRevision(verified) };
   }
 
+  async setHuState(
+    hu: number,
+    desiredState: string,
+    expectedState: string,
+    expectedRevision: number,
+  ): Promise<{ hu: number; state: string; revision: number }> {
+    positiveId(hu, "La HU");
+    validateState(desiredState, "El estado deseado");
+    validateState(expectedState, "El estado esperado");
+    const item = await this.readWorkItem(hu);
+    if (text(item, "System.WorkItemType") !== "User Story") {
+      throw new Error(`El work item ${hu} no es una User Story`);
+    }
+    const currentState = text(item, TICKET_FIELDS.state);
+    if (currentState !== expectedState) {
+      throw new Error(`El estado actual de la HU ${hu} (${currentState ?? "null"}) no coincide con el estado esperado ${expectedState}`);
+    }
+    const revision = workItemRevision(item);
+    if (revision !== expectedRevision) {
+      throw new Error(`La revision esperada de la HU ${hu} (${expectedRevision}) no coincide con la actual ${revision}`);
+    }
+    if (currentState === desiredState) return { hu, state: desiredState, revision };
+    if (!STATE_TRANSITIONS[currentState]?.includes(desiredState)) {
+      throw new Error(`Transición de HU no soportada: ${currentState} -> ${desiredState}`);
+    }
+
+    const verified = await this.patchAndRead(item, [
+      { op: "test", path: "/rev", value: revision },
+      { op: "replace", path: `/fields/${TICKET_FIELDS.state}`, value: desiredState },
+    ], (candidate) => text(candidate, TICKET_FIELDS.state) === desiredState);
+    const state = text(verified, TICKET_FIELDS.state);
+    if (state !== desiredState) throw new Error(`No se pudo verificar el estado de la HU ${hu}`);
+    return { hu, state: desiredState, revision: workItemRevision(verified) };
+  }
+
+  async getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>> {
+    positiveId(hu, "La HU");
+    const parent = await this.readWorkItem(hu);
+    if (text(parent, "System.WorkItemType") !== "User Story") {
+      throw new Error(`El work item ${hu} no es una User Story`);
+    }
+    const childIds = (parent.relations ?? [])
+      .filter(({ rel, url }) => rel === "System.LinkTypes.Hierarchy-Forward" && typeof url === "string")
+      .map((relation) => relationId(relation.url))
+      .filter((id): id is number => id !== undefined);
+    const children = await Promise.all(childIds.map((id) => this.readWorkItem(id)));
+    return children.map((item) => {
+      const type = text(item, "System.WorkItemType") ?? "Unknown";
+      const state = text(item, TICKET_FIELDS.state) ?? "Unknown";
+      const title = text(item, "System.Title");
+      return { id: item.id, type, state, title };
+    });
+  }
+
+  async hasOpenDeliveryChildren(hu: number): Promise<boolean> {
+    const children = await this.getHuChildren(hu);
+    return children.some((child) =>
+      (child.type === "Task" || child.type === "Bug") && HU_OPEN_DELIVERY_STATES.has(child.state)
+    );
+  }
+
   async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
     const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
     const manifestPath = await realpath(resolve(path));
@@ -824,10 +897,11 @@ export class AzureTicketInfoService {
     if (associatedCandidates.some((candidate) => candidate.source !== ticketBranch.ref)) {
       throw new Error(`El ticket ${ticket} tiene una asociación nativa a un PR de otra rama`);
     }
-    if (associatedCandidates.length > 1 || (associatedCandidates[0] && associatedCandidates[0].id !== pullRequestId)) {
+    if (associatedCandidates.length > 0 && !associatedCandidates.some((candidate) => candidate.id === pullRequestId)) {
       throw new Error(`El PR ${pullRequestId} entra en conflicto con el PR canónico ya asociado al ticket ${ticket}`);
     }
-    if (!associatedCandidates[0]) {
+    const alreadyLinked = associatedCandidates.some((candidate) => candidate.id === pullRequestId);
+    if (!alreadyLinked) {
       await this.addPullRequestWorkItem(pullRequestId, ticket, integration.project, integration.repository, item);
     }
     if (!await this.isPullRequestLinked(pullRequest, ticket)) {

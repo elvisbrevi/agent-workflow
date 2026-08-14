@@ -100,6 +100,20 @@ starting OpenCode. The operator prompt is not a branch-management interface.
   validation, review, commit, and completion-manifest generation. OpenCode emits
   `IMPLEMENTATION_READY`, after which the coordinator verifies completion, removes
   the completed ticket branch, and refreshes Azure before selecting the next ticket.
+
+**Azure multi-repository ticket delivery run**:
+  A lazy-workflow invocation with `code --hu <ID> --ticket <ID>
+  --working-directory <repo1,repo2,...> [--base-branch <name>]`. It runs one
+  OpenCode session from the workspace parent directory, validates one
+  completion manifest per changed repository, associates every changed-repository
+  pull request and merge commit with the same ticket through native Azure
+  ArtifactLinks, applies every existing completion gate before moving the ticket
+  to `Done`, and only then transitions the HU from exactly `En Desarrollo` to
+  exactly `Desarrollo Terminado` once no direct delivery children remain open.
+  The single primary ticket Branch ArtifactLink points to the first changed
+  repository while participant repositories keep their workspace branches
+  without native links. Single-repository Azure ticket delivery remains
+  unchanged when `--working-directory` is a single path.
 _Avoid_: Azure HU planning run
 
 **Azure workspace branch topology**:
