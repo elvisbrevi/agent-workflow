@@ -209,14 +209,14 @@ test("reconciliación de padres ocurre después de la limpieza y antes de borrar
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
     readManifest: async () => ({ issue: 179, branch: "refs/heads/issue/179", commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "implemented" }),
-    pushCommit: async () => events.push("push"),
+    pushCommit: async () => { events.push("push"); },
     createOrReusePullRequest: async () => { events.push("pull-request"); return { number: 201 }; },
     mergePullRequest: async () => { events.push("merge"); return { number: 201, mergeCommit: "b".repeat(40) }; },
-    closeIssue: async () => events.push("close-issue"),
-    cleanupBranch: async () => events.push("cleanup"),
+    closeIssue: async () => { events.push("close-issue"); },
+    cleanupBranch: async () => { events.push("cleanup"); },
   };
   const parents: GitHubParentReconciliationAdapter = {
-    reconcileParents: async () => events.push("parents"),
+    reconcileParents: async () => { events.push("parents"); },
     reconcileOpenParents: async () => undefined,
   };
   let selected = true;
@@ -225,6 +225,7 @@ test("reconciliación de padres ocurre después de la limpieza y antes de borrar
       ? (selected = false, { kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } })
       : { kind: "empty" as const },
     claimSelectedIssue: async () => fakeSelectedIssue(179),
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
 
   const code = await new LazyWorkflowCli(
@@ -263,6 +264,7 @@ test("reconcilia padres pendientes al iniciar sin lanzar OpenCode", async () => 
   const queue = {
     selectEligibleIssue: async () => ({ kind: "empty" as const }),
     claimSelectedIssue: async () => { throw new Error("must not claim"); },
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
   const store: GitHubCheckpointStore = {
     read: async () => null,
