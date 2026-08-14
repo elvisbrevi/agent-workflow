@@ -16,6 +16,7 @@ export type GitHubWorkspacePhase = typeof GITHUB_WORKSPACE_PHASES[number];
 
 export interface GitHubWorkspaceUnit {
   path: string;
+  remote: string;
   repository: string;
   branch: string;
   baseBranch: string | null;
@@ -23,6 +24,7 @@ export interface GitHubWorkspaceUnit {
   changed: boolean | null;
   startingCommit: string;
   commit: string | null;
+  evidence: Array<{ path: string; sha256: string }>;
   pullRequest: number | null;
   mergeCommit: string | null;
   phase: GitHubWorkspacePhase;
@@ -59,10 +61,17 @@ function validReceipts(value: unknown): value is Record<string, { verifiedAt: st
     && Object.values(value).every((receipt) => typeof receipt === "object" && receipt !== null && Object.keys(receipt).length === 1 && typeof receipt.verifiedAt === "string" && Number.isFinite(Date.parse(receipt.verifiedAt)));
 }
 
+function validEvidence(value: unknown): value is Array<{ path: string; sha256: string }> {
+  return Array.isArray(value) && value.every((entry) =>
+    typeof entry?.path === "string" && entry.path.length > 0 && typeof entry.sha256 === "string" && entry.sha256.length > 0
+  );
+}
+
 function validUnit(value: unknown): value is GitHubWorkspaceUnit {
   if (typeof value !== "object" || value === null) return false;
   const unit = value as Partial<GitHubWorkspaceUnit>;
   return typeof unit.path === "string"
+    && typeof unit.remote === "string" && unit.remote.length > 0
     && typeof unit.repository === "string"
     && validRef(unit.branch)
     && (unit.baseBranch === null || validRef(unit.baseBranch))
@@ -70,6 +79,7 @@ function validUnit(value: unknown): value is GitHubWorkspaceUnit {
     && (unit.changed === null || typeof unit.changed === "boolean")
     && /^[0-9a-f]{40,64}$/i.test(unit.startingCommit ?? "")
     && validCommit(unit.commit)
+    && validEvidence(unit.evidence)
     && (unit.pullRequest === null || (typeof unit.pullRequest === "number" && Number.isInteger(unit.pullRequest) && unit.pullRequest > 0))
     && validCommit(unit.mergeCommit)
     && GITHUB_WORKSPACE_PHASES.includes(unit.phase as GitHubWorkspacePhase)
@@ -103,6 +113,38 @@ export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWork
       && /^[0-9a-f]{40,64}$/i.test(checkpoint.reconciliation.originalCommit)
       && /^[0-9a-f]{40,64}$/i.test(checkpoint.reconciliation.baseCommit)
     ));
+}
+
+export interface GitHubWorkspaceManifest {
+  issue: number;
+  branch: string;
+  repositories: GitHubWorkspaceUnit[];
+  summary: string;
+  clean: true;
+}
+
+export function isGitHubWorkspaceManifest(value: unknown): value is GitHubWorkspaceManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const manifest = value as Partial<GitHubWorkspaceManifest>;
+  return Number.isInteger(manifest.issue) && (manifest.issue ?? 0) > 0
+    && validRef(manifest.branch)
+    && Array.isArray(manifest.repositories) && manifest.repositories.length > 0
+    && manifest.repositories.every(validUnit)
+    && typeof manifest.summary === "string" && manifest.summary.trim().length > 0
+    && manifest.clean === true;
+}
+
+const MANIFEST_FILE_NAME = "github-workspace-manifest.json";
+
+export async function writeGitHubWorkspaceManifest(manifest: GitHubWorkspaceManifest, stateDirectory: string): Promise<void> {
+  if (!isGitHubWorkspaceManifest(manifest)) throw new Error("El manifest agregado del workspace es inválido");
+  const path = resolve(stateDirectory, MANIFEST_FILE_NAME);
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.tmp-${process.pid}`;
+  await Bun.write(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await rename(temporaryPath, path);
+  const written: unknown = await Bun.file(path).json();
+  if (!isGitHubWorkspaceManifest(written)) throw new Error("El manifest agregado del workspace no se pudo verificar tras escribirse");
 }
 
 export class GitHubWorkspaceCheckpointStore {
