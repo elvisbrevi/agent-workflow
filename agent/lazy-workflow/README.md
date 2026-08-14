@@ -49,7 +49,7 @@ and stacks with either verbosity. The Reporter keeps the existing
 continues to route to `info` regardless of which verbosity flag is active.
 
 A single `code` GitHub run against a delivery that includes one reasoning
-step, three tool uses, and one terminal `TICKET_COMPLETED` text event
+step, three tool uses, and one terminal `IMPLEMENTATION_READY` text event
 produces a different volume of operator output per mode. The blocks below
 show the full transcript each flag emits, with ANSI stripped so the examples
 are copy-pasteable:
@@ -61,7 +61,7 @@ are copy-pasteable:
 ℹ OpenCode iniciado en /repo
 ℹ OpenCode [sesión ses_delivery] inició un paso
 ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
-ℹ OpenCode [sesión ses_delivery]: TICKET_COMPLETED
+ℹ OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
 ℹ lazy-workflow: no quedan issues GitHub elegibles.
 ```
 
@@ -77,7 +77,7 @@ mode hides:
 · OpenCode [sesión ses_delivery] herramienta edit (completed): "/repo/README.md"
 ℹ OpenCode [sesión ses_delivery] inició un paso
 ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
-ℹ OpenCode [sesión ses_delivery]: TICKET_COMPLETED
+ℹ OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
 ℹ lazy-workflow: no quedan issues GitHub elegibles.
 ```
 
@@ -112,12 +112,14 @@ branches, enforce Azure completion gates, or clean Azure ticket branches.
 `--branch` and `--base-branch` are rejected in this GitHub scope.
 
 `plan` remains a one-shot planning-only workflow. `code` refreshes GitHub,
-delivers exactly one eligible issue in a fresh OpenCode session, closes that
-session after `TICKET_COMPLETED`, and repeats. A final fresh session returns
-`QUEUE_EMPTY` and stops the command. `WORKFLOW_STEP_FINISHED` closes every
-provider session. A repository-scoped GitHub checkpoint and lock preserve a
-fixed interrupted issue; startup resumes an active checkpointed session or
-stops with `RECONCILIATION_REQUIRED` rather than selecting replacement work.
+delivers exactly one eligible issue in a fresh OpenCode session, and coordinates
+delivery from `IMPLEMENTATION_READY` through verified merge, issue closure, and
+branch cleanup. The coordinator emits `TICKET_COMPLETED` only after those gates
+pass; the provider cannot declare delivery or queue outcomes. A final refresh
+emits `QUEUE_EMPTY` and stops the command. A repository-scoped GitHub
+checkpoint and lock preserve a fixed interrupted issue; startup resumes an
+active session or reconciles a post-readiness delivery without selecting
+replacement work.
 
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or

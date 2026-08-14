@@ -526,8 +526,9 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
     "WORKFLOW_STEP_FINISHED",
   ]);
   expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
+  expect(calls[0]?.options.prompt).toContain("IMPLEMENTATION_READY");
+  expect(calls[0]?.options.prompt).toContain("QUEUE_EMPTY");
   expect(calls[0]?.options.prompt).toContain("TICKET_COMPLETED");
-  expect(calls[0]?.options.prompt).toContain("do not print QUEUE_EMPTY");
   expect(calls[0]?.options.prompt).toContain("Coordinator-fixed issue context");
   expect(calls[0]?.options.prompt).toContain("\"number\":201");
   expect(calls[0]?.options.prompt).toContain("\"body of #201\"");

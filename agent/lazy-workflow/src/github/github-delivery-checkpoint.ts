@@ -18,6 +18,11 @@ export interface GitHubDeliveryReceipt {
   verifiedAt: string;
 }
 
+export interface GitHubDeliveryIntent {
+  effect: string;
+  target: string;
+}
+
 export interface GitHubDeliveryCheckpoint {
   schemaVersion: 1;
   workflow: "github-code";
@@ -29,6 +34,10 @@ export interface GitHubDeliveryCheckpoint {
   commit: string | null;
   pullRequest: number | null;
   receipts: Partial<Record<string, GitHubDeliveryReceipt>>;
+  baseBranch?: string | null;
+  manifestPath?: string | null;
+  mergeCommit?: string | null;
+  intent?: GitHubDeliveryIntent | null;
 }
 
 export interface GitHubCheckpointStore {
@@ -40,7 +49,15 @@ export interface GitHubCheckpointStore {
 const FILE_NAME = "lazy-workflow/github-code-checkpoint.json";
 
 function isBranch(value: unknown): value is string | null {
-  return value === null || (typeof value === "string" && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value) && !value.includes("//"));
+  const name = typeof value === "string" ? value.slice("refs/heads/".length) : "";
+  return value === null || (
+    typeof value === "string"
+    && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value)
+    && !name.includes("..")
+    && !name.includes("//")
+    && !name.startsWith("/")
+    && !name.endsWith("/")
+  );
 }
 
 function isCommit(value: unknown): value is string | null {
@@ -71,6 +88,10 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "commit",
     "pullRequest",
     "receipts",
+    "baseBranch",
+    "manifestPath",
+    "mergeCommit",
+    "intent",
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
   return checkpoint.schemaVersion === 1
@@ -84,6 +105,18 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     && (checkpoint.sessionId === null
       || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
     && isCommit(checkpoint.commit)
+    && (checkpoint.baseBranch === undefined || isBranch(checkpoint.baseBranch))
+    && (checkpoint.manifestPath === undefined || checkpoint.manifestPath === null || (typeof checkpoint.manifestPath === "string" && checkpoint.manifestPath.length > 0 && !/[\r\n]/.test(checkpoint.manifestPath)))
+    && (checkpoint.mergeCommit === undefined || isCommit(checkpoint.mergeCommit))
+    && (checkpoint.intent === undefined || checkpoint.intent === null || (
+      typeof checkpoint.intent === "object"
+      && checkpoint.intent !== null
+      && Object.keys(checkpoint.intent).every((key) => key === "effect" || key === "target")
+      && typeof checkpoint.intent.effect === "string"
+      && typeof checkpoint.intent.target === "string"
+      && checkpoint.intent.effect.length > 0
+      && checkpoint.intent.target.length > 0
+    ))
     && (pullRequest === null || (typeof pullRequest === "number" && Number.isInteger(pullRequest) && pullRequest > 0))
     && typeof checkpoint.receipts === "object"
     && checkpoint.receipts !== null
