@@ -87,10 +87,24 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
   const state = boundaries();
   const { azure, openCode } = services();
   const events: string[] = [];
-  let available = true;
   const store: GitHubCheckpointStore = {
     ...state.store,
     write: async (value) => { events.push(`write:${value.phase}`); await state.store.write(value); },
+  };
+  const queue = {
+    available: true,
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    async selectEligibleIssue() {
+      events.push("select");
+      if (!this.available) return { kind: "empty" as const };
+      this.available = false;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
+    },
+    async claimSelectedIssue() {
+      events.push("claim");
+      if (this.available) throw new Error("issue was not selected");
+      return fakeSelectedIssue(178);
+    },
   };
   const code = await new LazyWorkflowCli(
     azure,
@@ -106,16 +120,7 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
     undefined,
     undefined,
     undefined,
-    {
-      selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
-      selectEligibleIssue: async () => {
-        events.push("select");
-        if (!available) return { kind: "empty" };
-        available = false;
-        return { kind: "candidate", issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
-      },
-      claimSelectedIssue: async () => { events.push("claim"); return fakeSelectedIssue(178); },
-    },
+    queue,
     store,
     state.lock,
   ).run(["code", "--working-directory", "/repo"]);

@@ -736,13 +736,12 @@ export class LazyWorkflowCli {
   ): Promise<number> {
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
-    const selectEligibleIssue = this.githubManagedQueue.selectEligibleIssue;
-    const claimSelectedIssue = this.githubManagedQueue.claimSelectedIssue;
+    const queue = this.githubManagedQueue;
     let queueOutcome: ManagedQueueOutcome;
     let checkpointWasWritten = false;
     let receipts: GitHubDeliveryCheckpoint["receipts"] = { "issue-claim": { verifiedAt: new Date().toISOString() } };
-    if (store && selectEligibleIssue && claimSelectedIssue) {
-      const selection = await selectEligibleIssue(options.workingDirectory);
+    if (store && queue.selectEligibleIssue && queue.claimSelectedIssue) {
+      const selection = await queue.selectEligibleIssue(options.workingDirectory);
       if (selection.kind === "candidate") {
         receipts = {};
         await store.write({
@@ -759,7 +758,7 @@ export class LazyWorkflowCli {
         }, options.workingDirectory);
         checkpointWasWritten = true;
         try {
-          const claimedIssue = await claimSelectedIssue(selection.issue.number, options.workingDirectory);
+          const claimedIssue = await queue.claimSelectedIssue(selection.issue.number, options.workingDirectory);
           queueOutcome = { kind: "selected", issue: claimedIssue, repository: selection.repository };
         } catch (error) {
           console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: selection.issue.number, phase: "selected" }, null, 2));
@@ -783,7 +782,7 @@ export class LazyWorkflowCli {
         queueOutcome = selection;
       }
     } else {
-      queueOutcome = await this.githubManagedQueue.selectAndClaimEligibleIssue(options.workingDirectory);
+      queueOutcome = await queue.selectAndClaimEligibleIssue(options.workingDirectory);
     }
     if (queueOutcome.kind === "empty") {
       console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
