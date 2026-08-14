@@ -88,6 +88,62 @@ test("checkout de recuperación rechaza una operación Git activa", async () => 
   }
 });
 
+function mergeGhStub(prChecks: (args: string[]) => Promise<string>) {
+  const commit = "a".repeat(40);
+  let prViews = 0;
+  const gh = async (args: string[]): Promise<string> => {
+    const [command, sub] = args;
+    if (command === "repo" && sub === "view") {
+      return JSON.stringify({ nameWithOwner: "owner/repo", defaultBranchRef: { name: "main" } });
+    }
+    if (command === "pr" && sub === "view") {
+      const merged = prViews++ > 0;
+      return JSON.stringify({
+        number: 201,
+        state: merged ? "MERGED" : "OPEN",
+        body: "Closes #189",
+        headRefName: "issue/189",
+        headRefOid: commit,
+        baseRefName: "main",
+        isDraft: false,
+        mergeStateStatus: "CLEAN",
+        statusCheckRollup: [],
+        ...(merged ? { mergeCommit: { oid: "c".repeat(40) } } : {}),
+      });
+    }
+    if (command === "api" && sub === "repos/owner/repo/branches/main") return JSON.stringify({ protected: false });
+    if (command === "pr" && sub === "checks") return prChecks(args);
+    if (command === "pr" && sub === "merge") return "";
+    throw new Error(`unexpected gh command: ${args.join(" ")}`);
+  };
+  const git = async (args: string[]): Promise<string> => {
+    if (args[0] === "remote" && args[1] === "get-url") return "https://github.com/owner/repo.git\n";
+    throw new Error(`unexpected git command: ${args.join(" ")}`);
+  };
+  return { gh, git, commit };
+}
+
+test("merge tolera 'no checks reported' cuando la rama no tiene checks", async () => {
+  const { gh, git, commit } = mergeGhStub(async () => {
+    throw new Error("gh pr fallo (no checks reported on the 'issue/189' branch)");
+  });
+  const delivery = new GitHubDeliveryService(gh, git);
+
+  const result = await delivery.mergePullRequest(201, 189, "refs/heads/issue/189", "refs/heads/main", commit, "/repo");
+
+  expect(result).toEqual({ number: 201, mergeCommit: "c".repeat(40) });
+});
+
+test("merge propaga fallos de gh pr checks que no sean 'no checks reported'", async () => {
+  const { gh, git, commit } = mergeGhStub(async () => {
+    throw new Error("gh pr fallo (API rate limit exceeded)");
+  });
+  const delivery = new GitHubDeliveryService(gh, git);
+
+  await expect(delivery.mergePullRequest(201, 189, "refs/heads/issue/189", "refs/heads/main", commit, "/repo"))
+    .rejects.toThrow("API rate limit exceeded");
+});
+
 test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {
   const calls: string[] = [];
   let selections = 0;

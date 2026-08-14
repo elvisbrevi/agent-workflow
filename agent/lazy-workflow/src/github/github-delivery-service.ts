@@ -347,14 +347,25 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       const protection = await this.gh(["api", `repos/${repository}/branches/${branchName(baseBranch)}/protection`], workingDirectory);
       if (!protection.trim()) throw new Error("La protección de la rama base no se pudo verificar");
     }
-    const checksOutput = await this.gh(["pr", "checks", `${pullRequest}`, "--required", "--json", "name,state,bucket"], workingDirectory);
-    const checks = parseJson<Array<{ state?: string; bucket?: string }>>(
-      checksOutput.trim() || "[]",
-      "gh pr checks",
-    );
+    const checks = await this.readRequiredChecks(pullRequest, workingDirectory);
     if (checks.some(({ state, bucket }) => !["SUCCESS", "COMPLETED"].includes(state ?? "") && bucket !== "pass" && bucket !== "skipping")) {
       throw new Error("El PR tiene checks requeridos no satisfactorios");
     }
+  }
+
+  private async readRequiredChecks(pullRequest: number, workingDirectory: string): Promise<Array<{ state?: string; bucket?: string }>> {
+    let checksOutput: string;
+    try {
+      checksOutput = await this.gh(["pr", "checks", `${pullRequest}`, "--required", "--json", "name,state,bucket"], workingDirectory);
+    } catch (error) {
+      // `gh pr checks` exits non-zero with "no [required] checks reported on the '<branch>' branch"
+      // when the head commit has no status checks. That is not a failing check: there is nothing to
+      // satisfy. Swallowing it is safe because a genuinely failing/missing required check makes the PR
+      // BLOCKED, and validatePullRequest already rejected everything but CLEAN before we reach here.
+      if (error instanceof Error && /no (?:required )?checks reported/i.test(error.message)) return [];
+      throw error;
+    }
+    return parseJson<Array<{ state?: string; bucket?: string }>>(checksOutput.trim() || "[]", "gh pr checks");
   }
 
   async mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }> {
