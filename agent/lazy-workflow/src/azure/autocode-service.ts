@@ -48,6 +48,42 @@ export interface IntegrationBranchInfo {
   branch: string | null;
 }
 
+export interface AzureWorkspaceRepositoryIdentity {
+  workingDirectory: string;
+  remote: string;
+  repository: string;
+  project: string;
+  projectId: string;
+  repositoryId: string;
+}
+
+export interface AzureWorkspaceBranchUnit {
+  path: string;
+  remote: string;
+  repository: string;
+  project: string;
+  integrationBranch: string;
+  ticketBranch: string | null;
+  integrationBranchCreated: boolean;
+  ticketBranchCreated: boolean;
+  ticketBranchAnchor: string | null;
+}
+
+export interface AzureWorkspaceBranchTopology {
+  hu: number;
+  ticket: number | null;
+  integrationBranch: string;
+  ticketBranch?: string;
+  anchor: AzureWorkspaceRepositoryIdentity;
+  ticketBranchAnchor: string | null;
+  units: AzureWorkspaceBranchUnit[];
+}
+
+export interface AzureWorkspaceRepositoryInput {
+  readonly path: string;
+  readonly remote: string;
+}
+
 export const COMPLETION_GATE = {
   pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
@@ -650,6 +686,391 @@ export class AzureAutocodeService implements AutocodeAzureService {
       return (await this.setIntegrationBranch(hu, linked.branch, workingDirectory)).branch;
     }
     return (await this.setIntegrationBranch(hu, `refs/heads/hu/${hu}`, workingDirectory, baseBranch)).branch;
+  }
+
+  async prepareWorkspaceBranches(options: {
+    hu: number;
+    repositories: readonly AzureWorkspaceRepositoryInput[];
+    baseBranch?: string | null;
+    integrationBranch?: string;
+  }): Promise<AzureWorkspaceBranchTopology> {
+    if (!Number.isInteger(options.hu) || options.hu <= 0) {
+      throw new Error(`La HU debe ser un entero positivo: ${options.hu}`);
+    }
+    if (options.repositories.length === 0) throw new Error("El alcance multi-repositorio no puede ser vacío");
+    const identities = await Promise.all(options.repositories.map((repository) => this.resolveRepositoryIdentity(repository)));
+
+    const parent = await show(options.hu, true, this.az);
+    const existingLinks = uniqueBranchLinks(parent);
+    const projectName = field(parent, "System.TeamProject");
+    if (!projectName) throw new Error("La HU no tiene proyecto Azure");
+    const integrationBranch = normalizeBranch(options.integrationBranch ?? `refs/heads/hu/${options.hu}`).ref;
+
+    const matchedAnchor = existingLinks.length === 1
+      ? identities.find((identity) => identity.repositoryId === existingLinks[0]!.repository && identity.projectId === existingLinks[0]!.project)
+      : undefined;
+    if (existingLinks.length > 0 && !matchedAnchor) {
+      throw new Error(existingLinks.length > 1
+        ? `La HU ${options.hu} tiene multiples Branch ArtifactLink distintos; no se puede elegir un ancla única`
+        : `La HU ${options.hu} tiene una Branch ArtifactLink vinculada fuera del alcance declarado`);
+    }
+
+    const anchor = matchedAnchor ?? identities[0]!;
+    const baseBranch = options.baseBranch?.trim() ? normalizeBranch(options.baseBranch).ref : null;
+    if (!matchedAnchor && !baseBranch) {
+      throw new Error(`La HU ${options.hu} no tiene una rama de integración vinculada; indique --base-branch <name>`);
+    }
+
+    const plan = await Promise.all(identities.map(async (identity) => {
+      const isAnchor = identity.workingDirectory === anchor.workingDirectory;
+      const effectiveBase = matchedAnchor && isAnchor ? null : baseBranch;
+      const existed = !!(await remoteBranchSha(this.git, integrationBranch, identity.workingDirectory));
+      const requiresBase = !existed && !!effectiveBase;
+      const baseSha = requiresBase
+        ? await remoteBranchSha(this.git, normalizeBranch(effectiveBase!).ref, identity.workingDirectory)
+        : null;
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], identity.workingDirectory);
+      return { identity, isAnchor, effectiveBase, existed, baseSha, status };
+    }));
+
+    for (const { identity, existed, effectiveBase, baseSha, status } of plan) {
+      if (!existed && !effectiveBase) {
+        throw new Error(`La rama ${integrationBranch} no existe en ${identity.workingDirectory} y no se proporcionó base`);
+      }
+      if (!existed && !baseSha) {
+        throw new Error(`La rama base ${normalizeBranch(effectiveBase!).ref} no existe remotamente`);
+      }
+      if (status.trim()) {
+        throw new Error(`El repositorio ${identity.workingDirectory} tiene cambios sin guardar; no se creará la rama HU`);
+      }
+    }
+
+    await this.verifyRemoteIdentities(identities);
+
+    const units: AzureWorkspaceBranchUnit[] = [];
+    for (const { identity, isAnchor, effectiveBase, existed } of plan) {
+      const created = existed
+        ? false
+        : await this.createIntegrationBranchInRepository({
+            hu: options.hu,
+            identity,
+            integrationBranch,
+            baseBranch: effectiveBase,
+            existingLink: existingLinks[0] ?? null,
+            isAnchor,
+          });
+      const shouldLink = isAnchor && !existingLinks[0];
+      if (shouldLink) {
+        await this.linkIntegrationBranchArtifact({
+          hu: options.hu,
+          identity,
+          integrationBranch,
+        });
+      }
+      units.push({
+        path: identity.workingDirectory,
+        remote: identity.remote,
+        repository: identity.repository,
+        project: identity.project,
+        integrationBranch,
+        ticketBranch: null,
+        integrationBranchCreated: created,
+        ticketBranchCreated: false,
+        ticketBranchAnchor: null,
+      });
+    }
+
+    await this.verifyRemoteBranches(units);
+
+    return {
+      hu: options.hu,
+      ticket: null,
+      integrationBranch,
+      anchor: {
+        workingDirectory: anchor.workingDirectory,
+        remote: anchor.remote,
+        repository: anchor.repository,
+        project: anchor.project,
+        projectId: anchor.projectId,
+        repositoryId: anchor.repositoryId,
+      },
+      ticketBranchAnchor: null,
+      units,
+    };
+  }
+
+  async prepareWorkspaceTicketBranches(options: {
+    hu: number;
+    ticket: number;
+    integrationBranch: string;
+    repositories: readonly AzureWorkspaceRepositoryInput[];
+    ticketBranch?: string;
+    ticketBranchAnchor?: string | null;
+  }): Promise<AzureWorkspaceBranchTopology> {
+    if (!Number.isInteger(options.hu) || options.hu <= 0) {
+      throw new Error(`La HU debe ser un entero positivo: ${options.hu}`);
+    }
+    if (!Number.isInteger(options.ticket) || options.ticket <= 0) {
+      throw new Error(`El ticket debe ser un entero positivo: ${options.ticket}`);
+    }
+    const identities = await Promise.all(options.repositories.map((repository) => this.resolveRepositoryIdentity(repository)));
+    const parent = await show(options.hu, true, this.az);
+    const projectName = field(parent, "System.TeamProject");
+    if (!projectName) throw new Error("La HU no tiene proyecto Azure");
+    const integrationBranch = normalizeBranch(options.integrationBranch).ref;
+    const ticketBranch = normalizeBranch(options.ticketBranch ?? `refs/heads/ticket/${options.ticket}`).ref;
+    const anchorPath = options.ticketBranchAnchor ?? null;
+    const anchorIndex = anchorPath ? identities.findIndex((identity) => identity.workingDirectory === anchorPath) : -1;
+    const anchor = anchorIndex >= 0 ? identities[anchorIndex]! : identities[0]!;
+
+    const ticketItem = await show(options.ticket, true, this.az);
+    const isDirectChild = (parent.relations ?? []).some((relation) =>
+      relation.rel === "System.LinkTypes.Hierarchy-Forward" && relationId(relation.url) === options.ticket
+    );
+    if (!isDirectChild) throw new Error(`El ticket ${options.ticket} no es hijo directo de la HU ${options.hu}`);
+    const existingTicketLinks = uniqueBranchLinks(ticketItem);
+    const existingTicketLink = existingTicketLinks[0] ?? null;
+    if (existingTicketLink && existingTicketLink.ref !== ticketBranch) {
+      throw new Error(`El ticket ${options.ticket} ya tiene una rama vinculada distinta; conflicto`);
+    }
+
+    const plan = await Promise.all(identities.map(async (identity) => {
+      const integrationBranchSha = await remoteBranchSha(this.git, integrationBranch, identity.workingDirectory);
+      const ticketBranchSha = await remoteBranchSha(this.git, ticketBranch, identity.workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], identity.workingDirectory);
+      return { identity, integrationBranchSha, ticketBranchSha, status };
+    }));
+
+    for (const { identity, integrationBranchSha, ticketBranchSha, status } of plan) {
+      if (!integrationBranchSha) throw new Error(`La rama de integración ${integrationBranch} no existe remotamente en ${identity.workingDirectory}`);
+      if (ticketBranchSha && ticketBranchSha !== integrationBranchSha) {
+        throw new Error(`La rama del ticket ${ticketBranch} no coincide con la rama de integración de la HU`);
+      }
+      if (!ticketBranchSha && status.trim()) {
+        throw new Error(`El repositorio ${identity.workingDirectory} tiene cambios sin guardar; no se creará la rama del ticket`);
+      }
+    }
+
+    const units: AzureWorkspaceBranchUnit[] = [];
+    for (const { identity, ticketBranchSha, integrationBranchSha } of plan) {
+      const created = ticketBranchSha === integrationBranchSha
+        ? false
+        : await this.createTicketBranchInRepository({
+            hu: options.hu,
+            ticket: options.ticket,
+            identity,
+            integrationBranch,
+            ticketBranch,
+          });
+      units.push({
+        path: identity.workingDirectory,
+        remote: identity.remote,
+        repository: identity.repository,
+        project: identity.project,
+        integrationBranch,
+        ticketBranch,
+        integrationBranchCreated: false,
+        ticketBranchCreated: created,
+        ticketBranchAnchor: null,
+      });
+    }
+
+    const anchorUnit = units.find((unit) => unit.path === anchor.workingDirectory);
+    if (!anchorUnit) throw new Error(`El ancla del ticket ${options.ticket} no pertenece al alcance`);
+    anchorUnit.ticketBranchAnchor = anchor.workingDirectory;
+    for (const unit of units) {
+      if (unit.path !== anchor.workingDirectory) unit.ticketBranchAnchor = anchor.workingDirectory;
+    }
+
+    if (!existingTicketLink) {
+      await this.linkTicketBranchArtifact({
+        hu: options.hu,
+        ticket: options.ticket,
+        identity: anchor,
+        ticketBranch,
+      });
+    }
+
+    return {
+      hu: options.hu,
+      ticket: options.ticket,
+      integrationBranch,
+      ticketBranch,
+      anchor: {
+        workingDirectory: anchor.workingDirectory,
+        remote: anchor.remote,
+        repository: anchor.repository,
+        project: anchor.project,
+        projectId: anchor.projectId,
+        repositoryId: anchor.repositoryId,
+      },
+      ticketBranchAnchor: anchor.workingDirectory,
+      units,
+    };
+  }
+
+  private async resolveRepositoryIdentity(repository: AzureWorkspaceRepositoryInput): Promise<AzureWorkspaceRepositoryIdentity> {
+    const origin = parseAzureOrigin(await this.git(["remote", "get-url", "origin"], repository.path));
+    const repositoryOutput = await this.az([
+      "repos", "show", "--organization", ORGANIZATION,
+      "--project", origin.project, "--repository", origin.repository, "--output", "json",
+    ]);
+    const azure = JSON.parse(repositoryOutput) as AzureRepository;
+    if (!azure.id || !azure.name || !azure.project?.id || !azure.project.name) {
+      throw new Error(`El repositorio Azure ${origin.repository} no es identificable`);
+    }
+    if (!same(azure.name, origin.repository) || !same(azure.project.name, origin.project)) {
+      throw new Error(`El repositorio Azure no coincide con el origen declarado: ${repository.path}`);
+    }
+    return {
+      workingDirectory: repository.path,
+      remote: repository.remote,
+      repository: azure.name,
+      project: azure.project.name,
+      projectId: azure.project.id,
+      repositoryId: azure.id,
+    };
+  }
+
+  private async createIntegrationBranchInRepository(options: {
+    hu: number;
+    identity: AzureWorkspaceRepositoryIdentity;
+    integrationBranch: string;
+    baseBranch: string | null;
+    existingLink: BranchLink | null;
+    isAnchor: boolean;
+  }): Promise<boolean> {
+    if (!options.baseBranch) {
+      throw new Error(`La rama ${options.integrationBranch} no existe en ${options.identity.workingDirectory} y no se proporcionó base`);
+    }
+    const base = normalizeBranch(options.baseBranch);
+    if (base.ref === options.integrationBranch) throw new Error("La base remota no puede ser la rama HU");
+    const baseSha = await remoteBranchSha(this.git, base.ref, options.identity.workingDirectory);
+    if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], options.identity.workingDirectory);
+    if (status.trim()) throw new Error(`El repositorio ${options.identity.workingDirectory} tiene cambios sin guardar; no se creará la rama HU`);
+    const localBaseRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+    try {
+      const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", localBaseRef], options.identity.workingDirectory)).trim();
+      if (existingRef) throw new Error(`El ref temporal local ${localBaseRef} ya existe`);
+      await this.git(["fetch", "--no-tags", "origin", `+${base.ref}:${localBaseRef}`], options.identity.workingDirectory);
+      const fetchedSha = (await this.git(["rev-parse", `${localBaseRef}^{commit}`], options.identity.workingDirectory)).trim();
+      if (fetchedSha !== baseSha) throw new Error(`La base remota ${base.ref} cambió durante la preparación`);
+      await this.git(["push", "origin", `${localBaseRef}:${options.integrationBranch}`], options.identity.workingDirectory);
+      const publishedSha = await remoteBranchSha(this.git, options.integrationBranch, options.identity.workingDirectory);
+      if (publishedSha !== baseSha) {
+        throw new Error(`No se pudo verificar remotamente la rama ${options.integrationBranch} desde ${base.ref}`);
+      }
+    } finally {
+      await this.git(["update-ref", "-d", localBaseRef], options.identity.workingDirectory);
+    }
+    return true;
+  }
+
+  private async createTicketBranchInRepository(options: {
+    hu: number;
+    ticket: number;
+    identity: AzureWorkspaceRepositoryIdentity;
+    integrationBranch: string;
+    ticketBranch: string;
+  }): Promise<boolean> {
+    const integrationSha = await remoteBranchSha(this.git, options.integrationBranch, options.identity.workingDirectory);
+    if (!integrationSha) throw new Error(`La rama de integración ${options.integrationBranch} no existe remotamente en ${options.identity.workingDirectory}`);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all", "--ignored"], options.identity.workingDirectory);
+    if (status.trim()) throw new Error(`El repositorio ${options.identity.workingDirectory} tiene cambios sin guardar; no se creará la rama del ticket`);
+    const temporaryRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+    try {
+      const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", temporaryRef], options.identity.workingDirectory)).trim();
+      if (existingRef) throw new Error(`El ref temporal local ${temporaryRef} ya existe`);
+      await this.git(["fetch", "--no-tags", "origin", `+${options.integrationBranch}:${temporaryRef}`], options.identity.workingDirectory);
+      const fetchedSha = (await this.git(["rev-parse", `${temporaryRef}^{commit}`], options.identity.workingDirectory)).trim();
+      if (fetchedSha !== integrationSha) throw new Error(`La rama de integración ${options.integrationBranch} cambió durante la preparación`);
+      await this.git(["push", "origin", `${temporaryRef}:${options.ticketBranch}`], options.identity.workingDirectory);
+      const publishedSha = await remoteBranchSha(this.git, options.ticketBranch, options.identity.workingDirectory);
+      if (publishedSha !== integrationSha) throw new Error(`No se pudo verificar remotamente la rama ${options.ticketBranch}`);
+    } finally {
+      await this.git(["update-ref", "-d", temporaryRef], options.identity.workingDirectory);
+    }
+    return true;
+  }
+
+  private async linkIntegrationBranchArtifact(options: {
+    hu: number;
+    identity: AzureWorkspaceRepositoryIdentity;
+    integrationBranch: string;
+  }): Promise<void> {
+    const normalized = normalizeBranch(options.integrationBranch);
+    const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${options.identity.projectId}/${options.identity.repositoryId}/GB${normalized.name}`)}`;
+    const patchBody = JSON.stringify([{
+      op: "add",
+      path: "/relations/-",
+      value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
+    }]);
+    await this.az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE,
+      "--method", "patch",
+      "--uri", `${ORGANIZATION}/${options.identity.projectId}/_apis/wit/workitems/${options.hu}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--headers", "Content-Type=application/json-patch+json",
+      "--body", patchBody,
+      "--output", "json",
+    ]);
+    const verified = await this.getIntegrationBranchInfo(options.hu);
+    if (verified.branch !== normalized.ref) {
+      throw new Error(`No se pudo verificar en Azure la rama ${normalized.ref}`);
+    }
+  }
+
+  private async linkTicketBranchArtifact(options: {
+    hu: number;
+    ticket: number;
+    identity: AzureWorkspaceRepositoryIdentity;
+    ticketBranch: string;
+  }): Promise<void> {
+    const normalized = normalizeBranch(options.ticketBranch);
+    const artifactUrl = `vstfs:///Git/Ref/${encodeURIComponent(`${options.identity.projectId}/${options.identity.repositoryId}/GB${normalized.name}`)}`;
+    const revision = await this.fetchTicketRevision(options.ticket);
+    const patchBody = JSON.stringify([
+      { op: "test", path: "/rev", value: revision },
+      {
+        op: "add",
+        path: "/relations/-",
+        value: { rel: "ArtifactLink", url: artifactUrl, attributes: { name: "Branch" } },
+      },
+    ]);
+    await this.az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE,
+      "--method", "patch",
+      "--uri", `${ORGANIZATION}/${options.identity.projectId}/_apis/wit/workitems/${options.ticket}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--headers", "Content-Type=application/json-patch+json",
+      "--body", patchBody,
+      "--output", "json",
+    ]);
+  }
+
+  private async fetchTicketRevision(ticket: number): Promise<number> {
+    const item = await show(ticket, true, this.az);
+    const revision = item.rev;
+    if (typeof revision !== "number" || !Number.isInteger(revision) || revision <= 0) {
+      throw new Error(`El ticket ${ticket} no tiene una revisión Azure válida`);
+    }
+    return revision;
+  }
+
+  private async verifyRemoteBranches(units: readonly AzureWorkspaceBranchUnit[]): Promise<void> {
+    for (const unit of units) {
+      const sha = await remoteBranchSha(this.git, unit.integrationBranch, unit.path);
+      if (!sha) throw new Error(`La rama ${unit.integrationBranch} no existe remotamente en ${unit.path}`);
+    }
+  }
+
+  private async verifyRemoteIdentities(identities: readonly AzureWorkspaceRepositoryIdentity[]): Promise<void> {
+    for (const identity of identities) {
+      const origin = await this.git(["remote", "get-url", "origin"], identity.workingDirectory);
+      const parsed = parseAzureOrigin(origin);
+      if (!same(parsed.repository, identity.repository) || !same(parsed.project, identity.project)) {
+        throw new Error(`El remote de ${identity.workingDirectory} no coincide con la identidad Azure resuelta`);
+      }
+    }
   }
 
   async getAutocodeContext(hu: number, integrationBranch?: string): Promise<AutocodeContext | null> {
