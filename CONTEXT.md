@@ -102,6 +102,23 @@ starting OpenCode. The operator prompt is not a branch-management interface.
   the completed ticket branch, and refreshes Azure before selecting the next ticket.
 _Avoid_: Azure HU planning run
 
+**Azure workspace branch topology**:
+The resolved HU and ticket branch layout across the declared participant
+repositories, including the anchor repository that owns the single native
+Branch ArtifactLink for the HU and the candidate primary repository for the
+ticket Branch ArtifactLink. The anchor is the existing HU Branch ArtifactLink
+when present and unambiguous, otherwise the first declared repository. The
+ticket primary anchor is later selected as the first repository that actually
+produces changes.
+_Avoid_: per-repository native Branch links, guessed base branches
+
+**Azure HU integration branch preparation**:
+The multi-repository preparation that resolves the anchor, verifies or
+provisions `hu/<HU>` in each participant repository from a checked, clean
+worktree and the explicit remote base branch, and writes the single native
+Branch ArtifactLink only in the anchor repository.
+_Avoid_: multiple native HU Branch links, implicit base branch
+
 **Explicit command**:
 The first argument must be a supported workflow command: `plan`, `code`,
 `hu-info`, `hu-branch-info`, `hu-branch-set`, or a documented `ticket-*`

@@ -12,6 +12,7 @@ import {
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
+import type { AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -94,6 +95,8 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   validateEvidenceFile?(filePath: string, kind: EvidenceKind): Promise<void>;
   validateEvidence?(ticket: number, filePath: string): Promise<void>;
+  prepareWorkspaceBranches?(options: { hu: number; repositories: readonly AzureWorkspaceRepositoryInput[]; baseBranch?: string | null; integrationBranch?: string }): Promise<AzureWorkspaceBranchTopology>;
+  prepareWorkspaceTicketBranches?(options: { hu: number; ticket: number; integrationBranch: string; repositories: readonly AzureWorkspaceRepositoryInput[]; ticketBranch?: string; ticketBranchAnchor?: string | null }): Promise<AzureWorkspaceBranchTopology>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -273,6 +276,11 @@ function isValidHu(hu: number | null): hu is number {
   return hu !== null && Number.isInteger(hu) && hu > 0;
 }
 
+function isAzureRemote(origin: string): boolean {
+  const trimmed = origin.trim();
+  return /^https:\/\/dev\.azure\.com\/|^git@ssh\.dev\.azure\.com:|^https?:\/\/[^\/]*\.visualstudio\.com\//.test(trimmed);
+}
+
 function readPrompt(name: "default" | "autoplan" | "autocode" | "architecture-review-sag"): Promise<string> {
   return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
 }
@@ -357,13 +365,12 @@ export class LazyWorkflowCli {
     }
 
     if (options.workingDirectory.includes(",")) {
-      if (options.hu !== null) {
-        reportOperator("el alcance multi-repositorio GitHub no permite --hu");
-        return 1;
-      }
       if (command !== "plan" && command !== "code") {
         reportOperator("--working-directory CSV solo se permite con plan o code");
         return 1;
+      }
+      if (options.hu !== null) {
+        return this.runAzureWorkspaceCode(options);
       }
       return command === "plan"
         ? this.runWorkspacePlan(options)
@@ -759,6 +766,63 @@ export class LazyWorkflowCli {
       await this.githubDelivery?.verifyRepository?.(repository.providerIdentity!, repository.path);
     }
     return scope;
+  }
+
+  private async azureWorkspaceScope(options: CliOptions): Promise<WorkspaceScope> {
+    const scope = await normalizeWorkspaceScope(options.workingDirectory, this.git, () => null);
+    for (const repository of scope.repositories) {
+      const origin = await this.git(["remote", "get-url", "origin"], repository.path);
+      if (!isAzureRemote(origin)) {
+        throw new Error(`El repositorio ${repository.path} no tiene un remote Azure DevOps`);
+      }
+    }
+    return scope;
+  }
+
+  private async runAzureWorkspaceCode(options: CliOptions): Promise<number> {
+    if (!this.huInfoService.prepareWorkspaceBranches || !this.huInfoService.prepareWorkspaceTicketBranches) {
+      reportOperator("El servicio Azure no expone la preparación workspace de ramas");
+      return 1;
+    }
+    if (!isValidHu(options.hu)) {
+      reportOperator("runAzureWorkspaceCode requiere --hu");
+      return 1;
+    }
+    try {
+      const scope = await this.azureWorkspaceScope(options);
+      const topology = await this.huInfoService.prepareWorkspaceBranches({
+        hu: options.hu,
+        repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+        baseBranch: options.baseBranch,
+      });
+      const ticketTopology = options.ticket
+        ? await this.huInfoService.prepareWorkspaceTicketBranches({
+            hu: options.hu,
+            ticket: options.ticket,
+            integrationBranch: topology.integrationBranch,
+            repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+          })
+        : null;
+      const summary = {
+        hu: topology.hu,
+        integrationBranch: topology.integrationBranch,
+        anchor: topology.anchor.workingDirectory,
+        ticketBranch: ticketTopology?.ticketBranch ?? null,
+        ticketBranchAnchor: ticketTopology?.ticketBranchAnchor ?? null,
+        units: topology.units.map((unit) => ({
+          path: unit.path,
+          repository: unit.repository,
+          integrationBranch: unit.integrationBranch,
+          integrationBranchCreated: unit.integrationBranchCreated,
+          ticketBranchCreated: ticketTopology?.units.find(({ path }) => path === unit.path)?.ticketBranchCreated ?? false,
+        })),
+      };
+      console.log(JSON.stringify(summary, null, 2));
+      return 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
   }
 
   private async workspacePrompt(
