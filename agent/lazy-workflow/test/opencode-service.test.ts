@@ -315,4 +315,95 @@ describe("OpenCodeService reporter routing", () => {
     expect(ticks.some((line) => line.includes("OpenCode iniciado en"))).toBeTrue();
     expect(ticks.some((line) => line.includes("OpenCode [sesión ses_spin]: ok"))).toBeTrue();
   });
+
+  test("reconoce el marcador terminal cuando llega en un segundo evento de texto tras ':'", async () => {
+    const encoder = new TextEncoder();
+    let closeStdout: () => void = () => undefined;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeStdout = () => controller.close();
+        controller.enqueue(encoder.encode(`${jsonEvent({ type: "session", sessionID: "ses_ready_split" })}\n`));
+        controller.enqueue(encoder.encode(`${jsonEvent({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "Trabajo completado:" } })}\n`));
+        controller.enqueue(encoder.encode(`${jsonEvent({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "IMPLEMENTATION_READY" } })}\n`));
+      },
+    });
+    let closeStderr: () => void = () => undefined;
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeStderr = () => controller.close();
+      },
+    });
+    let resolveExit: (code: number) => void = () => undefined;
+    const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+    const signals: string[] = [];
+    const service = new OpenCodeService((command) => command[1] === "session"
+      ? {
+        stdout: new Blob([]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      }
+      : {
+        stdout,
+        stderr,
+        exited,
+        kill: (signal) => {
+          signals.push(signal);
+          if (signal === "SIGKILL") resolveExit(137);
+        },
+      }, undefined, 5);
+
+    const execution = service.run({
+      ...standardOptions,
+      terminalMarker: "IMPLEMENTATION_READY",
+    }, true);
+    const outcome = await Promise.race([
+      execution.then(() => "completed" as const),
+      Bun.sleep(50).then(() => "timeout" as const),
+    ]);
+    if (outcome === "timeout") {
+      closeStdout();
+      closeStderr();
+      resolveExit(0);
+      await execution;
+    }
+
+    expect(outcome).toBe("completed");
+    const finalResult = await execution;
+    expect(finalResult.azureLoginRequired).toBeFalse();
+    expect(finalResult.failed).toBeFalse();
+    expect(finalResult.result.text).toBe("Trabajo completado:\nIMPLEMENTATION_READY");
+    expect(finalResult.result.text.split(/\r?\n/).map((line) => line.trim()))
+      .toContain("IMPLEMENTATION_READY");
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+
+  test("no emite el marcador terminal cuando solo aparece conversacionalmente", async () => {
+    const output = [
+      jsonEvent({ type: "session", sessionID: "ses_chat" }),
+      jsonEvent({ type: "text", sessionID: "ses_chat", part: { type: "text", text: "Voy a emitir IMPLEMENTATION_READY pronto" } }),
+    ].join("\n");
+    const service = new OpenCodeService((command) => command[1] === "session"
+      ? {
+        stdout: new Blob([]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      }
+      : {
+        stdout: new Blob([output]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      });
+
+    const execution = await service.run({
+      ...standardOptions,
+      terminalMarker: "IMPLEMENTATION_READY",
+    }, true);
+
+    expect(execution.azureLoginRequired).toBeFalse();
+    expect(execution.failed).toBeFalse();
+    expect(execution.result.text).toBe("Voy a emitir IMPLEMENTATION_READY pronto");
+  });
 });
