@@ -11,6 +11,9 @@ export const ticket = 51;
 export const repoA = "repo-a";
 export const repoB = "repo-b";
 export const teamProject = "Team";
+export const projectId = "project-id";
+export const repoAId = `${repoA}-id`;
+export const repoBId = `${repoB}-id`;
 export const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 export const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
 export const integrationBranch = `refs/heads/hu/${hu}`;
@@ -243,6 +246,8 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
             path: repository.path,
             remote: repository.remote,
             repository: basename(repository.path),
+            repositoryId: `${basename(repository.path)}-id`,
+            projectId,
             project: teamProject,
             integrationBranch,
             ticketBranch: null,
@@ -269,6 +274,8 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
             path: repository.path,
             remote: repository.remote,
             repository: basename(repository.path),
+            repositoryId: `${basename(repository.path)}-id`,
+            projectId,
             project: teamProject,
             integrationBranch,
             ticketBranch,

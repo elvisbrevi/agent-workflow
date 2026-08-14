@@ -1,5 +1,4 @@
-import { mkdir, rename, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { areReceipts, isBranchRef, WorkspaceCheckpointStore } from "../workspace/workspace-checkpoint-store.ts";
 
 export const AZURE_WORKSPACE_PHASES = [
   "started",
@@ -41,19 +40,6 @@ export interface AzureWorkspaceCheckpoint {
   intent: { effect: string; target: string } | null;
 }
 
-const FILE_NAME = "azure-workspace-code-checkpoint.json";
-
-function validRef(value: unknown): value is string {
-  return typeof value === "string" && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(value) && !value.includes("..") && !value.includes("//");
-}
-
-function validReceipts(value: unknown): value is Record<string, { verifiedAt: string }> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.values(value).every((receipt) => typeof receipt === "object" && receipt !== null
-      && Object.keys(receipt).length === 1 && typeof receipt.verifiedAt === "string"
-      && Number.isFinite(Date.parse(receipt.verifiedAt)));
-}
-
 function validUnit(value: unknown): value is AzureWorkspaceCheckpointUnit {
   if (typeof value !== "object" || value === null) return false;
   const unit = value as Partial<AzureWorkspaceCheckpointUnit>;
@@ -65,7 +51,7 @@ function validUnit(value: unknown): value is AzureWorkspaceCheckpointUnit {
     && (unit.commit === null || (typeof unit.commit === "string" && /^[0-9a-f]{40,64}$/i.test(unit.commit)))
     && (unit.pullRequest === null || (Number.isInteger(unit.pullRequest) && (unit.pullRequest ?? 0) > 0))
     && (unit.mergeCommit === null || (typeof unit.mergeCommit === "string" && unit.mergeCommit.length > 0))
-    && validReceipts(unit.receipts);
+    && areReceipts(unit.receipts);
 }
 
 export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorkspaceCheckpoint {
@@ -79,47 +65,22 @@ export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorksp
     && Number.isInteger(checkpoint.ticket) && (checkpoint.ticket ?? 0) > 0
     && AZURE_WORKSPACE_PHASES.includes(checkpoint.phase as AzureWorkspacePhase)
     && (checkpoint.sessionId === null || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0))
-    && validRef(checkpoint.integrationBranch)
-    && validRef(checkpoint.ticketBranch)
+    && isBranchRef(checkpoint.integrationBranch)
+    && isBranchRef(checkpoint.ticketBranch)
     && typeof checkpoint.parentDirectory === "string" && checkpoint.parentDirectory.length > 0
     && typeof checkpoint.activeDurationMs === "number" && Number.isFinite(checkpoint.activeDurationMs) && checkpoint.activeDurationMs >= 0
     && Array.isArray(repositories) && repositories.length > 0
     && repositories.every((entry) => typeof entry?.path === "string" && entry.path.length > 0
       && typeof entry.remote === "string" && entry.remote.length > 0)
     && Array.isArray(units) && units.length <= repositories.length && units.every(validUnit)
-    && validReceipts(checkpoint.receipts)
+    && areReceipts(checkpoint.receipts)
     && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && checkpoint.intent !== null
       && typeof checkpoint.intent.effect === "string" && checkpoint.intent.effect.length > 0
       && typeof checkpoint.intent.target === "string" && checkpoint.intent.target.length > 0));
 }
 
-export class AzureWorkspaceCheckpointStore {
-  private path(stateDirectory: string): string {
-    return resolve(stateDirectory, FILE_NAME);
-  }
-
-  async read(stateDirectory: string): Promise<AzureWorkspaceCheckpoint | null> {
-    const path = this.path(stateDirectory);
-    if (!await Bun.file(path).exists()) return null;
-    const value: unknown = await Bun.file(path).json();
-    if (!isAzureWorkspaceCheckpoint(value)) throw new Error("Checkpoint Azure workspace inválido; no se sobrescribirá");
-    return value;
-  }
-
-  async write(checkpoint: AzureWorkspaceCheckpoint, stateDirectory: string): Promise<void> {
-    if (!isAzureWorkspaceCheckpoint(checkpoint)) throw new Error("Checkpoint Azure workspace inválido");
-    const path = this.path(stateDirectory);
-    await mkdir(dirname(path), { recursive: true });
-    const temporaryPath = `${path}.tmp-${process.pid}`;
-    await Bun.write(temporaryPath, `${JSON.stringify(checkpoint)}\n`);
-    await rename(temporaryPath, path);
-  }
-
-  async clear(stateDirectory: string): Promise<void> {
-    try {
-      await unlink(this.path(stateDirectory));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
+export class AzureWorkspaceCheckpointStore extends WorkspaceCheckpointStore<AzureWorkspaceCheckpoint> {
+  protected readonly fileName = "azure-workspace-code-checkpoint.json";
+  protected readonly label = "Azure workspace";
+  protected isCheckpoint = isAzureWorkspaceCheckpoint;
 }
