@@ -465,7 +465,7 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   expect(received.options?.prompt).toContain("3");
 });
 
-test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY", async () => {
+test("code sin HU entrega un solo issue por sesion", async () => {
   let azureCalls = 0;
   let checkpointCalls = 0;
   let cleanupCalls = 0;
@@ -474,18 +474,11 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
     OpenCodeResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_issue_1",
-      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
-    })),
-    OpenCodeResult.fromJsonLines(JSON.stringify({
-      type: "text",
-      sessionID: "ses_issue_2",
-      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+      part: { type: "text", text: "IMPLEMENTATION_READY" },
     })),
   ];
   const outcomes: ManagedQueueOutcome[] = [
     fakeSelectedOutcome(201),
-    fakeSelectedOutcome(202),
-    { kind: "empty" },
   ];
 
   const code = await new LazyWorkflowCli(
@@ -519,12 +512,9 @@ test("code sin HU drena GitHub con una sesion nueva por issue hasta QUEUE_EMPTY"
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(calls).toHaveLength(2);
-  expect(calls.map(({ options }) => options.session)).toEqual([null, null]);
-  expect(calls.map(({ options }) => options.terminalMarker)).toEqual([
-    "WORKFLOW_STEP_FINISHED",
-    "WORKFLOW_STEP_FINISHED",
-  ]);
+  expect(calls).toHaveLength(1);
+  expect(calls.map(({ options }) => options.session)).toEqual([null]);
+  expect(calls.map(({ options }) => options.terminalMarker)).toEqual(["IMPLEMENTATION_READY"]);
   expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
   expect(calls[0]?.options.prompt).toContain("IMPLEMENTATION_READY");
   expect(calls[0]?.options.prompt).toContain("QUEUE_EMPTY");
@@ -618,6 +608,8 @@ test("code sin HU imprime QUEUE_EMPTY y termina sin iniciar OpenCode", async () 
 
   expect(openCodeCalls).toBe(0);
   expect(output[0]).toContain("QUEUE_EMPTY");
+  expect(output[1]).toBe("QUEUE_EMPTY");
+  expect(output[2]).toBe("WORKFLOW_STEP_FINISHED");
 });
 
 test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async () => {
@@ -657,7 +649,7 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
   expect(calls).toBe(1);
 });
 
-test("code sin HU avanza cuando el marcador llega en un segundo evento de texto tras ':'", async () => {
+test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", async () => {
   const calls: string[] = [];
   const results = [
     OpenCodeResult.fromJsonLines(JSON.stringify({
@@ -667,7 +659,7 @@ test("code sin HU avanza cuando el marcador llega en un segundo evento de texto 
     }) + "\n" + JSON.stringify({
       type: "text",
       sessionID: "ses_split_1",
-      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+      part: { type: "text", text: "IMPLEMENTATION_READY" },
     })),
   ];
 
@@ -732,7 +724,7 @@ test("code sin HU ignora un marcador conversacional dentro de un solo evento de 
   expect(calls).toBe(1);
 });
 
-test("code sin HU no avanza dos veces cuando el marcador llega duplicado en eventos de texto separados", async () => {
+test("code sin HU ignora los marcadores de entrega heredados", async () => {
   const calls: string[] = [];
   const results = [
     OpenCodeResult.fromJsonLines(JSON.stringify({
@@ -769,7 +761,7 @@ test("code sin HU no avanza dos veces cuando el marcador llega duplicado en even
     queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
   ).run(["code", "--working-directory", "/repo"]);
 
-  expect(code).toBe(0);
+  expect(code).toBe(1);
   expect(calls).toEqual(["run"]);
 });
 

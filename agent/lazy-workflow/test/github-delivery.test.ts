@@ -27,7 +27,7 @@ function phaseOf(checkpoint: GitHubDeliveryCheckpoint | null): string | undefine
 
 test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {
   const calls: string[] = [];
-  let selected = true;
+  let selections = 0;
   let current: GitHubDeliveryCheckpoint | null = null;
   const store: GitHubCheckpointStore = {
     read: async () => current,
@@ -80,9 +80,11 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
     undefined,
     {
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      selectEligibleIssue: async () => selected
-        ? (selected = false, { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } })
-        : { kind: "empty" },
+      selectEligibleIssue: async () => {
+        selections += 1;
+        if (selections > 1) throw new Error("must not select a second issue");
+        return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+      },
       claimSelectedIssue: async () => fakeSelectedIssue(179),
     },
     store,
@@ -91,6 +93,7 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
+  expect(selections).toBe(1);
   expect(calls).toEqual(["prepare-branch", "read-manifest", "push", "pull-request", "merge", "close-issue", "cleanup"]);
   expect(current).toBeNull();
 });
