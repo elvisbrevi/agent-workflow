@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
@@ -26,6 +27,7 @@ export interface GitHubPullRequest {
 
 export interface GitHubDeliveryAdapter {
   verifyRepository?(repository: string, workingDirectory: string): Promise<void>;
+  checkoutBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   verifyBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
@@ -136,6 +138,31 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   async verifyRepository(repository: string, workingDirectory: string): Promise<void> {
     const current = await this.repository(workingDirectory);
     if (current.name !== repository) throw new Error(`el checkpoint GitHub pertenece a ${repository}, no a ${current.name}`);
+  }
+
+  async checkoutBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void> {
+    const verifiedBranch = requireBranch(branch, "La rama");
+    requireBranch(baseBranch, "La rama base");
+    const operationPaths = (await this.git([
+      "rev-parse",
+      "--git-path", "MERGE_HEAD",
+      "--git-path", "CHERRY_PICK_HEAD",
+      "--git-path", "REVERT_HEAD",
+      "--git-path", "BISECT_LOG",
+      "--git-path", "rebase-merge",
+      "--git-path", "rebase-apply",
+    ], workingDirectory)).trim().split(/\r?\n/).filter(Boolean);
+    if (operationPaths.some((path) => existsSync(resolve(workingDirectory, path)))) {
+      throw new Error("El repositorio tiene una operación Git en curso");
+    }
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar");
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    if (active === branchName(verifiedBranch)) return;
+    if (!(await this.git(["branch", "--list", branchName(verifiedBranch)], workingDirectory)).trim()) {
+      throw new Error(`La rama local ${verifiedBranch} no existe`);
+    }
+    await this.git(["switch", "--no-guess", branchName(verifiedBranch)], workingDirectory);
   }
 
   async verifyBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void> {

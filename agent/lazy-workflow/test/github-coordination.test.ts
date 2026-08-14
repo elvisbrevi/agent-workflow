@@ -55,6 +55,20 @@ const services = () => ({
   },
 });
 
+function failingDelivery(overrides: Partial<GitHubDeliveryAdapter> = {}): GitHubDeliveryAdapter {
+  const unexpected = async (): Promise<never> => { throw new Error("unexpected delivery operation"); };
+  return {
+    prepareBranch: unexpected,
+    readManifest: unexpected,
+    pushCommit: unexpected,
+    createOrReusePullRequest: unexpected,
+    mergePullRequest: unexpected,
+    closeIssue: unexpected,
+    cleanupBranch: unexpected,
+    ...overrides,
+  };
+}
+
 test("checkpoint GitHub bloquea la selección de un issue sustituto", async () => {
   const state = boundaries(checkpoint(null));
   const { azure, openCode } = services();
@@ -139,6 +153,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   const { azure, openCode } = services();
   let selections = 0;
   let resumes = 0;
+  let resumeOverrides: unknown;
   const queue = {
     issue: fakeSelectedIssue(178),
     selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
@@ -147,6 +162,58 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
       return this.issue;
     },
   };
+  const code = await new LazyWorkflowCli(
+    azure,
+    { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
+      resumes += 1;
+      resumeOverrides = overrides;
+      return openCode.resume();
+    } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queue,
+    state.store,
+    state.lock,
+  ).run([
+    "code", "--working-directory", "/repo",
+    "--model", "openai/gpt-5.6-luna", "--variant", "high",
+  ]);
+
+  expect(code).toBe(1);
+  expect(selections).toBe(0);
+  expect(resumes).toBe(1);
+  expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
+  expect(state.current?.issue).toBe(178);
+  expect(state.current?.phase).toBe("implementing");
+});
+
+test("la recuperación conserva el checkpoint si el checkout seguro falla", async () => {
+  const initial = checkpoint("ses_178");
+  initial.branch = "refs/heads/issue/178";
+  initial.baseBranch = "refs/heads/main";
+  const state = boundaries(initial);
+  const { azure, openCode } = services();
+  let reconciliations = 0;
+  let resumes = 0;
+  const delivery = failingDelivery({
+    verifyRepository: async () => undefined,
+    checkoutBranch: async () => { throw new Error("El repositorio tiene cambios sin guardar"); },
+    verifyBranch: async () => { throw new Error("must not verify after checkout failure"); },
+  });
+  const queue = {
+    selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
+    reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
+  };
+
   const code = await new LazyWorkflowCli(
     azure,
     { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
@@ -164,16 +231,54 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     queue,
     state.store,
     state.lock,
-  ).run(["code", "--working-directory", "/repo"]);
+    delivery,
+  ).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
-  expect(selections).toBe(0);
-  expect(resumes).toBe(1);
-  expect(state.current?.issue).toBe(178);
-  expect(state.current?.phase).toBe("implementing");
+  expect(reconciliations).toBe(0);
+  expect(resumes).toBe(0);
+  expect(state.current).toEqual(initial);
+  expect(state.lockAcquires).toBe(1);
+  expect(state.lockReleases).toBe(1);
 });
 
-test("la recuperación sessionless conserva el receptor del adaptador GitHub", async () => {
+test("la recuperación no usa queue ni OpenCode si falta la rama fijada", async () => {
+  const initial = checkpoint("ses_178");
+  const state = boundaries(initial);
+  const { azure, openCode } = services();
+  let reconciliations = 0;
+  let resumes = 0;
+
+  const code = await new LazyWorkflowCli(
+    azure,
+    { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
+      reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
+    },
+    state.store,
+    state.lock,
+    failingDelivery(),
+  ).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(reconciliations).toBe(0);
+  expect(resumes).toBe(0);
+  expect(state.current).toEqual(initial);
+});
+
+test("la recuperación sessionless cambia a la rama fijada antes de continuar", async () => {
   const state = boundaries({
     ...checkpoint(null),
     phase: "started",
@@ -182,30 +287,28 @@ test("la recuperación sessionless conserva el receptor del adaptador GitHub", a
     manifestPath: "/missing-manifest.json",
   });
   const { azure, openCode } = services();
+  const events: string[] = [];
   let reconciliations = 0;
   let runs = 0;
   const queue = {
     issue: fakeSelectedIssue(178),
     selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
     async reconcileClaimedIssue(issueNumber: number) {
+      events.push("read-issue");
       reconciliations += 1;
       if (this.issue.number !== issueNumber) throw new Error("wrong issue");
       return this.issue;
     },
   };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => { throw new Error("must reuse prepared branch"); },
-    readManifest: async () => { throw new Error("must not read missing manifest"); },
-    pushCommit: async () => { throw new Error("must not push"); },
-    createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
-    mergePullRequest: async () => { throw new Error("must not merge"); },
-    closeIssue: async () => { throw new Error("must not close issue"); },
-    cleanupBranch: async () => { throw new Error("must not clean branch"); },
-  };
+  const delivery = failingDelivery({
+    verifyRepository: async () => { events.push("verify-repository"); },
+    checkoutBranch: async () => { events.push("checkout-branch"); },
+    verifyBranch: async () => { events.push("verify-branch"); },
+  });
 
   const code = await new LazyWorkflowCli(
     azure,
-    { ...openCode, run: async () => { runs += 1; throw new Error("stop after recovery preflight"); } },
+    { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
     undefined,
     undefined,
     undefined,
@@ -226,6 +329,7 @@ test("la recuperación sessionless conserva el receptor del adaptador GitHub", a
   expect(code).toBe(1);
   expect(reconciliations).toBe(1);
   expect(runs).toBe(1);
+  expect(events).toEqual(["verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
   expect(state.current?.phase).toBe("started");
 });
 

@@ -24,6 +24,8 @@ describe("buildCli parser", () => {
       if (result.kind !== "options") return;
       expect(result.options.model).toBe("opencode-go/deepseek-v4-pro");
       expect(result.options.variant).toBe("high");
+      expect(result.options.hasModel).toBeFalse();
+      expect(result.options.hasVariant).toBeFalse();
       expect(result.options.prompt).toBe("Follow the authoritative workflow and context.");
       expect(result.options.numberOfQuestions).toBe(5);
       expect(result.options.workingDirectory).toBe(process.cwd());
@@ -224,6 +226,8 @@ describe("buildCli parser", () => {
         session: "ses_1",
         model: "model-x",
         variant: "low",
+        hasModel: true,
+        hasVariant: true,
         prompt: "pregunta",
         branch: "refs/heads/hu/23438",
         baseBranch: "main",
