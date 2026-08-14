@@ -120,6 +120,7 @@ export function orderEligibleManagedIssues(issues: ManagedIssue[]): ManagedIssue
 
 export interface GitHubManagedQueueAdapter {
   selectAndClaimEligibleIssue(workingDirectory: string): Promise<ManagedQueueOutcome>;
+  verifyRepository?(workingDirectory: string): Promise<GitHubRepositoryContext>;
   readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
 }
@@ -199,13 +200,10 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
     const identity = await this.verifyAuthentication(workingDirectory);
     const issue = await this.readIssueDetail(issueNumber, workingDirectory);
     const assignees = assigneeLogins(issue);
-    if (issue.state !== "OPEN"
-      || assignees.length !== 1
+    const eligibilityAfterClaim = evaluateEligibility(issue).filter((reason) => reason !== "assigned");
+    if (assignees.length !== 1
       || assignees[0] !== identity.login
-      || !labelNames(issue).includes(READY_FOR_AGENT_LABEL)
-      || titlePrefix(issue.title) !== null
-      || labelNames(issue).includes("epic")
-      || openBlockers(issue).length > 0) {
+      || eligibilityAfterClaim.length > 0) {
       throw new Error(`el Issue #${issueNumber} ya no conserva el claim GitHub verificable`);
     }
     return issue;

@@ -697,6 +697,7 @@ export class LazyWorkflowCli {
       }
       return this.runDefaultCodeWorkflowLoop(options, store);
     } catch (error) {
+      console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER }, null, 2));
       reportOperator(`lazy-workflow: no se pudo coordinar la entrega GitHub (${errorMessage(error)}); ejecucion detenida.`);
       return 1;
     } finally {
@@ -831,6 +832,12 @@ export class LazyWorkflowCli {
         this.reportGitHubReconciliationRequired(checkpoint);
         return 1;
       }
+      if (this.githubManagedQueue.verifyRepository) {
+        const repository = await this.githubManagedQueue.verifyRepository(options.workingDirectory);
+        if (repository.nameWithOwner !== liveCheckpoint.repository) {
+          throw new Error(`el checkpoint GitHub pertenece a ${liveCheckpoint.repository}, no a ${repository.nameWithOwner}`);
+        }
+      }
       const issue = await reconcileClaimedIssue(liveCheckpoint.issue, options.workingDirectory);
       if (issue.number !== liveCheckpoint.issue) throw new Error("el checkpoint GitHub no coincide con el issue recuperado");
       const result = await this.openCodeService.resume(
@@ -849,8 +856,11 @@ export class LazyWorkflowCli {
       await store.clear(options.workingDirectory);
       return 0;
     } catch (error) {
-      await store.write({ ...checkpoint, phase: "reconciling" }, options.workingDirectory);
-      reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
+      const reread = await store.read(options.workingDirectory).catch(() => null);
+      const currentCheckpoint = reread ?? checkpoint;
+      await store.write({ ...currentCheckpoint, phase: "reconciling" }, options.workingDirectory);
+      this.reportGitHubReconciliationRequired(currentCheckpoint);
+      reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${currentCheckpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
       return 1;
     } finally {
       if (release) await release();
