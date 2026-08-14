@@ -25,7 +25,9 @@ Narrower modes include `--claude-global`, `--global`, `--local`,
 and run `./install.sh --help` for the complete option list.
 
 With `--all-global` or `--claude-global`, the executable launcher is installed
-at `~/.local/bin/lazy-workflow`. Ensure `~/.local/bin` is in `PATH`, then run:
+at `~/.local/bin/lazy-workflow`; the installer prepares its locked Bun
+dependencies in the managed cache before exposing the launcher. Ensure
+`~/.local/bin` is in `PATH`, then run:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository

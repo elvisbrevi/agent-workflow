@@ -71,6 +71,9 @@ seed_remote() {
   printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' \
     > "${FIXTURE_SOURCE}/agent/runner/AGENT.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${FIXTURE_SOURCE}/agent/runner/run.sh"
+  printf '%s\n' '{"name":"runner","dependencies":{"fixture":"1.0.0"}}' \
+    > "${FIXTURE_SOURCE}/agent/runner/package.json"
+  printf '%s\n' '{"lockfileVersion":1}' > "${FIXTURE_SOURCE}/agent/runner/bun.lock"
   chmod +x "${FIXTURE_SOURCE}/agent/runner/run.sh"
   git -C "$FIXTURE_SOURCE" init --quiet
   git -C "$FIXTURE_SOURCE" config user.name 'Installer Test'
@@ -227,6 +230,8 @@ test_all_global_round_trip() {
   assert_file_symlink "${home}/.claude/agents/runner.md"
   [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected shared runner agent symlink'
   assert_file_symlink "${home}/.local/bin/runner"
+  [[ -f "${home}/.cache/agent-workflow/agent/runner/node_modules/.installed" ]] || \
+    fail 'Runner dependencies were not installed in the managed cache'
   assert_contains "$install_output" 'Installing skills → all-global'
   assert_contains "$install_output" 'Installing Claude agents → all-global'
   assert_contains "$install_output" 'Installing agents → all-global'
@@ -244,6 +249,22 @@ test_all_global_round_trip() {
   [[ ! -L "${home}/.local/bin/runner" ]] || fail 'Runner survived unified uninstall'
 
   pass 'unified global mode installs and uninstalls every global integration'
+}
+
+install_fake_bun() {
+  local bin_dir="${TEST_ROOT}/bin"
+
+  mkdir -p "$bin_dir"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '[[ "$1" == "install" ]] || exit 2' \
+    'mkdir -p node_modules' \
+    'printf "%s\n" installed > node_modules/.installed' \
+    > "${bin_dir}/bun"
+  chmod +x "${bin_dir}/bun"
+  PATH="${bin_dir}:${PATH}"
+  export PATH
 }
 
 test_install_reconciles_dirty_cache_and_stale_managed_links() {
@@ -315,6 +336,7 @@ test_install_reconciles_dirty_cache_and_stale_managed_links() {
 }
 
 seed_remote
+install_fake_bun
 export AGENT_WORKFLOW_REPO_URL="$FIXTURE_REMOTE"
 
 test_no_tty_error
