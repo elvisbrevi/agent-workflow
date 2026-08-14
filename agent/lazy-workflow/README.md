@@ -121,6 +121,12 @@ scoped GitHub checkpoint and lock preserve a fixed interrupted issue; startup
 resumes an active session or reconciles a post-readiness delivery without
 selecting replacement work.
 
+GitHub recovery validates the repository and acquires its lock before switching
+to the exact local branch recorded by the checkpoint. A dirty worktree, active
+Git operation, missing branch, or branch unavailable to the current worktree
+stops recovery before OpenCode or queue access. Recovery never creates, guesses,
+resets, or force-switches a branch.
+
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
 `nextjs`; it never infers the component from source layout. OpenCode receives
@@ -306,6 +312,18 @@ OpenCode. The HU and ticket are restored from the repository checkpoint, so no
 ```bash
 bun run main.ts code --session <session-id> --prompt continue
 ```
+
+The same recovery path can continue the preserved GitHub or Azure session with
+an explicitly selected model:
+
+```bash
+bun run main.ts code --session <session-id> \
+  --model openai/gpt-5.6-luna --variant high --prompt continue
+```
+
+Only explicitly supplied `--model` and `--variant` values override the existing
+session. Omitted values remain unchanged. This does not recover a session
+removed with `opencode session delete`.
 
 Recovery and sessionless reconciliation first reacquire the HU's native Branch
 link through the deterministic branch service, then rebuild the pinned ticket

@@ -1288,6 +1288,17 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
     { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
     store,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
   ).run(["code", "--session", "ses-otro", "--prompt", "continue"]);
 
   expect(code).toBe(1);
@@ -1300,6 +1311,17 @@ test("code --session rechaza una sesión sin checkpoint sin tocar Azure", async 
     { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
     { read: async () => null, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
   ).run(["code", "--session", "ses-missing", "--prompt", "continue"]);
 
   expect(code).toBe(1);
@@ -1488,6 +1510,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
     integrationBranch: "refs/heads/hu/23438",
   };
   const markers: string[] = [];
+  let resumeOverrides: unknown;
   const ticketBranch = "refs/heads/ticket/51";
   const checkpoint = { workflow: "autocode" as const, hu: 23438, ticket: 51, sessionId: "ses-51" };
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
@@ -1510,15 +1533,23 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
     },
     {
       run: async () => { throw new Error("must resume"); },
-      resume: async (_session, _prompt, _directory, marker) => { markers.push(marker ?? ""); return result; },
+      resume: async (_session, _prompt, _directory, marker, overrides) => {
+        markers.push(marker ?? "");
+        resumeOverrides = overrides;
+        return result;
+      },
     },
     { read: async () => checkpoint, write: async (value) => { writes.push(value); }, clear: async () => undefined },
     undefined,
     { deleteTicketBranch: async () => undefined },
-  ).run(["code", "--session", "ses-51", "--working-directory", "/repo"]);
+  ).run([
+    "code", "--session", "ses-51", "--working-directory", "/repo",
+    "--model", "openai/gpt-5.6-luna", "--variant", "high",
+  ]);
 
   expect(code).toBe(1);
   expect(markers).toEqual(["IMPLEMENTATION_READY"]);
+  expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
   expect(writes.some(({ schemaVersion, phase }) => schemaVersion === 2 && phase === "implementing")).toBeTrue();
   expect(verificationCalls).toBe(0);
 });
