@@ -12,7 +12,7 @@ import {
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
-import type { AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
+import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -88,7 +88,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
   getCompletionManifestPath?(workingDirectory: string): Promise<string>;
-  createOrReusePullRequest?(hu: number, ticket: number): Promise<{ pullRequest: number; mergeCommit: string }>;
+  createOrReusePullRequest?(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<{ pullRequest: number; mergeCommit: string }>;
   validateDirectTicketContext?(hu: number, ticket: number): Promise<void>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
@@ -110,8 +110,8 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   setHuState?(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
   getHuChildren?(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
   hasOpenDeliveryChildren?(hu: number): Promise<boolean>;
-  linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
-  linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
+  linkPullRequest?(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
+  linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence?(ticket: number, filePath: string): Promise<unknown>;
   publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
@@ -132,6 +132,11 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function revisionOf(result: unknown): number | null {
+  const revision = (result as { revision?: unknown } | null)?.revision;
+  return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
 }
 
 async function manifestBelongsToDelivery(manifestPath: string, issue: number, branch: string): Promise<boolean> {
@@ -821,6 +826,7 @@ export class LazyWorkflowCli {
     const ticket = options.ticket;
     const hu = options.hu;
     const boundary = this.huInfoService;
+    const startedAt = this.clock.now();
     try {
       await boundary.validateDirectTicketContext!(hu, ticket);
       const scope = await this.azureWorkspaceScope(options);
@@ -852,7 +858,7 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
         return 1;
       }
-      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology);
+      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, Math.max(0, this.clock.now() - startedAt));
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
@@ -892,12 +898,14 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
+    activeDurationMs: number,
   ): Promise<number> {
     const integrationBranch = topology.integrationBranch;
     const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`;
     const ticketBranchAnchor = ticketTopology.ticketBranchAnchor ?? topology.anchor.workingDirectory;
     const boundary = this.huInfoService;
 
+    const azureIdentity = new Map(ticketTopology.units.map((unit) => [unit.path, unit]));
     const units: Array<{ path: string; manifestPath: string; manifest?: unknown; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
     for (const repository of scope.repositories) {
       const manifestPath = await boundary.getCompletionManifestPath!(repository.path);
@@ -931,14 +939,25 @@ export class LazyWorkflowCli {
     const delivered: Array<{ path: string; commit: string; pullRequest: number; mergeCommit: string }> = [];
     for (const unit of changedUnits) {
       const commit = unit.commit!;
+      const identity = azureIdentity.get(unit.path);
+      if (!identity) {
+        reportOperator(`lazy-workflow: el repositorio ${unit.path} no tiene identidad Azure en la topología; ejecución detenida.`);
+        return 1;
+      }
+      const participant: AzurePullRequestTarget = {
+        project: identity.project,
+        repository: identity.repository,
+        source: identity.ticketBranch ?? ticketBranch,
+        target: identity.integrationBranch,
+      };
       try {
         await boundary.checkoutTicketBranch!(ticketBranch, unit.path);
         await boundary.pushTicketBranch!(ticketBranch, unit.path);
-        const created = await boundary.createOrReusePullRequest!(hu, ticket);
+        const created = await boundary.createOrReusePullRequest!(hu, ticket, participant);
         const pullRequest = created.pullRequest;
         const mergeCommit = created.mergeCommit;
-        await boundary.linkPullRequest!(hu, ticket, pullRequest);
-        await boundary.linkCommit!(ticket, pullRequest);
+        await boundary.linkPullRequest!(hu, ticket, pullRequest, participant);
+        await boundary.linkCommit!(ticket, pullRequest, participant);
         delivered.push({ path: unit.path, commit, pullRequest, mergeCommit });
       } catch (error) {
         reportOperator(`lazy-workflow: no se pudo entregar el repositorio ${unit.path} (${errorMessage(error)}); ejecución detenida.`);
@@ -953,7 +972,7 @@ export class LazyWorkflowCli {
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
     const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
-    const activeHours = 0;
+    const activeHours = Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
     const ticketStateBefore = await boundary.getState!(ticket);
 
     for (const evidence of completionManifest.evidence) {
@@ -993,11 +1012,14 @@ export class LazyWorkflowCli {
 
     const targetReal = baselineReal + activeHours;
     const targetRealHours = baselineRealHours + activeHours;
+    let effortRevision = finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0;
     if (finalInfo.ticket.state !== "Done") {
       const currentState = await boundary.getState!(ticket);
-      await boundary.setState!(ticket, "Done", currentState.state ?? ticketStateBefore.state ?? "Active", true, currentState.revision ?? ticketStateBefore.revision ?? 0);
+      const done = await boundary.setState!(ticket, "Done", currentState.state ?? ticketStateBefore.state ?? "Active", true, currentState.revision ?? ticketStateBefore.revision ?? 0);
+      // The state change advances the work item revision; setEffort must test against the new one.
+      effortRevision = revisionOf(done) ?? (await boundary.getState!(ticket)).revision ?? effortRevision;
     }
-    await boundary.setEffort!(ticket, targetReal, targetRealHours, finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0);
+    await boundary.setEffort!(ticket, targetReal, targetRealHours, effortRevision);
 
     const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
     if (verifyAfter.ticket.state !== "Done") {
