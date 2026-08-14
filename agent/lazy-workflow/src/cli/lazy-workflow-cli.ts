@@ -30,6 +30,12 @@ import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, ty
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 import { GitHubManagedQueueService, type GitHubManagedQueueAdapter } from "../github/managed-queue-service.ts";
 import {
+  GitHubDeliveryCheckpointStore,
+  type GitHubCheckpointStore,
+  type GitHubDeliveryCheckpoint,
+} from "../github/github-delivery-checkpoint.ts";
+import { GitHubRepositoryLockService, type GitHubRepositoryLockBoundary } from "../github/github-repository-lock.ts";
+import {
   buildCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
@@ -184,6 +190,7 @@ const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const QUEUE_BLOCKED_MARKER = "QUEUE_BLOCKED";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
+const RECONCILIATION_REQUIRED_MARKER = "RECONCILIATION_REQUIRED";
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
   "ticket-description-info",
@@ -237,6 +244,9 @@ function parseCli(args: string[], parser: CliParser): CliParseResult {
 }
 
 export class LazyWorkflowCli {
+  private readonly githubCheckpointStore: GitHubCheckpointStore | null;
+  private readonly githubRepositoryLock: GitHubRepositoryLockBoundary | null;
+
   constructor(
     private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
     private readonly openCodeService: Pick<OpenCodeService, "run" | "resume"> = new OpenCodeService(),
@@ -252,7 +262,19 @@ export class LazyWorkflowCli {
     private readonly cliParser: CliParser = buildCli(),
     private readonly createReporterFn: typeof createReporter = createReporter,
     private readonly githubManagedQueue: GitHubManagedQueueAdapter = new GitHubManagedQueueService(),
-  ) {}
+    githubCheckpointStore?: GitHubCheckpointStore,
+    githubRepositoryLock?: GitHubRepositoryLockBoundary,
+  ) {
+    const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
+      || githubCheckpointStore !== undefined
+      || githubRepositoryLock !== undefined;
+    this.githubCheckpointStore = coordinatorEnabled
+      ? githubCheckpointStore ?? new GitHubDeliveryCheckpointStore()
+      : null;
+    this.githubRepositoryLock = coordinatorEnabled
+      ? githubRepositoryLock ?? new GitHubRepositoryLockService()
+      : null;
+  }
 
   async run(args: string[]): Promise<number> {
     const parsed = parseCli(args, this.cliParser);
@@ -572,13 +594,27 @@ export class LazyWorkflowCli {
       }
     }
 
-    const recoveringAzureCode = command === "code" && options.session !== null;
+    let githubRecovery: GitHubDeliveryCheckpoint | null = null;
+    if (command === "code" && options.hu === null && options.session !== null && this.githubCheckpointStore) {
+      try {
+        githubRecovery = await this.githubCheckpointStore.read(options.workingDirectory);
+      } catch (error) {
+        if (/ENOENT|posix_spawn ['"]git['"]/.test(errorMessage(error))) {
+          githubRecovery = null;
+        } else {
+          reportOperator(`lazy-workflow: no se pudo leer el checkpoint GitHub (${errorMessage(error)}); ejecucion detenida.`);
+          return 1;
+        }
+      }
+    }
+    const recoveringAzureCode = command === "code" && options.session !== null && githubRecovery === null;
     if (options.hu === null && !recoveringAzureCode && (options.branch !== null || options.baseBranch !== null)) {
       reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }
 
     if (command === "code") {
+      if (githubRecovery) return this.runGitHubRecovery(options, githubRecovery);
       if (recoveringAzureCode || options.hu !== null) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
     }
@@ -640,6 +676,31 @@ export class LazyWorkflowCli {
   }
 
   private async runDefaultCodeWorkflow(options: CliOptions): Promise<number> {
+    const store = this.githubCheckpointStore;
+    const lock = this.githubRepositoryLock;
+    if (!store || !lock) return this.runDefaultCodeWorkflowLoop(options, null);
+
+    let release: (() => Promise<void>) | null = null;
+    try {
+      release = await lock.acquire(options.workingDirectory);
+      const checkpoint = await store.read(options.workingDirectory);
+      if (checkpoint) {
+        this.reportGitHubReconciliationRequired(checkpoint);
+        return 1;
+      }
+      return this.runDefaultCodeWorkflowLoop(options, store);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo coordinar la entrega GitHub (${errorMessage(error)}); ejecucion detenida.`);
+      return 1;
+    } finally {
+      if (release) await release();
+    }
+  }
+
+  private async runDefaultCodeWorkflowLoop(
+    options: CliOptions,
+    store: GitHubCheckpointStore | null,
+  ): Promise<number> {
     while (true) {
       const norms = await this.loadSagNorms(options, "coding");
       if (options.normasSag && norms === null) return 1;
@@ -659,6 +720,21 @@ export class LazyWorkflowCli {
       }
 
       const issue = queueOutcome.issue;
+      const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
+        if (store) await store.write({
+          schemaVersion: 1,
+          workflow: "github-code",
+          repository: queueOutcome.repository.nameWithOwner,
+          issue: issue.number,
+          phase,
+          branch: null,
+          sessionId,
+          commit: null,
+          pullRequest: null,
+          receipts: {},
+        }, options.workingDirectory);
+      };
+      await saveCheckpoint("selected");
       const prompt = [
         await readPrompt("default"),
         `Selected workflow: code`,
@@ -680,14 +756,24 @@ export class LazyWorkflowCli {
         "Operator request:",
         options.prompt,
       ].join("\n");
-      const execution = await this.openCodeService.run({
-        ...options,
-        prompt,
-        session: null,
-        terminalMarker: WORKFLOW_STEP_FINISHED_MARKER,
-      }, false);
+      await saveCheckpoint("started");
+      let execution;
+      try {
+        execution = await this.openCodeService.run({
+          ...options,
+          prompt,
+          session: null,
+          terminalMarker: WORKFLOW_STEP_FINISHED_MARKER,
+        }, false);
+      } catch (error) {
+        await saveCheckpoint("reconciling");
+        reportOperator(`lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`);
+        return 1;
+      }
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
+      const terminal = containsMarker(result.text, WORKFLOW_STEP_FINISHED_MARKER);
+      await saveCheckpoint(execution.failed ? "reconciling" : "implementing", terminal ? null : result.sessionId);
       if (execution.failed) return 1;
 
       if (!containsMarker(result.text, WORKFLOW_STEP_FINISHED_MARKER)) {
@@ -698,6 +784,63 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: la sesión GitHub debe terminar con ${TICKET_COMPLETED_MARKER}.`);
         return 1;
       }
+      if (store) await store.clear(options.workingDirectory);
+    }
+  }
+
+  private reportGitHubReconciliationRequired(checkpoint: GitHubDeliveryCheckpoint): void {
+    console.log(JSON.stringify({
+      outcome: RECONCILIATION_REQUIRED_MARKER,
+      issue: checkpoint.issue,
+      phase: checkpoint.phase,
+    }, null, 2));
+    reportOperator(`lazy-workflow: el Issue #${checkpoint.issue} conserva un checkpoint GitHub en fase ${checkpoint.phase}; requiere reconciliacion.`);
+  }
+
+  private async runGitHubRecovery(options: CliOptions, checkpoint: GitHubDeliveryCheckpoint): Promise<number> {
+    const store = this.githubCheckpointStore;
+    const lock = this.githubRepositoryLock;
+    if (!store || !lock || !checkpoint.sessionId || options.session !== checkpoint.sessionId) {
+      if (checkpoint.sessionId !== options.session) reportOperator("lazy-workflow: la sesión GitHub no coincide con el checkpoint fijado.");
+      else this.reportGitHubReconciliationRequired(checkpoint);
+      return 1;
+    }
+    if (!this.githubManagedQueue.readIssueDetail) {
+      this.reportGitHubReconciliationRequired(checkpoint);
+      return 1;
+    }
+
+    let release: (() => Promise<void>) | null = null;
+    try {
+      release = await lock.acquire(options.workingDirectory);
+      const liveCheckpoint = await store.read(options.workingDirectory);
+      if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || liveCheckpoint.sessionId !== checkpoint.sessionId) {
+        this.reportGitHubReconciliationRequired(checkpoint);
+        return 1;
+      }
+      const issue = await this.githubManagedQueue.readIssueDetail(liveCheckpoint.issue, options.workingDirectory);
+      if (issue.number !== liveCheckpoint.issue) throw new Error("el checkpoint GitHub no coincide con el issue recuperado");
+      const result = await this.openCodeService.resume(
+        liveCheckpoint.sessionId,
+        "continue",
+        options.workingDirectory,
+        WORKFLOW_STEP_FINISHED_MARKER,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      const terminal = containsMarker(result.text, WORKFLOW_STEP_FINISHED_MARKER);
+      await store.write({ ...liveCheckpoint, phase: "implementing", sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+      if (!terminal || !containsMarker(result.text, TICKET_COMPLETED_MARKER)) {
+        reportOperator(`lazy-workflow: la sesión GitHub debe terminar con ${TICKET_COMPLETED_MARKER} y ${WORKFLOW_STEP_FINISHED_MARKER}.`);
+        return 1;
+      }
+      await store.clear(options.workingDirectory);
+      return 0;
+    } catch (error) {
+      await store.write({ ...checkpoint, phase: "reconciling", sessionId: null }, options.workingDirectory);
+      reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`);
+      return 1;
+    } finally {
+      if (release) await release();
     }
   }
 
