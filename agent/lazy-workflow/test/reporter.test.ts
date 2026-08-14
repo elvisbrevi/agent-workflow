@@ -150,6 +150,97 @@ describe("createReporter", () => {
     });
   });
 
+  describe("quiet", () => {
+    test("silencia info, warn y debug pero conserva error", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: true, quiet: true, stream });
+      reporter.info("uno");
+      reporter.warn("dos");
+      reporter.debug("tres");
+      reporter.error("cuatro");
+
+      expect(chunks).toEqual(["\u001b[31m✗ cuatro\u001b[39m\n"]);
+    });
+
+    test("quiet con verbose false coincide con quiet con verbose true en errores", () => {
+      const quietStream = captureStream();
+      const quietLoudStream = captureStream();
+      const quietReporter = createReporter({ verbose: false, quiet: true, stream: quietStream.stream });
+      const quietLoudReporter = createReporter({ verbose: true, quiet: true, stream: quietLoudStream.stream });
+
+      quietReporter.info("a");
+      quietReporter.warn("b");
+      quietReporter.error("c");
+      quietReporter.debug("d");
+      quietLoudReporter.info("a");
+      quietLoudReporter.warn("b");
+      quietLoudReporter.error("c");
+      quietLoudReporter.debug("d");
+
+      expect(quietStream.chunks).toEqual(quietLoudStream.chunks);
+    });
+
+    test("quiet false mantiene el comportamiento original de info y warn", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, quiet: false, stream });
+      reporter.info("hola");
+      reporter.warn("cuidado");
+
+      expect(chunks).toEqual([
+        "\u001b[34mℹ hola\u001b[39m\n",
+        "\u001b[33m⚠ cuidado\u001b[39m\n",
+      ]);
+    });
+
+    test("quiet por defecto es false", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, stream });
+      reporter.info("visible");
+
+      expect(chunks).toEqual(["\u001b[34mℹ visible\u001b[39m\n"]);
+    });
+  });
+
+  describe("noColor explicito", () => {
+    let originalNoColor: string | undefined;
+
+    beforeEach(() => {
+      originalNoColor = process.env.NO_COLOR;
+      delete process.env.NO_COLOR;
+    });
+
+    afterEach(() => {
+      if (originalNoColor === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = originalNoColor;
+    });
+
+    test("noColor=true fuerza texto plano aunque NO_COLOR no este definido", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: true, stream });
+      reporter.info("hola");
+      reporter.error("fallo");
+
+      expect(chunks).toEqual(["ℹ hola\n", "✗ fallo\n"]);
+    });
+
+    test("noColor=false preserva los colores cuando NO_COLOR no esta definido", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: false, stream });
+      reporter.info("hola");
+
+      expect(chunks).toEqual(["\u001b[34mℹ hola\u001b[39m\n"]);
+    });
+
+    test("el spinner arranca silencioso con noColor=true", () => {
+      const { stream } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: true, stream });
+      const spinner = reporter.start("cargando");
+
+      expect(spinner.isSilent).toBeTrue();
+      spinner.stop();
+    });
+  });
+
   describe("factory", () => {
     test("acepta un booleano para usos publicos", () => {
       const reporter = createReporter(false);

@@ -29,6 +29,24 @@ the shell command reported by OpenCode. The working directory is passed as
 OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
 
+## Reporter and verbosity
+
+The lazy-workflow Reporter is the typed abstraction that emits operator
+output. Three global flags select its mode and propagate through every
+workflow:
+
+```bash
+lazy-workflow code --working-directory /path/to/repository        # default (info, warn, error)
+lazy-workflow code --verbose --working-directory /path/to/repository   # info, warn, error, debug
+lazy-workflow code --quiet   --working-directory /path/to/repository   # error only
+lazy-workflow code --no-color --working-directory /path/to/repository  # ANSI stripped
+```
+
+`--verbose` and `--quiet` are mutually exclusive. `--no-color` is independent
+and stacks with either verbosity. The Reporter keeps the existing
+`operator-output` file module name as a compat shim, so `reportOperator(...)`
+continues to route to `info` regardless of which verbosity flag is active.
+
 ## Default GitHub workflows
 
 Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` in
