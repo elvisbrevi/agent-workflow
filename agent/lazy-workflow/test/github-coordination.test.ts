@@ -44,7 +44,7 @@ const services = () => ({
   openCode: {
     run: async () => ({
       result: OpenCodeResult.fromJsonLines(JSON.stringify({
-        type: "text", sessionID: "ses_178", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+        type: "text", sessionID: "ses_178", part: { type: "text", text: "IMPLEMENTATION_READY" },
       })),
       azureLoginRequired: false,
     }),
@@ -121,7 +121,7 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(state.phases).toEqual(["selected", "selected", "started", "implementing"]);
+  expect(state.phases).toEqual(["selected", "selected", "started", "implementation-ready"]);
   expect(state.current).toBeNull();
   expect(events.slice(0, 3)).toEqual(["select", "write:selected", "claim"]);
   expect(state.lockAcquires).toBe(1);

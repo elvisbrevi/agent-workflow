@@ -113,13 +113,13 @@ branches, enforce Azure completion gates, or clean Azure ticket branches.
 
 `plan` remains a one-shot planning-only workflow. `code` refreshes GitHub,
 delivers exactly one eligible issue in a fresh OpenCode session, and coordinates
-delivery from `IMPLEMENTATION_READY` through verified merge, issue closure, and
-branch cleanup. The coordinator emits `TICKET_COMPLETED` only after those gates
-pass; the provider cannot declare delivery or queue outcomes. A final refresh
-emits `QUEUE_EMPTY` and stops the command. A repository-scoped GitHub
-checkpoint and lock preserve a fixed interrupted issue; startup resumes an
-active session or reconciles a post-readiness delivery without selecting
-replacement work.
+delivery from `IMPLEMENTATION_READY` through verified merge, issue closure,
+parent reconciliation, and branch cleanup. The coordinator emits
+`TICKET_COMPLETED` followed by `WORKFLOW_STEP_FINISHED` only after those gates
+pass; the provider cannot declare delivery or queue outcomes. A repository-
+scoped GitHub checkpoint and lock preserve a fixed interrupted issue; startup
+resumes an active session or reconciles a post-readiness delivery without
+selecting replacement work.
 
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or

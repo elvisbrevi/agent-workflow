@@ -54,7 +54,7 @@ const buildDeliveryEvents = (sessionId: string): string[] => [
   }),
   jsonEvent({ type: "step_start", sessionID: sessionId, part: { type: "step", reason: "agent" } }),
   jsonEvent({ type: "step_finish", sessionID: sessionId, part: { type: "step", reason: "stop" } }),
-  jsonEvent({ type: "text", sessionID: sessionId, part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } }),
+  jsonEvent({ type: "text", sessionID: sessionId, part: { type: "text", text: "IMPLEMENTATION_READY" } }),
 ];
 
 const countByLevel = (captured: CapturedMessage[]) => ({
@@ -125,7 +125,7 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
     expect(counts.total).toBeLessThanOrEqual(15);
     expect(counts.debug).toBe(0);
     expect(counts.error).toBe(0);
-    expect(captured.some((entry) => entry.message.includes("TICKET_COMPLETED"))).toBeTrue();
+    expect(captured.some((entry) => entry.message.includes("IMPLEMENTATION_READY"))).toBeTrue();
     expect(captured.some((entry) => entry.message.includes("inició un paso"))).toBeTrue();
     expect(captured.some((entry) => entry.message.includes("terminó un paso"))).toBeTrue();
   });
