@@ -82,7 +82,7 @@ function parseJson<T>(output: string, label: string): T {
   }
 }
 
-function repositoryFromRemote(remote: string): string | null {
+export function githubRepositoryFromRemote(remote: string): string | null {
   const value = remote.trim().replace(/\.git$/, "");
   const match = value.match(/(?:github\.com[/:])([^/]+\/[^/]+)$/i);
   return match?.[1] ?? null;
@@ -126,7 +126,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const base = view.defaultBranchRef?.name;
     if (!name || !base) throw new Error("No se pudo verificar el repositorio o su rama base");
     const remote = await this.git(["remote", "get-url", "origin"], workingDirectory);
-    if (repositoryFromRemote(remote) !== name) throw new Error("El remote origin no coincide con el repositorio GitHub fijado");
+    if (githubRepositoryFromRemote(remote) !== name) throw new Error("El remote origin no coincide con el repositorio GitHub fijado");
     return { name, baseBranch: requireBranch(`refs/heads/${base}`, "La rama base") };
   }
 

@@ -40,7 +40,7 @@ test("valida limpieza, remote y orden antes de devolver el alcance", async () =>
   try {
     const scope = await normalizeWorkspaceScope(`${repoA}, ${repoB}`, git);
     expect(scope.repositories.map(({ path }) => path)).toEqual([await realpath(repoA), await realpath(repoB)]);
-    expect(scope.repositories.map(({ githubRepository }) => githubRepository)).toEqual([`owner/${basename(repoA)}`, `owner/${basename(repoB)}`]);
+    expect(scope.repositories.map(({ providerIdentity }) => providerIdentity)).toEqual([null, null]);
     expect(calls.filter((call) => call.includes("status")).map((call) => call.split(":", 1)[0])).toEqual([await realpath(repoA), await realpath(repoB)]);
   } finally {
     await rm(root, { recursive: true, force: true });
