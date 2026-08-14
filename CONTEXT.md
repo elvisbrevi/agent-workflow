@@ -10,6 +10,23 @@ The Bun-based workflow in `agent/lazy-workflow/` that sends a prompt to
 OpenCode and emits a normalized JSON result.
 _Avoid_: issue runner, queue supervisor
 
+**Reporter**:
+The typed severity-aware output abstraction used by `agent/lazy-workflow/`.
+Every workflow constructs a single `Reporter` via `createReporter()` and
+funnels all operator messages through its `info`, `warn`, `error`, `debug`,
+`start`, and `stop` methods. The Reporter decides whether each message
+reaches the operator based on three global flags (`--verbose`, `--quiet`,
+`--no-color`) and respects the `NO_COLOR=1` environment variable.
+_Avoid_: ad-hoc console output, parallel log streams
+
+**operator-output**:
+The name of the file module (`src/output/operator-output.ts`) that hosts
+the compat shim `reportOperator(message)`. The shim routes the existing
+~100 call sites to the Reporter's `info` method and keeps a swappable
+default Reporter. The Reporter is the abstraction; `operator-output` is
+the seam name and the legacy entry point.
+_Avoid_: new direct `console.log` calls, new top-level log helpers
+
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
 repository's GitHub conventions and never uses Azure coordination; `plan` runs

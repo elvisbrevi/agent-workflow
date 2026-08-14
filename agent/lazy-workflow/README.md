@@ -47,6 +47,51 @@ and stacks with either verbosity. The Reporter keeps the existing
 `operator-output` file module name as a compat shim, so `reportOperator(...)`
 continues to route to `info` regardless of which verbosity flag is active.
 
+A single `code` GitHub run against a delivery that includes one reasoning
+step, three tool uses, and one terminal `TICKET_COMPLETED` text event
+produces a different volume of operator output per mode. The blocks below
+show the full transcript each flag emits, with ANSI stripped so the examples
+are copy-pasteable:
+
+**Default** (`code --working-directory /repo`) — info + warn + error only,
+5 to 15 lines for a typical ticket delivery, GitHub-Actions style:
+
+```text
+ℹ OpenCode iniciado en /repo
+ℹ OpenCode [sesión ses_delivery] inició un paso
+ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
+ℹ OpenCode [sesión ses_delivery]: TICKET_COMPLETED
+ℹ lazy-workflow: no quedan issues GitHub elegibles.
+```
+
+**Verbose** (`code --verbose --working-directory /repo`) — preserves the full
+event stream; reasoning and tool_use surface as debug lines that the default
+mode hides:
+
+```text
+ℹ OpenCode iniciado en /repo
+· OpenCode [sesión ses_delivery] razonando: Analizando cambios pendientes
+· OpenCode [sesión ses_delivery] herramienta bash (completed): "git status --short"
+· OpenCode [sesión ses_delivery] herramienta read (completed): "/repo/AGENTS.md"
+· OpenCode [sesión ses_delivery] herramienta edit (completed): "/repo/README.md"
+ℹ OpenCode [sesión ses_delivery] inició un paso
+ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
+ℹ OpenCode [sesión ses_delivery]: TICKET_COMPLETED
+ℹ lazy-workflow: no quedan issues GitHub elegibles.
+```
+
+**Quiet** (`code --quiet --working-directory /repo`) — only error lines
+reach the operator; info and warn are silenced, and the run is silent
+unless something fails:
+
+```text
+✗ lazy-workflow: OpenCode terminó con error.
+```
+
+`--no-color` can be stacked on top of any of the three modes above and
+strips ANSI from every line, leaving only the icon, the space, and the
+message.
+
 ## Default GitHub workflows
 
 Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` in
