@@ -1069,6 +1069,7 @@ export class LazyWorkflowCli {
   private async runGitHubRecovery(options: CliOptions, checkpoint: GitHubDeliveryCheckpoint, lockAlreadyHeld = false): Promise<number> {
     const store = this.githubCheckpointStore;
     const lock = this.githubRepositoryLock;
+    const queue = this.githubManagedQueue;
     if (!store || !lock) {
       this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
@@ -1076,7 +1077,7 @@ export class LazyWorkflowCli {
     if (this.githubDelivery && checkpoint.sessionId === null && checkpoint.phase === "started") {
       try {
         let liveCheckpoint = await store.read(options.workingDirectory);
-        const readIssue = this.githubManagedQueue.reconcileClaimedIssue ?? this.githubManagedQueue.readIssueDetail;
+        const readIssue = (queue.reconcileClaimedIssue ?? queue.readIssueDetail)?.bind(queue);
         if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || !readIssue) {
           this.reportGitHubReconciliationRequired(checkpoint);
           return 1;
@@ -1153,7 +1154,7 @@ export class LazyWorkflowCli {
       else this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
     }
-    const reconcileClaimedIssue = this.githubManagedQueue.reconcileClaimedIssue;
+    const reconcileClaimedIssue = queue.reconcileClaimedIssue?.bind(queue);
     if (!reconcileClaimedIssue) {
       this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
