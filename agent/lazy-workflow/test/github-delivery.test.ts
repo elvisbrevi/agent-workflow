@@ -283,6 +283,114 @@ test("la entrega completada elimina el manifest para que no contamine el siguien
   }
 });
 
+function drainDelivery(closed: number[]): GitHubDeliveryAdapter {
+  let pendingIssue = 179;
+  let pendingBranch = "refs/heads/issue/179";
+  return {
+    prepareBranch: async (issueNumber) => {
+      pendingIssue = issueNumber;
+      pendingBranch = `refs/heads/issue/${issueNumber}`;
+      return { branch: pendingBranch, baseBranch: "refs/heads/main", manifestPath: `/nonexistent-${issueNumber}-manifest.json` };
+    },
+    readManifest: async () => ({ issue: pendingIssue, branch: pendingBranch, commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "done" }),
+    pushCommit: async () => undefined,
+    createOrReusePullRequest: async () => ({ number: 200 + pendingIssue }),
+    mergePullRequest: async () => ({ number: 200 + pendingIssue, mergeCommit: "b".repeat(40) }),
+    closeIssue: async (issueNumber) => { closed.push(issueNumber); },
+    cleanupBranch: async () => undefined,
+  };
+}
+
+function drainQueue(next: number) {
+  let offered = true;
+  return {
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+    reconcileClaimedIssue: async (n: number) => fakeSelectedIssue(n),
+    selectEligibleIssue: async () => {
+      if (!offered) return { kind: "empty" as const };
+      offered = false;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(next), repository: { nameWithOwner: "owner/repo" } };
+    },
+    claimSelectedIssue: async () => fakeSelectedIssue(next),
+  };
+}
+
+test("un run que recupera un checkpoint sessionless drena la cola con el siguiente issue elegible", async () => {
+  const closed: number[] = [];
+  const delivery = drainDelivery(closed);
+  let current: GitHubDeliveryCheckpoint | null = {
+    schemaVersion: 1,
+    workflow: "github-code",
+    repository: "owner/repo",
+    issue: 179,
+    phase: "started",
+    branch: "refs/heads/issue/179",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/nonexistent-179-manifest.json",
+    sessionId: null,
+    commit: null,
+    pullRequest: null,
+    receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
+  };
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (c) => { current = c; },
+    clear: async () => { current = null; },
+  };
+
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    { run: async () => execution(), resume: async () => execution().result },
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    drainQueue(180),
+    store,
+    { acquire: async () => async () => undefined },
+    delivery,
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(closed).toEqual([179, 180]);
+  expect(current).toBeNull();
+});
+
+test("un run --session que recupera una sesión drena la cola con el siguiente issue elegible", async () => {
+  const closed: number[] = [];
+  const delivery = drainDelivery(closed);
+  let current: GitHubDeliveryCheckpoint | null = {
+    schemaVersion: 1,
+    workflow: "github-code",
+    repository: "owner/repo",
+    issue: 179,
+    phase: "implementing",
+    branch: "refs/heads/issue/179",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/nonexistent-179-manifest.json",
+    sessionId: "ses_179",
+    commit: null,
+    pullRequest: null,
+    receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
+  };
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (c) => { current = c; },
+    clear: async () => { current = null; },
+  };
+
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    { run: async () => execution(), resume: async () => execution().result },
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    drainQueue(180),
+    store,
+    { acquire: async () => async () => undefined },
+    delivery,
+  ).run(["code", "--session", "ses_179", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(closed).toEqual([179, 180]);
+  expect(current).toBeNull();
+});
+
 test("recupera una entrega sessionless desde el límite de merge sin ejecutar OpenCode", async () => {
   let selected = true;
   let failMerge = true;
@@ -432,7 +540,7 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(selections).toBe(0);
+  expect(selections).toBe(1);
   expect(prompt).toContain(originalCommit);
   expect(prompt).toContain(baseCommit);
   expect(prompt).toContain("Coordinator-fixed pull request: #201");
@@ -448,7 +556,7 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   expect(current).toBeNull();
 });
 
-test("reanuda una reconciliación conflictiva sin seleccionar otro Issue", async () => {
+test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y luego drena la cola", async () => {
   const originalCommit = "a".repeat(40);
   const baseCommit = "b".repeat(40);
   const reconciledCommit = "c".repeat(40);
@@ -524,7 +632,7 @@ test("reanuda una reconciliación conflictiva sin seleccionar otro Issue", async
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect({ selections, runs, resumes }).toEqual({ selections: 0, runs: 0, resumes: 1 });
+  expect({ selections, runs, resumes }).toEqual({ selections: 1, runs: 0, resumes: 1 });
   expect(events.filter((event) => event === "verify-pending")).toHaveLength(1);
   expect(events.indexOf("verify-pending")).toBeLessThan(events.indexOf("verify-reconciled"));
   expect(events.indexOf("verify-reconciled")).toBeLessThan(events.indexOf(`push:${reconciledCommit}`));
