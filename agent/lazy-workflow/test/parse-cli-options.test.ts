@@ -1,7 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   buildCli,
-  type CliParseFailure,
   type CliParseResult,
   type CliParser,
 } from "../src/cli/parse-cli-options.ts";
@@ -115,18 +114,21 @@ describe("buildCli parser", () => {
     test("--hu rechaza un entero no positivo", () => {
       const result = parse(["plan", "--hu", "0"]);
       expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
       expect(result.exitCode).toBe(1);
     });
 
     test("--ticket rechaza un valor no entero", () => {
       const result = parse(["ticket-info", "--hu", "1", "--ticket", "abc"]);
       expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
       expect(result.exitCode).toBe(1);
     });
 
     test("--real-effort rechaza valores no numericos", () => {
       const result = parse(["ticket-effort-set", "--ticket", "1", "--real-effort", "abc", "--real-effort-hh", "1", "--expected-rev", "1"]);
       expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
       expect(result.exitCode).toBe(1);
     });
   });

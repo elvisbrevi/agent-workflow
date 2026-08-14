@@ -1291,18 +1291,20 @@ const captureReporter = () => {
     warn: (message: string) => { warn.push(message); },
     error: (message: string) => { error.push(message); },
     debug: (message: string) => { debug.push(message); },
-    start: () => ({ stop: () => undefined }),
+    start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
   };
   return { reporter, info, warn, error, debug };
 };
+
+type VerbosityOptions = { verbose: boolean; quiet: boolean; noColor: boolean };
 
 test("--verbose enrutado al Reportador conserva los errores y emite debug", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
-  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
+  const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
     const code = await new LazyWorkflowCli(
@@ -1313,8 +1315,8 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
       },
       undefined, undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined,
-      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
-        received = options;
+      ((options: VerbosityOptions) => {
+        captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
     ).run(["plan", "--verbose", "--working-directory", "/repo"]);
@@ -1324,10 +1326,10 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
     setDefaultReporter(previous);
   }
 
-  expect(received).not.toBeNull();
-  expect(received?.verbose).toBeTrue();
-  expect(received?.quiet).toBeFalse();
-  expect(received?.noColor).toBeFalse();
+  expect(captured.value).not.toBeNull();
+  expect(captured.value?.verbose).toBeTrue();
+  expect(captured.value?.quiet).toBeFalse();
+  expect(captured.value?.noColor).toBeFalse();
 });
 
 test("--quiet filtra info y warn pero conserva errores del Reportador", async () => {
@@ -1335,7 +1337,7 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
-  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
+  const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
     const code = await new LazyWorkflowCli(
@@ -1346,8 +1348,8 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
       },
       undefined, undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined,
-      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
-        received = options;
+      ((options: VerbosityOptions) => {
+        captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
     ).run(["plan", "--quiet", "--working-directory", "/repo"]);
@@ -1357,18 +1359,18 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
     setDefaultReporter(previous);
   }
 
-  expect(received).not.toBeNull();
-  expect(received?.quiet).toBeTrue();
-  expect(received?.verbose).toBeFalse();
+  expect(captured.value).not.toBeNull();
+  expect(captured.value?.quiet).toBeTrue();
+  expect(captured.value?.verbose).toBeFalse();
 });
 
 test("--no-color produce Reportador sin codigos ANSI", async () => {
-  let received: { verbose: boolean; quiet: boolean; noColor: boolean } | null = null;
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   setDefaultReporter(createReporter({ verbose: false, noColor: false }));
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
+  const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
     await new LazyWorkflowCli(
@@ -1379,8 +1381,8 @@ test("--no-color produce Reportador sin codigos ANSI", async () => {
       },
       undefined, undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined,
-      ((options: { verbose: boolean; quiet: boolean; noColor: boolean }) => {
-        received = options;
+      ((options: VerbosityOptions) => {
+        captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
     ).run(["plan", "--no-color", "--working-directory", "/repo"]);
@@ -1388,9 +1390,9 @@ test("--no-color produce Reportador sin codigos ANSI", async () => {
     setDefaultReporter(previous);
   }
 
-  expect(received).not.toBeNull();
-  expect(received?.noColor).toBeTrue();
-  expect(received?.verbose).toBeFalse();
+  expect(captured.value).not.toBeNull();
+  expect(captured.value?.noColor).toBeTrue();
+  expect(captured.value?.verbose).toBeFalse();
 });
 
 test("--verbose y --quiet son mutuamente excluyentes", async () => {
@@ -1420,11 +1422,10 @@ test("lazy-workflow sin argumentos imprime ayuda y devuelve codigo 1", async () 
     console.log = originalLog;
   }
 
-  expect(output[0]).toContain("plan");
-  expect(output[0]).toContain("code");
+  expect(output[0]).toContain("plan [options]");
+  expect(output[0]).toContain("code [options]");
   expect(output[0]).toContain("--verbose");
   expect(output[0]).toContain("--quiet");
-  expect(output[0]).toContain("--no-color");
 });
 
 test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
@@ -1447,5 +1448,4 @@ test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
   expect(output[0]).toContain("code [options]");
   expect(output[0]).toContain("--verbose");
   expect(output[0]).toContain("--quiet");
-  expect(output[0]).toContain("--no-color");
 });

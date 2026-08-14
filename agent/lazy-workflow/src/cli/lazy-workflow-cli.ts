@@ -10,7 +10,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { CompletionManifest, TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
+import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -21,7 +21,7 @@ import {
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
-import { getDefaultReporter, reportOperator, setDefaultReporter } from "../output/operator-output.ts";
+import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagCodingContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
@@ -234,10 +234,6 @@ function parseCli(args: string[], parser: CliParser): CliParseResult {
   return result;
 }
 
-function containsLongFlag(args: string[], flag: string): boolean {
-  return args.slice(1).some((arg) => arg === flag || arg.startsWith(`${flag}=`));
-}
-
 export class LazyWorkflowCli {
   constructor(
     private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
@@ -253,7 +249,6 @@ export class LazyWorkflowCli {
     private readonly infrastructureService: Pick<SagInfrastructureService, "verify"> = new SagInfrastructureService(),
     private readonly cliParser: CliParser = buildCli(),
     private readonly createReporterFn: typeof createReporter = createReporter,
-    private readonly defaultReporterFactory: () => Reporter = getDefaultReporter,
   ) {}
 
   async run(args: string[]): Promise<number> {
@@ -291,7 +286,7 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (command === "deploy-sag" && containsLongFlag(args, "--environment") && !options.environment?.trim()) {
+    if (command === "deploy-sag" && options.environment !== null && !options.environment?.trim()) {
        reportOperator("deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
       return 1;
     }
@@ -305,7 +300,7 @@ export class LazyWorkflowCli {
         reportOperator("architecture-review-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
-      if (options.session !== null || containsLongFlag(args, "--branch") || containsLongFlag(args, "--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("architecture-review-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -328,7 +323,7 @@ export class LazyWorkflowCli {
         reportOperator("infra-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
-      if (options.session !== null || containsLongFlag(args, "--branch") || containsLongFlag(args, "--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("infra-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -336,8 +331,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "deploy-sag") {
-      const environmentFlags = args.filter((arg) => arg === "--environment" || arg.startsWith("--environment="));
-      if (environmentFlags.length > 1) {
+      if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
         reportOperator("deploy-sag no permite repetir --environment");
         return 1;
       }
@@ -354,7 +348,7 @@ export class LazyWorkflowCli {
         reportOperator("deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
         return 1;
       }
-      if (options.session !== null || containsLongFlag(args, "--branch") || containsLongFlag(args, "--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("deploy-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -490,7 +484,7 @@ export class LazyWorkflowCli {
         reportOperator("ticket-branch-set requiere --branch <name>");
         return 1;
       }
-      if (!containsLongFlag(args, "--working-directory")) {
+      if (options.workingDirectory === process.cwd() && !args.some((arg) => arg === "--working-directory" || arg.startsWith("--working-directory="))) {
         reportOperator("ticket-branch-set requiere --working-directory <path>");
         return 1;
       }
@@ -576,7 +570,7 @@ export class LazyWorkflowCli {
     }
 
     const recoveringAzureCode = command === "code" && options.session !== null;
-    if (options.hu === null && !recoveringAzureCode && (containsLongFlag(args, "--branch") || containsLongFlag(args, "--base-branch"))) {
+    if (options.hu === null && !recoveringAzureCode && (options.branch !== null || options.baseBranch !== null)) {
       reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }

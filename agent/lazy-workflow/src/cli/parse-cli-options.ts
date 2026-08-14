@@ -1,4 +1,5 @@
 import yargs from "yargs";
+import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 
 export interface CliOptions {
@@ -140,13 +141,13 @@ export function buildCli(): CliParser {
   return (rawArgs, hooks) => {
     const command = rawArgs[0];
     if (typeof command !== "string" || !SUPPORTED_COMMANDS.has(command)) {
-      const output = renderHelp();
+      const output = renderHelp(buildParserForHelp(rawArgs.slice(1)));
       hooks.onHelp(output);
       return { kind: "help", output };
     }
 
     if (rawArgs.slice(1).some((arg) => arg === "--help" || arg === "-h")) {
-      const output = renderHelp();
+      const output = renderHelp(buildParserForHelp(rawArgs.slice(1)));
       hooks.onHelp(output);
       return { kind: "help", output };
     }
@@ -158,46 +159,7 @@ export function buildCli(): CliParser {
       return exitCode;
     };
 
-    const parser = yargs(rawArgs.slice(1))
-      .scriptName("lazy-workflow")
-      .usage("Usage:\n  $0 <command> [options]")
-      .version(false)
-      .help(false)
-      .exitProcess(false)
-      .strict()
-      .strictOptions()
-      .fail((message, error) => {
-        reportError(error?.message ?? message ?? "argumento invalido");
-      })
-      .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
-      .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
-      .option("session", stringOption("session", "--session", "Sesion OpenCode opaca para reanudar."))
-      .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo de OpenCode.", coerce: stringCoerce("--model") })
-      .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: "Variante del modelo.", coerce: stringCoerce("--variant") })
-      .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para OpenCode.", coerce: stringCoerce("--prompt") })
-      .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
-      .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
-      .option("ticket", positiveIntegerOption("ticket", "--ticket", "Identificador del ticket Azure."))
-      .option("pr", positiveIntegerOption("pr", "--pr", "Identificador del pull request."))
-      .option("manifest", stringOption("manifest", "--manifest", "Ruta al manifest de completion."))
-      .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
-      .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
-      .option("description-file", stringOption("description-file", "--description-file", "Archivo con la descripcion del ticket."))
-      .option("state", stringOption("state", "--state", "Estado destino del ticket."))
-      .option("expected-state", stringOption("expected-state", "--expected-state", "Estado actual esperado antes de la transicion."))
-      .option("environment", stringOption("environment", "--environment", "Entorno destino de deploy-sag (dev|test|qa)."))
-      .option("real-effort", nonNegativeNumberOption("real-effort", "--real-effort", "Real Effort en horas."))
-      .option("real-effort-hh", nonNegativeNumberOption("real-effort-hh", "--real-effort-hh", "Real Effort HH."))
-      .option("expected-rev", positiveIntegerOption("expected-rev", "--expected-rev", "Revision esperada del ticket."))
-      .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
-      .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
-      .option("number-of-questions", positiveIntegerOption("number-of-questions", "--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
-      .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
-      .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
-      .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
-      .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
-      .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
-      .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
+    const parser = buildParser(rawArgs.slice(1), reportError);
 
     let argv: ReturnType<typeof parser.parseSync>;
     try {
@@ -212,6 +174,65 @@ export function buildCli(): CliParser {
 
     return { kind: "options", options: readOptions(command, argv) };
   };
+}
+
+type YargsInstance = Argv;
+
+function buildParser(args: string[], reportError: (message: string) => number): YargsInstance {
+  return configureParser(yargs(args), reportError);
+}
+
+function buildParserForHelp(args: string[]): YargsInstance {
+  return configureParser(yargs(args), () => 1);
+}
+
+function configureParser(parser: YargsInstance, reportError: (message: string) => number): YargsInstance {
+  return parser
+    .scriptName("lazy-workflow")
+    .usage("Usage:\n  $0 <command> [options]")
+    .version(false)
+    .exitProcess(false)
+    .strict()
+    .strictOptions()
+    .fail((message, error) => {
+      reportError(error?.message ?? message ?? "argumento invalido");
+    })
+    .group(["hu", "issue", "environment"], "Alcance:")
+    .group(["session", "model", "variant", "prompt"], "OpenCode:")
+    .group(["branch", "base-branch", "ticket", "pr", "manifest"], "Tickets Azure:")
+    .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
+    .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
+    .group(["normas-sag", "working-directory"], "Contexto:")
+    .group(["verbose", "quiet", "color"], "Reportador:")
+    .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
+    .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
+    .option("session", stringOption("session", "--session", "Sesion OpenCode opaca para reanudar."))
+    .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo de OpenCode.", coerce: stringCoerce("--model") })
+    .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: "Variante del modelo.", coerce: stringCoerce("--variant") })
+    .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para OpenCode.", coerce: stringCoerce("--prompt") })
+    .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
+    .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
+    .option("ticket", positiveIntegerOption("ticket", "--ticket", "Identificador del ticket Azure."))
+    .option("pr", positiveIntegerOption("pr", "--pr", "Identificador del pull request."))
+    .option("manifest", stringOption("manifest", "--manifest", "Ruta al manifest de completion."))
+    .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
+    .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
+    .option("description-file", stringOption("description-file", "--description-file", "Archivo con la descripcion del ticket."))
+    .option("state", stringOption("state", "--state", "Estado destino del ticket."))
+    .option("expected-state", stringOption("expected-state", "--expected-state", "Estado actual esperado antes de la transicion."))
+    .option("environment", stringOption("environment", "--environment", "Entorno destino de deploy-sag (dev|test|qa)."))
+    .option("real-effort", nonNegativeNumberOption("real-effort", "--real-effort", "Real Effort en horas."))
+    .option("real-effort-hh", nonNegativeNumberOption("real-effort-hh", "--real-effort-hh", "Real Effort HH."))
+    .option("expected-rev", positiveIntegerOption("expected-rev", "--expected-rev", "Revision esperada del ticket."))
+    .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
+    .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
+    .option("number-of-questions", positiveIntegerOption("number-of-questions", "--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
+    .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
+    .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
+    .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
+    .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
+    .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
+    .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
 }
 
 function readOptions(command: string, argv: unknown): CliOptions {
@@ -259,66 +280,15 @@ function readOptions(command: string, argv: unknown): CliOptions {
   };
 }
 
-function renderHelp(): string {
+function renderHelp(parser: YargsInstance): string {
+  let autoHelp = "";
+  parser.showHelp((text) => { autoHelp = text; });
   return [
-    "Usage:",
-    "  lazy-workflow plan [options]",
-    "  lazy-workflow plan --hu <id> [options]",
-    "  lazy-workflow code [options]",
-    "  lazy-workflow code --hu <id> [options]",
-    "  lazy-workflow code --session <id> --prompt continue",
-    "  lazy-workflow infra-sag --hu <id> [options]",
-    "  lazy-workflow infra-sag --issue <id> [options]",
-    "  lazy-workflow architecture-review-sag --hu <id> [options]",
-    "  lazy-workflow architecture-review-sag --issue <id> [options]",
-    "  lazy-workflow deploy-sag --hu <id> [options]",
-    "  lazy-workflow deploy-sag --issue <id> [options]",
-    "  lazy-workflow hu-info --hu <id>",
-    "  lazy-workflow hu-branch-info --hu <id>",
-    "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
-    "  lazy-workflow ticket-info --hu <id> --ticket <id>",
-    "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
-    "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
-    "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
-    "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
-    "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
-    "  lazy-workflow ticket-description-set --ticket <id> --description-file <path>",
-    "  lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>",
-    "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
-    "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
-    "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
-    "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
+    COMMAND_FORMS.join("\n"),
     "",
-    "Options:",
-    "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
-    "  --issue <id>                 alcance GitHub explicito para workflows SAG",
-    "  --environment <dev|test|qa>  destino de deploy-sag; omitir usa DEV; PROD siempre esta prohibido",
-    "  --session <id>               sesion OpenCode opaca para reanudar code",
-    "  --model <model>              modelo de OpenCode",
-    "  --variant <variant>          variante del modelo",
-    "  --prompt <prompt>            prompt explicito para OpenCode",
-    "  --branch <name>              rama del repositorio (solo Azure)",
-    "  --base-branch <name>         rama base remota para crear la rama HU (solo Azure)",
-    "  --ticket <id>                identificador del ticket Azure",
-    "  --pr <id>                    identificador del pull request",
-    "  --description-file <path>    archivo con la descripcion del ticket",
-    "  --state <state>              estado destino del ticket",
-    "  --expected-state <state>     estado actual esperado antes de la transicion",
-    "  --real-effort <hours>        Real Effort en horas",
-    "  --real-effort-hh <hours>     Real Effort HH",
-    "  --expected-rev <rev>         revision esperada del ticket",
-    "  --file <path>                archivo de evidencia (alias --evidence-file)",
-    "  --kind <type>                tipo de evidencia http-json|screen|command-output (alias --evidence-kind)",
-    "  --evidence-file <path>       alias de --file",
-    "  --evidence-kind <type>       alias de --kind",
-    "  --number-of-questions <n>    cantidad de preguntas para plan",
-    "  --normas-sag                 carga normas SAG de planning o coding desde master remoto; requiere .sag/config.json",
-    "  --working-directory <path>   directorio de trabajo del repositorio objetivo",
-    "  --verbose                    emite el stream completo de eventos (Reportador en modo verbose)",
-    "  --quiet                      solo emite errores (Reportador en modo quiet)",
-    "  --no-color                   fuerza texto plano sin codigos ANSI",
-    "  --help                       muestra esta ayuda",
+    autoHelp.trimEnd(),
     "",
+    "Notas:",
     "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
     "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
@@ -326,3 +296,33 @@ function renderHelp(): string {
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
   ].join("\n");
 }
+
+const COMMAND_FORMS = [
+  "Formas de invocacion:",
+  "  lazy-workflow plan [options]",
+  "  lazy-workflow plan --hu <id> [options]",
+  "  lazy-workflow code [options]",
+  "  lazy-workflow code --hu <id> [options]",
+  "  lazy-workflow code --session <id> --prompt continue",
+  "  lazy-workflow infra-sag --hu <id> [options]",
+  "  lazy-workflow infra-sag --issue <id> [options]",
+  "  lazy-workflow architecture-review-sag --hu <id> [options]",
+  "  lazy-workflow architecture-review-sag --issue <id> [options]",
+  "  lazy-workflow deploy-sag --hu <id> [options]",
+  "  lazy-workflow deploy-sag --issue <id> [options]",
+  "  lazy-workflow hu-info --hu <id>",
+  "  lazy-workflow hu-branch-info --hu <id>",
+  "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
+  "  lazy-workflow ticket-info --hu <id> --ticket <id>",
+  "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
+  "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
+  "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
+  "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
+  "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
+  "  lazy-workflow ticket-description-set --ticket <id> --description-file <path>",
+  "  lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>",
+  "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
+  "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
+  "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
+  "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
+];
