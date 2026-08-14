@@ -20,7 +20,7 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeResumeOverrides, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -111,6 +111,13 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getResumeOverrides(options: CliOptions): OpenCodeResumeOverrides {
+  return {
+    ...(options.hasModel ? { model: options.model } : {}),
+    ...(options.hasVariant ? { variant: options.variant } : {}),
+  };
 }
 
 function deploymentErrorMessage(error: unknown): string {
@@ -1181,6 +1188,7 @@ export class LazyWorkflowCli {
         "continue",
         options.workingDirectory,
         IMPLEMENTATION_READY_MARKER,
+        getResumeOverrides(options),
       );
       console.log(JSON.stringify(result, null, 2));
       const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
@@ -1931,7 +1939,7 @@ export class LazyWorkflowCli {
           ? [resumePrompt, this.formatSagContext(norms)].join("\n")
           : resumePrompt;
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER), azureLoginRequired: false, failed: false }
+          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), azureLoginRequired: false, failed: false }
           : this.openCodeService.run({ ...options, prompt: [await readPrompt("autocode"), JSON.stringify({
             ...context,
             ticketBranch,

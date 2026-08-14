@@ -17,6 +17,8 @@ export interface OpenCodeExecution {
   failed?: boolean;
 }
 
+export type OpenCodeResumeOverrides = Partial<Pick<OpenCodeRunOptions, "model" | "variant">>;
+
 export interface OpenCodeProcess {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
@@ -225,13 +227,21 @@ export class OpenCodeService {
     ], detectAzureLogin, options.workingDirectory, options.terminalMarker);
   }
 
-  async resume(sessionId: string, prompt = "continue", workingDirectory?: string, terminalMarker?: string): Promise<OpenCodeResult> {
+  async resume(
+    sessionId: string,
+    prompt = "continue",
+    workingDirectory?: string,
+    terminalMarker?: string,
+    overrides: OpenCodeResumeOverrides = {},
+  ): Promise<OpenCodeResult> {
     const execution = await this.execute([
       "opencode",
       "run",
       "--auto",
       "--session",
       sessionId,
+      ...(overrides.model ? ["--model", overrides.model] : []),
+      ...(overrides.variant ? ["--variant", overrides.variant] : []),
       "--format",
       "json",
       "--thinking",
