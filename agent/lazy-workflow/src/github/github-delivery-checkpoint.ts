@@ -52,6 +52,7 @@ function isReceipt(value: unknown): value is GitHubDeliveryReceipt {
     && value !== null
     && Object.keys(value).every((key) => key === "verifiedAt")
     && typeof (value as GitHubDeliveryReceipt).verifiedAt === "string"
+    && Number.isFinite(Date.parse((value as GitHubDeliveryReceipt).verifiedAt))
     && (value as GitHubDeliveryReceipt).verifiedAt.length > 0;
 }
 
