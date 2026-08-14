@@ -24,6 +24,7 @@ export interface GitHubPullRequest {
 
 export interface GitHubDeliveryAdapter {
   verifyRepository?(repository: string, workingDirectory: string): Promise<void>;
+  verifyBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
@@ -91,6 +92,10 @@ function referencesIssue(body: string, issue: number): boolean {
   return new RegExp(`(?:^|\\s)#${issue}(?!\\d)`).test(body);
 }
 
+function validationResultIsNotFailure(result: string): boolean {
+  return !/^(?:fail(?:ed|ure)?|error)(?:\b|:)/i.test(result.trim()) && !/^exit\s+[1-9]/i.test(result.trim());
+}
+
 function manifestIsValid(value: unknown): value is GitHubReadyManifest {
   if (typeof value !== "object" || value === null) return false;
   const allowedKeys = new Set(["issue", "branch", "commit", "validation", "clean", "summary"]);
@@ -102,7 +107,7 @@ function manifestIsValid(value: unknown): value is GitHubReadyManifest {
     && typeof manifest.commit === "string"
     && Array.isArray(manifest.validation)
     && manifest.validation.length > 0
-    && manifest.validation.every((entry) => typeof entry?.command === "string" && entry.command.trim().length > 0 && typeof entry.result === "string" && entry.result.trim().length > 0)
+    && manifest.validation.every((entry) => typeof entry?.command === "string" && entry.command.trim().length > 0 && typeof entry.result === "string" && entry.result.trim().length > 0 && validationResultIsNotFailure(entry.result))
     && manifest.clean === true
     && typeof manifest.summary === "string"
     && manifest.summary.trim().length > 0;
@@ -130,6 +135,21 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (current.name !== repository) throw new Error(`el checkpoint GitHub pertenece a ${repository}, no a ${current.name}`);
   }
 
+  async verifyBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void> {
+    const verifiedBranch = requireBranch(branch, "La rama");
+    requireBranch(baseBranch, "La rama base");
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    if (active !== branchName(verifiedBranch)) throw new Error(`La rama activa ${active || "detached"} no coincide con ${verifiedBranch}`);
+    if (!(await this.git(["branch", "--list", branchName(verifiedBranch)], workingDirectory)).trim()) {
+      throw new Error(`La rama local ${verifiedBranch} no existe`);
+    }
+    const remote = (await this.git(["ls-remote", "--heads", "origin", verifiedBranch], workingDirectory)).trim();
+    if (remote) {
+      const localCommit = (await this.git(["rev-parse", `refs/heads/${branchName(verifiedBranch)}^{commit}`], workingDirectory)).trim();
+      if (remote.split(/\s+/)[0] !== localCommit) throw new Error(`La rama local ${verifiedBranch} no coincide con su rama remota`);
+    }
+  }
+
   async prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation> {
     if (!Number.isInteger(issue) || issue <= 0) throw new Error("El issue no es válido");
     const { baseBranch } = await this.repository(workingDirectory);
@@ -143,8 +163,12 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       await checkoutGitBranch(this.git, branch, workingDirectory);
     } else {
       const local = await this.git(["branch", "--list", branchName(branch)], workingDirectory);
-      if (local.trim()) throw new Error(`La rama local ${branch} existe sin rama remota verificable`);
-      await this.git(["switch", "--create", branchName(branch), `refs/remotes/origin/${baseName}`], workingDirectory);
+      if (local.trim()) {
+        const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+        if (active !== branchName(branch)) throw new Error(`La rama local ${branch} existe sin rama remota verificable`);
+      } else {
+        await this.git(["switch", "--create", branchName(branch), `refs/remotes/origin/${baseName}`], workingDirectory);
+      }
     }
     const commonDirectory = resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim());
     const manifestPath = resolve(commonDirectory, "lazy-workflow/github-completion-manifest.json");
@@ -178,6 +202,8 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const { name } = await this.repository(workingDirectory);
     const head = branchName(branch);
     const base = branchName(baseBranch);
+    const remote = (await this.git(["ls-remote", "--heads", "origin", branch], workingDirectory)).trim();
+    if (!remote || remote.split(/\s+/)[0] !== commit) throw new Error(`La rama remota ${branch} no coincide con el commit fijado`);
     const output = await this.gh(["pr", "list", "--repo", name, "--state", "all", "--head", head, "--base", base, "--json", "number,state,body,headRefName,baseRefName,headRefOid"], workingDirectory);
     const relatedPullRequests = parseJson<PullRequestView[]>(output, "gh pr list").filter((pr) =>
       pr.headRefName === head && pr.baseRefName === base && typeof pr.number === "number" && referencesIssue(pr.body ?? "", issue));
