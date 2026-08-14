@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import type { GitHubCheckpointStore } from "../src/github/github-delivery-checkpoint.ts";
 import { GitHubPullRequestConflictError, type GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
+import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 import { isGitHubWorkspaceManifest } from "../src/github/github-workspace-checkpoint.ts";
@@ -360,6 +361,173 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
     expect(events).toContain(`cleanup:repo-a:${reconciledCommit}`);
     expect(events.indexOf("merge:repo-b")).toBeGreaterThan(events.lastIndexOf("merge:repo-a"));
     expect(events.indexOf("close")).toBeGreaterThan(events.indexOf("merge:repo-b"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reconcilia padres del workspace después de la limpieza y antes de borrar el checkpoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-parents-"));
+  const repoA = join(root, "repo-a");
+  const repoB = join(root, "repo-b");
+  await Bun.$`mkdir -p ${repoA} ${repoB}`;
+  const events: string[] = [];
+  const checkpointPath = join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json");
+  let checkpointExistedDuringReconciliation: boolean | null = null;
+  let reconciliationWorkingDirectory: string | null = null;
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
+    return "";
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async (issue, workingDirectory) => {
+      events.push(`prepare:${basename(workingDirectory)}`);
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+    },
+    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
+    createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
+    mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) }; },
+    closeIssue: async () => { events.push("close"); },
+    cleanupBranch: async (_branch, _base, _commit, workingDirectory) => { events.push(`cleanup:${basename(workingDirectory)}`); },
+  };
+  const parents: GitHubParentReconciliationAdapter = {
+    reconcileParents: async (_issueNumber, workingDirectory) => {
+      events.push("parents");
+      reconciliationWorkingDirectory = workingDirectory;
+      checkpointExistedDuringReconciliation = await Bun.file(checkpointPath).exists();
+    },
+    reconcileOpenParents: async () => undefined,
+  };
+  const checkpointStore: GitHubCheckpointStore = { read: async () => null, write: async () => undefined, clear: async () => undefined };
+  const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
+  const issue = { number: 188, title: "workspace", state: "OPEN", labels: [{ name: "ready-for-agent" }], assignees: [], createdAt: "2026-01-01", blockedBy: { nodes: [] } };
+  const queue = {
+    selectEligibleIssue: async () => ({ kind: "candidate" as const, issue, repository: { nameWithOwner: "owner/repo-a" } }),
+    claimSelectedIssue: async () => ({ ...issue, body: "body", comments: [] }),
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+  };
+  const cli = new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    { run: async () => {
+      for (const repository of [repoA, repoB]) {
+        await Bun.write(join(repository, "manifest.json"), "{}\n");
+        await Bun.write(join(repository, "evidence.txt"), "evidence");
+      }
+      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+    }, resume: async () => { throw new Error("must not resume"); } },
+    undefined, undefined, undefined, undefined, undefined, git,
+    undefined, undefined, undefined, undefined, undefined,
+    queue,
+    checkpointStore,
+    lock,
+    delivery,
+    parents,
+  );
+  try {
+    expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(0);
+    expect(events.indexOf("parents")).toBeGreaterThan(events.lastIndexOf("cleanup:repo-b"));
+    expect(events.indexOf("parents")).toBeGreaterThan(events.indexOf("close"));
+    expect(checkpointExistedDuringReconciliation).toBe(true);
+    expect(reconciliationWorkingDirectory).toBe(await realpath(repoA));
+    expect(await Bun.file(checkpointPath).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserva los recibos entregados y no cierra el Issue cuando el merge de otro repositorio falla, y completa la entrega al reanudar", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-partial-failure-"));
+  const repoA = join(root, "repo-a");
+  const repoB = join(root, "repo-b");
+  await Bun.$`mkdir -p ${repoA} ${repoB}`;
+  const events: string[] = [];
+  let mergeBAttempts = 0;
+  let runCalls = 0;
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
+    return "";
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async (issue, workingDirectory) => {
+      events.push(`prepare:${basename(workingDirectory)}`);
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+    },
+    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
+    createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
+    mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => {
+      events.push(`merge:${basename(workingDirectory)}`);
+      if (basename(workingDirectory) === "repo-b") {
+        mergeBAttempts += 1;
+        if (mergeBAttempts === 1) throw new Error("required check pendiente");
+      }
+      return { number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) };
+    },
+    closeIssue: async () => { events.push("close"); },
+    cleanupBranch: async (_branch, _base, _commit, workingDirectory) => { events.push(`cleanup:${basename(workingDirectory)}`); },
+  };
+  const checkpointStore: GitHubCheckpointStore = { read: async () => null, write: async () => undefined, clear: async () => undefined };
+  const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
+  const parents: GitHubParentReconciliationAdapter = {
+    reconcileParents: async () => { events.push("parents"); },
+    reconcileOpenParents: async () => undefined,
+  };
+  const issue = { number: 188, title: "workspace", state: "OPEN", labels: [{ name: "ready-for-agent" }], assignees: [], createdAt: "2026-01-01", blockedBy: { nodes: [] } };
+  const queue = {
+    selectEligibleIssue: async () => ({ kind: "candidate" as const, issue, repository: { nameWithOwner: "owner/repo-a" } }),
+    claimSelectedIssue: async () => ({ ...issue, body: "body", comments: [] }),
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+  };
+  const cli = new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    { run: async () => {
+      runCalls += 1;
+      if (runCalls > 1) throw new Error("must not run OpenCode again on resume");
+      for (const repository of [repoA, repoB]) {
+        await Bun.write(join(repository, "manifest.json"), "{}\n");
+        await Bun.write(join(repository, "evidence.txt"), "evidence");
+      }
+      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+    }, resume: async () => { throw new Error("must not resume"); } },
+    undefined, undefined, undefined, undefined, undefined, git,
+    undefined, undefined, undefined, undefined, undefined,
+    queue,
+    checkpointStore,
+    lock,
+    delivery,
+    parents,
+  );
+  try {
+    expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(1);
+    expect(events.filter((event) => event === "close")).toHaveLength(0);
+    expect(events).toContain("merge:repo-a");
+    expect(events).toContain("merge:repo-b");
+    expect(events).not.toContain("cleanup:repo-a");
+    expect(events).not.toContain("cleanup:repo-b");
+    expect(events).not.toContain("parents");
+    expect(events.filter((event) => event === "push:repo-b")).toHaveLength(1);
+    expect(events.filter((event) => event === "pr:repo-b")).toHaveLength(1);
+
+    expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(0);
+    expect(events.filter((event) => event === "prepare:repo-a")).toHaveLength(1);
+    expect(events.filter((event) => event === "push:repo-a")).toHaveLength(1);
+    expect(events.filter((event) => event === "pr:repo-a")).toHaveLength(1);
+    expect(events.filter((event) => event === "merge:repo-a")).toHaveLength(1);
+    expect(events.filter((event) => event === "push:repo-b")).toHaveLength(1);
+    expect(events.filter((event) => event === "pr:repo-b")).toHaveLength(1);
+    expect(events.filter((event) => event === "merge:repo-b")).toHaveLength(2);
+    expect(events.filter((event) => event === "close")).toHaveLength(1);
+    expect(events.filter((event) => event === "cleanup:repo-a")).toHaveLength(1);
+    expect(events.filter((event) => event === "cleanup:repo-b")).toHaveLength(1);
+    expect(events.filter((event) => event === "parents")).toHaveLength(1);
+    expect(events.indexOf("close")).toBeGreaterThan(events.lastIndexOf("merge:repo-b"));
+    expect(events.indexOf("parents")).toBeGreaterThan(events.lastIndexOf("cleanup:repo-b"));
+    expect(runCalls).toBe(1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
