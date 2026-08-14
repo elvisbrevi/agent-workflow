@@ -116,6 +116,32 @@ resolve_target() {
 }
 
 # ── Refresh managed cache ──────────────────────────────────
+prepare_runner_dependencies() {
+  local cache="$1" agent agent_dir
+
+  [[ "$UNINSTALL" == false && "$DRY_RUN" == false ]] || return 0
+  case "$MODE" in
+    all-global|claude-global|claude-local) ;;
+    *) return 0 ;;
+  esac
+
+  if ! command -v bun >/dev/null 2>&1; then
+    err "Bun is required to install executable agent dependencies."
+    return 1
+  fi
+
+  while IFS= read -r agent; do
+    [[ -n "$agent" ]] || continue
+    agent_dir="${cache}/agent/${agent}"
+    [[ -f "${agent_dir}/run.sh" && -f "${agent_dir}/package.json" ]] || continue
+
+    info "Installing runtime dependencies for ${agent}..."
+    if ! (cd "$agent_dir" && bun install --frozen-lockfile); then
+      return 1
+    fi
+  done < <(discover_agents "$cache")
+}
+
 sync_repo() {
   local ref_label="${REPO_BRANCH}"
   local cache_parent refresh_dir previous_dir
@@ -130,6 +156,11 @@ sync_repo() {
   if ! git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$refresh_dir" --quiet; then
     rm -rf "$refresh_dir"
     die "Unable to download ${REPO_URL} at ${ref_label}; existing cache was left untouched."
+  fi
+
+  if ! prepare_runner_dependencies "$refresh_dir"; then
+    rm -rf "$refresh_dir"
+    die "Unable to install executable agent dependencies; existing cache was left untouched."
   fi
 
   if [[ -e "$CACHE_DIR" ]] || [[ -L "$CACHE_DIR" ]]; then

@@ -7,7 +7,8 @@ bun install
 ```
 
 When installed globally by `install.sh --all-global` or
-`install.sh --claude-global`, use the `lazy-workflow` command directly:
+`install.sh --claude-global`, the installer prepares the locked Bun
+dependencies in its managed cache. Use the `lazy-workflow` command directly:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
