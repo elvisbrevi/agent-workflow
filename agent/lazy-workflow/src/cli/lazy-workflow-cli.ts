@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import { unlink } from "node:fs/promises";
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import {
   AzureAutocodeService,
@@ -125,6 +126,19 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function manifestBelongsToDelivery(manifestPath: string, issue: number, branch: string): Promise<boolean> {
+  try {
+    if (!(await Bun.file(manifestPath).exists())) return false;
+    const value: unknown = await Bun.file(manifestPath).json();
+    return typeof value === "object"
+      && value !== null
+      && (value as { issue?: unknown }).issue === issue
+      && (value as { branch?: unknown }).branch === branch;
+  } catch {
+    return false;
+  }
 }
 
 function getResumeOverrides(options: CliOptions): OpenCodeResumeOverrides {
@@ -1611,6 +1625,7 @@ export class LazyWorkflowCli {
     if (this.githubParentReconciliation && !checkpoint.receipts["parent-reconciliation"]) {
       await effect("parent-reconciliation", `${checkpoint.issue}`, () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
     }
+    await unlink(fixedManifestPath).catch(() => undefined);
     await store.clear(options.workingDirectory);
   }
 
@@ -1675,7 +1690,7 @@ export class LazyWorkflowCli {
         }
         const issue = await readIssue(liveCheckpoint.issue, options.workingDirectory);
         const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
-        if (await Bun.file(manifestPath).exists()) {
+        if (await manifestBelongsToDelivery(manifestPath, liveCheckpoint.issue, branch)) {
           await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "implementation-ready", sessionId: null });
           console.log(TICKET_COMPLETED_MARKER);
           console.log(WORKFLOW_STEP_FINISHED_MARKER);

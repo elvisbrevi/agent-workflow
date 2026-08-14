@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
@@ -378,6 +381,62 @@ test("la recuperación sessionless cambia a la rama fijada antes de continuar", 
   expect(runs).toBe(1);
   expect(events).toEqual(["verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
   expect(state.current?.phase).toBe("started");
+});
+
+test("la recuperación sessionless ignora un manifest ajeno de un issue previo", async () => {
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-stale-manifest-"));
+  const manifestPath = join(root, "github-completion-manifest.json");
+  writeFileSync(manifestPath, JSON.stringify({ issue: 177, branch: "refs/heads/issue/177", commit: "a".repeat(40) }));
+  const state = boundaries({
+    ...checkpoint(null),
+    phase: "started",
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath,
+  });
+  const { azure, openCode } = services();
+  const events: string[] = [];
+  let runs = 0;
+  const queue = {
+    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
+    reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+  };
+  const delivery = failingDelivery({
+    verifyRepository: async () => { events.push("verify-repository"); },
+    checkoutBranch: async () => { events.push("checkout-branch"); },
+    verifyBranch: async () => { events.push("verify-branch"); },
+    readManifest: async () => { events.push("read-manifest"); throw new Error("must not read stale manifest"); },
+  });
+
+  try {
+    const code = await new LazyWorkflowCli(
+      azure,
+      { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      queue,
+      state.store,
+      state.lock,
+      delivery,
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(1);
+    expect(runs).toBe(1);
+    expect(events).not.toContain("read-manifest");
+    expect(events.at(-1)).toBe("opencode");
+    expect(state.current?.phase).toBe("started");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const phase of GITHUB_DELIVERY_PHASES) {
