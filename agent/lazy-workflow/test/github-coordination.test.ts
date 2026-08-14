@@ -3,7 +3,7 @@ import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
-import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeSelectedIssue, fakeSelectedOutcome } from "./_helpers/managed-queue-fixtures.ts";
 
 function checkpoint(sessionId: string | null): GitHubDeliveryCheckpoint {
   return {
@@ -86,6 +86,12 @@ test("checkpoint GitHub bloquea la selección de un issue sustituto", async () =
 test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado completo", async () => {
   const state = boundaries();
   const { azure, openCode } = services();
+  const events: string[] = [];
+  let available = true;
+  const store: GitHubCheckpointStore = {
+    ...state.store,
+    write: async (value) => { events.push(`write:${value.phase}`); await state.store.write(value); },
+  };
   const code = await new LazyWorkflowCli(
     azure,
     openCode,
@@ -100,14 +106,24 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
     undefined,
     undefined,
     undefined,
-    queueAdapter([fakeSelectedOutcome(178), { kind: "empty" }]),
-    state.store,
+    {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+      selectEligibleIssue: async () => {
+        events.push("select");
+        if (!available) return { kind: "empty" };
+        available = false;
+        return { kind: "candidate", issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async () => { events.push("claim"); return fakeSelectedIssue(178); },
+    },
+    store,
     state.lock,
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(state.phases).toEqual(["selected", "started", "implementing"]);
   expect(state.current).toBeNull();
+  expect(events.slice(0, 3)).toEqual(["select", "write:selected", "claim"]);
   expect(state.lockAcquires).toBe(1);
   expect(state.lockReleases).toBe(1);
 });

@@ -1,4 +1,5 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, rename } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
@@ -35,7 +36,9 @@ export class GitHubRepositoryLockService implements GitHubRepositoryLockBoundary
         try {
           const owner = await Bun.file(ownerPath).json() as { pid?: unknown };
           if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && !(await processIsAlive(owner.pid))) {
-            await rm(path, { recursive: true, force: false });
+            const stalePath = `${path}.stale-${randomUUID()}`;
+            await rename(path, stalePath);
+            await rm(stalePath, { recursive: true, force: false });
             return this.acquire(workingDirectory);
           }
         } catch {
@@ -45,7 +48,12 @@ export class GitHubRepositoryLockService implements GitHubRepositoryLockBoundary
       }
       throw error;
     }
-    await Bun.write(join(path, "owner.json"), `${JSON.stringify({ pid: process.pid })}\n`);
+    try {
+      await Bun.write(join(path, "owner.json"), `${JSON.stringify({ pid: process.pid })}\n`);
+    } catch (error) {
+      await rm(path, { recursive: true, force: true });
+      throw error;
+    }
 
     let released = false;
     return async () => {
