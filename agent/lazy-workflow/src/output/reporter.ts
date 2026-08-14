@@ -14,6 +14,8 @@ export interface Reporter {
 
 export interface ReporterOptions {
   verbose: boolean;
+  quiet?: boolean;
+  noColor?: boolean;
   stream?: ReporterStream;
 }
 
@@ -26,10 +28,10 @@ const ICONS = {
 
 type IconName = keyof typeof ICONS;
 
-const isNoColor = (): boolean => process.env.NO_COLOR === "1";
+const envNoColor = (): boolean => process.env.NO_COLOR === "1";
 
-const paint = (color: "blue" | "yellow" | "red" | "gray") =>
-  (line: string): string => (isNoColor() ? line : (chalk[color] as ChalkInstance)(line));
+const paint = (color: "blue" | "yellow" | "red" | "gray", noColor: boolean) =>
+  (line: string): string => (noColor ? line : (chalk[color] as ChalkInstance)(line));
 
 const format = (icon: IconName, message: string): string => `${ICONS[icon]} ${message}`;
 
@@ -44,28 +46,32 @@ export function createReporter(options: ReporterOptions): Reporter;
 export function createReporter(arg: boolean | ReporterOptions): Reporter {
   const options: ReporterOptions = typeof arg === "boolean" ? { verbose: arg } : arg;
   const stream = options.stream ?? consoleErrorStream;
-  const noColor = isNoColor();
+  const noColor = options.noColor ?? envNoColor();
+  const quiet = options.quiet ?? false;
 
   const write = (text: string): void => {
     stream.write(text);
   };
 
-  const coloredInfo = paint("blue");
-  const coloredWarn = paint("yellow");
-  const coloredError = paint("red");
-  const coloredDebug = paint("gray");
+  const coloredInfo = paint("blue", noColor);
+  const coloredWarn = paint("yellow", noColor);
+  const coloredError = paint("red", noColor);
+  const coloredDebug = paint("gray", noColor);
 
   return {
     info(message) {
+      if (quiet) return;
       write(`${coloredInfo(format("info", message))}\n`);
     },
     warn(message) {
+      if (quiet) return;
       write(`${coloredWarn(format("warn", message))}\n`);
     },
     error(message) {
       write(`${coloredError(format("error", message))}\n`);
     },
     debug(message) {
+      if (quiet) return;
       if (!options.verbose) return;
       write(`${coloredDebug(format("debug", message))}\n`);
     },

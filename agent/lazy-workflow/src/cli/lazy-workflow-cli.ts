@@ -10,7 +10,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { CompletionManifest, EvidenceKind, TicketInfo, TicketAttachment } from "../azure/ticket-info-service.ts";
+import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -21,37 +21,21 @@ import {
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
 import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
-import { reportOperator } from "../output/operator-output.ts";
+import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
+import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService, type SagArchitectureReviewContext, type SagCodingContext, type SagNormsContext } from "../sag/sag-norms-service.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
 import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
+import {
+  buildCli,
+  type CliOptions as ParsedCliOptions,
+  type CliParseResult,
+  type CliParser,
+} from "./parse-cli-options.ts";
 
-type CliOptions = OpenCodeRunOptions & {
-  hu: number | null;
-  issue: number | null;
-  branch: string | null;
-  baseBranch: string | null;
-  ticket: number | null;
-  pullRequest: number | null;
-  manifest: string | null;
-  file: string | null;
-  descriptionFile: string | null;
-  state: string | null;
-  expectedState: string | null;
-  realEffort: number;
-  realEffortHours: number;
-  expectedRevision: number;
-  environment: string | null;
-  hasRealEffort: boolean;
-  hasRealEffortHours: boolean;
-  hasExpectedRevision: boolean;
-  evidenceKind: EvidenceKind | null;
-  numberOfQuestions: number;
-  normasSag: boolean;
-  workingDirectory: string;
-};
+type CliOptions = OpenCodeRunOptions & ParsedCliOptions;
 
 type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
@@ -194,10 +178,6 @@ function requireVerifiedCompletion(
   return verification !== null && !isIncompleteCompletion(verification);
 }
 
-const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
-const DEFAULT_VARIANT = "high";
-const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
-const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
@@ -224,14 +204,12 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-evidence-set",
   "ticket-completion-apply",
 ]);
-const INFRASTRUCTURE_FLAGS = new Set(["--hu", "--issue", "--model", "--variant", "--prompt", "--working-directory"]);
-
-function optionValue(args: string[], name: string): string | null {
-  const index = args.indexOf(name);
-  if (index >= 0) return args[index + 1] ?? null;
-  const inline = args.find((arg) => arg.startsWith(`${name}=`));
-  return inline?.slice(name.length + 1) ?? null;
-}
+const INFRASTRUCTURE_FLAGS = new Set([
+  "--hu", "--issue",
+  "--model", "--variant", "--prompt",
+  "--working-directory",
+  "--verbose", "--quiet", "--no-color",
+]);
 
 function isValidHu(hu: number | null): hu is number {
   return hu !== null && Number.isInteger(hu) && hu > 0;
@@ -241,104 +219,19 @@ function readPrompt(name: "default" | "autoplan" | "autocode" | "architecture-re
   return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
 }
 
-function parseOptions(args: string[]): CliOptions {
-  const hu = optionValue(args, "--hu");
-  const issue = optionValue(args, "--issue");
-  const ticket = optionValue(args, "--ticket");
-  const realEffort = optionValue(args, "--real-effort");
-  const realEffortHours = optionValue(args, "--real-effort-hh");
-  const expectedRevision = optionValue(args, "--expected-rev");
-  const presentValue = (value: string | null): boolean => value !== null && value.trim() !== "" && !value.startsWith("--");
-  return {
-    model: optionValue(args, "--model") ?? DEFAULT_MODEL,
-    variant: optionValue(args, "--variant") ?? DEFAULT_VARIANT,
-    session: optionValue(args, "--session"),
-    prompt: optionValue(args, "--prompt") ?? DEFAULT_PROMPT,
-    hu: args.includes("--hu") ? Number(hu) : null,
-    issue: args.includes("--issue") ? Number(issue) : null,
-    branch: optionValue(args, "--branch"),
-    baseBranch: optionValue(args, "--base-branch"),
-    ticket: args.includes("--ticket") ? Number(ticket) : null,
-    pullRequest: args.includes("--pr") ? Number(optionValue(args, "--pr")) : null,
-    manifest: optionValue(args, "--manifest"),
-    file: optionValue(args, "--evidence-file") ?? optionValue(args, "--file"),
-    descriptionFile: optionValue(args, "--description-file"),
-    state: optionValue(args, "--state"),
-    expectedState: optionValue(args, "--expected-state"),
-    environment: optionValue(args, "--environment"),
-    realEffort: Number(realEffort),
-    realEffortHours: Number(realEffortHours),
-    expectedRevision: Number(expectedRevision),
-    hasRealEffort: presentValue(realEffort),
-    hasRealEffortHours: presentValue(realEffortHours),
-    hasExpectedRevision: presentValue(expectedRevision),
-    evidenceKind: (optionValue(args, "--kind") ?? optionValue(args, "--evidence-kind")) as EvidenceKind | null,
-    numberOfQuestions: Number.parseInt(optionValue(args, "--number-of-questions") ?? `${DEFAULT_NUMBER_OF_QUESTIONS}`, 10),
-    normasSag: args.includes("--normas-sag"),
-    workingDirectory: optionValue(args, "--working-directory") ?? process.cwd(),
-  };
-}
-
-function printHelp(): void {
-  console.log([
-    "Usage:",
-    "  lazy-workflow plan [options]",
-    "  lazy-workflow plan --hu <id> [options]",
-    "  lazy-workflow code [options]",
-    "  lazy-workflow code --hu <id> [options]",
-    "  lazy-workflow code --session <id> --prompt continue",
-     "  lazy-workflow infra-sag --hu <id> [options]",
-     "  lazy-workflow infra-sag --issue <id> [options]",
-    "  lazy-workflow architecture-review-sag --hu <id> [options]",
-    "  lazy-workflow architecture-review-sag --issue <id> [options]",
-    "  lazy-workflow deploy-sag --hu <id> [options]",
-    "  lazy-workflow deploy-sag --issue <id> [options]",
-    "  lazy-workflow hu-info --hu <id>",
-    "  lazy-workflow hu-branch-info --hu <id>",
-    "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
-    "  lazy-workflow ticket-info --hu <id> --ticket <id>",
-    "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
-    "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
-    "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
-    "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
-    "  lazy-workflow ticket-commit-link --ticket <id> --pr <id>",
-    "  lazy-workflow ticket-description-set --ticket <id> --description-file <path>",
-    "  lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>",
-    "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
-    "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
-    "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
-    "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
-    "",
-    "Options:",
-    "  --hu <id>                    selecciona el flujo Azure; omitir usa GitHub",
-    "  --issue <id>                 alcance GitHub explicito para workflows SAG",
-    "  --environment <dev|test|qa>  destino de deploy-sag; omitir usa DEV; PROD siempre esta prohibido",
-    "  --session <id>",
-    "  --model <model>",
-    "  --variant <variant>",
-    "  --prompt <prompt>",
-    "  --branch <name>",
-    "  --base-branch <name>",
-    "  --ticket <id>",
-    "  --pr <id>",
-    "  --description-file <path>",
-    "  --state <state>",
-    "  --expected-state <state>",
-    "  --real-effort <hours>",
-    "  --real-effort-hh <hours>",
-    "  --expected-rev <rev>",
-    "  --file <path>",
-    "  --kind <http-json|screen|command-output>",
-    "  --evidence-file <path>",
-    "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
-    "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
-    "  --number-of-questions <count>",
-    "  --normas-sag                 carga normas SAG de planning o coding desde master remoto; requiere .sag/config.json",
-     "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
-    "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
-    "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
-    "  --working-directory <path>",
-  ].join("\n"));
+function parseCli(args: string[], parser: CliParser): CliParseResult {
+  let result: CliParseResult | undefined;
+  result = parser(args, {
+    onHelp: (output) => {
+      console.log(output);
+      return 0;
+    },
+    onError: (message) => {
+      reportOperator(`lazy-workflow: ${message}`);
+      return 1;
+    },
+  });
+  return result;
 }
 
 export class LazyWorkflowCli {
@@ -354,19 +247,27 @@ export class LazyWorkflowCli {
     private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
     private readonly deploymentService: Pick<SagDeploymentService, "deploy"> = new SagDeploymentService(),
     private readonly infrastructureService: Pick<SagInfrastructureService, "verify"> = new SagInfrastructureService(),
+    private readonly cliParser: CliParser = buildCli(),
+    private readonly createReporterFn: typeof createReporter = createReporter,
   ) {}
 
   async run(args: string[]): Promise<number> {
-    const command = args[0];
-    if (typeof command !== "string" || (command !== "plan" && command !== "code" && command !== "infra-sag" && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "hu-info" && command !== "hu-branch-info" && command !== "hu-branch-set" && !TICKET_READ_COMMANDS.has(command) && !TICKET_MUTATION_COMMANDS.has(command))) {
-      printHelp();
+    const parsed = parseCli(args, this.cliParser);
+    if (parsed.kind === "help") {
+      const requestedHelp = args.some((arg) => arg === "--help" || arg === "-h");
+      return requestedHelp ? 0 : 1;
+    }
+    if (parsed.kind === "error") {
       return 1;
     }
 
-    const options = parseOptions(args);
+    const options = parsed.options;
+    this.applyReporter(options);
 
-    if (options.hu !== null && !isValidHu(options.hu)) {
-      reportOperator(`La HU debe ser un entero positivo: ${options.hu}`);
+    const command = options.command;
+
+    if (options.verbose && options.quiet) {
+      reportOperator("--verbose y --quiet son mutuamente excluyentes");
       return 1;
     }
 
@@ -385,7 +286,7 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    if (command === "deploy-sag" && args.includes("--environment") && !options.environment?.trim()) {
+    if (command === "deploy-sag" && options.environment !== null && !options.environment?.trim()) {
        reportOperator("deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
       return 1;
     }
@@ -399,11 +300,7 @@ export class LazyWorkflowCli {
         reportOperator("architecture-review-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
-      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
-        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
-        return 1;
-      }
-      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("architecture-review-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -426,11 +323,7 @@ export class LazyWorkflowCli {
         reportOperator("infra-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
-      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
-        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
-        return 1;
-      }
-      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("infra-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -438,8 +331,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "deploy-sag") {
-      const environmentFlags = args.filter((arg) => arg === "--environment" || arg.startsWith("--environment="));
-      if (environmentFlags.length > 1) {
+      if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
         reportOperator("deploy-sag no permite repetir --environment");
         return 1;
       }
@@ -451,16 +343,12 @@ export class LazyWorkflowCli {
         reportOperator("deploy-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
-      if (options.issue !== null && (!Number.isInteger(options.issue) || options.issue <= 0)) {
-        reportOperator(`El Issue debe ser un entero positivo: ${options.issue}`);
-        return 1;
-      }
       const environment = options.environment?.trim().toLowerCase() ?? "dev";
       if (environment !== "dev" && environment !== "test" && environment !== "qa") {
         reportOperator("deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
         return 1;
       }
-      if (options.session !== null || args.includes("--branch") || args.includes("--base-branch")) {
+      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
         reportOperator("deploy-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
@@ -596,7 +484,11 @@ export class LazyWorkflowCli {
         reportOperator("ticket-branch-set requiere --branch <name>");
         return 1;
       }
-      const workingDirectory = optionValue(args, "--working-directory");
+      if (options.workingDirectory === process.cwd() && !args.some((arg) => arg === "--working-directory" || arg.startsWith("--working-directory="))) {
+        reportOperator("ticket-branch-set requiere --working-directory <path>");
+        return 1;
+      }
+      const workingDirectory = options.workingDirectory;
       if (!workingDirectory?.trim() || workingDirectory.startsWith("--")) {
         reportOperator("ticket-branch-set requiere --working-directory <path>");
         return 1;
@@ -678,7 +570,7 @@ export class LazyWorkflowCli {
     }
 
     const recoveringAzureCode = command === "code" && options.session !== null;
-    if (options.hu === null && !recoveringAzureCode && (args.includes("--branch") || args.includes("--base-branch"))) {
+    if (options.hu === null && !recoveringAzureCode && (options.branch !== null || options.baseBranch !== null)) {
       reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }
@@ -712,6 +604,15 @@ export class LazyWorkflowCli {
     }
     console.log(JSON.stringify(result, null, 2));
     return 0;
+  }
+
+  private applyReporter(options: ParsedCliOptions): void {
+    const reporter = this.createReporterFn({
+      verbose: options.verbose,
+      quiet: options.quiet,
+      noColor: options.noColor,
+    });
+    setDefaultReporter(reporter);
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
