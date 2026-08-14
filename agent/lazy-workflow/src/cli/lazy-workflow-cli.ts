@@ -804,9 +804,7 @@ export class LazyWorkflowCli {
     let scope: WorkspaceScope;
     const releases: Array<() => Promise<void>> = [];
     try {
-      scope = await normalizeWorkspaceScope(options.workingDirectory, this.git, githubRepositoryFromRemote, false);
-      if (scope.repositories.some(({ providerIdentity }) => providerIdentity === null)) throw new Error("todos los repositorios del alcance deben tener un remote GitHub");
-      for (const repository of scope.repositories) await this.githubDelivery?.verifyRepository?.(repository.providerIdentity!, repository.path);
+      scope = await this.workspaceScope(options);
       if (this.githubRepositoryLock) {
         for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
       }
@@ -816,7 +814,6 @@ export class LazyWorkflowCli {
         return 1;
       }
       if (existing) return this.resumeWorkspaceCode(options, scope, existing);
-      scope = await this.workspaceScope(options);
       const anchor = scope.repositories[0];
       if (!anchor?.providerIdentity) throw new Error("el primer repositorio no tiene identidad GitHub");
       const selection = await this.githubManagedQueue.selectEligibleIssue?.(anchor.path);
