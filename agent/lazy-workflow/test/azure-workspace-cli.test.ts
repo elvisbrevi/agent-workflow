@@ -39,7 +39,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => {
@@ -137,6 +137,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     getAttachments: async () => ({ ticket: 51, attachments: [] }),
     getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
     validateDirectTicketContext: async () => undefined,
+    linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
   const git: GitRunner = async (args, directory) => {
     if (args[0] === "remote" && args[1] === "get-url") {
