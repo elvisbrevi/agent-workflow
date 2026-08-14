@@ -5,6 +5,7 @@ import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext
 import { GitHubArchitectureReviewService } from "../src/github/architecture-review-service.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import type { OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-sag-${crypto.randomUUID()}`;
 
@@ -397,6 +398,18 @@ test("--normas-sag code se rechaza antes de servicios si falta el cargador codin
   const code = await new LazyWorkflowCli(
     { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
     { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queueAdapter([{ kind: "empty" }]),
   ).run(["code", "--normas-sag"]);
 
   expect(code).toBe(1);
@@ -407,7 +420,7 @@ test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async ()
   const directory = await config();
   let received: OpenCodeRunOptions | null = null;
   let sourceCalls = 0;
-  const results = ["TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED", "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED"].map((text, index) => OpenCodeResult.fromJsonLines(JSON.stringify({
+  const results = ["TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED", "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED"].map((text, index) => OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: `ses-code-sag-${index}`,
     part: { type: "text", text },
@@ -427,6 +440,16 @@ test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async ()
         loadPlanning: async () => { throw new Error("must not plan"); },
         loadCoding: async () => { sourceCalls += 1; return new SagNormsService(codingSource()).loadCoding(directory); },
       },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      queueAdapter([
+        fakeSelectedOutcome(201),
+        { kind: "empty" },
+      ]),
     ).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
@@ -444,7 +467,7 @@ test("un contexto SAG de coding inaccesible detiene code antes de iniciar OpenCo
   let openCodeCalls = 0;
   try {
     const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+{ getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
       {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
@@ -454,6 +477,13 @@ test("un contexto SAG de coding inaccesible detiene code antes de iniciar OpenCo
       undefined,
       undefined,
       { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => { throw new Error("source unavailable"); } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      queueAdapter([fakeSelectedOutcome(201)]),
     ).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(1);
