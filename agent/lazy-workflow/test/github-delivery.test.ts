@@ -144,6 +144,50 @@ test("merge propaga fallos de gh pr checks que no sean 'no checks reported'", as
     .rejects.toThrow("API rate limit exceeded");
 });
 
+test("el prompt de entrega GitHub especifica la forma {command, result} del manifest", async () => {
+  let prompt = "";
+  let current: GitHubDeliveryCheckpoint | null = null;
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (checkpoint) => { current = checkpoint; },
+    clear: async () => { current = null; },
+  };
+  let selected = true;
+  const queue = {
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+    selectEligibleIssue: async () => {
+      if (!selected) return { kind: "empty" as const };
+      selected = false;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+    },
+    claimSelectedIssue: async () => fakeSelectedIssue(179),
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
+    readManifest: async () => { throw new Error("must not read"); },
+    pushCommit: async () => undefined,
+    createOrReusePullRequest: async () => ({ number: 201 }),
+    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
+    closeIssue: async () => undefined,
+    cleanupBranch: async () => undefined,
+  };
+
+  await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    { run: async (options) => { prompt = options.prompt; throw new Error("stop after capturing prompt"); }, resume: async () => execution().result },
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    queue,
+    store,
+    { acquire: async () => async () => undefined },
+    delivery,
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(prompt).toContain('{"command"');
+  expect(prompt).toContain('"result"');
+  expect(prompt).toContain("non-empty JSON array of objects");
+  expect(prompt).toContain("never plain strings");
+});
+
 test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {
   const calls: string[] = [];
   let selections = 0;

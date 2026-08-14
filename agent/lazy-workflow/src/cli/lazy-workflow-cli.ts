@@ -74,7 +74,7 @@ type GitHubReconciliationOutcome =
   | { kind: "pending"; sessionId: string }
   | { kind: "ready"; manifest: GitHubReadyManifest };
 
-type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
+export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
@@ -107,6 +107,9 @@ type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partia
   setDescription?(ticket: number, filePath: string): Promise<unknown>;
   setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
   setEffort?(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
+  setHuState?(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
+  getHuChildren?(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
+  hasOpenDeliveryChildren?(hu: number): Promise<boolean>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -243,6 +246,10 @@ const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const QUEUE_BLOCKED_MARKER = "QUEUE_BLOCKED";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const RECONCILIATION_REQUIRED_MARKER = "RECONCILIATION_REQUIRED";
+// Coordinator/manifest contract: validators require `validation` to be an array of
+// {command, result} objects (github-delivery-service.ts, ticket-info-service.ts).
+// Every manifest-writing prompt must state this shape so OpenCode never emits plain strings.
+const MANIFEST_VALIDATION_SHAPE = 'The manifest "validation" field must be a non-empty JSON array of objects, each exactly {"command": "<command you ran>", "result": "<its successful outcome>"} — never plain strings.';
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
   "ticket-description-info",
@@ -791,41 +798,246 @@ export class LazyWorkflowCli {
       reportOperator("runAzureWorkspaceCode requiere --hu");
       return 1;
     }
+    if (!options.ticket || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      reportOperator("runAzureWorkspaceCode requiere --ticket <id> con un entero positivo");
+      return 1;
+    }
+    if (!this.huInfoService.createOrReusePullRequest || !this.huInfoService.checkoutTicketBranch
+      || !this.huInfoService.pushTicketBranch || !this.huInfoService.linkPullRequest
+      || !this.huInfoService.linkCommit || !this.huInfoService.getTicketInfo
+      || !this.huInfoService.setEffort || !this.huInfoService.setState
+      || !this.huInfoService.getCompletionManifestPath || !this.huInfoService.readCompletionManifest
+      || !this.huInfoService.validateCompletionManifest || !this.huInfoService.getBranch
+      || !this.huInfoService.validateEvidenceFile || !this.huInfoService.addAttachment
+      || !this.huInfoService.setEvidence || !this.huInfoService.getState
+      || !this.huInfoService.getEffort || !this.huInfoService.validateEvidence
+      || !this.huInfoService.setHuState || !this.huInfoService.hasOpenDeliveryChildren
+      || !this.huInfoService.getAutocodeContextForTicket || !this.huInfoService.getTicket
+      || !this.huInfoService.getDescription || !this.huInfoService.getAttachments
+      || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext) {
+      reportOperator("El servicio Azure no expone todas las primitivas de entrega workspace");
+      return 1;
+    }
+    const ticket = options.ticket;
+    const hu = options.hu;
+    const boundary = this.huInfoService;
     try {
+      await boundary.validateDirectTicketContext!(hu, ticket);
       const scope = await this.azureWorkspaceScope(options);
       const topology = await this.huInfoService.prepareWorkspaceBranches({
-        hu: options.hu,
+        hu,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
         baseBranch: options.baseBranch,
       });
-      const ticketTopology = options.ticket
-        ? await this.huInfoService.prepareWorkspaceTicketBranches({
-            hu: options.hu,
-            ticket: options.ticket,
-            integrationBranch: topology.integrationBranch,
-            repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
-          })
-        : null;
-      const summary = {
-        hu: topology.hu,
+      const ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
+        hu: options.hu,
+        ticket,
         integrationBranch: topology.integrationBranch,
-        anchor: topology.anchor.workingDirectory,
-        ticketBranch: ticketTopology?.ticketBranch ?? null,
-        ticketBranchAnchor: ticketTopology?.ticketBranchAnchor ?? null,
-        units: topology.units.map((unit) => ({
-          path: unit.path,
-          repository: unit.repository,
-          integrationBranch: unit.integrationBranch,
-          integrationBranchCreated: unit.integrationBranchCreated,
-          ticketBranchCreated: ticketTopology?.units.find(({ path }) => path === unit.path)?.ticketBranchCreated ?? false,
-        })),
-      };
-      console.log(JSON.stringify(summary, null, 2));
-      return 0;
+        repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+      });
+      const prompt = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
+      const execution = await this.openCodeService.run({
+        ...options,
+        workingDirectory: scope.parentDirectory,
+        prompt,
+        session: null,
+        terminalMarker: IMPLEMENTATION_READY_MARKER,
+      }, true);
+      if (execution.failed) {
+        reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+        return 1;
+      }
+      const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
+      if (!terminal) {
+        reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+        return 1;
+      }
+      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+  }
+
+  private async azureWorkspacePrompt(
+    options: CliOptions,
+    scope: WorkspaceScope,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): Promise<string> {
+    return [
+      await readPrompt("default"),
+      "Selected workflow: code",
+      `Coordinator-fixed HU: ${options.hu}`,
+      `Coordinator-fixed ticket: ${options.ticket}`,
+      `Coordinator-fixed integration branch: ${topology.integrationBranch}`,
+      `Coordinator-fixed ticket branch: ${ticketTopology.ticketBranch ?? null}`,
+      `Coordinator-fixed ticket branch anchor: ${ticketTopology.ticketBranchAnchor ?? topology.anchor.workingDirectory}`,
+      `Workspace parent directory: ${scope.parentDirectory}`,
+      "Ordered participant repositories:",
+      ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
+      "Each participant repository must end with a manifest at the per-repo completion-manifest path including at least one evidence entry; unchanged repositories must end clean.",
+      MANIFEST_VALIDATION_SHAPE,
+      "Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
+      `The working directory is ${scope.parentDirectory}`,
+      "Operator request:",
+      options.prompt,
+    ].join("\n");
+  }
+
+  private async integrateAzureWorkspaceCode(
+    options: CliOptions,
+    hu: number,
+    ticket: number,
+    scope: WorkspaceScope,
+    topology: AzureWorkspaceBranchTopology,
+    ticketTopology: AzureWorkspaceBranchTopology,
+  ): Promise<number> {
+    const integrationBranch = topology.integrationBranch;
+    const ticketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`;
+    const ticketBranchAnchor = ticketTopology.ticketBranchAnchor ?? topology.anchor.workingDirectory;
+    const boundary = this.huInfoService;
+
+    const units: Array<{ path: string; manifestPath: string; manifest?: unknown; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
+    for (const repository of scope.repositories) {
+      const manifestPath = await boundary.getCompletionManifestPath!(repository.path);
+      const exists = await Bun.file(manifestPath).exists();
+      if (!exists) {
+        const status = await this.git(["status", "--porcelain", "--untracked-files=all"], repository.path);
+        if (status.trim()) {
+          reportOperator(`lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`);
+          return 1;
+        }
+        units.push({ path: repository.path, manifestPath, changed: false });
+        continue;
+      }
+      try {
+        const manifest = await boundary.readCompletionManifest!(manifestPath, repository.path);
+        const info = await boundary.getTicketInfo!(hu, ticket);
+        await boundary.validateCompletionManifest!(manifest, info, ticket, repository.path);
+        units.push({ path: repository.path, manifestPath, manifest, commit: manifest.commit, changed: true });
+      } catch (error) {
+        reportOperator(`lazy-workflow: el manifest de ${repository.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
+    }
+
+    const changedUnits = units.filter((unit) => unit.changed);
+    if (changedUnits.length === 0) {
+      reportOperator("lazy-workflow: el workspace no contiene cambios entregables; ejecución detenida.");
+      return 1;
+    }
+
+    const delivered: Array<{ path: string; commit: string; pullRequest: number; mergeCommit: string }> = [];
+    for (const unit of changedUnits) {
+      const commit = unit.commit!;
+      try {
+        await boundary.checkoutTicketBranch!(ticketBranch, unit.path);
+        await boundary.pushTicketBranch!(ticketBranch, unit.path);
+        const created = await boundary.createOrReusePullRequest!(hu, ticket);
+        const pullRequest = created.pullRequest;
+        const mergeCommit = created.mergeCommit;
+        await boundary.linkPullRequest!(hu, ticket, pullRequest);
+        await boundary.linkCommit!(ticket, pullRequest);
+        delivered.push({ path: unit.path, commit, pullRequest, mergeCommit });
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo entregar el repositorio ${unit.path} (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
+    }
+
+    const completionManifest = await boundary.readCompletionManifest!(changedUnits[0]!.manifestPath, changedUnits[0]!.path);
+    const completionInfo = await boundary.getTicketInfo!(hu, ticket);
+    await boundary.validateCompletionManifest!(completionManifest, completionInfo, ticket, changedUnits[0]!.path);
+
+    const ticketEffortBefore = await boundary.getEffort!(ticket);
+    const baselineReal = ticketEffortBefore.effort.real ?? 0;
+    const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
+    const activeHours = 0;
+    const ticketStateBefore = await boundary.getState!(ticket);
+
+    for (const evidence of completionManifest.evidence) {
+      await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
+    }
+
+    const textEvidence = completionManifest.evidence.find(({ kind }) => kind !== "screen");
+    if (!textEvidence) {
+      reportOperator("lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.");
+      return 1;
+    }
+    await boundary.validateEvidence!(ticket, textEvidence.path);
+
+    for (const evidence of completionManifest.evidence) {
+      const existingAttachment = completionInfo.attachments.find((attachment) =>
+        typeof attachment.url === "string"
+        && attachment.url.trim().length > 0
+        && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
+        && attachment.evidenceKind === evidence.kind
+      );
+      if (!existingAttachment) {
+        await boundary.addAttachment!(ticket, evidence.path, evidence.kind);
+      }
+    }
+
+    const refreshedInfo = await boundary.getTicketInfo!(hu, ticket);
+    if (!refreshedInfo.completionEvidence) {
+      await boundary.setEvidence!(ticket, textEvidence.path);
+    }
+
+    const finalInfo = await boundary.getTicketInfo!(hu, ticket);
+    const unmetBeforeDone = finalInfo.gates.unmet.filter((gate) => gate !== COMPLETION_GATE.ticketState);
+    if (unmetBeforeDone.length > 0) {
+      reportOperator(`lazy-workflow: gates incumplidos en el ticket workspace ${ticket}: ${unmetBeforeDone.join(", ")}`);
+      return 1;
+    }
+
+    const targetReal = baselineReal + activeHours;
+    const targetRealHours = baselineRealHours + activeHours;
+    if (finalInfo.ticket.state !== "Done") {
+      const currentState = await boundary.getState!(ticket);
+      await boundary.setState!(ticket, "Done", currentState.state ?? ticketStateBefore.state ?? "Active", true, currentState.revision ?? ticketStateBefore.revision ?? 0);
+    }
+    await boundary.setEffort!(ticket, targetReal, targetRealHours, finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0);
+
+    const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
+    if (verifyAfter.ticket.state !== "Done") {
+      reportOperator(`lazy-workflow: no se pudo verificar la finalización del ticket workspace ${ticket}`);
+      return 1;
+    }
+
+    const huState = await boundary.getState!(hu);
+    let huTransitionApplied = false;
+    if (huState.state === "Desarrollo Terminado") {
+      huTransitionApplied = true;
+    } else if (await boundary.hasOpenDeliveryChildren!(hu)) {
+      reportOperator(`lazy-workflow: la HU ${hu} todavía tiene hijos de entrega abiertos; transición de HU omitida`);
+    } else {
+      try {
+        await boundary.setHuState!(hu, "Desarrollo Terminado", huState.state ?? "En Desarrollo", huState.revision ?? 0);
+        const verified = await boundary.getState!(hu);
+        if (verified.state !== "Desarrollo Terminado") {
+          reportOperator(`lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`);
+        } else {
+          huTransitionApplied = true;
+        }
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo transicionar la HU ${hu} (${errorMessage(error)}); el ticket ${ticket} se conservó en Done`);
+      }
+    }
+
+    const summary = {
+      hu: hu,
+      ticket: ticket,
+      integrationBranch,
+      ticketBranch,
+      ticketBranchAnchor,
+      delivered: delivered.map((entry) => ({ path: entry.path, pullRequest: entry.pullRequest, mergeCommit: entry.mergeCommit })),
+      ticketState: "Done",
+      huState: huTransitionApplied ? "Desarrollo Terminado" : (huState.state ?? "En Desarrollo"),
+      clean: true,
+    };
+    console.log(JSON.stringify(summary, null, 2));
+    return 0;
   }
 
   private async workspacePrompt(
@@ -854,6 +1066,7 @@ export class LazyWorkflowCli {
       "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
       "Work through repositories serially in the declared order, committing each changed repository independently.",
       "Each changed repository must write a manifest with at least one in-repository evidence path and its SHA-256 digest.",
+      MANIFEST_VALIDATION_SHAPE,
       `The working directory is ${scope.parentDirectory}`,
       "Operator request:",
       options.prompt,
@@ -1493,6 +1706,7 @@ export class LazyWorkflowCli {
       `Coordinator-fixed issue branch: ${branch}`,
       `Write the IMPLEMENTATION_READY manifest to: ${manifestPath}`,
       `The manifest JSON must contain issue ${issue.number}, branch ${branch}, the exact HEAD commit, a non-empty validation array, clean=true, and a non-empty summary.`,
+      MANIFEST_VALIDATION_SHAPE,
       `The only successful terminal marker is ${IMPLEMENTATION_READY_MARKER}; do not print ${TICKET_COMPLETED_MARKER} or ${WORKFLOW_STEP_FINISHED_MARKER}.`,
       ...(norms ? [this.formatSagContext(norms)] : []),
       `The working directory is ${options.workingDirectory}`,
