@@ -636,10 +636,11 @@ export class AzureTicketInfoService {
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
     const integrationBranch = uniqueBranch(parent);
     const ticketBranch = uniqueBranch(item);
-    if (ticketBranch.ref && (
-      ticketBranch.project !== integrationBranch.project
-      || ticketBranch.repository !== integrationBranch.repository
-    )) throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integracion de la HU`);
+    // A ticket delivered across repositories anchors its branch in its primary repository, which
+    // need not be the HU's; both still belong to the same Azure project.
+    if (ticketBranch.ref && ticketBranch.project !== integrationBranch.project) {
+      throw new Error(`La rama del ticket ${ticket} no coincide con el proyecto de la rama de integracion de la HU`);
+    }
     return { hu, ticket, branch: ticketBranch.ref, integrationBranch: integrationBranch.ref };
   }
 

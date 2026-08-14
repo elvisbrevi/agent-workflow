@@ -59,6 +59,8 @@ export interface AzureWorkspaceHarnessOptions {
   pullRequestFailsIn?: string;
   /** Remote URLs to report per repository directory name, overriding the seeded ones. */
   remotes?: Map<string, string>;
+  /** Repository (by directory name) already carrying the ticket's Branch ArtifactLink. */
+  resolvedPrimary?: string;
   terminal?: boolean;
 }
 
@@ -155,9 +157,10 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           gates: { satisfied: [], unmet: [] },
         }),
         validateDirectTicketContext: async () => undefined,
-        linkTicketBranch: async (_huId, ticketId, branch: string, workingDirectory: string) => {
-          ticketBranchLinks.push(basename(workingDirectory));
-          return { ticket: ticketId, branch, workingDirectory };
+        linkTicketBranch: async (_huId, ticketId, branch: string, repositories: readonly string[]) => {
+          const resolved = repositories.find((path) => basename(path) === options.resolvedPrimary) ?? repositories[0]!;
+          ticketBranchLinks.push(basename(resolved));
+          return { ticket: ticketId, branch, workingDirectory: resolved };
         },
         getCompletionInfo: async (huId, ticketId) => ({ hu: huId, ticket: ticketId, gates: { satisfied: [], unmet: [] } }),
         readCompletionManifest: async () => ({

@@ -137,7 +137,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     getAttachments: async () => ({ ticket: 51, attachments: [] }),
     getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
     validateDirectTicketContext: async () => undefined,
-    linkTicketBranch: async (_huId, ticketId, branch: string, workingDirectory: string) => ({ ticket: ticketId, branch, workingDirectory }),
+    linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
   const git: GitRunner = async (args, directory) => {
     if (args[0] === "remote" && args[1] === "get-url") {

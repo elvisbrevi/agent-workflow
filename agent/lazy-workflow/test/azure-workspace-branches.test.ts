@@ -435,7 +435,7 @@ test("linkTicketBranch fija el Branch ArtifactLink primario en el repositorio in
     ticketBranch,
   });
 
-  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, ["/repo/b"]);
 
   const ticketLink = fixture.patchBodies.find(({ body }) => JSON.stringify(body).includes("ticket%2F193"));
   expect(ticketLink).toBeDefined();
@@ -460,14 +460,30 @@ test("linkTicketBranch es idempotente y rechaza mover un enlace ya fijado a otro
     ticketBranch,
   });
 
-  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, ["/repo/b"]);
   const patchesAfterFirst = fixture.patchBodies.length;
 
-  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/b");
+  await fixture.service.linkTicketBranch(hu, ticket, ticketBranch, ["/repo/b"]);
   expect(fixture.patchBodies).toHaveLength(patchesAfterFirst);
 
-  await expect(fixture.service.linkTicketBranch(hu, ticket, ticketBranch, "/repo/a"))
+  await expect(fixture.service.linkTicketBranch(hu, ticket, ticketBranch, ["/repo/a"]))
     .rejects.toThrow("ya tiene una rama vinculada distinta");
+});
+
+test("linkTicketBranch rechaza un ticket que no es hijo directo de la HU", async () => {
+  const fixture = workspaceFixture();
+  await fixture.service.prepareWorkspaceBranches({ hu, repositories: fixture.repositories, baseBranch });
+  await fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  });
+
+  await expect(fixture.service.linkTicketBranch(hu, 999, "refs/heads/ticket/999", ["/repo/b"]))
+    .rejects.toThrow(`no es hijo directo de la HU ${hu}`);
+  expect(fixture.patchBodies.find(({ body }) => JSON.stringify(body).includes("ticket%2F999"))).toBeUndefined();
 });
 
 test("prepareWorkspaceTicketBranches falla cuando el ticket no existe", async () => {
