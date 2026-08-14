@@ -111,8 +111,8 @@ starting OpenCode. The operator prompt is not a branch-management interface.
   to `Done`, and only then transitions the HU from exactly `En Desarrollo` to
   exactly `Desarrollo Terminado` once no direct delivery children remain open.
   The single primary ticket Branch ArtifactLink points to the first changed
-  repository while participant repositories keep their workspace branches
-  without native links. Single-repository Azure ticket delivery remains
+  repository and is written only once that repository is known, while
+  participant repositories keep their workspace branches without native links. Single-repository Azure ticket delivery remains
   unchanged when `--working-directory` is a single path.
 _Avoid_: Azure HU planning run
 
@@ -131,6 +131,14 @@ and a repository unit without one stays pending. Aggregate completion, the
 ticket transition to `Done`, and the HU transition require a receipt for every
 changed repository.
 _Avoid_: rollback or revert pull requests after a partial merge
+
+**Ticket primary repository**:
+The single participant repository that owns the ticket's one native Branch
+ArtifactLink: the first repository in declared order that produced a verified
+completion manifest, which need not be the HU's anchor repository. It is chosen
+after the implementation session, recorded in the workspace checkpoint, and
+determines where the ticket's pull request and completion gates are read.
+_Avoid_: first declared repository, multiple ticket Branch links
 
 **Azure workspace branch topology**:
 The resolved HU and ticket branch layout across the declared participant

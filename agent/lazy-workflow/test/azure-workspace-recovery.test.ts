@@ -192,6 +192,54 @@ test("azure workspace delivery leaves later repositories pending and preserves t
   expect(preserved!.intent).toEqual({ effect: "azure-delivery", target: units.find(({ repository }) => repository === repoB)!.path });
 });
 
+test("azure workspace delivery anchors the ticket branch link on the first changed repository", async () => {
+  const harness = createAzureWorkspaceHarness({ changedRepositories: [repoB] });
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  // repo-a is declared first but produces no manifest, so repo-b is the primary repository.
+  expect(harness.ticketBranchLinks).toEqual([repoB]);
+  expect(harness.prCreateCalls.map(({ target }) => target?.repository)).toEqual([repoBId]);
+});
+
+test("azure workspace recovery reuses the checkpointed primary repository instead of reselecting", async () => {
+  const harness = createAzureWorkspaceHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    for (const path of [pathA, pathB]) await Bun.write(join(path, "lazy-workflow/completion-manifest.json"), "{}");
+    await harness.writeCheckpoint(checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""), {
+      phase: "implementation-ready",
+      // An earlier run picked repo-b because repo-a had not changed yet.
+      primaryRepository: pathB,
+    }));
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.ticketBranchLinks).toEqual([repoB]);
+});
+
+test("azure workspace delivery records the primary repository in the checkpoint", async () => {
+  const harness = createAzureWorkspaceHarness({ changedRepositories: [repoB], pullRequestFailsIn: repoBId });
+  let preserved: AzureWorkspaceCheckpoint | null = null;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+    preserved = await harness.readCheckpoint();
+    expect(preserved?.primaryRepository).toBe(pathB);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(preserved).not.toBeNull();
+});
+
 test("azure workspace delivery cleans the ticket branch of repositories without changes", async () => {
   const harness = createAzureWorkspaceHarness({ changedRepositories: [repoA] });
   let exit = -1;
