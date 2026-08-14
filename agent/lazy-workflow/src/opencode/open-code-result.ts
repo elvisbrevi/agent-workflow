@@ -70,7 +70,7 @@ export class OpenCodeResult {
     const text = events
       .filter((event) => event.type === "text")
       .map((event) => event.part?.text ?? "")
-      .join("");
+      .join("\n");
 
     const sessionId = events.find((event) => typeof event.sessionID === "string")?.sessionID;
     if (!sessionId) {

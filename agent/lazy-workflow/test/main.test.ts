@@ -548,6 +548,96 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
   expect(calls).toBe(1);
 });
 
+test("code sin HU avanza cuando el marcador llega en un segundo evento de texto tras ':'", async () => {
+  const calls: string[] = [];
+  const results = [
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_split_1",
+      part: { type: "text", text: "Trabajo completado:" },
+    }) + "\n" + JSON.stringify({
+      type: "text",
+      sessionID: "ses_split_1",
+      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+    })),
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_split_empty",
+      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
+    })),
+  ];
+
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    {
+      run: async () => {
+        calls.push("run");
+        return { result: results.shift()!, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(calls).toEqual(["run", "run"]);
+});
+
+test("code sin HU ignora un marcador conversacional dentro de un solo evento de texto", async () => {
+  let calls = 0;
+  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_chat",
+    part: { type: "text", text: "He emitido TICKET_COMPLETED al final del trabajo\nWORKFLOW_STEP_FINISHED" },
+  }));
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    {
+      run: async () => {
+        calls += 1;
+        return { result, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(calls).toBe(1);
+});
+
+test("code sin HU no avanza dos veces cuando el marcador llega duplicado en eventos de texto separados", async () => {
+  const calls: string[] = [];
+  const results = [
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_dup_1",
+      part: { type: "text", text: "TICKET_COMPLETED" },
+    }) + "\n" + JSON.stringify({
+      type: "text",
+      sessionID: "ses_dup_1",
+      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
+    })),
+    OpenCodeResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_dup_empty",
+      part: { type: "text", text: "QUEUE_EMPTY\nWORKFLOW_STEP_FINISHED" },
+    })),
+  ];
+
+  const code = await new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    {
+      run: async () => {
+        calls.push("run");
+        return { result: results.shift()!, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(calls).toEqual(["run", "run"]);
+});
+
 test.each([
   ["plan", "abc"],
   ["code", "0"],
@@ -644,6 +734,61 @@ test("OpenCodeResult normaliza la salida JSONL", () => {
   expect(result.tokens?.total).toBe(10);
   expect(result.cost).toBe(0.01);
 });
+
+test("OpenCodeResult preserva los límites entre eventos de texto consecutivos", () => {
+  const result = OpenCodeResult.fromJsonLines([
+    JSON.stringify({ type: "text", sessionID: "ses_split", part: { type: "text", text: "Trabajo completado:" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_split", part: { type: "text", text: "TICKET_COMPLETED" } }),
+  ].join("\n"));
+
+  expect(result.text).toBe("Trabajo completado:\nTICKET_COMPLETED");
+  expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeTrue();
+});
+
+test("OpenCodeResult reconoce el marcador readiness aún cuando el evento anterior termina en ':'", () => {
+  const result = OpenCodeResult.fromJsonLines([
+    JSON.stringify({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "Done:" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "IMPLEMENTATION_READY" } }),
+  ].join("\n"));
+
+  expect(result.text).toBe("Done:\nIMPLEMENTATION_READY");
+  expect(containsMarker(result.text, "IMPLEMENTATION_READY")).toBeTrue();
+});
+
+test("OpenCodeResult ignora marcadores conversacionales dentro de una sola línea", () => {
+  const result = OpenCodeResult.fromJsonLines([
+    JSON.stringify({ type: "text", sessionID: "ses_chat", part: { type: "text", text: "Deberíamos emitir TICKET_COMPLETED cuando esté listo" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_chat", part: { type: "text", text: "y luego marcar QUEUE_EMPTY si la cola queda vacía." } }),
+  ].join("\n"));
+
+  expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeFalse();
+  expect(containsMarker(result.text, "QUEUE_EMPTY")).toBeFalse();
+  expect(containsMarker(result.text, "WORKFLOW_STEP_FINISHED")).toBeFalse();
+});
+
+test("OpenCodeResult ignora marcadores fragmentados a través de eventos", () => {
+  const result = OpenCodeResult.fromJsonLines([
+    JSON.stringify({ type: "text", sessionID: "ses_frag", part: { type: "text", text: "TICKET_" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_frag", part: { type: "text", text: "COMPLETED" } }),
+  ].join("\n"));
+
+  expect(result.text).toBe("TICKET_\nCOMPLETED");
+  expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeFalse();
+});
+
+test("OpenCodeResult acepta múltiples eventos text del mismo marcador sin alterar el texto agregado", () => {
+  const result = OpenCodeResult.fromJsonLines([
+    JSON.stringify({ type: "text", sessionID: "ses_dup", part: { type: "text", text: "TICKET_COMPLETED" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_dup", part: { type: "text", text: "TICKET_COMPLETED" } }),
+  ].join("\n"));
+
+  expect(result.text).toBe("TICKET_COMPLETED\nTICKET_COMPLETED");
+  expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeTrue();
+});
+
+function containsMarker(text: string, marker: string): boolean {
+  return text.split(/\r?\n/).some((line) => line.trim() === marker);
+}
 
 test("plan imprime OpenCode con formato JSON legible", async () => {
   const result = OpenCodeResult.fromJsonLines(
