@@ -8,6 +8,7 @@ export const GITHUB_DELIVERY_PHASES = [
   "implementing",
   "implementation-ready",
   "integrating",
+  "conflict-resolving",
   "reconciling",
   "cleaning",
 ] as const;
@@ -21,6 +22,12 @@ export interface GitHubDeliveryReceipt {
 export interface GitHubDeliveryIntent {
   effect: string;
   target: string;
+}
+
+export interface GitHubPullRequestReconciliation {
+  pullRequest: number;
+  originalCommit: string;
+  baseCommit: string;
 }
 
 export interface GitHubDeliveryCheckpoint {
@@ -38,6 +45,7 @@ export interface GitHubDeliveryCheckpoint {
   manifestPath?: string | null;
   mergeCommit?: string | null;
   intent?: GitHubDeliveryIntent | null;
+  reconciliation?: GitHubPullRequestReconciliation | null;
 }
 
 export interface GitHubCheckpointStore {
@@ -92,6 +100,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "manifestPath",
     "mergeCommit",
     "intent",
+    "reconciliation",
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
   return checkpoint.schemaVersion === 1
@@ -116,6 +125,17 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
       && typeof checkpoint.intent.target === "string"
       && checkpoint.intent.effect.length > 0
       && checkpoint.intent.target.length > 0
+    ))
+    && (checkpoint.reconciliation === undefined || checkpoint.reconciliation === null || (
+      typeof checkpoint.reconciliation === "object"
+      && checkpoint.reconciliation !== null
+      && Object.keys(checkpoint.reconciliation).every((key) => ["pullRequest", "originalCommit", "baseCommit"].includes(key))
+      && Number.isInteger(checkpoint.reconciliation.pullRequest)
+      && checkpoint.reconciliation.pullRequest > 0
+      && isCommit(checkpoint.reconciliation.originalCommit)
+      && checkpoint.reconciliation.originalCommit !== null
+      && isCommit(checkpoint.reconciliation.baseCommit)
+      && checkpoint.reconciliation.baseCommit !== null
     ))
     && (pullRequest === null || (typeof pullRequest === "number" && Number.isInteger(pullRequest) && pullRequest > 0))
     && typeof checkpoint.receipts === "object"

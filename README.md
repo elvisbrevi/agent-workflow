@@ -83,6 +83,12 @@ session; the coordinator emits `TICKET_COMPLETED` and
 `WORKFLOW_STEP_FINISHED` only after verified delivery. Add `--hu <ID>` to select
 the existing Azure planning or delivery workflow.
 
+If a canonical GitHub PR conflicts with its base, `code` fixes the exact base
+commit and starts a conflict-only OpenCode session for the same Issue, branch
+and PR. It accepts the result only when the new manifest commit contains both
+the original implementation and fixed base; interrupted reconciliation resumes
+from its checkpoint without selecting another Issue.
+
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
 `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt

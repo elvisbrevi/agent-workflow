@@ -25,6 +25,13 @@ export interface GitHubPullRequest {
   mergeCommit?: string;
 }
 
+export class GitHubPullRequestConflictError extends Error {
+  constructor(readonly pullRequest: number) {
+    super(`El PR #${pullRequest} tiene conflictos con su rama base`);
+    this.name = "GitHubPullRequestConflictError";
+  }
+}
+
 export interface GitHubDeliveryAdapter {
   verifyRepository?(repository: string, workingDirectory: string): Promise<void>;
   checkoutBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
@@ -33,6 +40,9 @@ export interface GitHubDeliveryAdapter {
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
   createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string): Promise<GitHubPullRequest>;
+  preparePullRequestReconciliation?(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<{ baseCommit: string }>;
+  verifyPendingPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, workingDirectory: string): Promise<void>;
+  verifyPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, reconciledCommit: string, workingDirectory: string): Promise<void>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
   closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
@@ -269,10 +279,66 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       throw new Error("El PR no coincide con el issue, la rama o la rama base fijados");
     }
     if (pr.state === "MERGED") return;
+    if (pr.state === "OPEN" && !pr.isDraft && pr.mergeStateStatus === "DIRTY") {
+      throw new GitHubPullRequestConflictError(pr.number ?? 0);
+    }
     if (pr.state !== "OPEN" || pr.isDraft || pr.mergeStateStatus !== "CLEAN") throw new Error("El PR no cumple los requisitos de merge");
     const failedCheck = (pr.statusCheckRollup ?? []).find(({ conclusion, state }) =>
       conclusion && !["SUCCESS", "SKIPPED", "NEUTRAL"].includes(conclusion) || state && !["SUCCESS", "COMPLETED"].includes(state));
     if (failedCheck) throw new Error("El PR tiene checks requeridos no satisfactorios");
+  }
+
+  async preparePullRequestReconciliation(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<{ baseCommit: string }> {
+    const fixedBranch = requireBranch(branch, "La rama");
+    const fixedBaseBranch = requireBranch(baseBranch, "La rama base");
+    const fixedCommit = requireCommit(commit);
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    if (active !== branchName(fixedBranch) || head !== fixedCommit || status.trim()) {
+      throw new Error("La rama del PR cambió antes de reconciliar conflictos");
+    }
+    const baseName = branchName(fixedBaseBranch);
+    await this.git(["fetch", "origin", `+${fixedBaseBranch}:refs/remotes/origin/${baseName}`], workingDirectory);
+    const baseCommit = requireCommit((await this.git(["rev-parse", `refs/remotes/origin/${baseName}^{commit}`], workingDirectory)).trim());
+    return { baseCommit };
+  }
+
+  async verifyPullRequestReconciliation(branch: string, originalCommit: string, baseCommit: string, reconciledCommit: string, workingDirectory: string): Promise<void> {
+    const fixedBranch = requireBranch(branch, "La rama");
+    const original = requireCommit(originalCommit);
+    const base = requireCommit(baseCommit);
+    const reconciled = requireCommit(reconciledCommit);
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    if (active !== branchName(fixedBranch) || head !== reconciled || status.trim()) {
+      throw new Error("La reconciliación no dejó la rama fijada limpia en el commit declarado");
+    }
+    await this.git(["merge-base", "--is-ancestor", original, reconciled], workingDirectory);
+    await this.git(["merge-base", "--is-ancestor", base, reconciled], workingDirectory);
+  }
+
+  async verifyPendingPullRequestReconciliation(branch: string, originalCommit: string, baseCommit: string, workingDirectory: string): Promise<void> {
+    const fixedBranch = requireBranch(branch, "La rama");
+    const original = requireCommit(originalCommit);
+    const base = requireCommit(baseCommit);
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    const head = requireCommit((await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim());
+    if (active !== branchName(fixedBranch)) throw new Error("La rama activa no coincide con la reconciliación fijada");
+    if (head !== original) {
+      await this.verifyPullRequestReconciliation(fixedBranch, original, base, head, workingDirectory);
+      return;
+    }
+    const mergeHeadPath = (await this.git(["rev-parse", "--git-path", "MERGE_HEAD"], workingDirectory)).trim();
+    if (await Bun.file(resolve(workingDirectory, mergeHeadPath)).exists()) {
+      const mergeHead = requireCommit((await Bun.file(resolve(workingDirectory, mergeHeadPath)).text()).trim());
+      if (mergeHead !== base) throw new Error("MERGE_HEAD no coincide con la base fijada");
+      return;
+    }
+    if ((await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory)).trim()) {
+      throw new Error("El worktree cambió fuera de la reconciliación fijada");
+    }
   }
 
   private async verifyMergeRequirements(repository: string, baseBranch: string, pullRequest: number, workingDirectory: string): Promise<void> {
