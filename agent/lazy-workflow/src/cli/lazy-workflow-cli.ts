@@ -246,6 +246,10 @@ const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
 const QUEUE_BLOCKED_MARKER = "QUEUE_BLOCKED";
 const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 const RECONCILIATION_REQUIRED_MARKER = "RECONCILIATION_REQUIRED";
+// Coordinator/manifest contract: validators require `validation` to be an array of
+// {command, result} objects (github-delivery-service.ts, ticket-info-service.ts).
+// Every manifest-writing prompt must state this shape so OpenCode never emits plain strings.
+const MANIFEST_VALIDATION_SHAPE = 'The manifest "validation" field must be a non-empty JSON array of objects, each exactly {"command": "<command you ran>", "result": "<its successful outcome>"} — never plain strings.';
 const TICKET_READ_COMMANDS = new Set([
   "ticket-info",
   "ticket-description-info",
@@ -873,6 +877,7 @@ export class LazyWorkflowCli {
       "Ordered participant repositories:",
       ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
       "Each participant repository must end with a manifest at the per-repo completion-manifest path including at least one evidence entry; unchanged repositories must end clean.",
+      MANIFEST_VALIDATION_SHAPE,
       "Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
       `The working directory is ${scope.parentDirectory}`,
       "Operator request:",
@@ -1061,6 +1066,7 @@ export class LazyWorkflowCli {
       "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
       "Work through repositories serially in the declared order, committing each changed repository independently.",
       "Each changed repository must write a manifest with at least one in-repository evidence path and its SHA-256 digest.",
+      MANIFEST_VALIDATION_SHAPE,
       `The working directory is ${scope.parentDirectory}`,
       "Operator request:",
       options.prompt,
@@ -1700,6 +1706,7 @@ export class LazyWorkflowCli {
       `Coordinator-fixed issue branch: ${branch}`,
       `Write the IMPLEMENTATION_READY manifest to: ${manifestPath}`,
       `The manifest JSON must contain issue ${issue.number}, branch ${branch}, the exact HEAD commit, a non-empty validation array, clean=true, and a non-empty summary.`,
+      MANIFEST_VALIDATION_SHAPE,
       `The only successful terminal marker is ${IMPLEMENTATION_READY_MARKER}; do not print ${TICKET_COMPLETED_MARKER} or ${WORKFLOW_STEP_FINISHED_MARKER}.`,
       ...(norms ? [this.formatSagContext(norms)] : []),
       `The working directory is ${options.workingDirectory}`,
