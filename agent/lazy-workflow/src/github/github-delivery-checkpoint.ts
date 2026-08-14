@@ -50,6 +50,7 @@ function isCommit(value: string | null): boolean {
 function isReceipt(value: unknown): value is GitHubDeliveryReceipt {
   return typeof value === "object"
     && value !== null
+    && Object.keys(value).every((key) => key === "verifiedAt")
     && typeof (value as GitHubDeliveryReceipt).verifiedAt === "string"
     && (value as GitHubDeliveryReceipt).verifiedAt.length > 0;
 }
