@@ -78,9 +78,10 @@ bun run main.ts plan --prompt "plan the requested GitHub work" --working-directo
 ```
 
 Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
-tools. `code` drains all eligible GitHub issues one per fresh OpenCode session
-and stops when the queue is empty. Add `--hu <ID>` to select the existing Azure
-planning or delivery workflow.
+tools. `code` delivers exactly one eligible GitHub issue per fresh OpenCode
+session; the coordinator emits `TICKET_COMPLETED` and
+`WORKFLOW_STEP_FINISHED` only after verified delivery. Add `--hu <ID>` to select
+the existing Azure planning or delivery workflow.
 
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
