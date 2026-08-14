@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
+import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome } from "./_helpers/managed-queue-fixtures.ts";
 
@@ -138,6 +139,14 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   const { azure, openCode } = services();
   let selections = 0;
   let resumes = 0;
+  const queue = {
+    issue: fakeSelectedIssue(178),
+    selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
+    async reconcileClaimedIssue(issueNumber: number) {
+      if (this.issue.number !== issueNumber) throw new Error("wrong issue");
+      return this.issue;
+    },
+  };
   const code = await new LazyWorkflowCli(
     azure,
     { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
@@ -152,10 +161,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     undefined,
     undefined,
     undefined,
-    {
-      selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
-      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
-    },
+    queue,
     state.store,
     state.lock,
   ).run(["code", "--working-directory", "/repo"]);
@@ -165,6 +171,62 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   expect(resumes).toBe(1);
   expect(state.current?.issue).toBe(178);
   expect(state.current?.phase).toBe("implementing");
+});
+
+test("la recuperación sessionless conserva el receptor del adaptador GitHub", async () => {
+  const state = boundaries({
+    ...checkpoint(null),
+    phase: "started",
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/missing-manifest.json",
+  });
+  const { azure, openCode } = services();
+  let reconciliations = 0;
+  let runs = 0;
+  const queue = {
+    issue: fakeSelectedIssue(178),
+    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
+    async reconcileClaimedIssue(issueNumber: number) {
+      reconciliations += 1;
+      if (this.issue.number !== issueNumber) throw new Error("wrong issue");
+      return this.issue;
+    },
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async () => { throw new Error("must reuse prepared branch"); },
+    readManifest: async () => { throw new Error("must not read missing manifest"); },
+    pushCommit: async () => { throw new Error("must not push"); },
+    createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
+    mergePullRequest: async () => { throw new Error("must not merge"); },
+    closeIssue: async () => { throw new Error("must not close issue"); },
+    cleanupBranch: async () => { throw new Error("must not clean branch"); },
+  };
+
+  const code = await new LazyWorkflowCli(
+    azure,
+    { ...openCode, run: async () => { runs += 1; throw new Error("stop after recovery preflight"); } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queue,
+    state.store,
+    state.lock,
+    delivery,
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(reconciliations).toBe(1);
+  expect(runs).toBe(1);
+  expect(state.current?.phase).toBe("started");
 });
 
 for (const phase of GITHUB_DELIVERY_PHASES) {
