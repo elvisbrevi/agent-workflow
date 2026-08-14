@@ -82,6 +82,72 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   }
 });
 
+test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-dirty-"));
+  const repoA = join(root, "repo-a");
+  const repoB = join(root, "repo-b");
+  await Bun.$`mkdir -p ${repoA} ${repoB}`;
+  const events: string[] = [];
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
+    if (args[0] === "status" && basename(directory) === "repo-b") return " M file.ts";
+    return "";
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    verifyRepository: async () => { events.push("verify"); },
+    prepareBranch: async () => { events.push("prepare"); throw new Error("must not prepare"); },
+    readManifest: async () => { throw new Error("must not read manifest"); },
+    pushCommit: async () => { events.push("push"); },
+    createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
+    mergePullRequest: async () => { throw new Error("must not merge"); },
+    closeIssue: async () => { events.push("close"); },
+    cleanupBranch: async () => { events.push("cleanup"); },
+  };
+  const queue = {
+    selectEligibleIssue: async () => { events.push("select"); return { kind: "empty" as const }; },
+    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+  };
+  const openCode = {
+    run: async () => { events.push("opencode"); throw new Error("must not run"); },
+    resume: async () => { events.push("resume"); throw new Error("must not resume"); },
+  };
+  const lock: GitHubRepositoryLockBoundary = {
+    acquire: async () => { events.push("lock"); return async () => undefined; },
+  };
+  const checkpointStore: GitHubCheckpointStore = {
+    read: async () => { events.push("checkpoint-read"); return null; },
+    write: async () => { events.push("checkpoint-write"); },
+    clear: async () => undefined,
+  };
+  const cli = new LazyWorkflowCli(
+    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    openCode,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    git,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queue,
+    checkpointStore,
+    lock,
+    delivery,
+  );
+
+  try {
+    expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(1);
+    expect(events).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reconcilia serialmente un PR conflictivo dentro del workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-conflict-"));
   const repoA = join(root, "repo-a");

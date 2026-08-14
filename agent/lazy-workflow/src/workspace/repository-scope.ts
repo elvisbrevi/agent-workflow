@@ -3,15 +3,15 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 export interface WorkspaceRepository {
-  path: string;
-  remote: string;
-  providerIdentity: string | null;
+  readonly path: string;
+  readonly remote: string;
+  readonly providerIdentity: string | null;
 }
 
 export interface WorkspaceScope {
-  repositories: WorkspaceRepository[];
-  parentDirectory: string;
-  stateDirectory: string;
+  readonly repositories: readonly WorkspaceRepository[];
+  readonly parentDirectory: string;
+  readonly stateDirectory: string;
 }
 
 export function parseWorkingDirectoryList(value: string): string[] {
