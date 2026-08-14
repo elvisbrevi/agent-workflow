@@ -826,7 +826,7 @@ export class LazyWorkflowCli {
           manifestPath = prepared.manifestPath;
           await saveCheckpoint("started");
         } catch (error) {
-          await saveCheckpoint("reconciling");
+          await saveCheckpoint("started");
           reportOperator(`lazy-workflow: no se pudo preparar la rama del Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`);
           return 1;
         }
@@ -871,7 +871,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       const terminalMarker = this.githubDelivery ? IMPLEMENTATION_READY_MARKER : WORKFLOW_STEP_FINISHED_MARKER;
       const terminal = containsMarker(result.text, terminalMarker);
-      await saveCheckpoint(execution.failed ? "reconciling" : "implementing", terminal ? null : result.sessionId);
+      await saveCheckpoint(execution.failed ? "reconciling" : (terminal && this.githubDelivery ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({
           schemaVersion: 1,
@@ -1009,6 +1009,9 @@ export class LazyWorkflowCli {
     if (manifest.issue !== checkpoint.issue || manifest.branch !== fixedBranch) {
       throw new Error("El manifest no coincide con el Issue o la rama fijados");
     }
+    if (checkpoint.commit !== null && checkpoint.commit !== manifest.commit) {
+      throw new Error("El commit del manifest cambió respecto al checkpoint fijado");
+    }
     checkpoint = {
       ...checkpoint,
       commit: manifest.commit,
@@ -1071,18 +1074,29 @@ export class LazyWorkflowCli {
     }
     if (this.githubDelivery && checkpoint.sessionId === null && checkpoint.phase === "started") {
       try {
-        const liveCheckpoint = await store.read(options.workingDirectory);
+        let liveCheckpoint = await store.read(options.workingDirectory);
         const readIssue = this.githubManagedQueue.reconcileClaimedIssue ?? this.githubManagedQueue.readIssueDetail;
-        if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || !liveCheckpoint.branch || !liveCheckpoint.manifestPath || !liveCheckpoint.baseBranch || !readIssue) {
+        if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || !readIssue) {
           this.reportGitHubReconciliationRequired(checkpoint);
           return 1;
+        }
+        let branch = liveCheckpoint.branch;
+        let manifestPath = liveCheckpoint.manifestPath;
+        let baseBranch = liveCheckpoint.baseBranch;
+        if (!branch || !manifestPath || !baseBranch) {
+          const prepared = await this.githubDelivery.prepareBranch(liveCheckpoint.issue, options.workingDirectory);
+          branch = prepared.branch;
+          manifestPath = prepared.manifestPath;
+          baseBranch = prepared.baseBranch;
+          liveCheckpoint = { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "started", sessionId: null };
+          await store.write(liveCheckpoint, options.workingDirectory);
         }
         const issue = await readIssue(liveCheckpoint.issue, options.workingDirectory);
         const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
         await this.githubDelivery.verifyRepository?.(liveCheckpoint.repository, options.workingDirectory);
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
-        const prompt = await this.buildGitHubDeliveryPrompt(options, issue, repository, liveCheckpoint.branch, liveCheckpoint.manifestPath, norms);
+        const prompt = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
         const execution = await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         await store.write({ ...liveCheckpoint, phase: "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);

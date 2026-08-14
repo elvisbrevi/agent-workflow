@@ -87,6 +87,10 @@ function repositoryFromRemote(remote: string): string | null {
   return match?.[1] ?? null;
 }
 
+function referencesIssue(body: string, issue: number): boolean {
+  return new RegExp(`(?:^|\\s)#${issue}(?!\\d)`).test(body);
+}
+
 function manifestIsValid(value: unknown): value is GitHubReadyManifest {
   if (typeof value !== "object" || value === null) return false;
   const allowedKeys = new Set(["issue", "branch", "commit", "validation", "clean", "summary"]);
@@ -175,8 +179,10 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const head = branchName(branch);
     const base = branchName(baseBranch);
     const output = await this.gh(["pr", "list", "--repo", name, "--state", "all", "--head", head, "--base", base, "--json", "number,state,body,headRefName,baseRefName,headRefOid"], workingDirectory);
-    const pullRequests = parseJson<PullRequestView[]>(output, "gh pr list").filter((pr) =>
-      pr.headRefName === head && pr.baseRefName === base && pr.headRefOid === commit && typeof pr.number === "number" && (pr.body ?? "").includes(`#${issue}`));
+    const relatedPullRequests = parseJson<PullRequestView[]>(output, "gh pr list").filter((pr) =>
+      pr.headRefName === head && pr.baseRefName === base && typeof pr.number === "number" && referencesIssue(pr.body ?? "", issue));
+    const pullRequests = relatedPullRequests.filter((pr) => pr.headRefOid === commit);
+    if (relatedPullRequests.some((pr) => pr.headRefOid !== commit)) throw new Error(`El Issue #${issue} tiene un PR con una rama o commit conflictivo`);
     if (pullRequests.length > 1) throw new Error(`El Issue #${issue} tiene múltiples PR canónicos`);
     if (pullRequests.length === 1) return { number: pullRequests[0]!.number! };
     const created = await this.gh([
@@ -195,7 +201,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   }
 
   private validatePullRequest(pr: PullRequestView, issue: number, branch: string, baseBranch: string, commit: string): void {
-    if (pr.headRefName !== branchName(branch) || pr.headRefOid !== commit || pr.baseRefName !== branchName(baseBranch) || !(pr.body ?? "").includes(`#${issue}`)) {
+    if (pr.headRefName !== branchName(branch) || pr.headRefOid !== commit || pr.baseRefName !== branchName(baseBranch) || !referencesIssue(pr.body ?? "", issue)) {
       throw new Error("El PR no coincide con el issue, la rama o la rama base fijados");
     }
     if (pr.state === "MERGED") return;
@@ -206,12 +212,19 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   }
 
   private async verifyMergeRequirements(repository: string, baseBranch: string, pullRequest: number, workingDirectory: string): Promise<void> {
-    try {
-      await this.gh(["api", `repos/${repository}/branches/${branchName(baseBranch)}/protection`], workingDirectory);
-    } catch (error) {
-      if (!/\b404\b/.test(error instanceof Error ? error.message : String(error))) throw error;
+    const branch = parseJson<{ protected?: boolean }>(await this.gh(["api", `repos/${repository}/branches/${branchName(baseBranch)}`], workingDirectory), "GitHub branch");
+    if (branch.protected) {
+      const protection = await this.gh(["api", `repos/${repository}/branches/${branchName(baseBranch)}/protection`], workingDirectory);
+      if (!protection.trim()) throw new Error("La protección de la rama base no se pudo verificar");
     }
-    await this.gh(["pr", "checks", `${pullRequest}`, "--required", "--json", "name,state,bucket"], workingDirectory);
+    const checksOutput = await this.gh(["pr", "checks", `${pullRequest}`, "--required", "--json", "name,state,bucket"], workingDirectory);
+    const checks = parseJson<Array<{ state?: string; bucket?: string }>>(
+      checksOutput.trim() || "[]",
+      "gh pr checks",
+    );
+    if (checks.some(({ state, bucket }) => !["SUCCESS", "COMPLETED"].includes(state ?? "") && bucket !== "pass" && bucket !== "skipping")) {
+      throw new Error("El PR tiene checks requeridos no satisfactorios");
+    }
   }
 
   async mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }> {
@@ -248,7 +261,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (local && (await this.git(["rev-parse", `refs/heads/${branchName(branch)}^{commit}`], workingDirectory)).trim() !== commit) {
       throw new Error(`La rama local ${branch} cambió antes de la limpieza`);
     }
-    await this.cleaner.deleteTicketBranch(branch, baseBranch, workingDirectory);
+    await this.cleaner.deleteTicketBranch(branch, baseBranch, workingDirectory, commit);
     if ((await this.git(["branch", "--list", branchName(branch)], workingDirectory)).trim()) {
       throw new Error(`La rama local ${branch} no se pudo eliminar`);
     }
