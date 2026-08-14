@@ -23,13 +23,14 @@ export interface GitHubPullRequest {
 }
 
 export interface GitHubDeliveryAdapter {
+  verifyRepository?(repository: string, workingDirectory: string): Promise<void>;
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
-  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, workingDirectory: string): Promise<GitHubPullRequest>;
-  mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
+  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest>;
+  mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
   closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void>;
-  cleanupBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
+  cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
 }
 
 interface RepositoryView {
@@ -42,6 +43,7 @@ interface PullRequestView {
   state?: string;
   body?: string;
   headRefName?: string;
+  headRefOid?: string;
   baseRefName?: string;
   isDraft?: boolean;
   mergeStateStatus?: string;
@@ -96,10 +98,10 @@ function manifestIsValid(value: unknown): value is GitHubReadyManifest {
     && typeof manifest.commit === "string"
     && Array.isArray(manifest.validation)
     && manifest.validation.length > 0
-    && manifest.validation.every((entry) => typeof entry?.command === "string" && typeof entry.result === "string")
+    && manifest.validation.every((entry) => typeof entry?.command === "string" && entry.command.trim().length > 0 && typeof entry.result === "string" && entry.result.trim().length > 0)
     && manifest.clean === true
     && typeof manifest.summary === "string"
-    && manifest.summary.length > 0;
+    && manifest.summary.trim().length > 0;
 }
 
 export class GitHubDeliveryService implements GitHubDeliveryAdapter {
@@ -117,6 +119,11 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const remote = await this.git(["remote", "get-url", "origin"], workingDirectory);
     if (repositoryFromRemote(remote) !== name) throw new Error("El remote origin no coincide con el repositorio GitHub fijado");
     return { name, baseBranch: requireBranch(`refs/heads/${base}`, "La rama base") };
+  }
+
+  async verifyRepository(repository: string, workingDirectory: string): Promise<void> {
+    const current = await this.repository(workingDirectory);
+    if (current.name !== repository) throw new Error(`el checkpoint GitHub pertenece a ${repository}, no a ${current.name}`);
   }
 
   async prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation> {
@@ -163,13 +170,13 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     await pushGitBranch(this.git, branch, workingDirectory);
   }
 
-  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, workingDirectory: string): Promise<GitHubPullRequest> {
+  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest> {
     const { name } = await this.repository(workingDirectory);
     const head = branchName(branch);
     const base = branchName(baseBranch);
-    const output = await this.gh(["pr", "list", "--repo", name, "--state", "all", "--head", head, "--base", base, "--json", "number,state,body,headRefName,baseRefName"], workingDirectory);
+    const output = await this.gh(["pr", "list", "--repo", name, "--state", "all", "--head", head, "--base", base, "--json", "number,state,body,headRefName,baseRefName,headRefOid"], workingDirectory);
     const pullRequests = parseJson<PullRequestView[]>(output, "gh pr list").filter((pr) =>
-      pr.headRefName === head && pr.baseRefName === base && typeof pr.number === "number" && (pr.body ?? "").includes(`#${issue}`));
+      pr.headRefName === head && pr.baseRefName === base && pr.headRefOid === commit && typeof pr.number === "number" && (pr.body ?? "").includes(`#${issue}`));
     if (pullRequests.length > 1) throw new Error(`El Issue #${issue} tiene múltiples PR canónicos`);
     if (pullRequests.length === 1) return { number: pullRequests[0]!.number! };
     const created = await this.gh([
@@ -183,12 +190,12 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
 
   private async readPullRequest(number: number, workingDirectory: string): Promise<PullRequestView> {
     return parseJson<PullRequestView>(await this.gh([
-      "pr", "view", `${number}`, "--json", "number,state,body,headRefName,baseRefName,isDraft,mergeStateStatus,mergeCommit,mergedAt,statusCheckRollup",
+      "pr", "view", `${number}`, "--json", "number,state,body,headRefName,headRefOid,baseRefName,isDraft,mergeStateStatus,mergeCommit,mergedAt,statusCheckRollup",
     ], workingDirectory), "gh pr view");
   }
 
-  private validatePullRequest(pr: PullRequestView, issue: number, branch: string, baseBranch: string): void {
-    if (pr.headRefName !== branchName(branch) || pr.baseRefName !== branchName(baseBranch) || !(pr.body ?? "").includes(`#${issue}`)) {
+  private validatePullRequest(pr: PullRequestView, issue: number, branch: string, baseBranch: string, commit: string): void {
+    if (pr.headRefName !== branchName(branch) || pr.headRefOid !== commit || pr.baseRefName !== branchName(baseBranch) || !(pr.body ?? "").includes(`#${issue}`)) {
       throw new Error("El PR no coincide con el issue, la rama o la rama base fijados");
     }
     if (pr.state === "MERGED") return;
@@ -198,13 +205,24 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (failedCheck) throw new Error("El PR tiene checks requeridos no satisfactorios");
   }
 
-  async mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }> {
+  private async verifyMergeRequirements(repository: string, baseBranch: string, pullRequest: number, workingDirectory: string): Promise<void> {
+    try {
+      await this.gh(["api", `repos/${repository}/branches/${branchName(baseBranch)}/protection`], workingDirectory);
+    } catch (error) {
+      if (!/\b404\b/.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+    await this.gh(["pr", "checks", `${pullRequest}`, "--required", "--json", "name,state,bucket"], workingDirectory);
+  }
+
+  async mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }> {
+    const { name } = await this.repository(workingDirectory);
     let current = await this.readPullRequest(pullRequest, workingDirectory);
-    this.validatePullRequest(current, issue, branch, baseBranch);
+    this.validatePullRequest(current, issue, branch, baseBranch, commit);
     if (current.state !== "MERGED") {
+      await this.verifyMergeRequirements(name, baseBranch, pullRequest, workingDirectory);
       await this.gh(["pr", "merge", `${pullRequest}`, "--merge"], workingDirectory);
       current = await this.readPullRequest(pullRequest, workingDirectory);
-      this.validatePullRequest(current, issue, branch, baseBranch);
+      this.validatePullRequest(current, issue, branch, baseBranch, commit);
     }
     const mergeCommit = current.mergeCommit?.oid;
     if (current.state !== "MERGED" || !mergeCommit) throw new Error("El PR no tiene un commit de merge verificable");
@@ -212,15 +230,24 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   }
 
   async closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void> {
-    const state = parseJson<{ state?: string }>(await this.gh(["issue", "view", `${issue}`, "--json", "state"], workingDirectory), "gh issue view");
+    const state = parseJson<{ state?: string; comments?: Array<{ body?: string }> }>(await this.gh(["issue", "view", `${issue}`, "--json", "state,comments"], workingDirectory), "gh issue view");
     if (state.state === "CLOSED") return;
-    await this.gh(["issue", "comment", `${issue}`, "--body", `Delivered by merged PR #${pullRequest} (${mergeCommit}).`], workingDirectory);
+    const marker = `lazy-workflow: delivered PR #${pullRequest} (${mergeCommit})`;
+    if (!(state.comments ?? []).some(({ body }) => body?.includes(marker))) {
+      await this.gh(["issue", "comment", `${issue}`, "--body", marker], workingDirectory);
+    }
     await this.gh(["issue", "close", `${issue}`], workingDirectory);
     const verified = parseJson<{ state?: string }>(await this.gh(["issue", "view", `${issue}`, "--json", "state"], workingDirectory), "gh issue view");
     if (verified.state !== "CLOSED") throw new Error(`El Issue #${issue} no quedó cerrado`);
   }
 
-  async cleanupBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void> {
+  async cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void> {
+    const remote = (await this.git(["ls-remote", "--heads", "origin", branch], workingDirectory)).trim();
+    if (remote && remote.split(/\s+/)[0] !== commit) throw new Error(`La rama remota ${branch} cambió antes de la limpieza`);
+    const local = (await this.git(["branch", "--list", branchName(branch)], workingDirectory)).trim();
+    if (local && (await this.git(["rev-parse", `refs/heads/${branchName(branch)}^{commit}`], workingDirectory)).trim() !== commit) {
+      throw new Error(`La rama local ${branch} cambió antes de la limpieza`);
+    }
     await this.cleaner.deleteTicketBranch(branch, baseBranch, workingDirectory);
     if ((await this.git(["branch", "--list", branchName(branch)], workingDirectory)).trim()) {
       throw new Error(`La rama local ${branch} no se pudo eliminar`);
