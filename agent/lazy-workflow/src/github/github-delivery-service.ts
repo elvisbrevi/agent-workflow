@@ -28,7 +28,7 @@ export interface GitHubDeliveryAdapter {
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
-  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest>;
+  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean): Promise<GitHubPullRequest>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
   closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
@@ -198,7 +198,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     await pushGitBranch(this.git, branch, workingDirectory);
   }
 
-  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest> {
+  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue = true): Promise<GitHubPullRequest> {
     const { name } = await this.repository(workingDirectory);
     const head = branchName(branch);
     const base = branchName(baseBranch);
@@ -213,7 +213,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (pullRequests.length === 1) return { number: pullRequests[0]!.number! };
     const created = await this.gh([
       "pr", "create", "--repo", name, "--base", base, "--head", head,
-      "--title", `Issue #${issue}`, "--body", `Closes #${issue}`,
+      "--title", `Issue #${issue}`, "--body", closesIssue ? `Closes #${issue}` : `Tracks #${issue}`,
     ], workingDirectory);
     const match = created.match(/\/pull\/(\d+)(?:\s|$)/);
     if (!match) throw new Error("gh pr create no devolvió un PR verificable");
