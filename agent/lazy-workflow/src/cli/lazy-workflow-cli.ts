@@ -44,6 +44,10 @@ import {
   GitHubDeliveryService,
   type GitHubDeliveryAdapter,
 } from "../github/github-delivery-service.ts";
+import {
+  GitHubParentReconciliationService,
+  type GitHubParentReconciliationAdapter,
+} from "../github/github-parent-reconciliation-service.ts";
 import { GitHubRepositoryLockService, type GitHubRepositoryLockBoundary } from "../github/github-repository-lock.ts";
 import {
   buildCli,
@@ -257,6 +261,7 @@ export class LazyWorkflowCli {
   private readonly githubCheckpointStore: GitHubCheckpointStore | null;
   private readonly githubRepositoryLock: GitHubRepositoryLockBoundary | null;
   private readonly githubDelivery: GitHubDeliveryAdapter | null;
+  private readonly githubParentReconciliation: GitHubParentReconciliationAdapter | null;
 
   constructor(
     private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
@@ -276,6 +281,7 @@ export class LazyWorkflowCli {
     githubCheckpointStore?: GitHubCheckpointStore,
     githubRepositoryLock?: GitHubRepositoryLockBoundary,
     githubDelivery?: GitHubDeliveryAdapter,
+    githubParentReconciliation?: GitHubParentReconciliationAdapter,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -288,6 +294,9 @@ export class LazyWorkflowCli {
       : null;
     this.githubDelivery = coordinatorEnabled
       ? githubDelivery ?? (githubManagedQueue instanceof GitHubManagedQueueService ? new GitHubDeliveryService() : null)
+      : null;
+    this.githubParentReconciliation = coordinatorEnabled
+      ? githubParentReconciliation ?? (githubManagedQueue instanceof GitHubManagedQueueService ? new GitHubParentReconciliationService() : null)
       : null;
   }
 
@@ -710,6 +719,7 @@ export class LazyWorkflowCli {
         this.reportGitHubReconciliationRequired(checkpoint);
         return 1;
       }
+      await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
       return this.runDefaultCodeWorkflowLoop(options, store);
     } catch (error) {
       console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER }, null, 2));
@@ -1052,6 +1062,9 @@ export class LazyWorkflowCli {
     await save();
     if (!checkpoint.receipts.cleanup) {
       await effect("cleanup", fixedBranch, () => delivery.cleanupBranch(fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory));
+    }
+    if (this.githubParentReconciliation && !checkpoint.receipts["parent-reconciliation"]) {
+      await effect("parent-reconciliation", `${checkpoint.issue}`, () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
     }
     await store.clear(options.workingDirectory);
   }
