@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -27,7 +28,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed" }),
+    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) }; },
@@ -48,6 +49,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
       prompt = options.prompt;
       for (const repository of [repoA, repoB]) {
         await Bun.write(join(repository, "manifest.json"), "{}\n");
+        await Bun.write(join(repository, "evidence.txt"), "evidence");
       }
       return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
     }, resume: async () => { throw new Error("must not resume"); } },

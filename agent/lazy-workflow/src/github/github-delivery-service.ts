@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 
@@ -9,6 +10,7 @@ export interface GitHubReadyManifest {
   validation: Array<{ command: string; result: string }>;
   clean: boolean;
   summary: string;
+  evidence?: Array<{ path: string; sha256: string }>;
 }
 
 export interface GitHubBranchPreparation {
@@ -28,7 +30,7 @@ export interface GitHubDeliveryAdapter {
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
-  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean): Promise<GitHubPullRequest>;
+  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string): Promise<GitHubPullRequest>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
   closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
@@ -89,7 +91,7 @@ export function githubRepositoryFromRemote(remote: string): string | null {
 }
 
 function referencesIssue(body: string, issue: number): boolean {
-  return new RegExp(`(?:^|\\s)#${issue}(?!\\d)`).test(body);
+  return new RegExp(`(?:^|\\s)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${issue}(?!\\d)`).test(body);
 }
 
 function validationResultIsNotFailure(result: string): boolean {
@@ -98,7 +100,7 @@ function validationResultIsNotFailure(result: string): boolean {
 
 function manifestIsValid(value: unknown): value is GitHubReadyManifest {
   if (typeof value !== "object" || value === null) return false;
-  const allowedKeys = new Set(["issue", "branch", "commit", "validation", "clean", "summary"]);
+  const allowedKeys = new Set(["issue", "branch", "commit", "validation", "clean", "summary", "evidence"]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
   const manifest = value as Partial<GitHubReadyManifest>;
   return Number.isInteger(manifest.issue)
@@ -110,7 +112,8 @@ function manifestIsValid(value: unknown): value is GitHubReadyManifest {
     && manifest.validation.every((entry) => typeof entry?.command === "string" && entry.command.trim().length > 0 && typeof entry.result === "string" && entry.result.trim().length > 0 && validationResultIsNotFailure(entry.result))
     && manifest.clean === true
     && typeof manifest.summary === "string"
-    && manifest.summary.trim().length > 0;
+    && manifest.summary.trim().length > 0
+    && (manifest.evidence === undefined || (Array.isArray(manifest.evidence) && manifest.evidence.length > 0 && manifest.evidence.every((entry) => typeof entry?.path === "string" && entry.path.trim().length > 0 && typeof entry.sha256 === "string" && /^[0-9a-f]{64}$/i.test(entry.sha256))));
 }
 
 export class GitHubDeliveryService implements GitHubDeliveryAdapter {
@@ -187,6 +190,14 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (head !== commit) throw new Error("El commit del manifest no coincide con HEAD");
     const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
     if (status.trim()) throw new Error("El worktree no está limpio para publicar el manifest");
+    for (const evidence of manifest.evidence ?? []) {
+      const evidencePath = resolve(workingDirectory, evidence.path);
+      const relativeEvidencePath = relative(resolve(workingDirectory), evidencePath);
+      const outsideRepository = relativeEvidencePath === ".." || relativeEvidencePath.startsWith(`..${sep}`);
+      if (outsideRepository || !await Bun.file(evidencePath).exists()) throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${evidence.path}`);
+      const digest = createHash("sha256").update(new Uint8Array(await Bun.file(evidencePath).arrayBuffer())).digest("hex");
+      if (digest.toLowerCase() !== evidence.sha256.toLowerCase()) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
+    }
     return { ...manifest, branch, commit };
   }
 
@@ -198,7 +209,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     await pushGitBranch(this.git, branch, workingDirectory);
   }
 
-  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue = true): Promise<GitHubPullRequest> {
+  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue = true, issueReference = `#${issue}`): Promise<GitHubPullRequest> {
     const { name } = await this.repository(workingDirectory);
     const head = branchName(branch);
     const base = branchName(baseBranch);
@@ -213,7 +224,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (pullRequests.length === 1) return { number: pullRequests[0]!.number! };
     const created = await this.gh([
       "pr", "create", "--repo", name, "--base", base, "--head", head,
-      "--title", `Issue #${issue}`, "--body", closesIssue ? `Closes #${issue}` : `Tracks #${issue}`,
+      "--title", `Issue #${issue}`, "--body", closesIssue ? `Closes ${issueReference}` : `Tracks ${issueReference}`,
     ], workingDirectory);
     const match = created.match(/\/pull\/(\d+)(?:\s|$)/);
     if (!match) throw new Error("gh pr create no devolvió un PR verificable");
