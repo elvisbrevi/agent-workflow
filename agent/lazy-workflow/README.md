@@ -376,6 +376,55 @@ If OpenCode requests `az login`, lazy-workflow keeps the OpenCode session,
 prints `az login --use-device-code`, waits until the HU is accessible again,
 and resumes that session once with `continue`.
 
+## Multi-repository workspaces
+
+`code` accepts a comma-separated `--working-directory` list to deliver one unit
+of work across several repositories in a single OpenCode session:
+
+```bash
+bun run main.ts code --working-directory /path/to/repo-a,/path/to/repo-b
+bun run main.ts code --hu 23438 --ticket 51 \
+  --working-directory /path/to/repo-a,/path/to/repo-b
+```
+
+**Scope.** Each entry must be the root of a Git repository with an `origin`
+remote and a clean worktree. Entries are canonicalised, duplicates are
+rejected, and the declared order is the delivery order. All repositories must
+belong to the same provider: GitHub for the default scope, Azure DevOps when
+`--hu` and `--ticket` are given. A single path keeps the existing
+single-repository behavior unchanged — no workspace state is created and no
+aggregate checkpoint is read or written.
+
+**Workspace state.** The coordinator resolves a common parent directory of the
+declared repositories and keeps aggregate state in `<parent>/.lazy-workflow/`,
+outside every source repository. It holds the aggregate checkpoint
+(`github-workspace-code-checkpoint.json` or
+`azure-workspace-code-checkpoint.json`) and, for GitHub, the delivery manifest.
+Per-repository completion manifests stay inside each repository's Git common
+directory.
+
+**Serial execution.** One OpenCode session works across the whole workspace.
+After `IMPLEMENTATION_READY` the coordinator verifies every per-repository
+manifest, then delivers the changed repositories one at a time in the declared
+order: push, create or reuse the pull request against that repository's own
+base or HU integration branch, associate it with the Issue or ticket, and
+merge. Repositories without changes must end clean; their temporary branches
+are deleted safely. The Issue is closed — or the Azure ticket completed and the
+HU moved from `En Desarrollo` to `Desarrollo Terminado` — only after every
+required repository unit and every tracker gate is verified. GitHub parent
+reconciliation and the Azure HU transition never run on a partial delivery.
+
+**Recovery.** Rerun the same command to resume an interrupted workspace run.
+Recovery requires the exact same normalized repository list, in the same
+declared order, with the same remote identities, and — for Azure — the same HU
+and ticket. An added, removed, reordered or remote-changed repository stops the
+run before any external effect and leaves the checkpoint untouched. A pull
+request that was already created, associated and merged is reused through its
+recorded receipt rather than created twice; a failure in one repository leaves
+the later ones pending and preserves the aggregate checkpoint. Nothing is
+rolled back or reverted after a partial merge — fix the cause and rerun.
+`--session <id>` must match the session stored in the checkpoint.
+
 ## Structure
 
 ```text
