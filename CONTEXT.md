@@ -30,8 +30,38 @@ _Avoid_: new direct `console.log` calls, new top-level log helpers
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
 repository's GitHub conventions and never uses Azure coordination; `plan` runs
-once, while `code` drains eligible issues one per fresh OpenCode session.
+once, while `code` delegates one fixed issue at a time to a fresh OpenCode
+session through a coordinator-owned delivery lifecycle.
 _Avoid_: implicit Azure run, unscoped run
+
+**GitHub managed queue**:
+The open, non-epic GitHub issues carrying the repository's `ready-for-agent`
+role. An issue may belong to the queue while blocked; eligibility additionally
+requires an unclaimed issue whose native dependencies are closed.
+_Avoid_: every open issue, prompt-selected work
+
+**GitHub coordinated delivery**:
+The `code` lifecycle in which lazy workflow selects and claims one issue,
+fixes its identity for OpenCode, verifies every Git and GitHub effect, and
+reconciles the queue before advancing. OpenCode prepares one implementation;
+it does not select work or declare queue state.
+_Avoid_: prompt-driven queue drain, autonomous issue selection
+
+**GitHub parent reconciliation**:
+The verified closure of an open native parent after all of its direct native
+sub-issues and dependencies are closed. Reconciliation may continue through
+the parent's ancestors and never infers hierarchy from prose or titles.
+_Avoid_: checklist closure, title-based epic closure
+
+**GitHub delivery checkpoint**:
+The repository-scoped record that fixes an in-flight issue and its delivery
+phase so recovery reconciles that issue before consulting the managed queue.
+_Avoid_: selecting replacement work after partial delivery
+
+**GitHub queue outcome**:
+A coordinator-owned result distinguishing completed delivery, an empty managed
+queue, a blocked managed queue, and delivery state requiring reconciliation.
+_Avoid_: marker text supplied by OpenCode
 
 **Azure HU run**:
 A lazy-workflow invocation selected by `--hu`, or recovered from an Azure HU

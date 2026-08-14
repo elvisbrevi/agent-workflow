@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0020
+---
+
 # Drain GitHub issues with fresh sessions
 
 `code` without `--hu` repeatedly selects and completes one eligible GitHub
