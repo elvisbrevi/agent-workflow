@@ -1094,12 +1094,18 @@ export class LazyWorkflowCli {
         const issue = await readIssue(liveCheckpoint.issue, options.workingDirectory);
         const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
         await this.githubDelivery.verifyRepository?.(liveCheckpoint.repository, options.workingDirectory);
+        await this.githubDelivery.verifyBranch?.(branch, baseBranch, options.workingDirectory);
+        if (await Bun.file(manifestPath).exists()) {
+          await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "implementation-ready", sessionId: null });
+          console.log(JSON.stringify({ outcome: TICKET_COMPLETED_MARKER, issue: liveCheckpoint.issue }, null, 2));
+          return 0;
+        }
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
         const prompt = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
         const execution = await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
-        await store.write({ ...liveCheckpoint, phase: "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);
+        await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);
         if (execution.failed || !terminal) {
           this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: execution.result.sessionId });
           return 1;
@@ -1174,8 +1180,10 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       const terminalMarker = this.githubDelivery ? IMPLEMENTATION_READY_MARKER : WORKFLOW_STEP_FINISHED_MARKER;
       const terminal = containsMarker(result.text, terminalMarker);
-      await store.write({ ...liveCheckpoint, phase: "implementing", sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+       await store.write({ ...liveCheckpoint, phase: terminal && this.githubDelivery ? "implementation-ready" : "implementing", sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
       if (this.githubDelivery) {
+        if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch) throw new Error("el checkpoint GitHub no contiene la rama fijada");
+        await this.githubDelivery.verifyBranch?.(liveCheckpoint.branch, liveCheckpoint.baseBranch, options.workingDirectory);
         if (!terminal) {
           this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: result.sessionId });
           return 1;
