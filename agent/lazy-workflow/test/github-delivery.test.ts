@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import type {
-  GitHubDeliveryAdapter,
-  GitHubReadyManifest,
+import {
+  GitHubDeliveryService,
+  type GitHubDeliveryAdapter,
+  type GitHubReadyManifest,
 } from "../src/github/github-delivery-service.ts";
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
@@ -24,6 +28,64 @@ function execution() {
 function phaseOf(checkpoint: GitHubDeliveryCheckpoint | null): string | undefined {
   return checkpoint?.phase;
 }
+
+test("checkout de recuperación cambia a la rama local exacta sin crearla", async () => {
+  const commands: string[][] = [];
+  const delivery = new GitHubDeliveryService(
+    async () => { throw new Error("must not use GitHub"); },
+    async (command) => {
+      commands.push(command);
+      if (command[0] === "rev-parse" || command[0] === "status" || command[0] === "switch") return "";
+      if (command[0] === "symbolic-ref") return "main\n";
+      if (command[0] === "branch") return "  issue/198\n";
+      throw new Error(`unexpected git command: ${command.join(" ")}`);
+    },
+  );
+
+  await delivery.checkoutBranch("refs/heads/issue/198", "refs/heads/main", "/repo");
+
+  expect(commands.at(-1)).toEqual(["switch", "--no-guess", "issue/198"]);
+});
+
+test("checkout de recuperación rechaza un worktree sucio aunque la rama fijada ya esté activa", async () => {
+  const commands: string[][] = [];
+  const delivery = new GitHubDeliveryService(
+    async () => { throw new Error("must not use GitHub"); },
+    async (command) => {
+      commands.push(command);
+      if (command[0] === "rev-parse") return "";
+      if (command[0] === "symbolic-ref") return "issue/198\n";
+      if (command[0] === "status") return "?? local.txt\n";
+      throw new Error(`unexpected git command: ${command.join(" ")}`);
+    },
+  );
+
+  await expect(delivery.checkoutBranch("refs/heads/issue/198", "refs/heads/main", "/repo"))
+    .rejects.toThrow("cambios sin guardar");
+  expect(commands.some(([command]) => command === "switch")).toBeFalse();
+});
+
+test("checkout de recuperación rechaza una operación Git activa", async () => {
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-git-operation-"));
+  const mergeHead = join(root, "MERGE_HEAD");
+  writeFileSync(mergeHead, "a".repeat(40));
+  const delivery = new GitHubDeliveryService(
+    async () => { throw new Error("must not use GitHub"); },
+    async (command) => {
+      if (command[0] === "rev-parse") return `${mergeHead}\n`;
+      if (command[0] === "status") return "";
+      if (command[0] === "symbolic-ref") return "issue/198\n";
+      throw new Error(`unexpected git command: ${command.join(" ")}`);
+    },
+  );
+
+  try {
+    await expect(delivery.checkoutBranch("refs/heads/issue/198", "refs/heads/main", root))
+      .rejects.toThrow("operación Git en curso");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {
   const calls: string[] = [];

@@ -121,6 +121,12 @@ scoped GitHub checkpoint and lock preserve a fixed interrupted issue; startup
 resumes an active session or reconciles a post-readiness delivery without
 selecting replacement work.
 
+GitHub recovery validates the repository and acquires its lock before switching
+to the exact local branch recorded by the checkpoint. A dirty worktree, active
+Git operation, missing branch, or branch unavailable to the current worktree
+stops recovery before OpenCode or queue access. Recovery never creates, guesses,
+resets, or force-switches a branch.
+
 `plan --normas-sag` and `code --normas-sag` are opt-in. They read the canonical SAG `master` branch and
 requires `.sag/config.json` with an explicit `tipo` of `api`, `bff`, or
 `nextjs`; it never infers the component from source layout. OpenCode receives
