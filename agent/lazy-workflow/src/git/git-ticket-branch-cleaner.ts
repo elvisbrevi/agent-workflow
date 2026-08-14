@@ -82,6 +82,7 @@ export class GitTicketBranchCleaner {
     ticketBranchRef: string,
     integrationBranchRef: string,
     workingDirectory: string,
+    expectedRemoteCommit?: string,
   ): Promise<void> {
     const ticketBranch = branchName(ticketBranchRef);
     const integrationBranch = branchName(integrationBranchRef);
@@ -114,7 +115,17 @@ export class GitTicketBranchCleaner {
 
     const remoteBranch = await this.git(["ls-remote", "--heads", "origin", ticketBranchRef], workingDirectory);
     if (remoteBranch.trim()) {
-      await this.git(["push", "origin", "--delete", ticketBranch], workingDirectory);
+      const remoteCommit = remoteBranch.trim().split(/\s+/)[0];
+      if (expectedRemoteCommit && remoteCommit !== expectedRemoteCommit) {
+        throw new Error(`La rama remota ${ticketBranchRef} cambió antes de eliminarse`);
+      }
+      await this.git([
+        "push",
+        "origin",
+        ...(expectedRemoteCommit ? [`--force-with-lease=refs/heads/${ticketBranch}:${expectedRemoteCommit}`] : []),
+        "--delete",
+        ticketBranch,
+      ], workingDirectory);
     }
   }
 }
