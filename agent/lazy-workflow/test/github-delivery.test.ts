@@ -11,12 +11,12 @@ import {
 } from "../src/github/github-delivery-service.ts";
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
 
 function execution() {
   return {
-    result: OpenCodeResult.fromJsonLines(JSON.stringify({
+    result: AgentResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_179",
       part: { type: "text", text: "IMPLEMENTATION_READY" },
@@ -712,7 +712,7 @@ test("los marcadores de entrega heredados no avanzan una entrega GitHub", async 
   };
   const cli = new LazyWorkflowCli(
     { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => ({ ...execution(), result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => execution().result },
+    { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => execution().result },
     undefined,
     undefined,
     undefined,

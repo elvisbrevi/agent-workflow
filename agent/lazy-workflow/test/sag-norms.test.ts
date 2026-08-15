@@ -3,8 +3,8 @@ import { mkdir, rm } from "node:fs/promises";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 import { GitHubArchitectureReviewService } from "../src/github/architecture-review-service.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
-import type { OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
+import type { AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
 
@@ -279,9 +279,9 @@ test("normas SAG rechazan aliases de configuracion en conflicto", async () => {
 
 test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicita", async () => {
   const directory = await config("bff");
-  let received: OpenCodeRunOptions | null = null;
+  let received: AgentRunOptions | null = null;
   let sourceCalls = 0;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-plan-sag",
     part: { type: "text", text: "plan" },
@@ -331,9 +331,9 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
     expect(code).toBe(0);
     expect(sourceCalls).toBe(1);
     expect(received).not.toBeNull();
-    expect((received as unknown as OpenCodeRunOptions).prompt).toContain('"commit": "bff-commit"');
-    expect((received as unknown as OpenCodeRunOptions).prompt).toContain('"ruleId": "bff-R1"');
-    expect((received as unknown as OpenCodeRunOptions).prompt).toContain('"needsDecision"');
+    expect((received as unknown as AgentRunOptions).prompt).toContain('"commit": "bff-commit"');
+    expect((received as unknown as AgentRunOptions).prompt).toContain('"ruleId": "bff-R1"');
+    expect((received as unknown as AgentRunOptions).prompt).toContain('"needsDecision"');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -341,10 +341,10 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
 
 test("plan Azure agrega normas SAG despues de cargar la HU", async () => {
   const directory = await config();
-  let received: OpenCodeRunOptions | null = null;
+  let received: AgentRunOptions | null = null;
   // The planning run publishes what the session returns, so it must close its
   // contract; an empty plan is the valid "no delivery tickets needed" result.
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-plan-azure-sag",
     part: { type: "text", text: 'plan\nPLAN_READY\n{"tickets":[]}' },
@@ -365,8 +365,8 @@ test("plan Azure agrega normas SAG despues de cargar la HU", async () => {
 
     expect(code).toBe(0);
     expect(received).not.toBeNull();
-    expect((received as unknown as OpenCodeRunOptions).prompt).toContain('"commit": "commit-master-123"');
-    expect((received as unknown as OpenCodeRunOptions).prompt).toContain('"phase": "planning"');
+    expect((received as unknown as AgentRunOptions).prompt).toContain('"commit": "commit-master-123"');
+    expect((received as unknown as AgentRunOptions).prompt).toContain('"phase": "planning"');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -421,9 +421,9 @@ test("--normas-sag code se rechaza antes de servicios si falta el cargador codin
 
 test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async () => {
   const directory = await config();
-  let received: OpenCodeRunOptions | null = null;
+  let received: AgentRunOptions | null = null;
   let sourceCalls = 0;
-  const results = ["IMPLEMENTATION_READY"].map((text, index) => OpenCodeResult.fromJsonLines(JSON.stringify({
+  const results = ["IMPLEMENTATION_READY"].map((text, index) => AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: `ses-code-sag-${index}`,
     part: { type: "text", text },
@@ -496,8 +496,8 @@ test("un contexto SAG de coding inaccesible detiene code antes de iniciar OpenCo
 
 test("code Azure agrega normas SAG al prompt despues de fijar el ticket", async () => {
   const directory = await config();
-  let received: OpenCodeRunOptions | null = null;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  let received: AgentRunOptions | null = null;
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-code-azure-sag",
     part: { type: "text", text: "IMPLEMENTATION_READY" },
@@ -651,8 +651,8 @@ test("architecture-review rechaza source SAG inaccesible antes de OpenCode", asy
 test("architecture-review GitHub usa un Issue explicito y no toca Azure", async () => {
   const directory = await config();
   let azureCalls = 0;
-  let received: OpenCodeRunOptions | null = null;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  let received: AgentRunOptions | null = null;
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-review",
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"clean"}' },
@@ -700,9 +700,9 @@ test("architecture-review GitHub usa un Issue explicito y no toca Azure", async 
 
 test("architecture-review Azure usa la HU completa y conserva la ruta del tracker", async () => {
   const directory = await config();
-  let received: OpenCodeRunOptions | null = null;
+  let received: AgentRunOptions | null = null;
   let detectsAzure = false;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-azure",
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"clean"}' },
@@ -745,7 +745,7 @@ test("architecture-review Azure usa la HU completa y conserva la ruta del tracke
 
 test("architecture-review Azure rechaza findings sin publication verificable", async () => {
   const directory = await config();
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-azure-findings",
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"findings","summary":"finding","specification":{"title":"Fix","body":"body"},"tickets":[]}' },
@@ -783,7 +783,7 @@ test("architecture-review Azure rechaza findings sin publication verificable", a
 test("architecture-review GitHub publica findings through the tracker boundary", async () => {
   const directory = await config();
   let published = false;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-findings",
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"findings","summary":"boundary issue","specification":{"title":"Boundary fix","body":"spec"},"tickets":[{"title":"Fix boundary","body":"ticket"}]}' },
@@ -828,7 +828,7 @@ test("architecture-review GitHub publica findings through the tracker boundary",
 
 test("architecture-review rechaza una ejecucion OpenCode fallida", async () => {
   const directory = await config();
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-failed",
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"failed"}' },
@@ -865,7 +865,7 @@ test("architecture-review rechaza una ejecucion OpenCode fallida", async () => {
 
 test("architecture-review detiene la revision si OpenCode modifica el arbol", async () => {
   const directory = await config();
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-architecture-mutated",
     part: { type: "text", text: "review" },

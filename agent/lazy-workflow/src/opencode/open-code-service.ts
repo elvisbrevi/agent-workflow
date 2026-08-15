@@ -1,55 +1,21 @@
-import { OpenCodeResult, type OpenCodeEventData } from "./open-code-result.ts";
+import { AgentResult, type OpenCodeEventData } from "../coding-agent/agent-result.ts";
+import {
+  AgentSessionCloseError,
+  AgentSessionNotFoundError,
+  type AgentAuthority,
+  type AgentExecution,
+  type AgentResumeOverrides,
+  type AgentRunOptions,
+  type CodingAgent,
+} from "../coding-agent/coding-agent.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-
-export interface OpenCodeRunOptions {
-  model: string;
-  variant: string;
-  session: string | null;
-  prompt: string;
-  workingDirectory?: string;
-  terminalMarker?: string;
-  /** OpenCode agent whose permissions bound what this run may do. */
-  agent?: OpenCodeAuthority;
-}
-
-/** The agent profile and the config that defines it, injected per run. */
-export interface OpenCodeAuthority {
-  profile: string;
-  configPath: string;
-}
-
-export interface OpenCodeExecution {
-  result: OpenCodeResult;
-  azureLoginRequired: boolean;
-  failed?: boolean;
-}
-
-export type OpenCodeResumeOverrides = Partial<Pick<OpenCodeRunOptions, "model" | "variant" | "agent">>;
 
 export interface OpenCodeProcess {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   exited: Promise<number>;
   kill(signal: "SIGTERM" | "SIGKILL"): void;
-}
-
-export class OpenCodeSessionCloseError extends Error {
-  constructor(
-    readonly sessionId: string,
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = "OpenCodeSessionCloseError";
-  }
-}
-
-export class OpenCodeSessionNotFoundError extends Error {
-  constructor(readonly sessionId: string) {
-    super(`La sesión OpenCode ${sessionId} ya no existe`);
-    this.name = "OpenCodeSessionNotFoundError";
-  }
 }
 
 export interface OpenCodeSpawnOptions {
@@ -221,14 +187,14 @@ async function readLines(
   }
 }
 
-export class OpenCodeService {
+export class OpenCodeService implements CodingAgent {
   constructor(
     private readonly spawn: OpenCodeSpawner = spawnOpenCode,
     private readonly reporter: Reporter = getDefaultReporter(),
     private readonly shutdownGraceMs = 5_000,
   ) {}
 
-  async run(options: OpenCodeRunOptions, detectAzureLogin = false): Promise<OpenCodeExecution> {
+  async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
     return this.execute([
       "opencode",
       "run",
@@ -251,8 +217,8 @@ export class OpenCodeService {
     prompt = "continue",
     workingDirectory?: string,
     terminalMarker?: string,
-    overrides: OpenCodeResumeOverrides = {},
-  ): Promise<OpenCodeResult> {
+    overrides: AgentResumeOverrides = {},
+  ): Promise<AgentResult> {
     const execution = await this.execute([
       "opencode",
       "run",
@@ -281,8 +247,8 @@ export class OpenCodeService {
     detectAzureLogin: boolean,
     workingDirectory?: string,
     terminalMarker?: string,
-    authority?: OpenCodeAuthority,
-  ): Promise<OpenCodeExecution> {
+    authority?: AgentAuthority,
+  ): Promise<AgentExecution> {
     this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
     const child = this.spawn(command, {
       cwd: workingDirectory,
@@ -352,12 +318,12 @@ export class OpenCodeService {
         const sessionIndex = command.indexOf("--session");
         const sessionId = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
         if (sessionId && absentSessionPattern.test(stderr)) {
-          throw new OpenCodeSessionNotFoundError(sessionId);
+          throw new AgentSessionNotFoundError(sessionId, `La sesión OpenCode ${sessionId} ya no existe`);
         }
         throw new Error("OpenCode no devolvio eventos");
       }
 
-      const result = OpenCodeResult.fromJsonLines(streamed.lines.join("\n"));
+      const result = AgentResult.fromJsonLines(streamed.lines.join("\n"));
       if (terminalMarkerReceived) await this.closeSession(result.sessionId, workingDirectory);
 
       return {
@@ -382,8 +348,8 @@ export class OpenCodeService {
       if (exitCode === 0 || absentSessionPattern.test(output)) return;
       throw new Error(output || `opencode session delete terminó con código ${exitCode}`);
     } catch (error) {
-      if (error instanceof OpenCodeSessionCloseError) throw error;
-      throw new OpenCodeSessionCloseError(
+      if (error instanceof AgentSessionCloseError) throw error;
+      throw new AgentSessionCloseError(
         sessionId,
         `No se pudo cerrar la sesión OpenCode ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },

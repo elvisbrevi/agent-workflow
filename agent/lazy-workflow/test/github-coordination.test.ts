@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
@@ -53,12 +53,12 @@ const services = () => ({
   azure: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
   openCode: {
     run: async () => ({
-      result: OpenCodeResult.fromJsonLines(JSON.stringify({
+      result: AgentResult.fromJsonLines(JSON.stringify({
         type: "text", sessionID: "ses_178", part: { type: "text", text: "IMPLEMENTATION_READY" },
       })),
       azureLoginRequired: false,
     }),
-    resume: async () => OpenCodeResult.fromJsonLines(JSON.stringify({
+    resume: async () => AgentResult.fromJsonLines(JSON.stringify({
       type: "text", sessionID: "ses_178", part: { type: "text", text: "still working" },
     })),
   },

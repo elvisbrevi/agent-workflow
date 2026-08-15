@@ -1,4 +1,4 @@
-export interface OpenCodeTokens {
+export interface AgentTokens {
   total?: number;
   input?: number;
   output?: number;
@@ -27,7 +27,7 @@ interface OpenCodePartData {
   output?: string;
   error?: string;
   reason?: string;
-  tokens?: OpenCodeTokens;
+  tokens?: AgentTokens;
   cost?: number;
 }
 
@@ -37,26 +37,33 @@ export interface OpenCodeEventData {
   part?: OpenCodePartData;
 }
 
-interface OpenCodeResultData {
+interface AgentResultData {
   sessionId: string;
   text: string;
   reason?: string;
-  tokens?: OpenCodeTokens;
+  tokens?: AgentTokens;
   cost?: number;
 }
 
-export class OpenCodeResult {
+/**
+ * The normalized result of one coding agent session. Every CLI reduces to this
+ * shape, so coordination reads one result regardless of which agent produced it.
+ *
+ * `fromJsonLines` decodes OpenCode's stream, the only one there is today; a
+ * second CLI adds its own decoder rather than reshaping this one.
+ */
+export class AgentResult {
   readonly sessionId!: string;
   readonly text!: string;
   readonly reason?: string;
-  readonly tokens?: OpenCodeTokens;
+  readonly tokens?: AgentTokens;
   readonly cost?: number;
 
-  constructor(data: OpenCodeResultData) {
+  constructor(data: AgentResultData) {
     Object.assign(this, data);
   }
 
-  static fromJsonLines(output: string): OpenCodeResult {
+  static fromJsonLines(output: string): AgentResult {
     const events = output
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)
@@ -77,7 +84,7 @@ export class OpenCodeResult {
       throw new Error("OpenCode no devolvio un identificador de sesion");
     }
 
-    return new OpenCodeResult({
+    return new AgentResult({
       sessionId,
       text,
       reason: finishEvent?.part?.reason,
