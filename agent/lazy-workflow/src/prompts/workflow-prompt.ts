@@ -58,13 +58,6 @@ export type WorkflowPromptSpec =
       branch: string;
       manifestPath: string;
     }
-  /**
-   * The pre-ADR-0020 shape: a fixed issue with no coordinator-owned branch or
-   * manifest, so there is no delivery contract to state. Kept explicit — rather
-   * than as a silent fallback off the delivery prompt — so the missing contract
-   * is a visible decision instead of an accident.
-   */
-  | { kind: "github-code-uncoordinated"; issue: SelectedManagedIssue; repository: GitHubRepositoryContext }
   | {
       kind: "github-reconciliation";
       issue: SelectedManagedIssue;
@@ -216,18 +209,6 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         ...repositoryRoster(spec.scope),
         "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         `The working directory is ${spec.scope.parentDirectory}`,
-        "Operator request:",
-        operatorRequest,
-      ];
-
-    case "github-code-uncoordinated":
-      return [
-        ...(await githubWorkflow("code")),
-        `Coordinator-fixed repository: ${spec.repository.nameWithOwner}`,
-        "Coordinator-fixed issue context:",
-        issueContext(spec.issue),
-        ...sag,
-        `The working directory is ${workingDirectory}`,
         "Operator request:",
         operatorRequest,
       ];

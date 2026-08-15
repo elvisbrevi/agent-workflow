@@ -39,7 +39,6 @@ export function authorityProfile(spec: WorkflowPromptSpec): AuthorityProfile {
     case "github-delivery":
     case "github-reconciliation":
     case "github-workspace-delivery":
-    case "github-code-uncoordinated":
       return "lazy-github-code";
     case "azure-delivery":
     case "azure-workspace-delivery":

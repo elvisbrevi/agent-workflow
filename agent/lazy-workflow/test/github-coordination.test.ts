@@ -8,6 +8,12 @@ import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDelivery
 import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeGitHubDelivery } from "./_helpers/github-delivery-fixtures.ts";
+
+/** Consecutive duplicate phases collapsed, so the assertion reads as the delivery's phase progression. */
+function distinctPhaseSequence(phases: string[]): string[] {
+  return phases.filter((phase, index) => phase !== phases[index - 1]);
+}
 
 function checkpoint(sessionId: string | null): GitHubDeliveryCheckpoint {
   return {
@@ -141,10 +147,15 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
     queue,
     store,
     state.lock,
+    fakeGitHubDelivery(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect(state.phases).toEqual(["selected", "selected", "started", "implementation-ready"]);
+  expect(distinctPhaseSequence(state.phases)).toEqual([
+    "selected", "started", "implementation-ready", "integrating", "reconciling", "cleaning",
+  ]);
+  // The checkpoint is written once on selection and again after claim verification.
+  expect(state.phases.filter((phase) => phase === "selected")).toHaveLength(2);
   expect(state.current).toBeNull();
   expect(events.slice(0, 3)).toEqual(["select", "write:selected", "claim"]);
   expect(state.lockAcquires).toBe(1);
@@ -182,6 +193,7 @@ test("el coordinador continúa con la siguiente issue elegible hasta vaciar la c
       queue,
       state.store,
       state.lock,
+      fakeGitHubDelivery(),
     ).run(["code", "--working-directory", "/repo"]);
   } finally {
     console.log = original;
