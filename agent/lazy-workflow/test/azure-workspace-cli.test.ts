@@ -220,3 +220,160 @@ test("CLI single-repo conserva el rechazo cuando se omite --working-directory", 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("plan multi-repositorio con --hu inspecciona el alcance Azure sin mutar ramas ni tracker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-plan-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const realpathA = await realpath(pathA);
+  const realpathB = await realpath(pathB);
+  let prepareCalled = false;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches"> = {
+    getHuInfo: async (id: number) => ({ id, title: "HU transversal" }),
+    waitForAccess: async () => undefined,
+    prepareWorkspaceBranches: async () => {
+      prepareCalled = true;
+      throw new Error("plan must not prepare branches");
+    },
+    prepareWorkspaceTicketBranches: async () => {
+      prepareCalled = true;
+      throw new Error("plan must not prepare ticket branches");
+    },
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const sessions: Array<{ workingDirectory: string; prompt: string }> = [];
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async (options) => {
+        sessions.push({ workingDirectory: options.workingDirectory, prompt: options.prompt });
+        return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    git,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(prepareCalled).toBe(false);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.workingDirectory).toBe(await realpath(root));
+    expect(sessions[0]!.prompt).toContain(realpathA);
+    expect(sessions[0]!.prompt).toContain(realpathB);
+    expect(sessions[0]!.prompt).toContain("HU transversal");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el login de Azure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-login-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  let waited = 0;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => ({ id, title: "HU transversal" }),
+    waitForAccess: async () => { waited += 1; },
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const resumed: Array<{ sessionId: string; workingDirectory: string }> = [];
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async () => ({ result: { text: "", sessionId: "ses_login", failed: false } as never, azureLoginRequired: true, failed: false }),
+      resume: async (sessionId: string, _prompt: string, workingDirectory: string) => {
+        resumed.push({ sessionId, workingDirectory });
+        return { text: "plan", sessionId, failed: false } as never;
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    git,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(waited).toBe(1);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]!.sessionId).toBe("ses_login");
+    expect(resumed[0]!.workingDirectory).toBe(await realpath(root));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan multi-repositorio fija la frontera de autorización y resuelve las normas SAG en el repositorio ancla", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-scope-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const realpathA = await realpath(pathA);
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => ({ id }),
+    waitForAccess: async () => undefined,
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const planningDirectories: string[] = [];
+  let prompt = "";
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async (options) => {
+        prompt = options.prompt;
+        return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      loadPlanning: async (workingDirectory: string) => {
+        planningDirectories.push(workingDirectory);
+        return { norms: [] } as never;
+      },
+    } as never,
+    git,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--normas-sag", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(planningDirectories).toEqual([realpathA]);
+    expect(prompt).toContain("OpenCode may only read or modify the listed repositories.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

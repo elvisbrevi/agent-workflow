@@ -378,20 +378,26 @@ and resumes that session once with `continue`.
 
 ## Multi-repository workspaces
 
-`code` accepts a comma-separated `--working-directory` list to deliver one unit
-of work across several repositories in a single OpenCode session:
+`plan` and `code` accept a comma-separated `--working-directory` list to plan or
+deliver one unit of work across several repositories in a single OpenCode
+session:
 
 ```bash
+bun run main.ts plan --working-directory /path/to/repo-a,/path/to/repo-b
+bun run main.ts plan --hu 23438 --working-directory /path/to/repo-a,/path/to/repo-b
 bun run main.ts code --working-directory /path/to/repo-a,/path/to/repo-b
 bun run main.ts code --hu 23438 --ticket 51 \
   --working-directory /path/to/repo-a,/path/to/repo-b
 ```
 
+`plan` only inspects the declared repositories: it prepares no branches, writes
+no workspace state, and mutates no tracker item, with or without `--hu`.
+
 **Scope.** Each entry must be the root of a Git repository with an `origin`
 remote and a clean worktree. Entries are canonicalised, duplicates are
 rejected, and the declared order is the delivery order. All repositories must
 belong to the same provider: GitHub for the default scope, Azure DevOps when
-`--hu` and `--ticket` are given. A single path keeps the existing
+`--hu` is given (`code` also requires `--ticket`). A single path keeps the existing
 single-repository behavior unchanged — no workspace state is created and no
 aggregate checkpoint is read or written.
 
