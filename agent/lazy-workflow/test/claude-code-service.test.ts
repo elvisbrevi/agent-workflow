@@ -95,6 +95,48 @@ describe("ClaudeCodeService comando construido", () => {
     expect(options[0]?.cwd).toBe("/repo");
   });
 
+  test("inyecta por ruta la autoridad del run junto al modo que no pregunta", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_auth"), assistantText("ses_auth", "ok")].join("\n"));
+    });
+
+    await service.run({
+      ...standardOptions,
+      agent: { profile: "lazy-github-code", configPath: "/cfg/lazy-github-code.json" },
+    });
+
+    expect(commands[0]?.[commands[0].indexOf("--settings") + 1]).toBe("/cfg/lazy-github-code.json");
+    expect(commands[0]?.[commands[0].indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+  });
+
+  test("una sesion reanudada conserva la autoridad con la que arranco", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_auth"), assistantText("ses_auth", "ok")].join("\n"));
+    });
+
+    await service.resume("ses_auth", "continue", "/repo", undefined, {
+      agent: { profile: "lazy-review", configPath: "/cfg/lazy-review.json" },
+    });
+
+    expect(commands[0]?.[commands[0].indexOf("--settings") + 1]).toBe("/cfg/lazy-review.json");
+  });
+
+  test("un run sin autoridad no inyecta ninguna configuracion", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_libre"), assistantText("ses_libre", "ok")].join("\n"));
+    });
+
+    await service.run(standardOptions);
+
+    expect(commands[0]).not.toContain("--settings");
+  });
+
   test("la sesion nunca arranca en modo bare", async () => {
     const commands: string[][] = [];
     const service = new ClaudeCodeService((command) => {
