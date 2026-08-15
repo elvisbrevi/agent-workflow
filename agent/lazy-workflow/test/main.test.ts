@@ -1863,6 +1863,62 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
   expect(requested).toEqual(["claudecode", "opencode"]);
 });
 
+test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en orden", async () => {
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  const { reporter, info } = captureReporter();
+  const result = new AgentResult({ sessionId: "ses_fallback", text: "plan" });
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      () => ({
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => { throw new Error("must not resume"); },
+      }),
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined,
+      buildCli(() => true),
+      (() => reporter) as typeof createReporter,
+    ).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
+
+    expect(code).toBe(0);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  const chainLines = info.filter((message) => message.includes("cadena de fallback"));
+  expect(chainLines).toHaveLength(3);
+  expect(chainLines[0]).toContain("primario");
+  expect(chainLines[0]).toContain("opencode-go/deepseek-v4-pro");
+  expect(chainLines[1]).toContain("model-b");
+  expect(chainLines[2]).toContain("model-c");
+});
+
+test("sin --fallback no se reporta ninguna cadena", async () => {
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  const { reporter, info } = captureReporter();
+  const result = new AgentResult({ sessionId: "ses_no_fallback", text: "plan" });
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      () => ({
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => { throw new Error("must not resume"); },
+      }),
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      (() => reporter) as typeof createReporter,
+    ).run(["plan"]);
+
+    expect(code).toBe(0);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  expect(info.some((message) => message.includes("cadena de fallback"))).toBeFalse();
+});
+
 test("cada run recibe la autoridad de su perfil en el formato de su propio CLI", async () => {
   const authorities: Array<{ profile: string; configPath: string } | undefined> = [];
   const result = new AgentResult({ sessionId: "ses_auth", text: "plan" });

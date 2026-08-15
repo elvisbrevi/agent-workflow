@@ -205,6 +205,86 @@ describe("buildCli parser", () => {
     });
   });
 
+  describe("cadena de fallback", () => {
+    test("sin --fallback la cadena queda vacia", () => {
+      const result = parse(["plan"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.fallbackChain).toEqual([]);
+    });
+
+    test("--fallback acepta repeticiones y conserva el orden de declaracion", () => {
+      const result = captureParse(buildCli(() => true), [
+        "plan",
+        "--fallback", "opencode:model-b:medium",
+        "--fallback", "claudecode:model-c:high",
+      ]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.fallbackChain).toEqual([
+        { cli: "opencode", model: "model-b", variant: "medium" },
+        { cli: "claudecode", model: "model-c", variant: "high" },
+      ]);
+    });
+
+    test("un escalon con CLI desconocido falla nombrando el escalon exacto", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--fallback", "gemini:model-x:high"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("gemini:model-x:high");
+      expect(result.message).toContain("gemini");
+    });
+
+    test("un escalon con partes faltantes falla nombrando el escalon exacto", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--fallback", "opencode:model-x"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("opencode:model-x");
+    });
+
+    test("un escalon con variante invalida para Claude Code falla nombrando el escalon exacto", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--fallback", "claudecode:model-x:turbo"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("claudecode:model-x:turbo");
+      expect(result.message).toContain("turbo");
+    });
+
+    test("un escalon cuyo binario no esta presente falla al parsear", () => {
+      const result = captureParse(buildCli(() => false), ["plan", "--fallback", "claudecode:model-x:high"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("claudecode:model-x:high");
+      expect(result.message).toContain("claude");
+    });
+
+    test("un escalon identico al primario se rechaza", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--fallback", "opencode:opencode-go/deepseek-v4-pro:high"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("repite");
+    });
+
+    test("un escalon repetido dos veces se rechaza", () => {
+      const result = captureParse(buildCli(() => true), [
+        "plan",
+        "--fallback", "claudecode:model-x:high",
+        "--fallback", "claudecode:model-x:high",
+      ]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("repite");
+    });
+
+    test("--help documenta el formato y la semantica de orden de --fallback", () => {
+      const result = parse(["plan", "--help"]);
+      expect(result.kind).toBe("help");
+      if (result.kind !== "help") return;
+      expect(result.output).toContain("--fallback");
+      expect(result.output.toLowerCase()).toContain("prioridad");
+    });
+  });
+
   describe("flags desconocidos", () => {
     test("rechaza un flag desconocido con codigo de salida 1", () => {
       const result = parse(["plan", "--unknown-flag"]);

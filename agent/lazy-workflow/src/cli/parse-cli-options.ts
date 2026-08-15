@@ -2,7 +2,14 @@ import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
-import { AGENT_CLI_BINARIES, DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { AGENT_CLI_BINARIES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+
+/** One step of a declared fallback chain: the primary is rung zero, implicitly. */
+export interface FallbackRung {
+  cli: AgentCli;
+  model: string;
+  variant: string;
+}
 
 export interface CliOptions {
   command: string;
@@ -12,6 +19,8 @@ export interface CliOptions {
   hasCli: boolean;
   hasModel: boolean;
   hasVariant: boolean;
+  /** Declared with `--fallback`, in declaration order; empty when the run has none. */
+  fallbackChain: FallbackRung[];
   session: string | null;
   prompt: string;
   hu: number | null;
@@ -232,7 +241,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       reportError(error?.message ?? message ?? "argumento invalido");
     })
     .group(["hu", "issue", "environment"], "Alcance:")
-    .group(["cli", "session", "model", "variant", "prompt"], "Agente de codificacion:")
+    .group(["cli", "session", "model", "variant", "fallback", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "manifest"], "Tickets Azure:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
@@ -250,6 +259,11 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("session", stringOption("session", "--session", "Sesion de agente opaca para reanudar."))
     .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo del agente CLI seleccionado.", coerce: stringCoerce("--model") })
     .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; con claudecode es el esfuerzo (${CLAUDE_CODE_EFFORTS.join("|")}).`, coerce: stringCoerce("--variant") })
+    .option("fallback", {
+      type: "array",
+      requiresArg: true,
+      describe: "Escalon de respaldo <cli>:<modelo>:<variante>; repetible, el orden de declaracion es la prioridad de descenso.",
+    })
     .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
     .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
     .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
@@ -299,13 +313,16 @@ function readAgentCli(parsed: Record<string, unknown>, rawArgs: string[], binary
   return cli;
 }
 
+const isValidVariant = (cli: AgentCli, variant: string): boolean =>
+  cli !== "claudecode" || CLAUDE_CODE_EFFORTS.includes(variant as typeof CLAUDE_CODE_EFFORTS[number]);
+
 /**
  * `--variant` is the effort of the selected CLI, and Claude Code accepts a fixed
  * set of them, so an unusable value is an argument error rather than a session
  * that opens and dies. OpenCode variants stay free-form.
  */
 function readVariant(cli: AgentCli, variant: string): string {
-  if (cli === "claudecode" && !CLAUDE_CODE_EFFORTS.includes(variant as typeof CLAUDE_CODE_EFFORTS[number])) {
+  if (!isValidVariant(cli, variant)) {
     throw new Error(`--variant ${variant} no es un esfuerzo de Claude Code (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
   }
   return variant;
@@ -313,6 +330,55 @@ function readVariant(cli: AgentCli, variant: string): string {
 
 const flagSupplied = (rawArgs: string[], flag: string): boolean =>
   rawArgs.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+
+const sameRung = (a: FallbackRung, b: FallbackRung): boolean =>
+  a.cli === b.cli && a.model === b.model && a.variant === b.variant;
+
+/**
+ * `--fallback <cli>:<modelo>:<variante>`. Malformed shape, an unknown CLI, a
+ * missing binary, or a variant Claude Code does not accept are all argument
+ * errors that name the exact rung, so a typo is caught before the primary
+ * ever spends usage (issue #236).
+ */
+function parseFallbackRung(entry: unknown, binaryPresent: BinaryProbe): FallbackRung {
+  if (typeof entry !== "string" || entry.length === 0) {
+    throw new Error("--fallback requiere <cli>:<modelo>:<variante>");
+  }
+  const parts = entry.split(":");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw new Error(`--fallback ${entry} no tiene la forma <cli>:<modelo>:<variante>`);
+  }
+  const [cliText, model, variant] = parts as [string, string, string];
+  if (!isAgentCli(cliText)) {
+    throw new Error(`--fallback ${entry} nombra un CLI desconocido: ${cliText} (usa ${AGENT_CLIS.join("|")})`);
+  }
+  const binary = AGENT_CLI_BINARIES[cliText];
+  if (!binaryPresent(binary)) {
+    throw new Error(`--fallback ${entry} requiere el binario ${binary} en el PATH`);
+  }
+  if (!isValidVariant(cliText, variant)) {
+    throw new Error(`--fallback ${entry}: --variant ${variant} no es un esfuerzo de Claude Code (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
+  }
+  return { cli: cliText, model, variant };
+}
+
+/**
+ * The resolved chain always starts at `primary`; a declared rung identical to
+ * the primary, or repeated among the declared ones, leaves the chain with a
+ * useless step and fails at parse time instead of silently deduping.
+ */
+function parseFallbackChain(value: unknown, primary: FallbackRung, binaryPresent: BinaryProbe): FallbackRung[] {
+  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const chain: FallbackRung[] = [];
+  for (const raw of entries) {
+    const rung = parseFallbackRung(raw, binaryPresent);
+    if (sameRung(rung, primary) || chain.some((existing) => sameRung(existing, rung))) {
+      throw new Error(`--fallback ${raw} repite un escalon ya declarado (${rung.cli}:${rung.model}:${rung.variant})`);
+    }
+    chain.push(rung);
+  }
+  return chain;
+}
 
 /** `--field <referenceName>=<value>`; the value may contain `=`. */
 function parseFields(value: unknown): Array<{ referenceName: string; value: string }> {
@@ -337,15 +403,18 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
   };
 
   const cli = readAgentCli(parsed, rawArgs, binaryPresent);
+  const model = asString("model") ?? DEFAULT_MODEL;
+  const variant = readVariant(cli, asString("variant") ?? DEFAULT_VARIANT);
 
   return {
     command,
     cli,
-    model: asString("model") ?? DEFAULT_MODEL,
-    variant: readVariant(cli, asString("variant") ?? DEFAULT_VARIANT),
+    model,
+    variant,
     hasCli: flagSupplied(rawArgs, "--cli"),
     hasModel: flagSupplied(rawArgs, "--model"),
     hasVariant: flagSupplied(rawArgs, "--variant"),
+    fallbackChain: parseFallbackChain(parsed["fallback"], { cli, model, variant }, binaryPresent),
     session: asString("session"),
     prompt: asString("prompt") ?? DEFAULT_PROMPT,
     hu: asNumber("hu"),
