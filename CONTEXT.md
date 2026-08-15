@@ -76,6 +76,24 @@ A lazy-workflow invocation selected by `--hu`, or recovered from an Azure HU
 checkpoint. It preserves the HU's planning or ticket-delivery lifecycle.
 _Avoid_: GitHub repository run
 
+**Workflow prompt**:
+The single module that composes what OpenCode is told for one run, keyed by the
+class of run and the facts the coordinator has already fixed. It owns fragment
+order, the completion-manifest contract, and the terminal protocol marker
+vocabulary, so a contract change reaches every run at once. Each run receives
+only its own workflow's instructions and only its own provider's scope.
+_Avoid_: prompt text assembled at the call site, contract text restated in a
+prompt asset
+
+**Agent authority profile**:
+The OpenCode agent definition whose permission deny rules bound what one run may
+execute, injected per run alongside its prompt. The prompt states what OpenCode
+should decide; the profile states what it is able to do. There is one profile
+per authority — GitHub and Azure planning, GitHub and Azure delivery, and review
+— and it is derived from the same specification as the prompt, so the two cannot
+drift apart.
+_Avoid_: prohibitions enforced only by prompt prose
+
 **Default workflow prompt**:
 The GitHub-only instructions used by a GitHub repository run for its selected
 workflow and operator request.
@@ -84,8 +102,26 @@ _Avoid_: Azure HU prompt
 **Azure HU planning run**:
 A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
 User Story, combines that data with the English autoplan prompt, and starts
-OpenCode in the selected working directory.
-_Avoid_: Azure ticket delivery run
+OpenCode in the selected working directory. OpenCode decides how to slice the
+User Story and returns the slices as a delivery plan; it publishes no Azure work
+items. The coordinator validates that plan and publishes it.
+_Avoid_: Azure ticket delivery run, OpenCode-created work items
+
+**Delivery plan**:
+The machine-readable result of an Azure HU planning run: the tracer-bullet
+tickets to publish, each with its type, exact title, body, optional estimate,
+and the titles that block it. Titles are the plan's only identity, because
+work-item ids do not exist yet. Duplicate titles, unknown blockers, and blocking
+cycles are rejected before anything is created, so a malformed plan publishes
+nothing.
+_Avoid_: prose ticket list, work-item ids in a plan
+
+**Plan publication**:
+The coordinator-owned creation of a delivery plan in Azure: every work item
+first, in dependency order, then the blocking relations that can now name real
+ids. Both steps are idempotent, so republishing a plan reuses what already
+exists.
+_Avoid_: partial publication, duplicated work items
 
 **Azure multi-repository planning run**:
 A lazy-workflow invocation with `plan --hu <ID> --working-directory
