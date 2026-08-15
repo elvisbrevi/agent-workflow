@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { reportOperator } from "../output/operator-output.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 
 export interface GitHubReadyManifest {
@@ -166,7 +167,13 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       throw new Error("El repositorio tiene una operación Git en curso");
     }
     const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
-    if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar");
+    if (status.trim()) {
+      // Never auto-pop: a stash never lands on any branch's history, so it
+      // cannot mix unrelated work into whatever the recovery flow commits next.
+      // The operator must retrieve it deliberately once reconciliation is done.
+      await this.git(["stash", "push", "--include-untracked", "-m", `lazy-workflow: auto-stash antes de reconciliar ${verifiedBranch}`], workingDirectory);
+      reportOperator(`lazy-workflow: se detectaron cambios sin guardar; se guardaron con "git stash" antes de reconciliar la rama ${verifiedBranch} (recuperalos con "git stash list" / "git stash pop").`);
+    }
     const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
     if (active === branchName(verifiedBranch)) return;
     if (!(await this.git(["branch", "--list", branchName(verifiedBranch)], workingDirectory)).trim()) {

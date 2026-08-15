@@ -48,7 +48,7 @@ test("checkout de recuperación cambia a la rama local exacta sin crearla", asyn
   expect(commands.at(-1)).toEqual(["switch", "--no-guess", "issue/198"]);
 });
 
-test("checkout de recuperación rechaza un worktree sucio aunque la rama fijada ya esté activa", async () => {
+test("checkout de recuperación guarda en stash un worktree sucio en vez de rechazarlo o comitearlo", async () => {
   const commands: string[][] = [];
   const delivery = new GitHubDeliveryService(
     async () => { throw new Error("must not use GitHub"); },
@@ -57,12 +57,19 @@ test("checkout de recuperación rechaza un worktree sucio aunque la rama fijada 
       if (command[0] === "rev-parse") return "";
       if (command[0] === "symbolic-ref") return "issue/198\n";
       if (command[0] === "status") return "?? local.txt\n";
+      if (command[0] === "stash") return "";
       throw new Error(`unexpected git command: ${command.join(" ")}`);
     },
   );
 
-  await expect(delivery.checkoutBranch("refs/heads/issue/198", "refs/heads/main", "/repo"))
-    .rejects.toThrow("cambios sin guardar");
+  await delivery.checkoutBranch("refs/heads/issue/198", "refs/heads/main", "/repo");
+
+  const stashCommand = commands.find(([command]) => command === "stash");
+  expect(stashCommand).toBeDefined();
+  expect(stashCommand).toEqual(expect.arrayContaining(["stash", "push", "--include-untracked"]));
+  // Never a commit: a stash never lands on any branch's history, so it can't
+  // mix unrelated work into whatever the recovery flow commits next.
+  expect(commands.some(([command]) => command === "commit")).toBeFalse();
   expect(commands.some(([command]) => command === "switch")).toBeFalse();
 });
 
