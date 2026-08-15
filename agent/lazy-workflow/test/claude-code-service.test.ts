@@ -7,6 +7,7 @@ import {
   type ReporterStream,
 } from "../src/output/reporter.ts";
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
+import { AUTHORITY_PROFILES, authorityConfigPath } from "../src/prompts/authority-profile.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -95,20 +96,27 @@ describe("ClaudeCodeService comando construido", () => {
     expect(options[0]?.cwd).toBe("/repo");
   });
 
-  test("inyecta por ruta la autoridad del run junto al modo que no pregunta", async () => {
+  test("cada perfil inyecta por ruta su propia autoridad junto al modo que no pregunta", async () => {
     const commands: string[][] = [];
     const service = new ClaudeCodeService((command) => {
       commands.push(command);
       return stubProcess([initEvent("ses_auth"), assistantText("ses_auth", "ok")].join("\n"));
     });
 
-    await service.run({
-      ...standardOptions,
-      agent: { profile: "lazy-github-code", configPath: "/cfg/lazy-github-code.json" },
-    });
+    for (const profile of AUTHORITY_PROFILES) {
+      await service.run({
+        ...standardOptions,
+        agent: { profile, configPath: authorityConfigPath("claudecode", profile) },
+      });
+    }
 
-    expect(commands[0]?.[commands[0].indexOf("--settings") + 1]).toBe("/cfg/lazy-github-code.json");
-    expect(commands[0]?.[commands[0].indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    AUTHORITY_PROFILES.forEach((profile, index) => {
+      const command = commands[index]!;
+      expect(`${profile}: ${command[command.indexOf("--settings") + 1]}`)
+        .toBe(`${profile}: ${authorityConfigPath("claudecode", profile)}`);
+      expect(`${profile}: ${command[command.indexOf("--permission-mode") + 1]}`)
+        .toBe(`${profile}: bypassPermissions`);
+    });
   });
 
   test("una sesion reanudada conserva la autoridad con la que arranco", async () => {
