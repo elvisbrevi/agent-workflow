@@ -7,6 +7,7 @@ import {
   type ReporterStream,
 } from "../src/output/reporter.ts";
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
+import { AUTHORITY_PROFILES, authorityConfigPath } from "../src/prompts/authority-profile.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -93,6 +94,55 @@ describe("ClaudeCodeService comando construido", () => {
       "planifica",
     ]);
     expect(options[0]?.cwd).toBe("/repo");
+  });
+
+  test("cada perfil inyecta por ruta su propia autoridad junto al modo que no pregunta", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_auth"), assistantText("ses_auth", "ok")].join("\n"));
+    });
+
+    for (const profile of AUTHORITY_PROFILES) {
+      await service.run({
+        ...standardOptions,
+        agent: { profile, configPath: authorityConfigPath("claudecode", profile) },
+      });
+    }
+
+    AUTHORITY_PROFILES.forEach((profile, index) => {
+      const command = commands[index]!;
+      expect(`${profile}: ${command[command.indexOf("--settings") + 1]}`)
+        .toBe(`${profile}: ${authorityConfigPath("claudecode", profile)}`);
+      expect(`${profile}: ${command[command.indexOf("--permission-mode") + 1]}`)
+        .toBe(`${profile}: bypassPermissions`);
+    });
+  });
+
+  test("una sesion reanudada conserva la autoridad con la que arranco", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_auth"), assistantText("ses_auth", "ok")].join("\n"));
+    });
+
+    await service.resume("ses_auth", "continue", "/repo", undefined, {
+      agent: { profile: "lazy-review", configPath: "/cfg/lazy-review.json" },
+    });
+
+    expect(commands[0]?.[commands[0].indexOf("--settings") + 1]).toBe("/cfg/lazy-review.json");
+  });
+
+  test("un run sin autoridad no inyecta ninguna configuracion", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_libre"), assistantText("ses_libre", "ok")].join("\n"));
+    });
+
+    await service.run(standardOptions);
+
+    expect(commands[0]).not.toContain("--settings");
   });
 
   test("la sesion nunca arranca en modo bare", async () => {

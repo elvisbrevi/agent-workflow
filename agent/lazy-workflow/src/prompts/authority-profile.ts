@@ -1,29 +1,40 @@
 /**
- * Agent authority profile: the mechanical half of the coordinator/OpenCode boundary.
+ * Agent authority profile: the mechanical half of the coordinator/agent boundary.
  *
- * The prompt states what OpenCode should decide; this states what it is able to do.
- * Each profile is an OpenCode agent definition in `opencode/authority.json` whose
- * `permission.bash` deny rules are enforced by the provider, so a prohibition no
- * longer depends on the model reading and obeying prose.
+ * The prompt states what the coding agent should decide; this states what it is
+ * able to do, in the format each CLI's own provider validates and enforces, so a
+ * prohibition no longer depends on the model reading and obeying prose (ADR-0021,
+ * ADR-0023). Every profile exists in both formats and neither file is generated
+ * from the other: a rule lost in translation is a rule that stops enforcing.
  *
- * OpenCode runs with `--auto`, which auto-approves everything *not explicitly
- * denied*, so the deny rules are the whole enforcement surface. The config is
- * injected through `OPENCODE_CONFIG`, which merges with — rather than replaces —
- * whatever configuration the target repository already has.
+ * OpenCode carries all five profiles in `opencode/authority.json`, injected
+ * through `OPENCODE_CONFIG`, which merges with — rather than replaces — whatever
+ * configuration the target repository already has. Claude Code validates one
+ * settings file at a time, so each profile is its own file under `claudecode/`,
+ * injected by path with `--settings`.
+ *
+ * Both CLIs run in their auto-approve mode (`--auto`, `bypassPermissions`), so
+ * the deny rules are the whole enforcement surface: they are evaluated before any
+ * permission, and everything not denied is approved without a prompt.
  */
 
+import type { AgentCli } from "../cli/parse-cli-options.ts";
 import type { WorkflowPromptSpec } from "./workflow-prompt.ts";
 
-export type AuthorityProfile =
-  | "lazy-github-plan"
-  | "lazy-github-code"
-  | "lazy-azure-plan"
-  | "lazy-azure-code"
-  | "lazy-review";
+export const AUTHORITY_PROFILES = [
+  "lazy-github-plan",
+  "lazy-github-code",
+  "lazy-azure-plan",
+  "lazy-azure-code",
+  "lazy-review",
+] as const;
 
-/** Absolute path to the authority config lazy-workflow injects into OpenCode. */
-export function authorityConfigPath(): string {
-  return Bun.fileURLToPath(new URL("../../opencode/authority.json", import.meta.url));
+export type AuthorityProfile = typeof AUTHORITY_PROFILES[number];
+
+/** Absolute path to the authority config lazy-workflow injects into the given CLI. */
+export function authorityConfigPath(cli: AgentCli, profile: AuthorityProfile): string {
+  const relative = cli === "claudecode" ? `../../claudecode/${profile}.json` : "../../opencode/authority.json";
+  return Bun.fileURLToPath(new URL(relative, import.meta.url));
 }
 
 /** The authority a run may exercise, derived from what the coordinator already fixed. */

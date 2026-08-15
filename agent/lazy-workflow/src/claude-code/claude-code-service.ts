@@ -2,10 +2,9 @@
  * The Claude Code adapter: one more implementation of the coding agent seam, so
  * a run may execute its session with `--cli claudecode` (ADR-0023).
  *
- * The authority profile a run carries is not injected here yet: Claude Code takes
- * its deny rules from a settings file that does not exist until the authority
- * mirror lands, so sessions are bounded by the flow the coordinator allows rather
- * than by provider-enforced rules.
+ * The authority profile a run carries arrives as the settings file Claude Code
+ * validates, injected by path with `--settings`, so a prohibition is enforced by
+ * the provider rather than by prose the model may ignore (ADR-0021, ADR-0023).
  *
  * Claude Code streams its own JSONL, so this module owns both the command it
  * builds and the decoding of that stream into the shared `AgentResult`. Sessions
@@ -20,6 +19,7 @@ import {
 } from "../coding-agent/agent-process.ts";
 import { AgentResult, type AgentTokens } from "../coding-agent/agent-result.ts";
 import type {
+  AgentAuthority,
   AgentExecution,
   AgentResumeOverrides,
   AgentRunOptions,
@@ -184,7 +184,7 @@ export class ClaudeCodeService implements CodingAgent {
   async run(options: AgentRunOptions): Promise<AgentExecution> {
     return this.execute(
       [
-        ...this.sessionCommand(),
+        ...this.sessionCommand(options.agent),
         ...(options.session ? ["--resume", options.session] : []),
         "--model",
         options.model,
@@ -205,7 +205,9 @@ export class ClaudeCodeService implements CodingAgent {
   ): Promise<AgentResult> {
     const execution = await this.execute(
       [
-        ...this.sessionCommand(),
+        // A resumed session keeps the authority it started with, so the profile
+        // and its config travel with the resume too.
+        ...this.sessionCommand(overrides.agent),
         "--resume",
         sessionId,
         ...(overrides.model ? ["--model", overrides.model] : []),
@@ -223,7 +225,7 @@ export class ClaudeCodeService implements CodingAgent {
    * prompts are skipped while deny rules still block, because Claude Code
    * evaluates deny before allow in every mode (ADR-0023).
    */
-  private sessionCommand(): string[] {
+  private sessionCommand(authority?: AgentAuthority): string[] {
     return [
       "claude",
       "--print",
@@ -232,6 +234,7 @@ export class ClaudeCodeService implements CodingAgent {
       "--verbose",
       "--permission-mode",
       "bypassPermissions",
+      ...(authority ? ["--settings", authority.configPath] : []),
     ];
   }
 
