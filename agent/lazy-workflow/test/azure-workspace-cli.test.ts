@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
+import { createReporter, type Reporter } from "../src/output/reporter.ts";
 
 const hu = 192;
 const repoA = "repo-a";
@@ -17,6 +18,19 @@ const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
 const integrationBranch = `refs/heads/hu/${hu}`;
 const huBranchUri = `vstfs:///Git/Ref/${projectId}%2F${repoAId}%2FGBhu%2F${hu}`;
+
+function captureReporter(): { reporterFn: typeof createReporter; messages: string[] } {
+  const messages: string[] = [];
+  const reporter: Reporter = {
+    info: (message: string) => { messages.push(message); },
+    warn: () => undefined,
+    error: () => undefined,
+    debug: () => undefined,
+    start: () => ({ stop: () => undefined }) as never,
+    stop: () => undefined,
+  };
+  return { reporterFn: (() => reporter) as typeof createReporter, messages };
+}
 
 async function seedRepo(root: string, name: string): Promise<string> {
   const path = join(root, name);
@@ -376,6 +390,89 @@ test("plan multi-repositorio fija la frontera de autorización y resuelve las no
     expect(exit).toBe(0);
     expect(planningDirectories).toEqual([realpathA]);
     expect(prompt).toContain("OpenCode may only read or modify the listed repositories.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan multi-repositorio nombra el tracker, no el workspace, cuando falla la lectura de la HU", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-hu-failure-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async () => { throw new Error("az boards work-item show: not logged in"); },
+    waitForAccess: async () => undefined,
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const { reporterFn, messages } = captureReporter();
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async () => { throw new Error("plan must not start an OpenCode session when the HU read fails"); },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined, undefined, undefined, undefined, undefined,
+    git,
+    undefined, undefined, undefined, undefined,
+    reporterFn,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(1);
+    expect(messages.some((message) => message.includes("no se pudo leer la HU en Azure DevOps"))).toBeTrue();
+    expect(messages.some((message) => message.includes("no se pudo preparar el workspace"))).toBeFalse();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan multi-repositorio conserva el mensaje de alcance cuando un repositorio no tiene remote Azure DevOps", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-scope-failure-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  let huRead = false;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => { huRead = true; return { id }; },
+    waitForAccess: async () => undefined,
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      // repo-b resolves to a GitHub remote: the same single-provider check that
+      // guards `code --hu` rejects the mixed scope before the HU is ever read.
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : "https://github.com/org/repo-b.git\n";
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const { reporterFn, messages } = captureReporter();
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async () => { throw new Error("plan must not start an OpenCode session when the scope is rejected"); },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined, undefined, undefined, undefined, undefined,
+    git,
+    undefined, undefined, undefined, undefined,
+    reporterFn,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(1);
+    expect(huRead).toBe(false);
+    expect(messages.some((message) => message.includes("no se pudo preparar el workspace"))).toBeTrue();
+    expect(messages.some((message) => message.includes("no tiene un remote Azure DevOps"))).toBeTrue();
+    expect(messages.some((message) => message.includes("no se pudo leer la HU en Azure DevOps"))).toBeFalse();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
