@@ -29,6 +29,16 @@ export interface CliOptions {
   hasRealEffortHours: boolean;
   hasExpectedRevision: boolean;
   evidenceKind: EvidenceKind | null;
+  type: string | null;
+  title: string | null;
+  estimate: number | null;
+  assignee: string | null;
+  /** Explicit Azure reference names; display labels are never inferred (ADR-0006). */
+  fields: Array<{ referenceName: string; value: string }>;
+  parent: number | null;
+  child: number | null;
+  blocker: number | null;
+  blocked: number | null;
   numberOfQuestions: number;
   normasSag: boolean;
   workingDirectory: string;
@@ -80,6 +90,9 @@ const SUPPORTED_COMMANDS = new Set([
   "ticket-attachment-add",
   "ticket-evidence-set",
   "ticket-completion-apply",
+  "ticket-create",
+  "ticket-link-parent",
+  "ticket-link-predecessor",
 ]);
 
 const EVIDENCE_KINDS = new Set<EvidenceKind>(["http-json", "screen", "command-output"]);
@@ -174,7 +187,15 @@ export function buildCli(): CliParser {
 
     if (captured) return captured;
 
-    return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1)) };
+    // Reading the options can still reject a malformed value (`--field` pairs),
+    // and that is an argument error like any other yargs raises.
+    try {
+      return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1)) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      hooks.onError(message, 1);
+      return { kind: "error", message, exitCode: 1 };
+    }
   };
 }
 
@@ -229,12 +250,32 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
     .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
     .option("number-of-questions", positiveIntegerOption("number-of-questions", "--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
+    .option("type", stringOption("type", "--type", "Tipo de work item de entrega (Task o Bug)."))
+    .option("title", stringOption("title", "--title", "Titulo exacto del ticket."))
+    .option("estimate", nonNegativeNumberOption("estimate", "--estimate", "Estimacion original en horas."))
+    .option("assignee", stringOption("assignee", "--assignee", "Identidad Azure asignada al ticket."))
+    .option("field", { type: "array", requiresArg: true, describe: "Campo Azure explicito como <referenceName>=<valor>; repetible." })
+    .option("parent", positiveIntegerOption("parent", "--parent", "Work item padre."))
+    .option("child", positiveIntegerOption("child", "--child", "Work item hijo."))
+    .option("blocker", positiveIntegerOption("blocker", "--blocker", "Work item que bloquea."))
+    .option("blocked", positiveIntegerOption("blocked", "--blocked", "Work item bloqueado."))
     .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
     .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
     .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
     .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
     .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
+}
+
+/** `--field <referenceName>=<value>`; the value may contain `=`. */
+function parseFields(value: unknown): Array<{ referenceName: string; value: string }> {
+  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return entries.map((entry) => {
+    if (typeof entry !== "string") throw new Error("--field requiere <referenceName>=<valor>");
+    const separator = entry.indexOf("=");
+    if (separator <= 0) throw new Error(`--field ${entry} no tiene la forma <referenceName>=<valor>`);
+    return { referenceName: entry.slice(0, separator), value: entry.slice(separator + 1) };
+  });
 }
 
 function readOptions(command: string, argv: unknown, rawArgs: string[]): CliOptions {
@@ -275,6 +316,15 @@ function readOptions(command: string, argv: unknown, rawArgs: string[]): CliOpti
     hasRealEffortHours: parsed["real-effort-hh"] !== undefined,
     hasExpectedRevision: parsed["expected-rev"] !== undefined,
     evidenceKind: (parsed["kind"] as EvidenceKind | null | undefined) ?? (parsed["evidence-kind"] as EvidenceKind | null | undefined) ?? null,
+    type: asString("type"),
+    title: asString("title"),
+    estimate: asNumber("estimate"),
+    assignee: asString("assignee"),
+    fields: parseFields(parsed["field"]),
+    parent: asNumber("parent"),
+    child: asNumber("child"),
+    blocker: asNumber("blocker"),
+    blocked: asNumber("blocked"),
     numberOfQuestions: asNumber("number-of-questions") ?? DEFAULT_NUMBER_OF_QUESTIONS,
     normasSag: parsed["normas-sag"] === true,
     workingDirectory: asString("working-directory") ?? process.cwd(),
@@ -331,4 +381,7 @@ const COMMAND_FORMS = [
   "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
   "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
   "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
+  "  lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <titulo> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<valor>]",
+  "  lazy-workflow ticket-link-parent --parent <id> --child <id>",
+  "  lazy-workflow ticket-link-predecessor --blocker <id> --blocked <id>",
 ];

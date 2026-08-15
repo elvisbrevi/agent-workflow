@@ -341,10 +341,12 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
 test("plan Azure agrega normas SAG despues de cargar la HU", async () => {
   const directory = await config();
   let received: OpenCodeRunOptions | null = null;
+  // The planning run publishes what the session returns, so it must close its
+  // contract; an empty plan is the valid "no delivery tickets needed" result.
   const result = OpenCodeResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses-plan-azure-sag",
-    part: { type: "text", text: "plan" },
+    part: { type: "text", text: 'plan\nPLAN_READY\n{"tickets":[]}' },
   }));
   try {
     const code = await new LazyWorkflowCli(

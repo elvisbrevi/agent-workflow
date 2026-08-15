@@ -75,6 +75,16 @@ test("ningun perfil de entrega puede empujar, ramificar ni usar el proveedor aje
   expect(config.agent["lazy-azure-code"].permission.bash["az*"]).toBe("deny");
 });
 
+test("ningun perfil de planificacion puede mutar el tracker", async () => {
+  const config = await Bun.file(authorityConfigPath()).json();
+  // The coordinator publishes planning work items, so no planning run needs `az`.
+  expect(config.agent["lazy-azure-plan"].permission.bash["az*"]).toBe("deny");
+  expect(config.agent["lazy-github-plan"].permission.bash["az*"]).toBe("deny");
+  for (const profile of ["lazy-azure-plan", "lazy-github-plan"]) {
+    expect(`${profile}: ${config.agent[profile].permission.bash["git push*"]}`).toBe(`${profile}: deny`);
+  }
+});
+
 test("el perfil de revision no puede editar", async () => {
   const config = await Bun.file(authorityConfigPath()).json();
   expect(config.agent["lazy-review"].permission.edit).toBe("deny");

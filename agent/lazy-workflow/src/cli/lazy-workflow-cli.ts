@@ -1,5 +1,6 @@
-import { dirname } from "node:path";
-import { unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, unlink } from "node:fs/promises";
 import { HuInfoService } from "../azure/hu-info-service.ts";
 import {
   AzureAutocodeService,
@@ -77,6 +78,7 @@ import {
   type WorkflowPromptSpec,
 } from "../prompts/workflow-prompt.ts";
 import { authorityConfigPath, authorityProfile } from "../prompts/authority-profile.ts";
+import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
   type CliOptions as ParsedCliOptions,
@@ -127,6 +129,17 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   setHuState?(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
   getHuChildren?(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
   hasOpenDeliveryChildren?(hu: number): Promise<boolean>;
+  createTicket?(input: {
+    hu: number;
+    type: string;
+    title: string;
+    descriptionFile: string;
+    estimate?: number;
+    assignee?: string;
+    fields?: Array<{ referenceName: string; value: string }>;
+  }): Promise<{ hu: number; ticket: number; type: string; title: string; created: boolean }>;
+  linkParent?(parent: number, child: number): Promise<{ parent: number; child: number; linked: boolean }>;
+  linkPredecessor?(blocker: number, blocked: number): Promise<{ blocker: number; blocked: number; linked: boolean }>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -289,6 +302,9 @@ const TICKET_MUTATION_COMMANDS = new Set([
   "ticket-attachment-add",
   "ticket-evidence-set",
   "ticket-completion-apply",
+  "ticket-create",
+  "ticket-link-parent",
+  "ticket-link-predecessor",
 ]);
 const INFRASTRUCTURE_FLAGS = new Set([
   "--hu", "--issue",
@@ -505,6 +521,65 @@ export class LazyWorkflowCli {
         return 0;
       } catch (error) {
         reportOperator(`lazy-workflow: no se pudo ejecutar ticket-completion-apply (${errorMessage(error)})`);
+        return 1;
+      }
+    }
+
+    if (command === "ticket-create") {
+      if (!isValidHu(options.hu)) {
+        reportOperator("ticket-create requiere --hu <id>");
+        return 1;
+      }
+      if (options.type !== "Task" && options.type !== "Bug") {
+        reportOperator("ticket-create requiere --type Task o --type Bug");
+        return 1;
+      }
+      if (!options.title?.trim()) {
+        reportOperator("ticket-create requiere --title <titulo>");
+        return 1;
+      }
+      if (!options.descriptionFile?.trim()) {
+        reportOperator("ticket-create requiere --description-file <path>");
+        return 1;
+      }
+      try {
+        if (!this.huInfoService.createTicket) throw new Error("El servicio Azure no soporta ticket-create");
+        const result = await this.huInfoService.createTicket({
+          hu: options.hu,
+          type: options.type,
+          title: options.title,
+          descriptionFile: options.descriptionFile,
+          ...(options.estimate !== null ? { estimate: options.estimate } : {}),
+          ...(options.assignee ? { assignee: options.assignee } : {}),
+          ...(options.fields.length > 0 ? { fields: options.fields } : {}),
+        });
+        console.log(JSON.stringify(result, null, 2));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        return 1;
+      }
+    }
+
+    if (command === "ticket-link-parent" || command === "ticket-link-predecessor") {
+      const [first, second] = command === "ticket-link-parent"
+        ? [options.parent, options.child]
+        : [options.blocker, options.blocked];
+      const flags = command === "ticket-link-parent" ? "--parent <id> y --child <id>" : "--blocker <id> y --blocked <id>";
+      if (first === null || second === null) {
+        reportOperator(`${command} requiere ${flags} con enteros positivos`);
+        return 1;
+      }
+      try {
+        const service = this.huInfoService;
+        const link = command === "ticket-link-parent"
+          ? service.linkParent?.bind(service)
+          : service.linkPredecessor?.bind(service);
+        if (!link) throw new Error(`El servicio Azure no soporta ${command}`);
+        console.log(JSON.stringify(await link(first, second), null, 2));
+        return 0;
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
         return 1;
       }
     }
@@ -737,10 +812,49 @@ export class LazyWorkflowCli {
     if (execution.azureLoginRequired && options.hu > 0) {
       reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
       await this.huInfoService.waitForAccess(options.hu);
-      result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
+      result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
     }
     console.log(JSON.stringify(result, null, 2));
-    return 0;
+    if (execution.failed) return 1;
+    return this.publishAzurePlan(options.hu, result.text);
+  }
+
+  /**
+   * Publish the plan the session returned. OpenCode decided the slices; creating
+   * the work items and their blocking relations is the coordinator's mechanical
+   * work, verified through the same ticket-* primitives.
+   */
+  private async publishAzurePlan(hu: number, text: string): Promise<number> {
+    try {
+      const tickets = parsePlan(text);
+      if (tickets.length === 0) {
+        reportOperator(`lazy-workflow: el plan de la HU ${hu} no requiere tickets de entrega.`);
+        return 0;
+      }
+      // Only a plan with work to publish needs the publication primitives.
+      const { createTicket, linkPredecessor } = this.huInfoService;
+      if (!createTicket || !linkPredecessor) {
+        reportOperator("lazy-workflow: el coordinador no expone las primitivas de publicación de plan; ejecución detenida.");
+        return 1;
+      }
+      const service = new AzurePlanPublicationService(
+        {
+          createTicket: createTicket.bind(this.huInfoService),
+          linkPredecessor: linkPredecessor.bind(this.huInfoService),
+        },
+        async (body) => {
+          const path = join(await mkdtemp(join(tmpdir(), "lazy-workflow-plan-")), "description.html");
+          await Bun.write(path, body);
+          return path;
+        },
+      );
+      const publication = await service.publish(hu, tickets);
+      console.log(JSON.stringify(publication, null, 2));
+      return 0;
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo publicar el plan de la HU ${hu} (${errorMessage(error)}); no se creó trabajo parcial sin verificar.`);
+      return 1;
+    }
   }
 
   private applyReporter(options: ParsedCliOptions): void {

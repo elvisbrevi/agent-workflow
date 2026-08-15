@@ -48,7 +48,7 @@
       }
     },
     "lazy-azure-plan": {
-      "description": "lazy-workflow Azure planning authority: HU documentation and Azure Boards work items, never Azure Repos or GitHub.",
+      "description": "lazy-workflow Azure planning authority: HU documentation and a returned plan. The coordinator publishes the work items.",
       "mode": "primary",
       "permission": {
         "edit": "allow",
@@ -59,8 +59,7 @@
           "git switch -c*": "deny",
           "git remote*": "deny",
           "git tag*": "deny",
-          "az repos*": "deny",
-          "az pipelines*": "deny",
+          "az*": "deny",
           "gh*": "deny"
         }
       }

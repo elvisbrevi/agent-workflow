@@ -158,8 +158,8 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
   const huInfo = { id: 23438 } as never;
 
   const workspacePlan = await buildWorkflowPrompt({ kind: "workspace-plan", scope, huInfo }, context);
-  expect(workspacePlan).toContain("child work items");
-  expect(workspacePlan).not.toContain("Do not use Azure DevOps");
+  expect(workspacePlan).toContain("address the current User Story");
+  expect(workspacePlan).toContain("PLAN_READY");
   expect(workspacePlan).not.toContain("Use GitHub and `gh` for");
 
   const workspaceDelivery = await buildWorkflowPrompt({
