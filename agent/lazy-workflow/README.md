@@ -460,6 +460,38 @@ the later ones pending and preserves the aggregate checkpoint. Nothing is
 rolled back or reverted after a partial merge — fix the cause and rerun.
 `--session <id>` must match the session stored in the checkpoint.
 
+## Coding agent CLI
+
+Every command that opens a session — `plan`, `code`, and the SAG-scoped
+workflows — runs it through one coding agent CLI, selected once per run with
+`--cli`. The default is `opencode`; omitting the flag behaves exactly as before.
+
+```bash
+lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high \
+  --working-directory /path/to/repository
+```
+
+`--model` is the model of the selected CLI, and `--variant` is its effort level:
+Claude Code accepts `low`, `medium`, `high`, `xhigh`, and `max`, and rejects any
+other value before opening the session. When you name a `--cli`, its binary —
+`opencode` or `claude` — is verified while the arguments are parsed, so a
+missing installation is reported before a session starts.
+
+Claude Code sessions run non-interactively with its JSON event stream, take the
+session identifier from the CLI's own initialization event, and never use
+`--bare`, so the operator's login and the target repository's `CLAUDE.md` stay
+available. Its events reach the Reporter with the same severities as OpenCode's:
+assistant text as info, reasoning and tool calls as debug.
+
+`--cli claudecode` is accepted today by `plan` without `--hu`. Delivery pins its
+session in a checkpoint that does not record the owning CLI yet, and the `az
+login` handshake still reads OpenCode events only, so `code`, `plan --hu`, and
+the SAG workflows reject the flag rather than opening a session they could not
+recover or continue. Claude Code also runs without an injected authority profile
+until its settings mirror of `opencode/authority.json` exists; what a Claude Code
+session may do is bounded by the flow the coordinator allows, not yet by
+provider-enforced deny rules.
+
 ## Agent authority
 
 Every run carries an agent authority profile alongside its prompt. The prompt
@@ -496,7 +528,9 @@ src/github/             GitHub tracker boundaries for SAG review publication
 src/sag/                SAG norm retrieval and deployment coordination
 src/cli/                Workflow coordination
 src/git/                Verified ticket-branch cleanup
+src/coding-agent/       Coding agent seam: contract, result, process and CLI selection
 src/opencode/           OpenCode execution and JSONL result
+src/claude-code/        Claude Code execution and stream JSON result
 test/                   Bun tests
 ```
 

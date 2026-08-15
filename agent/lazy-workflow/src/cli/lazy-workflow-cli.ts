@@ -26,7 +26,7 @@ import {
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
 import { AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
-import { OpenCodeService } from "../opencode/open-code-service.ts";
+import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -85,6 +85,8 @@ import { authorityConfigPath, authorityProfile } from "../prompts/authority-prof
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
+  DEFAULT_CLI,
+  type AgentCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
   type CliParser,
@@ -347,10 +349,13 @@ export class LazyWorkflowCli {
   private readonly githubDelivery: GitHubDeliveryAdapter | null;
   private readonly githubParentReconciliation: GitHubParentReconciliationAdapter | null;
   private readonly githubWorkspaceCheckpoint = new GitHubWorkspaceCheckpointStore();
+  /** The agent of the run in course, resolved once from `--cli` (ADR-0023). */
+  private activeAgent: CodingAgent | null = null;
 
   constructor(
     private readonly huInfoService: AzureBoundary = new AzureAutocodeService(),
-    private readonly codingAgent: CodingAgent = new OpenCodeService(),
+    /** The agent itself when a caller injects one; otherwise the factory `--cli` selects from. */
+    private readonly agentSource: CodingAgent | CodingAgentFactory = createCodingAgent,
     private readonly checkpointStore: AutocodeCheckpointStore = new GitAutocodeCheckpointStore(),
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
@@ -386,6 +391,16 @@ export class LazyWorkflowCli {
       : null;
   }
 
+  /** The agent executing this run; every call site reads the one already resolved. */
+  private get codingAgent(): CodingAgent {
+    return this.activeAgent ?? this.resolveAgent(DEFAULT_CLI);
+  }
+
+  private resolveAgent(cli: AgentCli): CodingAgent {
+    this.activeAgent = typeof this.agentSource === "function" ? this.agentSource(cli) : this.agentSource;
+    return this.activeAgent;
+  }
+
   async run(args: string[]): Promise<number> {
     const parsed = parseCli(args, this.cliParser);
     if (parsed.kind === "help") {
@@ -398,8 +413,17 @@ export class LazyWorkflowCli {
 
     const options = parsed.options;
     this.applyReporter(options);
+    this.resolveAgent(options.cli);
 
     const command = options.command;
+
+    // Delivery pins its session in a checkpoint that does not record the CLI yet,
+    // and the Azure login handshake still reads OpenCode events only. Until both
+    // land, a Claude Code run is limited to the flow it can complete.
+    if (options.cli === "claudecode" && (command !== "plan" || options.hu !== null)) {
+      reportOperator("--cli claudecode solo esta disponible en plan sin --hu");
+      return 1;
+    }
 
     if (options.verbose && options.quiet) {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");

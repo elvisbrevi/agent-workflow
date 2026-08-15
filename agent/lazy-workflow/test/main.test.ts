@@ -10,6 +10,9 @@ import {
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { AgentSessionNotFoundError, type AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
+import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
+import { createCodingAgent } from "../src/coding-agent/create-coding-agent.ts";
+import { buildCli, type AgentCli } from "../src/cli/parse-cli-options.ts";
 import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
@@ -1807,4 +1810,76 @@ test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
   expect(output[0]).toContain("code [options]");
   expect(output[0]).toContain("--verbose");
   expect(output[0]).toContain("--quiet");
+});
+
+test("createCodingAgent construye el adaptador de cada CLI soportado", () => {
+  expect(createCodingAgent("opencode")).toBeInstanceOf(OpenCodeService);
+  expect(createCodingAgent("claudecode")).toBeInstanceOf(ClaudeCodeService);
+});
+
+test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", async () => {
+  const requested: AgentCli[] = [];
+  const result = new AgentResult({ sessionId: "ses_cli", text: "plan" });
+  const planWith = (args: string[]) => new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    (cli: AgentCli) => {
+      requested.push(cli);
+      return {
+        run: async () => ({ result, azureLoginRequired: false }),
+        resume: async () => { throw new Error("must not resume"); },
+      };
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(args);
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    expect(await planWith(["plan", "--cli", "claudecode"])).toBe(0);
+    expect(await planWith(["plan"])).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(requested).toEqual(["claudecode", "opencode"]);
+});
+
+test("claudecode se limita al plan GitHub mientras faltan checkpoints y deteccion de az login", async () => {
+  let sessions = 0;
+  const runWith = (args: string[]) => new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    () => ({
+      run: async () => { sessions += 1; throw new Error("must not open a session"); },
+      resume: async () => { sessions += 1; throw new Error("must not resume"); },
+    }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(args);
+
+  expect(await runWith(["code", "--cli", "claudecode"])).toBe(1);
+  expect(await runWith(["plan", "--hu", "23438", "--cli", "claudecode"])).toBe(1);
+  expect(sessions).toBe(0);
 });
