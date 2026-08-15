@@ -326,3 +326,54 @@ test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el l
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("plan multi-repositorio fija la frontera de autorización y resuelve las normas SAG en el repositorio ancla", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-scope-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const realpathA = await realpath(pathA);
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => ({ id }),
+    waitForAccess: async () => undefined,
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const planningDirectories: string[] = [];
+  let prompt = "";
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async (options) => {
+        prompt = options.prompt;
+        return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      loadPlanning: async (workingDirectory: string) => {
+        planningDirectories.push(workingDirectory);
+        return { norms: [] } as never;
+      },
+    } as never,
+    git,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--normas-sag", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(planningDirectories).toEqual([realpathA]);
+    expect(prompt).toContain("OpenCode may only read or modify the listed repositories.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

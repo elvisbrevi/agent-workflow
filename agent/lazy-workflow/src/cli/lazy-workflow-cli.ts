@@ -1365,7 +1365,8 @@ export class LazyWorkflowCli {
     try {
       // Azure scope with --hu, GitHub scope without it: the same single-provider rule as `code`.
       const scope = options.hu !== null ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
-      const norms = await this.loadSagNorms(options, "planning");
+      // The CSV list is not a path: SAG norms live in the anchor repository.
+      const norms = await this.loadSagNorms({ ...options, workingDirectory: scope.repositories[0]!.path }, "planning");
       if (options.normasSag && norms === null) return 1;
       const prompt = [
         await readPrompt("default"),
@@ -1377,6 +1378,7 @@ export class LazyWorkflowCli {
         `Workspace parent directory: ${scope.parentDirectory}`,
         "Ordered participant repositories:",
         ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
+        "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         `The working directory is ${scope.parentDirectory}`,
         "Operator request:",
         options.prompt,
