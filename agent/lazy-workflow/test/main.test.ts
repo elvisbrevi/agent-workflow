@@ -1903,7 +1903,51 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
   });
 });
 
-test("claudecode se limita al plan GitHub mientras faltan checkpoints y deteccion de az login", async () => {
+test("code --cli claudecode entrega la cola gestionada y fija el CLI en el checkpoint", async () => {
+  const requested: AgentCli[] = [];
+  const checkpoints: Array<{ cli: string; phase: string }> = [];
+  const [store, lock, delivery] = fakeCoordinatedGitHubDeps();
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    (cli: AgentCli) => {
+      requested.push(cli);
+      return {
+        run: async () => ({
+          result: AgentResult.fromJsonLines(JSON.stringify({
+            type: "text", sessionID: "ses_claude", part: { type: "text", text: "IMPLEMENTATION_READY" },
+          })),
+          azureLoginRequired: false,
+        }),
+        resume: async () => { throw new Error("must not resume"); },
+      };
+    },
+    emptyCheckpointStore(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+    undefined,
+    queueAdapter([fakeSelectedOutcome(201)]),
+    { ...store, write: async (checkpoint) => { checkpoints.push({ cli: checkpoint.cli, phase: checkpoint.phase }); await store.write(checkpoint); } },
+    lock,
+    delivery,
+  ).run(["code", "--cli", "claudecode", "--model", "claude-opus-5", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(requested).toEqual(["claudecode"]);
+  expect(checkpoints.every(({ cli }) => cli === "claudecode")).toBeTrue();
+  expect(checkpoints.map(({ phase }) => phase)).toContain("implementation-ready");
+});
+
+test("claudecode todavia no esta disponible en los workflows SAG", async () => {
   let sessions = 0;
   const runWith = (args: string[]) => new LazyWorkflowCli(
     {
@@ -1926,7 +1970,8 @@ test("claudecode se limita al plan GitHub mientras faltan checkpoints y deteccio
     buildCli(() => true),
   ).run(args);
 
-  expect(await runWith(["code", "--cli", "claudecode"])).toBe(1);
-  expect(await runWith(["plan", "--hu", "23438", "--cli", "claudecode"])).toBe(1);
+  expect(await runWith(["infra-sag", "--issue", "178", "--cli", "claudecode"])).toBe(1);
+  expect(await runWith(["architecture-review-sag", "--issue", "178", "--cli", "claudecode"])).toBe(1);
+  expect(await runWith(["deploy-sag", "--issue", "178", "--environment", "dev", "--cli", "claudecode"])).toBe(1);
   expect(sessions).toBe(0);
 });

@@ -66,6 +66,15 @@ The repository-scoped record that fixes an in-flight issue and its delivery
 phase so recovery reconciles that issue before consulting the managed queue.
 _Avoid_: selecting replacement work after partial delivery
 
+**Session-owning CLI**:
+The coding agent CLI recorded next to the session identifier in every checkpoint
+that keeps one. Recovery resumes against the CLI the checkpoint names rather than
+the run's default, and an explicit `--cli` that contradicts it fails closed with
+the checkpoint preserved. A checkpoint written before the field existed reads as
+OpenCode and is rewritten in the current schema, so a delivery in flight survives
+the update.
+_Avoid_: inferring the CLI from the current invocation, a second checkpoint file
+
 **GitHub queue outcome**:
 A coordinator-owned result distinguishing completed delivery, an empty managed
 queue, a blocked managed queue, and delivery state requiring reconciliation.
@@ -294,8 +303,10 @@ _Avoid_: raw transcript
 
 **Azure login continuation**:
 When an HU planning run encounters an `az login --use-device-code` request,
-lazy-workflow preserves the OpenCode session, waits for Azure access, and
-resumes that same session once with `continue`.
+lazy-workflow preserves the session, waits for Azure access, and resumes that
+same session once with `continue`. Both coding agent CLIs report the request —
+a shell call that runs it or text asking the operator to — so the continuation
+does not depend on which one executed the run.
 _Avoid_: automatic credential capture
 
 **SAG norms context**:

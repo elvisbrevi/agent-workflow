@@ -432,11 +432,10 @@ export class LazyWorkflowCli {
 
     const command = options.command;
 
-    // Delivery pins its session in a checkpoint that does not record the CLI yet,
-    // and the Azure login handshake still reads OpenCode events only. Until both
-    // land, a Claude Code run is limited to the flow it can complete.
-    if (options.cli === "claudecode" && (command !== "plan" || options.hu !== null)) {
-      reportOperator("--cli claudecode solo esta disponible en plan sin --hu");
+    // The SAG workflows still resolve their session outside the `--cli` seam, so
+    // a Claude Code run is limited to the flows it can complete until they do.
+    if (options.cli === "claudecode" && command.endsWith("-sag")) {
+      reportOperator(`--cli claudecode todavia no esta disponible en ${command}`);
       return 1;
     }
 
