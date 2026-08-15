@@ -402,6 +402,7 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   expect(requestedHu).toBe(12345);
   expect(received.azure).toBeTrue();
   expect(received.options?.prompt).toContain("Do not implement code");
+  expect(received.options?.prompt).toContain("PLAN_READY");
   expect(received.options?.prompt).toContain('"id":12345');
   expect(received.options?.prompt).toContain("3");
   expect(received.options?.prompt).toContain("/repo");
