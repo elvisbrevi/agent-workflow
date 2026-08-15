@@ -2,15 +2,16 @@ import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
+import { AGENT_CLI_BINARIES, DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 
-/** The coding agent CLI that executes the session of this run (ADR-0023). */
-export type AgentCli = "opencode" | "claudecode";
+export { AGENT_CLI_BINARIES, DEFAULT_CLI, type AgentCli };
 
 export interface CliOptions {
   command: string;
   cli: AgentCli;
   model: string;
   variant: string;
+  hasCli: boolean;
   hasModel: boolean;
   hasVariant: boolean;
   session: string | null;
@@ -64,12 +65,6 @@ export interface CliParserHooks {
 
 export type CliParser = (args: string[], hooks: CliParserHooks) => CliParseResult;
 
-export const DEFAULT_CLI: AgentCli = "opencode";
-/** The binary each CLI is invoked through, so a missing one is named as the operator installs it. */
-export const AGENT_CLI_BINARIES: Record<AgentCli, string> = {
-  opencode: "opencode",
-  claudecode: "claude",
-};
 const AGENT_CLIS = Object.keys(AGENT_CLI_BINARIES) as AgentCli[];
 
 /** Answers whether a binary is on the PATH; injected so tests never depend on the host. */
@@ -350,6 +345,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     cli,
     model: asString("model") ?? DEFAULT_MODEL,
     variant: readVariant(cli, asString("variant") ?? DEFAULT_VARIANT),
+    hasCli: flagSupplied(rawArgs, "--cli"),
     hasModel: flagSupplied(rawArgs, "--model"),
     hasVariant: flagSupplied(rawArgs, "--variant"),
     session: asString("session"),
