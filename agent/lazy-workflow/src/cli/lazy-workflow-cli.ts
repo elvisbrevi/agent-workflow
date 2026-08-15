@@ -1047,7 +1047,7 @@ export class LazyWorkflowCli {
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
         if (session.failed) return 1;
         if (!terminal) {
-          reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          reportOperator(`lazy-workflow: la sesión ${options.cli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
           return 1;
         }
       }
@@ -1073,7 +1073,7 @@ export class LazyWorkflowCli {
       terminalMarker: IMPLEMENTATION_READY_MARKER,
     }, true);
     if (execution.failed) {
-      reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+      reportOperator(`lazy-workflow: ${options.cli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
     }
     return { text: execution.result.text, sessionId: execution.result.sessionId ?? null, failed: !!execution.failed };
   }
@@ -2563,8 +2563,9 @@ export class LazyWorkflowCli {
 
   /**
    * Azure login continuation for the Azure HU planning run: preserve the
-   * OpenCode session, wait for Azure access, and resume it exactly once with
-   * `continue` and the same authority profile it started with. The
+   * session, wait for Azure access, and resume it exactly once with `continue`
+   * and the same authority profile it started with. Both CLIs report the
+   * handshake, so the continuation is the same in either. The
    * mono-repository and workspace planning modes share this one owner; the
    * working directory the resumed session runs from is the only fact that
    * differs by mode.
@@ -2576,7 +2577,7 @@ export class LazyWorkflowCli {
     agent: AgentAuthority,
   ): Promise<AgentExecution["result"]> {
     if (!execution.azureLoginRequired || run.kind !== "azure-hu-run") return execution.result;
-    reportOperator(`Sesion OpenCode detenida: ${execution.result.sessionId}`);
+    reportOperator(`Sesion detenida a la espera de az login: ${execution.result.sessionId}`);
     await this.huInfoService.waitForAccess(run.hu);
     return this.codingAgent.resume(execution.result.sessionId, "continue", workingDirectory, undefined, { agent });
   }
@@ -2731,7 +2732,7 @@ export class LazyWorkflowCli {
       const execution = await this.codingAgent.run({ ...options, ...run, session: null }, options.hu !== null);
       let result = execution.result;
       if (execution.azureLoginRequired && options.hu !== null) {
-        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        reportOperator(`Sesion detenida a la espera de az login: ${result.sessionId}`);
         await this.huInfoService.waitForAccess(options.hu);
         result = await this.codingAgent.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
       }
@@ -3387,7 +3388,7 @@ export class LazyWorkflowCli {
           reportOperator(`lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`);
           return 1;
         }
-        if (execution.failed) throw new Error("OpenCode termino con error");
+        if (execution.failed) throw new Error(`la sesión ${options.cli} termino con error`);
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       } catch (error) {
@@ -3397,7 +3398,7 @@ export class LazyWorkflowCli {
           reportOperator(`lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`);
           return 1;
         }
-        reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
+        reportOperator(`lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       }

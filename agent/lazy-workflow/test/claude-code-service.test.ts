@@ -212,6 +212,55 @@ describe("ClaudeCodeService comando construido", () => {
   });
 });
 
+describe("ClaudeCodeService continuidad de az login", () => {
+  test("la llamada de shell a az login detiene la sesion pidiendo autenticacion", async () => {
+    const output = [
+      initEvent("ses_login"),
+      jsonEvent({
+        type: "assistant",
+        session_id: "ses_login",
+        message: { content: [{ type: "tool_use", name: "Bash", input: { command: "az login --use-device-code" } }] },
+      }),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output));
+
+    expect((await service.run(standardOptions, true)).azureLoginRequired).toBeTrue();
+    expect((await service.run(standardOptions, false)).azureLoginRequired).toBeFalse();
+  });
+
+  test("el texto que pide ejecutar az login tambien detiene la sesion", async () => {
+    const service = new ClaudeCodeService(() => stubProcess([
+      initEvent("ses_login_text"),
+      assistantText("ses_login_text", "Por favor ejecuta az login --use-device-code y vuelve a intentarlo"),
+    ].join("\n")));
+
+    expect((await service.run(standardOptions, true)).azureLoginRequired).toBeTrue();
+  });
+
+  test("una sesion sin peticion de az login no pide autenticacion", async () => {
+    const service = new ClaudeCodeService(() => stubProcess([
+      initEvent("ses_sin_login"),
+      assistantText("ses_sin_login", "az account show devolvio la suscripcion"),
+    ].join("\n")));
+
+    expect((await service.run(standardOptions, true)).azureLoginRequired).toBeFalse();
+  });
+});
+
+describe("ClaudeCodeService cierre de sesion", () => {
+  test("el marcador terminal no dispara ningun cierre de sesion", async () => {
+    const commands: string[][] = [];
+    const service = new ClaudeCodeService((command) => {
+      commands.push(command);
+      return stubProcess([initEvent("ses_terminal"), assistantText("ses_terminal", "IMPLEMENTATION_READY")].join("\n"));
+    });
+
+    await service.run({ ...standardOptions, terminalMarker: "IMPLEMENTATION_READY" });
+
+    expect(commands).toHaveLength(1);
+  });
+});
+
 describe("ClaudeCodeService normalizacion del stream", () => {
   test("toma el identificador de sesion del evento de inicializacion", async () => {
     const service = new ClaudeCodeService(() =>
@@ -306,7 +355,7 @@ describe("ClaudeCodeService enrutado por el Reporter", () => {
 
     await service.run(standardOptions);
 
-    expect(captured.info.some((line) => line.startsWith("Claude Code iniciado en"))).toBeTrue();
+    expect(captured.info.some((line) => line.startsWith("Claude Code iniciado en") && line.includes("con el modelo claude-opus-5"))).toBeTrue();
     expect(captured.info).toContain("Claude Code [sesión ses_text]: avance");
   });
 

@@ -5,6 +5,7 @@ import {
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
 import { AgentResult, type OpenCodeEventData } from "../coding-agent/agent-result.ts";
+import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
   AgentSessionCloseError,
   AgentSessionNotFoundError,
@@ -25,7 +26,6 @@ export type OpenCodeSpawner = AgentSpawner;
 // than replacing it, so injecting the authority profiles is additive.
 const spawnOpenCode: OpenCodeSpawner = spawnAgentProcess;
 
-const loginInstructionPattern = /(?:please\s+run|run|ejecuta|execute).{0,40}\baz\s+login\b/i;
 const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not exist|no existe)|(?:not found|does not exist|no existe).*(?:session|sesion|sesión)/i;
 const SPINNER_RESTART_MS = 2_000;
 const SPINNER_TEXT = "OpenCode ejecutándose";
@@ -77,14 +77,14 @@ function requiresAzureLogin(line: string): boolean {
   try {
     event = JSON.parse(line) as OpenCodeEventData;
   } catch {
-    return loginInstructionPattern.test(line);
+    return asksForAzureLogin(line);
   }
 
   const command = event.part?.state?.input?.command ?? event.part?.input?.command ?? "";
   if (
     (event.type === "step_start" || event.type === "tool_use" || event.part?.type === "tool") &&
     (event.part?.tool === "bash" || event.part?.tool === "shell") &&
-    /(?:^|[;&|]\s*)az\s+login\b/i.test(command)
+    runsAzureLogin(command)
   ) {
     return true;
   }
@@ -93,7 +93,7 @@ function requiresAzureLogin(line: string): boolean {
     return false;
   }
 
-  return loginInstructionPattern.test([
+  return asksForAzureLogin([
     event.part?.text,
     event.part?.output,
     event.part?.error,
@@ -190,7 +190,7 @@ export class OpenCodeService implements CodingAgent {
       "json",
       "--thinking",
       options.prompt,
-    ], detectAzureLogin, options.workingDirectory, options.terminalMarker, options.agent);
+    ], detectAzureLogin, options.workingDirectory, options.terminalMarker, options.agent, options.model);
   }
 
   async resume(
@@ -215,7 +215,7 @@ export class OpenCodeService implements CodingAgent {
       "json",
       "--thinking",
       prompt,
-    ], true, workingDirectory, terminalMarker, overrides.agent);
+    ], true, workingDirectory, terminalMarker, overrides.agent, overrides.model);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
@@ -229,8 +229,9 @@ export class OpenCodeService implements CodingAgent {
     workingDirectory?: string,
     terminalMarker?: string,
     authority?: AgentAuthority,
+    model?: string,
   ): Promise<AgentExecution> {
-    this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
+    this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
     const child = this.spawn(command, {
       cwd: workingDirectory,
       ...(authority ? { env: { OPENCODE_CONFIG: authority.configPath } } : {}),
@@ -293,7 +294,7 @@ export class OpenCodeService implements CodingAgent {
       }
       const stderr = stderrOutput.lines.join("\n");
       const azureLoginRequired = detectAzureLogin
-        && (streamed.lines.some(requiresAzureLogin) || loginInstructionPattern.test(stderr));
+        && (streamed.lines.some(requiresAzureLogin) || asksForAzureLogin(stderr));
       const terminalMarkerReceived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
       if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
         const sessionIndex = command.indexOf("--session");
