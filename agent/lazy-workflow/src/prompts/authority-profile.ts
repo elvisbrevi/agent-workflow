@@ -18,7 +18,7 @@
  * permission, and everything not denied is approved without a prompt.
  */
 
-import type { AgentCli } from "../cli/parse-cli-options.ts";
+import type { AgentCli } from "../coding-agent/agent-cli.ts";
 import type { WorkflowPromptSpec } from "./workflow-prompt.ts";
 
 export const AUTHORITY_PROFILES = [

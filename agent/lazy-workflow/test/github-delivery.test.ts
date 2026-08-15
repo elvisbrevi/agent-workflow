@@ -370,7 +370,8 @@ test("un run que recupera un checkpoint sessionless drena la cola con el siguien
   const closed: number[] = [];
   const delivery = drainDelivery(closed);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
@@ -408,7 +409,8 @@ test("un run --session que recupera una sesión drena la cola con el siguiente i
   const closed: number[] = [];
   const delivery = drainDelivery(closed);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
@@ -507,7 +509,8 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   const events: string[] = [];
   let reconciled = false;
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
@@ -612,7 +615,8 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
   const baseCommit = "b".repeat(40);
   const reconciledCommit = "c".repeat(40);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,

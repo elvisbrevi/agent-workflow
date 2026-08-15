@@ -17,7 +17,8 @@ function distinctPhaseSequence(phases: string[]): string[] {
 
 function checkpoint(sessionId: string | null): GitHubDeliveryCheckpoint {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "owner/repo",
     issue: 178,

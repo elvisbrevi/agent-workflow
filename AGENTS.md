@@ -22,6 +22,7 @@ inside that directory rather than a skill directory.
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
 | Change how Claude Code is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/claude-code/` |
 | Change which CLI a `--cli` value resolves to | `agent/lazy-workflow/src/coding-agent/create-coding-agent.ts` |
+| Change the CLI names, their binaries, or how a checkpoint records its session owner | `agent/lazy-workflow/src/coding-agent/agent-cli.ts` and the checkpoint module of that workflow |
 | Change what OpenCode is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
 | Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
 | Change what a run is permitted to execute with OpenCode | `agent/lazy-workflow/opencode/authority.json` |
