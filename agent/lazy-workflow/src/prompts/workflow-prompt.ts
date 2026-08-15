@@ -127,6 +127,20 @@ function issueContext(issue: SelectedManagedIssue): string {
   });
 }
 
+/**
+ * The Azure HU planning run's own sections: the User Story data, the
+ * `autoplan` prompt, and the question budget. Both the mono-repository and
+ * workspace planning runs consume exactly this, so a change here reaches
+ * both at once.
+ */
+async function azureHuPlanningSections(huInfo: HuInfo, questions: number | undefined): Promise<string[]> {
+  return [
+    JSON.stringify(huInfo),
+    await readPromptAsset("autoplan"),
+    `The number of questions must be ${questions}`,
+  ];
+}
+
 function repositoryRoster(scope: WorkspaceScope): string[] {
   return [
     "Ordered participant repositories:",
@@ -169,10 +183,8 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
 
     case "azure-plan":
       return [
-        JSON.stringify(spec.huInfo),
-        await readPromptAsset("autoplan"),
+        ...(await azureHuPlanningSections(spec.huInfo, questions)),
         ...sag,
-        `The number of questions must be ${questions}`,
         operatorRequest,
         `The working directory is ${workingDirectory}`,
       ];
@@ -182,7 +194,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // so it must not carry the GitHub scope that forbids `az` and mandates `gh`.
       return [
         ...(spec.huInfo
-          ? [JSON.stringify(spec.huInfo), await readPromptAsset("autoplan"), `The number of questions must be ${questions}`]
+          ? await azureHuPlanningSections(spec.huInfo, questions)
           : await githubWorkflow("plan")),
         ...sag,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,

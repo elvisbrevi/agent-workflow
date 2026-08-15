@@ -104,6 +104,24 @@ test("el plan Azure adjunta la HU y no implementa codigo", async () => {
   expect(prompt).toContain("The working directory is /repo");
 });
 
+test("el run mono-repositorio y el workspace reciben las mismas secciones de planning Azure", async () => {
+  const huInfo = { id: 23438, title: "HU compartida" } as never;
+
+  const monoRepo = await buildWorkflowPrompt({ kind: "azure-plan", huInfo }, context);
+  const workspace = await buildWorkflowPrompt({ kind: "workspace-plan", scope, huInfo }, context);
+
+  // The HU data, the autoplan prompt, and the question budget are the Azure HU
+  // planning run's own sections: both modes must receive the exact same text,
+  // built from the same helper, not two independently written literals.
+  const huSection = JSON.stringify(huInfo);
+  const questionsLine = "The number of questions must be 3";
+  for (const prompt of [monoRepo, workspace]) {
+    expect(prompt).toContain(huSection);
+    expect(prompt).toContain("PLAN_READY");
+    expect(prompt).toContain(questionsLine);
+  }
+});
+
 test("la entrega GitHub fija issue, rama, manifest y markers", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "github-delivery",

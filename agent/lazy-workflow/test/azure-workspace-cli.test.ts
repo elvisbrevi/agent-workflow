@@ -297,13 +297,13 @@ test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el l
     if (args[0] === "status") return "";
     return "";
   };
-  const resumed: Array<{ sessionId: string; workingDirectory: string }> = [];
+  const resumed: Array<{ sessionId: string; workingDirectory: string; agentProfile: string | undefined }> = [];
   const cli = new LazyWorkflowCli(
     azureBoundary,
     {
       run: async () => ({ result: { text: "", sessionId: "ses_login", failed: false } as never, azureLoginRequired: true, failed: false }),
-      resume: async (sessionId: string, _prompt: string, workingDirectory: string) => {
-        resumed.push({ sessionId, workingDirectory });
+      resume: async (sessionId: string, _prompt: string, workingDirectory: string, _terminalMarker?: string, overrides?: { agent?: { profile: string } }) => {
+        resumed.push({ sessionId, workingDirectory, agentProfile: overrides?.agent?.profile });
         return { text: "plan", sessionId, failed: false } as never;
       },
     },
@@ -322,6 +322,9 @@ test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el l
     expect(resumed).toHaveLength(1);
     expect(resumed[0]!.sessionId).toBe("ses_login");
     expect(resumed[0]!.workingDirectory).toBe(await realpath(root));
+    // Single owner across mono-repository and workspace planning: the resumed
+    // session keeps the same Azure planning authority it started with.
+    expect(resumed[0]!.agentProfile).toBe("lazy-azure-plan");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
