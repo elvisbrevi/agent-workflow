@@ -433,6 +433,7 @@ export class LazyWorkflowCli {
     const options = parsed.options;
     this.applyReporter(options);
     this.resolveAgent(options.cli);
+    this.reportFallbackChain(options);
 
     const command = options.command;
 
@@ -904,6 +905,21 @@ export class LazyWorkflowCli {
       noColor: options.noColor,
     });
     setDefaultReporter(reporter);
+  }
+
+  /**
+   * Names the resolved chain to the operator before anything runs, so a run
+   * that declares `--fallback` shows what it will end up on if the primary
+   * gets exhausted. Silent without `--fallback`, so the historical output is
+   * unchanged (issue #236).
+   */
+  private reportFallbackChain(options: ParsedCliOptions): void {
+    if (options.fallbackChain.length === 0) return;
+    const rungs = [{ cli: options.cli, model: options.model, variant: options.variant }, ...options.fallbackChain];
+    rungs.forEach((rung, index) => {
+      const label = index === 0 ? "primario" : `respaldo ${index}`;
+      reportOperator(`lazy-workflow: cadena de fallback escalon ${index + 1}/${rungs.length} (${label}): ${rung.cli} modelo=${rung.model} variante=${rung.variant}`);
+    });
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
