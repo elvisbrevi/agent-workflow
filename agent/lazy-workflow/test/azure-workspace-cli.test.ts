@@ -279,3 +279,50 @@ test("plan multi-repositorio con --hu inspecciona el alcance Azure sin mutar ram
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el login de Azure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-login-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  let waited = 0;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => ({ id, title: "HU transversal" }),
+    waitForAccess: async () => { waited += 1; },
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const resumed: Array<{ sessionId: string; workingDirectory: string }> = [];
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async () => ({ result: { text: "", sessionId: "ses_login", failed: false } as never, azureLoginRequired: true, failed: false }),
+      resume: async (sessionId: string, _prompt: string, workingDirectory: string) => {
+        resumed.push({ sessionId, workingDirectory });
+        return { text: "plan", sessionId, failed: false } as never;
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    git,
+  );
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(waited).toBe(1);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]!.sessionId).toBe("ses_login");
+    expect(resumed[0]!.workingDirectory).toBe(await realpath(root));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
