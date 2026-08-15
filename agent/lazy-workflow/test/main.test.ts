@@ -977,10 +977,12 @@ test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", a
     part: { type: "text", text: "continuado" },
   }));
   const resumeCalls: string[] = [];
+  const resumeAgentProfiles: Array<string | undefined> = [];
   const openCodeService = {
     run: async () => ({ result: blocked, azureLoginRequired: true }),
-    resume: async (sessionId: string) => {
+    resume: async (sessionId: string, _prompt?: string, _workingDirectory?: string, _terminalMarker?: string, overrides?: { agent?: { profile: string } }) => {
       resumeCalls.push(sessionId);
+      resumeAgentProfiles.push(overrides?.agent?.profile);
       return completed;
     },
   };
@@ -1008,6 +1010,9 @@ test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", a
   expect(resumeCalls).toEqual(["ses_blocked"]);
   expect(waitCalls).toBe(1);
   expect(output).toEqual([JSON.stringify(completed, null, 2)]);
+  // Same single owner as the workspace planning run: the resumed session
+  // keeps the Azure planning authority it started with.
+  expect(resumeAgentProfiles).toEqual(["lazy-azure-plan"]);
 });
 
 test("OpenCode solo detecta az login para flujos Azure y conserva la sesion", async () => {
