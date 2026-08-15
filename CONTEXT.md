@@ -87,6 +87,14 @@ User Story, combines that data with the English autoplan prompt, and starts
 OpenCode in the selected working directory.
 _Avoid_: Azure ticket delivery run
 
+**Azure multi-repository planning run**:
+A lazy-workflow invocation with `plan --hu <ID> --working-directory
+<repo1,repo2,...>`. It normalizes and inspects the declared Azure repositories,
+combines the User Story data with the English autoplan prompt, and starts one
+OpenCode session from the workspace parent directory. It never prepares
+branches, writes a checkpoint, or mutates tracker state.
+_Avoid_: Azure multi-repository ticket delivery run
+
 A fresh **Azure ticket delivery run** first queries the HU's native integration
 branch and verifies or provisions `hu/<HU>` through structured
 `--base-branch <name>` input before selecting a ticket, writing a checkpoint, or

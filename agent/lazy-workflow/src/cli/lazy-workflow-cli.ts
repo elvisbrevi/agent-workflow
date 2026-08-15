@@ -389,12 +389,10 @@ export class LazyWorkflowCli {
         reportOperator("--working-directory CSV solo se permite con plan o code");
         return 1;
       }
-      if (options.hu !== null) {
-        return this.runAzureWorkspaceCode(options);
-      }
-      return command === "plan"
-        ? this.runWorkspacePlan(options)
-        : this.runWorkspaceCode(options);
+      // `plan` never mutates branches or tracker state, in either provider.
+      if (command === "plan") return this.runWorkspacePlan(options);
+      if (options.hu !== null) return this.runAzureWorkspaceCode(options);
+      return this.runWorkspaceCode(options);
     }
 
     if (options.normasSag && command !== "plan" && command !== "code") {
@@ -1365,19 +1363,36 @@ export class LazyWorkflowCli {
 
   private async runWorkspacePlan(options: CliOptions): Promise<number> {
     try {
-      const scope = await this.workspaceScope(options);
+      // Azure scope with --hu, GitHub scope without it: the same single-provider rule as `code`.
+      const scope = options.hu !== null ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
+      // The CSV list is not a path: SAG norms live in the anchor repository.
+      const norms = await this.loadSagNorms({ ...options, workingDirectory: scope.repositories[0]!.path }, "planning");
+      if (options.normasSag && norms === null) return 1;
       const prompt = [
         await readPrompt("default"),
         "Selected workflow: plan",
+        ...(options.hu !== null
+          ? [JSON.stringify(await this.huInfoService.getHuInfo(options.hu)), await readPrompt("autoplan"), `The number of questions must be ${options.numberOfQuestions}`]
+          : []),
+        ...(norms ? [this.formatSagContext(norms)] : []),
         `Workspace parent directory: ${scope.parentDirectory}`,
         "Ordered participant repositories:",
         ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
+        "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         `The working directory is ${scope.parentDirectory}`,
         "Operator request:",
         options.prompt,
       ].join("\n");
-      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, false);
-      reportOperator(JSON.stringify(execution.result, null, 2));
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, options.hu !== null);
+      let result = execution.result;
+      // Same Azure login continuation as the single-repository HU planning run: keep the session,
+      // wait for access, resume it exactly once.
+      if (execution.azureLoginRequired && options.hu !== null) {
+        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        await this.huInfoService.waitForAccess(options.hu);
+        result = await this.openCodeService.resume(result.sessionId, "continue", scope.parentDirectory);
+      }
+      reportOperator(JSON.stringify(result, null, 2));
       return execution.failed ? 1 : 0;
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`);
