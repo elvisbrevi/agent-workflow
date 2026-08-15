@@ -2745,9 +2745,15 @@ export class LazyWorkflowCli {
     }
   }
 
+  /** The authority of a run: its profile, in the format the run's own CLI enforces. */
+  private authority(spec: WorkflowPromptSpec, cli: AgentCli): AgentAuthority {
+    const profile = authorityProfile(spec);
+    return { profile, configPath: authorityConfigPath(cli, profile) };
+  }
+
   /**
-   * Prepare one run: what OpenCode is told, and what it is allowed to do. Both
-   * come from the same spec and travel together, so a run can never carry the
+   * Prepare one run: what the coding agent is told, and what it is allowed to do.
+   * Both come from the same spec and travel together, so a run can never carry the
    * delivery prompt without the matching authority profile.
    *
    * Every coordinator-fixed fact travels through `spec`; the operator request
@@ -2765,7 +2771,7 @@ export class LazyWorkflowCli {
         norms,
         questions: options.numberOfQuestions,
       }),
-      agent: { profile: authorityProfile(spec), configPath: authorityConfigPath() },
+      agent: this.authority(spec, options.cli),
     };
   }
 
