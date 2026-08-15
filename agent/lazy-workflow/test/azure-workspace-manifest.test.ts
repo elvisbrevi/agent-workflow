@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { COMPLETION_GATE, type CompletionGate } from "../src/azure/autocode-service.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { isAzureWorkspaceManifest, writeAzureWorkspaceManifest, type AzureWorkspaceManifest } from "../src/azure/azure-workspace-checkpoint.ts";
 import {
   createAzureWorkspaceHarness,
@@ -124,7 +124,7 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
         ] as CompletionGate[],
       },
     });
-    const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+    const result = AgentResult.fromJsonLines(JSON.stringify({
       type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
     }));
     const cli = new LazyWorkflowCli(

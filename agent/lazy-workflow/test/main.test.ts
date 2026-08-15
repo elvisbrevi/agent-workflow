@@ -7,8 +7,9 @@ import {
   type AutocodeContext,
   type CompletionGate,
 } from "../src/azure/autocode-service.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
-import { OpenCodeService, OpenCodeSessionNotFoundError, type OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
+import { AgentSessionNotFoundError, type AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
+import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
@@ -356,11 +357,11 @@ test("hu-branch-info rechaza un HU inválido sin consultar Azure", async () => {
 test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   const huInfo = new HuInfo({ id: 12345, title: "HU de prueba" });
   let requestedHu = 0;
-  const received: { options: OpenCodeRunOptions | null; azure: boolean | null } = {
+  const received: { options: AgentRunOptions | null; azure: boolean | null } = {
     options: null,
     azure: null,
   };
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_plan",
     part: { type: "text", text: "plan" },
@@ -373,7 +374,7 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
     waitForAccess: async () => undefined,
   };
   const openCodeService = {
-    run: async (options: OpenCodeRunOptions, azure: boolean) => {
+    run: async (options: AgentRunOptions, azure: boolean) => {
       received.options = options;
       received.azure = azure;
       return { result, azureLoginRequired: false };
@@ -415,11 +416,11 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   let azureCalls = 0;
   let checkpointCalls = 0;
   let cleanupCalls = 0;
-  const received: { options: OpenCodeRunOptions | null; detectAzureLogin: boolean | null } = {
+  const received: { options: AgentRunOptions | null; detectAzureLogin: boolean | null } = {
     options: null,
     detectAzureLogin: null,
   };
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_plan",
     part: { type: "text", text: "plan" },
@@ -472,9 +473,9 @@ test("code sin HU entrega un solo issue por sesion", async () => {
   let azureCalls = 0;
   let checkpointCalls = 0;
   let cleanupCalls = 0;
-  const calls: Array<{ options: OpenCodeRunOptions; detectAzure: boolean | undefined }> = [];
+  const calls: Array<{ options: AgentRunOptions; detectAzure: boolean | undefined }> = [];
   const results = [
-    OpenCodeResult.fromJsonLines(JSON.stringify({
+    AgentResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_issue_1",
       part: { type: "text", text: "IMPLEMENTATION_READY" },
@@ -492,7 +493,7 @@ test("code sin HU entrega un solo issue por sesion", async () => {
     {
       run: async (options, detectAzure) => {
         calls.push({ options, detectAzure });
-        return { result: results.shift() ?? OpenCodeResult.fromJsonLines(""), azureLoginRequired: false };
+        return { result: results.shift() ?? AgentResult.fromJsonLines(""), azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
@@ -618,7 +619,7 @@ test("code sin HU imprime QUEUE_EMPTY y termina sin iniciar OpenCode", async () 
 
 test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async () => {
   let calls = 0;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_incomplete",
     part: { type: "text", text: "TICKET_COMPLETED" },
@@ -657,7 +658,7 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
 test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", async () => {
   const calls: string[] = [];
   const results = [
-    OpenCodeResult.fromJsonLines(JSON.stringify({
+    AgentResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_split_1",
       part: { type: "text", text: "Trabajo completado:" },
@@ -698,7 +699,7 @@ test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", as
 
 test("code sin HU ignora un marcador conversacional dentro de un solo evento de texto", async () => {
   let calls = 0;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_chat",
     part: { type: "text", text: "He emitido TICKET_COMPLETED al final del trabajo\nWORKFLOW_STEP_FINISHED" },
@@ -734,7 +735,7 @@ test("code sin HU ignora un marcador conversacional dentro de un solo evento de 
 test("code sin HU ignora los marcadores de entrega heredados", async () => {
   const calls: string[] = [];
   const results = [
-    OpenCodeResult.fromJsonLines(JSON.stringify({
+    AgentResult.fromJsonLines(JSON.stringify({
       type: "text",
       sessionID: "ses_dup_1",
       part: { type: "text", text: "TICKET_COMPLETED" },
@@ -876,8 +877,8 @@ test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcom
   expect(output[0]).toContain("--session <id>");
 });
 
-test("OpenCodeResult normaliza la salida JSONL", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult normaliza la salida JSONL", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({
       type: "step_start",
       sessionID: "ses_test",
@@ -907,8 +908,8 @@ test("OpenCodeResult normaliza la salida JSONL", () => {
   expect(result.cost).toBe(0.01);
 });
 
-test("OpenCodeResult preserva los límites entre eventos de texto consecutivos", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult preserva los límites entre eventos de texto consecutivos", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({ type: "text", sessionID: "ses_split", part: { type: "text", text: "Trabajo completado:" } }),
     JSON.stringify({ type: "text", sessionID: "ses_split", part: { type: "text", text: "TICKET_COMPLETED" } }),
   ].join("\n"));
@@ -917,8 +918,8 @@ test("OpenCodeResult preserva los límites entre eventos de texto consecutivos",
   expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeTrue();
 });
 
-test("OpenCodeResult reconoce el marcador readiness aún cuando el evento anterior termina en ':'", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult reconoce el marcador readiness aún cuando el evento anterior termina en ':'", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "Done:" } }),
     JSON.stringify({ type: "text", sessionID: "ses_ready_split", part: { type: "text", text: "IMPLEMENTATION_READY" } }),
   ].join("\n"));
@@ -927,8 +928,8 @@ test("OpenCodeResult reconoce el marcador readiness aún cuando el evento anteri
   expect(containsMarker(result.text, "IMPLEMENTATION_READY")).toBeTrue();
 });
 
-test("OpenCodeResult ignora marcadores conversacionales dentro de una sola línea", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult ignora marcadores conversacionales dentro de una sola línea", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({ type: "text", sessionID: "ses_chat", part: { type: "text", text: "Deberíamos emitir TICKET_COMPLETED cuando esté listo" } }),
     JSON.stringify({ type: "text", sessionID: "ses_chat", part: { type: "text", text: "y luego marcar QUEUE_EMPTY si la cola queda vacía." } }),
   ].join("\n"));
@@ -938,8 +939,8 @@ test("OpenCodeResult ignora marcadores conversacionales dentro de una sola líne
   expect(containsMarker(result.text, "WORKFLOW_STEP_FINISHED")).toBeFalse();
 });
 
-test("OpenCodeResult ignora marcadores fragmentados a través de eventos", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult ignora marcadores fragmentados a través de eventos", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({ type: "text", sessionID: "ses_frag", part: { type: "text", text: "TICKET_" } }),
     JSON.stringify({ type: "text", sessionID: "ses_frag", part: { type: "text", text: "COMPLETED" } }),
   ].join("\n"));
@@ -948,8 +949,8 @@ test("OpenCodeResult ignora marcadores fragmentados a través de eventos", () =>
   expect(containsMarker(result.text, "TICKET_COMPLETED")).toBeFalse();
 });
 
-test("OpenCodeResult acepta múltiples eventos text del mismo marcador sin alterar el texto agregado", () => {
-  const result = OpenCodeResult.fromJsonLines([
+test("AgentResult acepta múltiples eventos text del mismo marcador sin alterar el texto agregado", () => {
+  const result = AgentResult.fromJsonLines([
     JSON.stringify({ type: "text", sessionID: "ses_dup", part: { type: "text", text: "TICKET_COMPLETED" } }),
     JSON.stringify({ type: "text", sessionID: "ses_dup", part: { type: "text", text: "TICKET_COMPLETED" } }),
   ].join("\n"));
@@ -963,21 +964,21 @@ function containsMarker(text: string, marker: string): boolean {
 }
 
 test("plan imprime OpenCode con formato JSON legible", async () => {
-  const result = OpenCodeResult.fromJsonLines(
+  const result = AgentResult.fromJsonLines(
     JSON.stringify({
       type: "text",
       sessionID: "ses_test",
       part: { type: "text", text: "respuesta" },
     }),
   );
-  const receivedOptions: { value: OpenCodeRunOptions | null } = { value: null };
+  const receivedOptions: { value: AgentRunOptions | null } = { value: null };
   let detectsAzureLogin: boolean | null = null;
   const service = {
     getHuInfo: async () => new HuInfo({ id: 12345, title: "HU de prueba" }),
     waitForAccess: async () => undefined,
   };
   const openCodeService = {
-    run: async (options: OpenCodeRunOptions, detectAzureLogin: boolean) => {
+    run: async (options: AgentRunOptions, detectAzureLogin: boolean) => {
       receivedOptions.value = options;
       detectsAzureLogin = detectAzureLogin;
       return { result, azureLoginRequired: false };
@@ -1009,12 +1010,12 @@ test("plan imprime OpenCode con formato JSON legible", async () => {
 });
 
 test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", async () => {
-  const blocked = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const blocked = AgentResult.fromJsonLines(JSON.stringify({
     type: "step_start",
     sessionID: "ses_blocked",
     part: { type: "tool", tool: "bash", input: { command: "az login --use-device-code" } },
   }));
-  const completed = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const completed = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_blocked",
     part: { type: "text", text: "continuado" },
@@ -1280,7 +1281,7 @@ test("resume reporta de forma tipada una sesion ausente aunque stderr tenga ANSI
     kill: () => undefined,
   }));
 
-  await expect(service.resume(sessionId)).rejects.toBeInstanceOf(OpenCodeSessionNotFoundError);
+  await expect(service.resume(sessionId)).rejects.toBeInstanceOf(AgentSessionNotFoundError);
 });
 
 test("resume usa una sola invocacion simple con continue", async () => {
@@ -1421,7 +1422,7 @@ test("code versionado detiene la entrega si falta el manifest del coordinador", 
   const events: string[] = [];
   const checkpoints: Array<{ phase: string; ticket: number | null; activeDurationMs: number; receipts: string[] }> = [];
   const clockValues = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800];
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-versioned", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const cli = new LazyWorkflowCli(
@@ -1504,7 +1505,7 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       gates: { satisfied: [], unmet },
     };
   };
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const code = new LazyWorkflowCli(
@@ -1563,7 +1564,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   let resumeOverrides: unknown;
   const ticketBranch = "refs/heads/ticket/51";
   const checkpoint = { workflow: "autocode" as const, hu: 23438, ticket: 51, sessionId: "ses-51" };
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const writes: Array<{ schemaVersion?: number; phase?: string; sessionId?: string | null }> = [];
@@ -1612,7 +1613,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
 test("code versionado no reintenta OpenCode si falla la limpieza tras el marcador", async () => {
   let runs = 0;
   let waits = 0;
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   const code = await new LazyWorkflowCli(
@@ -1659,7 +1660,7 @@ type VerbosityOptions = { verbose: boolean; quiet: boolean; noColor: boolean };
 
 test("--verbose enrutado al Reportador conserva los errores y emite debug", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
@@ -1692,7 +1693,7 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
 
 test("--quiet filtra info y warn pero conserva errores del Reportador", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
@@ -1725,7 +1726,7 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
 test("--no-color produce Reportador sin codigos ANSI", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   setDefaultReporter(createReporter({ verbose: false, noColor: false }));
-  const result = OpenCodeResult.fromJsonLines(JSON.stringify({
+  const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
