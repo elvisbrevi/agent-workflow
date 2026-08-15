@@ -796,6 +796,116 @@ export class AzureTicketInfoService {
     });
   }
 
+  /**
+   * Create one delivery ticket under its HU, or return the one that already exists.
+   *
+   * Idempotent by (HU, type, exact title): a matching direct child is reused rather
+   * than duplicated, and two children sharing that identity are a conflict. Field
+   * reference names are never inferred from display labels — anything beyond the
+   * system fields must be named explicitly through `fields` (ADR-0006).
+   */
+  async createTicket(input: {
+    hu: number;
+    type: string;
+    title: string;
+    descriptionFile: string;
+    estimate?: number;
+    assignee?: string;
+    fields?: Array<{ referenceName: string; value: string }>;
+  }): Promise<{ hu: number; ticket: number; type: string; title: string; created: boolean }> {
+    positiveId(input.hu, "La HU");
+    const type = input.type;
+    if (type !== "Task" && type !== "Bug") {
+      throw new Error(`El tipo de ticket ${type} no es un tipo de entrega (Task o Bug)`);
+    }
+    const title = input.title.trim();
+    if (!title) throw new Error("El ticket requiere un título no vacío");
+    const description = await readUtf8File(input.descriptionFile);
+    for (const { referenceName } of input.fields ?? []) {
+      if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_-]+)+$/.test(referenceName)) {
+        throw new Error(`El campo ${referenceName} no es un reference name de Azure válido`);
+      }
+    }
+
+    const existing = (await this.getHuChildren(input.hu)).filter(
+      (child) => child.type === type && child.title?.trim() === title,
+    );
+    if (existing.length > 1) {
+      throw new Error(`La HU ${input.hu} ya tiene ${existing.length} hijos ${type} titulados "${title}"`);
+    }
+    if (existing.length === 1) {
+      return { hu: input.hu, ticket: existing[0]!.id, type, title, created: false };
+    }
+
+    const patch = [
+      { op: "add", path: "/fields/System.Title", value: title },
+      { op: "add", path: `/fields/${TICKET_FIELDS.description}`, value: description },
+      ...(input.estimate !== undefined
+        ? [{ op: "add", path: "/fields/Microsoft.VSTS.Scheduling.OriginalEstimate", value: input.estimate }]
+        : []),
+      ...(input.assignee ? [{ op: "add", path: "/fields/System.AssignedTo", value: input.assignee }] : []),
+      ...(input.fields ?? []).map(({ referenceName, value }) => ({
+        op: "add",
+        path: `/fields/${referenceName}`,
+        value,
+      })),
+      {
+        op: "add",
+        path: "/relations/-",
+        value: {
+          rel: "System.LinkTypes.Hierarchy-Reverse",
+          url: `${ORGANIZATION}/_apis/wit/workItems/${input.hu}`,
+        },
+      },
+    ];
+    const project = await this.ticketProject(input.hu);
+    const created = await this.createWorkItem(project, type, patch);
+
+    // Reread through the same validation the delivery commands use, so a ticket is
+    // only reported as created once Azure agrees it is a direct child of its HU.
+    const item = await this.readWorkItemValidated(created);
+    await this.readDirectParent(created, item);
+    if (text(item, "System.Title")?.trim() !== title) {
+      throw new Error(`No se pudo verificar el título del ticket ${created}`);
+    }
+    return { hu: input.hu, ticket: created, type, title, created: true };
+  }
+
+  /** Attach a child to its parent. Idempotent; a different existing parent is a conflict. */
+  async linkParent(parent: number, child: number): Promise<{ parent: number; child: number; linked: boolean }> {
+    positiveId(parent, "El padre");
+    positiveId(child, "El hijo");
+    if (parent === child) throw new Error("Un work item no puede ser su propio padre");
+    const item = await this.readWorkItem(child);
+    const parents = [...new Set((item.relations ?? [])
+      .filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse")
+      .map(({ url }) => relationId(url))
+      .filter((id): id is number => id !== undefined))];
+    if (parents.includes(parent)) return { parent, child, linked: false };
+    if (parents.length > 0) {
+      throw new Error(`El work item ${child} ya tiene el padre ${parents.join(", ")}`);
+    }
+    await this.addRelation(item, "System.LinkTypes.Hierarchy-Reverse", parent);
+    return { parent, child, linked: true };
+  }
+
+  /**
+   * Record that `blocker` must complete before `blocked`, as the native
+   * Successor relation on the blocker. Idempotent.
+   */
+  async linkPredecessor(blocker: number, blocked: number): Promise<{ blocker: number; blocked: number; linked: boolean }> {
+    positiveId(blocker, "El bloqueante");
+    positiveId(blocked, "El bloqueado");
+    if (blocker === blocked) throw new Error("Un work item no puede bloquearse a sí mismo");
+    const item = await this.readWorkItem(blocker);
+    const successors = (item.relations ?? [])
+      .filter(({ rel }) => rel === "System.LinkTypes.Dependency-Forward")
+      .map(({ url }) => relationId(url));
+    if (successors.includes(blocked)) return { blocker, blocked, linked: false };
+    await this.addRelation(item, "System.LinkTypes.Dependency-Forward", blocked);
+    return { blocker, blocked, linked: true };
+  }
+
   async hasOpenDeliveryChildren(hu: number): Promise<boolean> {
     const children = await this.getHuChildren(hu);
     return children.some((child) =>
@@ -1329,6 +1439,39 @@ export class AzureTicketInfoService {
     } catch (error) {
       throw new Error(`No se pudo subir el adjunto ${name}: ${sanitizeError(error)}`, { cause: error });
     }
+  }
+
+  /** The Azure project a new child inherits from its HU. */
+  private async ticketProject(hu: number): Promise<string> {
+    const project = text(await this.readWorkItem(hu), "System.TeamProject");
+    if (!project) throw new Error(`La HU ${hu} no expone su proyecto Azure`);
+    return project;
+  }
+
+  private async createWorkItem(project: string, type: string, patch: unknown[]): Promise<number> {
+    const uri = `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/wit/workitems/$${type}?api-version=${API_VERSION}`;
+    const created = JSON.parse(await this.az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post", "--uri", uri,
+      "--headers", "Content-Type=application/json-patch+json", "--body", JSON.stringify(patch), "--output", "json",
+    ])) as { id?: unknown };
+    if (typeof created.id !== "number" || !Number.isInteger(created.id) || created.id <= 0) {
+      throw new Error(`Azure no devolvió el id del ${type} creado`);
+    }
+    return created.id;
+  }
+
+  /** Add one relation under a revision guard and confirm it after rereading. */
+  private async addRelation(item: WorkItem, rel: string, targetId: number): Promise<WorkItem> {
+    return this.patchAndRead(item, [
+      { op: "test", path: "/rev", value: workItemRevision(item) },
+      {
+        op: "add",
+        path: "/relations/-",
+        value: { rel, url: `${ORGANIZATION}/_apis/wit/workItems/${targetId}` },
+      },
+    ], (candidate) => (candidate.relations ?? []).some(
+      (relation) => relation.rel === rel && relationId(relation.url) === targetId,
+    ));
   }
 
   private async patchWorkItem(item: WorkItem, patch: unknown[]): Promise<void> {

@@ -32,7 +32,7 @@ published corrective work, unresolved applicability, and operational failure.
 The final output must end with this exact marker followed by one JSON object
 and no further text:
 
-`ARCHITECTURE_REVIEW_RESULT`
+`{{ARCHITECTURE_REVIEW_RESULT}}`
 `{"status":"clean","summary":"..."}`
 
 For findings, use `status: "findings"`, a concise `summary`, one

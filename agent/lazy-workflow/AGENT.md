@@ -26,3 +26,10 @@ Azure delivery keeps OpenCode semantic: it implements, validates, reviews,
 commits, and writes the completion manifest. The coordinator owns branches,
 pull requests, Azure fields, evidence, effort, completion gates, recovery, and
 cleanup. `IMPLEMENTATION_READY` is the only Azure model-completion marker.
+
+Azure planning is semantic in the same way: OpenCode decides how to slice the
+User Story and returns a delivery plan behind `PLAN_READY`, and the coordinator
+creates and links the work items.
+
+Each run also carries an agent authority profile whose permission deny rules
+OpenCode enforces, so the boundary does not rest on prompt prose.

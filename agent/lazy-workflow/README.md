@@ -95,8 +95,8 @@ message.
 
 ## Default GitHub workflows
 
-Without `--hu`, `plan` and `code` load `prompts/default-prompt.md` in
-GitHub-only scope:
+Without `--hu`, `plan` and `code` run in GitHub-only scope, each receiving the
+GitHub scope fragment plus its own workflow's instructions:
 
 ```bash
 bun run main.ts plan --prompt "plan the requested change" \
@@ -219,6 +219,26 @@ bun run main.ts plan --hu 23438 --working-directory /path/to/repository
 
 Planning uses the English autoplan prompt and never implements code. Missing or
 unsupported subcommands print help and do not call Azure Boards or OpenCode.
+
+The session decides how to slice the User Story and returns a delivery plan
+behind a `PLAN_READY` marker; it creates no Azure work items. The coordinator
+validates the whole plan first — duplicate titles, unknown blockers, and
+blocking cycles are rejected before anything is created — then publishes the
+work items in dependency order and records the blocking relations in a second
+pass, when it can name real ids. Publication is idempotent, so rerunning a plan
+reuses its work items instead of duplicating them, and an empty plan publishes
+nothing. The same primitives are available directly:
+
+```bash
+bun run main.ts ticket-create --hu 23438 --type Task --title "Slice uno" \
+  --description-file ./description.html --estimate 8
+bun run main.ts ticket-link-parent --parent 23438 --child 23459
+bun run main.ts ticket-link-predecessor --blocker 23459 --blocked 23460
+```
+
+Beyond the system fields, name any field explicitly with
+`--field <referenceName>=<value>`; reference names are never inferred from
+display labels.
 
 To obtain the information of a HU:
 
@@ -440,11 +460,37 @@ the later ones pending and preserves the aggregate checkpoint. Nothing is
 rolled back or reverted after a partial merge — fix the cause and rerun.
 `--session <id>` must match the session stored in the checkpoint.
 
+## Agent authority
+
+Every run carries an agent authority profile alongside its prompt. The prompt
+states what OpenCode should decide; the profile states what it may execute. The
+profiles live in `opencode/authority.json` and are injected per run through
+`OPENCODE_CONFIG`, which merges with the target repository's own OpenCode
+configuration rather than replacing it — enforcement does not require the target
+repository to be configured for lazy-workflow.
+
+| Profile | Used by | Denies |
+|---|---|---|
+| `lazy-github-plan` | `plan` without `--hu` | pushes, branch and remote mutation, `gh pr`/`gh api`, all `az` |
+| `lazy-github-code` | `code` without `--hu` | the above plus every `gh issue` mutation |
+| `lazy-azure-plan` | `plan --hu` | pushes, branch and remote mutation, all `az` and `gh` |
+| `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |
+| `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh`, and `az` command |
+
+OpenCode runs with `--auto`, which auto-approves only what is not explicitly
+denied, so these deny rules are the enforcement surface. A denied command fails
+as a permission error rather than relying on the model to obey prose; compound
+commands are matched per sub-command, so `cd x && git push` is denied too.
+Committing stays allowed in the delivery profiles because the completion
+manifest names a commit the session must produce.
+
 ## Structure
 
 ```text
 main.ts                 CLI entrypoint
-prompts/                OpenCode prompt assets
+prompts/                OpenCode prompt assets (composed by src/prompts/)
+opencode/authority.json Agent permission profiles injected per run
+src/prompts/            Prompt composition, contract vocabulary, authority profiles
 src/azure/              Azure Boards model and service
 src/github/             GitHub tracker boundaries for SAG review publication
 src/sag/                SAG norm retrieval and deployment coordination
