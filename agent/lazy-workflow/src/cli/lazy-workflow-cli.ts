@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, unlink } from "node:fs/promises";
 import { HuInfoService } from "../azure/hu-info-service.ts";
+import type { HuInfo } from "../azure/hu-info.ts";
 import {
   AzureAutocodeService,
   COMPLETION_GATE,
@@ -1427,7 +1428,16 @@ export class LazyWorkflowCli {
       // The CSV list is not a path: SAG norms live in the anchor repository.
       const norms = await this.loadSagNorms({ ...options, workingDirectory: scope.repositories[0]!.path }, "planning");
       if (options.normasSag && norms === null) return 1;
-      const huInfo = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
+      let huInfo: HuInfo | null = null;
+      if (options.hu !== null) {
+        try {
+          huInfo = await this.huInfoService.getHuInfo(options.hu);
+        } catch (error) {
+          // Distinct from the outer catch: this is a tracker read failure, not a workspace one.
+          reportOperator(`lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
+          return 1;
+        }
+      }
       const run = await this.prompt({ kind: "workspace-plan", scope, huInfo }, options, norms);
       const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, options.hu !== null);
       const result = await this.continuePlanAfterAzureLogin(execution, options.hu, scope.parentDirectory, run.agent);
