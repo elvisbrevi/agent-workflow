@@ -33,9 +33,9 @@ export function authorityProfile(spec: WorkflowPromptSpec): AuthorityProfile {
       return "lazy-github-plan";
     case "azure-plan":
       return "lazy-azure-plan";
-    // A workspace plan follows its provider: with an HU it is the Azure planning run.
+    // A workspace plan follows its already-resolved provider, not a fresh `--hu` check.
     case "workspace-plan":
-      return spec.huInfo ? "lazy-azure-plan" : "lazy-github-plan";
+      return spec.run.kind === "azure-hu-run" ? "lazy-azure-plan" : "lazy-github-plan";
     case "github-delivery":
     case "github-reconciliation":
     case "github-workspace-delivery":

@@ -33,10 +33,24 @@ type PromptAsset =
 
 export type SagContext = SagNormsContext | SagCodingContext;
 
+/**
+ * The provider an invocation resolves exactly once, in the vocabulary
+ * `CONTEXT.md` already defines: an Azure HU run or a GitHub repository run.
+ * Every branch that used to reinspect `--hu` reads this instead.
+ */
+export type WorkflowRun =
+  | { readonly kind: "github-repository-run" }
+  | { readonly kind: "azure-hu-run"; readonly hu: number };
+
+/** Resolve the invocation's provider once, from the raw `--hu` CLI value. */
+export function resolveWorkflowRun(hu: number | null): WorkflowRun {
+  return hu === null ? { kind: "github-repository-run" } : { kind: "azure-hu-run", hu };
+}
+
 export type WorkflowPromptSpec =
   | { kind: "github-plan" }
   | { kind: "azure-plan"; huInfo: HuInfo }
-  | { kind: "workspace-plan"; scope: WorkspaceScope; huInfo: HuInfo | null }
+  | { kind: "workspace-plan"; scope: WorkspaceScope; run: WorkflowRun; huInfo: HuInfo | null }
   | {
       kind: "github-delivery";
       issue: SelectedManagedIssue;
@@ -192,9 +206,10 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
     case "workspace-plan":
       // An Azure workspace plan is the Azure planning run with a repository roster,
       // so it must not carry the GitHub scope that forbids `az` and mandates `gh`.
+      // `spec.run` is the already-resolved provider; it is never reinspected here.
       return [
-        ...(spec.huInfo
-          ? await azureHuPlanningSections(spec.huInfo, questions)
+        ...(spec.run.kind === "azure-hu-run"
+          ? await azureHuPlanningSections(spec.huInfo!, questions)
           : await githubWorkflow("plan")),
         ...sag,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
