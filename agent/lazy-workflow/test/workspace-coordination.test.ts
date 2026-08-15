@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
-import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
+import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { GitHubCheckpointStore } from "../src/github/github-delivery-checkpoint.ts";
 import { GitHubPullRequestConflictError, type GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
@@ -53,7 +53,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
         await Bun.write(join(repository, "manifest.json"), "{}\n");
         await Bun.write(join(repository, "evidence.txt"), "evidence");
       }
-      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
     }, resume: async () => { throw new Error("must not resume"); } },
     undefined,
     undefined,
@@ -135,7 +135,7 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
       // Only repo-a receives a manifest; repo-b stays untouched (unchanged).
       await Bun.write(join(repoA, "manifest.json"), "{}\n");
       await Bun.write(join(repoA, "evidence.txt"), "evidence");
-      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
     }, resume: async () => { throw new Error("must not resume"); } },
     undefined, undefined, undefined, undefined, undefined, git,
     undefined, undefined, undefined, undefined, undefined,
@@ -193,7 +193,7 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
   };
   const cli = new LazyWorkflowCli(
     { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => ({ result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false }), resume: async () => { throw new Error("must not resume"); } },
+    { run: async () => ({ result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false }), resume: async () => { throw new Error("must not resume"); } },
     undefined, undefined, undefined, undefined, undefined, git,
     undefined, undefined, undefined, undefined, undefined,
     queue,
@@ -332,7 +332,7 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
           expect(options.prompt).toContain(baseCommit);
           expect(options.prompt).toContain("Coordinator-fixed pull request: #1");
         }
-        return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: `ses-${runs}`, part: { type: "text", text: runs === 2 ? "still working" : "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+        return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: `ses-${runs}`, part: { type: "text", text: runs === 2 ? "still working" : "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
       },
       resume: async (session, prompt) => {
         resumes += 1;
@@ -340,7 +340,7 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
         expect(prompt).toContain(baseCommit);
         expect(prompt).toContain("Coordinator-fixed pull request: #1");
         reconciled = true;
-        return OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: session, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
+        return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: session, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
       },
     },
     undefined, undefined, undefined, undefined, undefined, git,
@@ -416,7 +416,7 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
         await Bun.write(join(repository, "manifest.json"), "{}\n");
         await Bun.write(join(repository, "evidence.txt"), "evidence");
       }
-      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
     }, resume: async () => { throw new Error("must not resume"); } },
     undefined, undefined, undefined, undefined, undefined, git,
     undefined, undefined, undefined, undefined, undefined,
@@ -492,7 +492,7 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
         await Bun.write(join(repository, "manifest.json"), "{}\n");
         await Bun.write(join(repository, "evidence.txt"), "evidence");
       }
-      return { result: OpenCodeResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
     }, resume: async () => { throw new Error("must not resume"); } },
     undefined, undefined, undefined, undefined, undefined, git,
     undefined, undefined, undefined, undefined, undefined,
