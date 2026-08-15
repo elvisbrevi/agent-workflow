@@ -483,11 +483,26 @@ session identifier from the CLI's own initialization event, and never use
 available. Its events reach the Reporter with the same severities as OpenCode's:
 assistant text as info, reasoning and tool calls as debug.
 
-`--cli claudecode` is accepted today by `plan` without `--hu`. Delivery pins its
-session in a checkpoint that does not record the owning CLI yet, and the `az
-login` handshake still reads OpenCode events only, so `code`, `plan --hu`, and
-the SAG workflows reject the flag rather than opening a session they could not
-recover or continue.
+`--cli` is accepted by every command that opens a session — `plan`, `code`, and
+the three SAG-scoped workflows — and each keeps its own rules whichever CLI runs
+it:
+
+```bash
+lazy-workflow architecture-review-sag --issue 154 --cli claudecode \
+  --working-directory /path/to/repository
+lazy-workflow deploy-sag --issue 157 --environment qa --cli claudecode \
+  --working-directory /path/to/repository
+```
+
+The review session runs with the `lazy-review` authority in the format of its own
+CLI, so it cannot modify the reviewed tree in either; `deploy-sag` refuses PROD
+and its aliases before any external effect; and `infra-sag` and `deploy-sag`
+verify and deploy without opening a session at all, so `--cli` only names the CLI
+their run resolves.
+
+Delivery records the owning CLI in its checkpoint, so `--session <id>` resumes
+against the CLI that opened the session, and a `--cli` that contradicts the
+checkpoint fails closed with the checkpoint preserved.
 
 ## Agent authority
 
