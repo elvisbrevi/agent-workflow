@@ -1,6 +1,4 @@
-import { mkdir, rename } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { areReceipts, isBranchRef, WorkspaceCheckpointStore } from "../workspace/workspace-checkpoint-store.ts";
+import { areReceipts, isBranchRef, WorkspaceCheckpointStore, writeWorkspaceManifest } from "../workspace/workspace-checkpoint-store.ts";
 
 export const GITHUB_WORKSPACE_PHASES = [
   "selected",
@@ -131,14 +129,7 @@ export function isGitHubWorkspaceManifest(value: unknown): value is GitHubWorksp
 const MANIFEST_FILE_NAME = "github-workspace-manifest.json";
 
 export async function writeGitHubWorkspaceManifest(manifest: GitHubWorkspaceManifest, stateDirectory: string): Promise<void> {
-  if (!isGitHubWorkspaceManifest(manifest)) throw new Error("El manifest agregado del workspace es inválido");
-  const path = resolve(stateDirectory, MANIFEST_FILE_NAME);
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.tmp-${process.pid}`;
-  await Bun.write(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  await rename(temporaryPath, path);
-  const written: unknown = await Bun.file(path).json();
-  if (!isGitHubWorkspaceManifest(written)) throw new Error("El manifest agregado del workspace no se pudo verificar tras escribirse");
+  await writeWorkspaceManifest(manifest, stateDirectory, MANIFEST_FILE_NAME, isGitHubWorkspaceManifest, "GitHub");
 }
 
 export class GitHubWorkspaceCheckpointStore extends WorkspaceCheckpointStore<GitHubWorkspaceCheckpoint> {
