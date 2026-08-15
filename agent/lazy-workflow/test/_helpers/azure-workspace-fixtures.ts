@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { LazyWorkflowCli, type AzureBoundary } from "../../src/cli/lazy-workflow-cli.ts";
 import type { AzurePullRequestTarget } from "../../src/azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint } from "../../src/azure/azure-workspace-checkpoint.ts";
+import type { AgentCli } from "../../src/coding-agent/agent-cli.ts";
 import type { GitRunner } from "../../src/git/git-ticket-branch-cleaner.ts";
 
 export const hu = 23438;
@@ -62,6 +63,8 @@ export interface AzureWorkspaceHarnessOptions {
   /** Repository (by directory name) already carrying the ticket's Branch ArtifactLink. */
   resolvedPrimary?: string;
   terminal?: boolean;
+  /** Observes which coding agent CLI the run resolved, without changing the fake agent. */
+  observeCli?: (cli: AgentCli) => void;
 }
 
 export interface AzureWorkspaceHarness {
@@ -301,28 +304,29 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
       const elapsedMs = options.elapsedMs ?? 0;
       const clock = { now: () => (ticks++ === 0 ? 0 : elapsedMs) };
       const terminal = options.terminal ?? true;
+      const agent = {
+        run: async () => {
+          events.push("opencode:run");
+          for (const name of changedRepositories) {
+            await Bun.write(join(root!, name, "lazy-workflow/completion-manifest.json"), "{}");
+          }
+          return {
+            result: { text: terminal ? "IMPLEMENTATION_READY" : "still working", sessionId: "ses", failed: false } as never,
+            azureLoginRequired: false,
+            failed: false,
+          };
+        },
+        resume: async () => {
+          events.push("opencode:resume");
+          for (const name of changedRepositories) {
+            await Bun.write(join(root!, name, "lazy-workflow/completion-manifest.json"), "{}");
+          }
+          return { text: "IMPLEMENTATION_READY", sessionId: "ses" } as never;
+        },
+      };
       const cli = new LazyWorkflowCli(
         azureBoundary,
-        {
-          run: async () => {
-            events.push("opencode:run");
-            for (const name of changedRepositories) {
-              await Bun.write(join(root!, name, "lazy-workflow/completion-manifest.json"), "{}");
-            }
-            return {
-              result: { text: terminal ? "IMPLEMENTATION_READY" : "still working", sessionId: "ses", failed: false } as never,
-              azureLoginRequired: false,
-              failed: false,
-            };
-          },
-          resume: async () => {
-            events.push("opencode:resume");
-            for (const name of changedRepositories) {
-              await Bun.write(join(root!, name, "lazy-workflow/completion-manifest.json"), "{}");
-            }
-            return { text: "IMPLEMENTATION_READY", sessionId: "ses" } as never;
-          },
-        },
+        options.observeCli ? (resolved: AgentCli) => { options.observeCli!(resolved); return agent; } : agent,
         undefined,
         undefined,
         {
