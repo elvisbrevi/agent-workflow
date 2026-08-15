@@ -252,4 +252,44 @@ describe("buildCli parser", () => {
       });
     });
   });
+
+  describe("comandos de publicacion de plan", () => {
+    test("ticket-create acepta tipo, titulo, estimacion, asignado y campos explicitos", () => {
+      const result = parse([
+        "ticket-create", "--hu", "23438", "--type", "Task", "--title", "Slice uno",
+        "--description-file", "/tmp/d.html", "--estimate", "8", "--assignee", "dev@example.com",
+        "--field", "Custom.Mes=enero", "--field", "Custom.Otro=a=b",
+      ]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options).toMatchObject({
+        command: "ticket-create",
+        hu: 23438,
+        type: "Task",
+        title: "Slice uno",
+        descriptionFile: "/tmp/d.html",
+        estimate: 8,
+        assignee: "dev@example.com",
+      });
+      // The value may contain "=": only the first separator splits the pair.
+      expect(result.options.fields).toEqual([
+        { referenceName: "Custom.Mes", value: "enero" },
+        { referenceName: "Custom.Otro", value: "a=b" },
+      ]);
+    });
+
+    test("los comandos de enlace aceptan sus pares de identificadores", () => {
+      const parent = parse(["ticket-link-parent", "--parent", "10", "--child", "11"]);
+      expect(parent.kind).toBe("options");
+      if (parent.kind === "options") expect(parent.options).toMatchObject({ parent: 10, child: 11 });
+
+      const predecessor = parse(["ticket-link-predecessor", "--blocker", "10", "--blocked", "11"]);
+      expect(predecessor.kind).toBe("options");
+      if (predecessor.kind === "options") expect(predecessor.options).toMatchObject({ blocker: 10, blocked: 11 });
+    });
+
+    test("un --field sin separador falla", () => {
+      expect(parse(["ticket-create", "--field", "sinIgual"]).kind).toBe("error");
+    });
+  });
 });

@@ -1,0 +1,118 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "lazy-github-plan": {
+      "description": "lazy-workflow GitHub planning authority: documents and tracker work, no delivery effects.",
+      "mode": "primary",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "git push*": "deny",
+          "git branch*": "deny",
+          "git checkout -b*": "deny",
+          "git switch -c*": "deny",
+          "git remote*": "deny",
+          "git tag*": "deny",
+          "gh pr*": "deny",
+          "gh repo*": "deny",
+          "gh api*": "deny",
+          "az*": "deny"
+        }
+      }
+    },
+    "lazy-github-code": {
+      "description": "lazy-workflow GitHub delivery authority: implement, validate, commit. Every remote effect belongs to the coordinator.",
+      "mode": "primary",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "git push*": "deny",
+          "git branch*": "deny",
+          "git checkout -b*": "deny",
+          "git switch -c*": "deny",
+          "git remote*": "deny",
+          "git tag*": "deny",
+          "gh pr*": "deny",
+          "gh repo*": "deny",
+          "gh api*": "deny",
+          "gh issue edit*": "deny",
+          "gh issue close*": "deny",
+          "gh issue reopen*": "deny",
+          "gh issue comment*": "deny",
+          "gh issue delete*": "deny",
+          "gh issue transfer*": "deny",
+          "gh issue lock*": "deny",
+          "gh issue unlock*": "deny",
+          "az*": "deny"
+        }
+      }
+    },
+    "lazy-azure-plan": {
+      "description": "lazy-workflow Azure planning authority: HU documentation and a returned plan. The coordinator publishes the work items.",
+      "mode": "primary",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "git push*": "deny",
+          "git branch*": "deny",
+          "git checkout -b*": "deny",
+          "git switch -c*": "deny",
+          "git remote*": "deny",
+          "git tag*": "deny",
+          "az*": "deny",
+          "gh*": "deny"
+        }
+      }
+    },
+    "lazy-azure-code": {
+      "description": "lazy-workflow Azure delivery authority: implement, validate, commit, write the manifest. The coordinator owns Azure and every remote effect.",
+      "mode": "primary",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "git push*": "deny",
+          "git branch*": "deny",
+          "git checkout -b*": "deny",
+          "git switch -c*": "deny",
+          "git remote*": "deny",
+          "git tag*": "deny",
+          "az*": "deny",
+          "gh*": "deny"
+        }
+      }
+    },
+    "lazy-review": {
+      "description": "lazy-workflow review authority: read the tree and report. Modifies nothing.",
+      "mode": "primary",
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "git push*": "deny",
+          "git commit*": "deny",
+          "git add*": "deny",
+          "git rm*": "deny",
+          "git mv*": "deny",
+          "git branch*": "deny",
+          "git checkout*": "deny",
+          "git switch*": "deny",
+          "git merge*": "deny",
+          "git rebase*": "deny",
+          "git reset*": "deny",
+          "git restore*": "deny",
+          "git revert*": "deny",
+          "git cherry-pick*": "deny",
+          "git clean*": "deny",
+          "git stash*": "deny",
+          "git apply*": "deny",
+          "git tag*": "deny",
+          "git remote*": "deny",
+          "gh pr*": "deny",
+          "gh issue*": "deny",
+          "gh repo*": "deny",
+          "gh api*": "deny",
+          "az*": "deny"
+        }
+      }
+    }
+  }
+}
