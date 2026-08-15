@@ -401,6 +401,21 @@ export class LazyWorkflowCli {
     return this.activeAgent;
   }
 
+  /**
+   * A checkpoint owns the CLI that opened its session, so recovery resumes
+   * against that one without the operator declaring it. An explicit `--cli` that
+   * contradicts the checkpoint fails closed, with the checkpoint untouched, so a
+   * session is never resumed against the wrong binary (ADR-0023).
+   */
+  private adoptCheckpointCli(cli: AgentCli, options: CliOptions): boolean {
+    if (options.hasCli && options.cli !== cli) {
+      reportOperator(`lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado.`);
+      return false;
+    }
+    this.resolveAgent(cli);
+    return true;
+  }
+
   async run(args: string[]): Promise<number> {
     const parsed = parseCli(args, this.cliParser);
     if (parsed.kind === "help") {
@@ -971,6 +986,7 @@ export class LazyWorkflowCli {
       reportOperator(`lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+    if (checkpoint && !this.adoptCheckpointCli(checkpoint.cli, options)) return 1;
     if (options.session !== null && (!checkpoint || checkpoint.sessionId !== options.session)) {
       reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
       return 1;
@@ -1494,6 +1510,7 @@ export class LazyWorkflowCli {
         for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
       }
       const existing = await this.githubWorkspaceCheckpoint.read(scope.stateDirectory);
+      if (existing && !this.adoptCheckpointCli(existing.cli, options)) return 1;
       if (options.session !== null && (!existing || existing.sessionId !== options.session)) {
         reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace fijado.");
         return 1;
@@ -1817,6 +1834,7 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
+        if (!this.adoptCheckpointCli(checkpoint.cli, options)) return 1;
         let code: number;
         if (checkpoint.sessionId) {
           code = await this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
@@ -2953,6 +2971,7 @@ export class LazyWorkflowCli {
   ): Promise<number> {
     const now = (): number => this.clock.now();
     const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
+    if (migrated && !this.adoptCheckpointCli(migrated.cli, options)) return 1;
     let checkpoint: VersionedAutocodeCheckpoint = migrated ?? {
       schemaVersion: 3,
       cli: options.cli,
