@@ -13,7 +13,8 @@ import { runGit } from "../src/git/git-ticket-branch-cleaner.ts";
 
 function checkpoint(): GitHubDeliveryCheckpoint {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "github-code",
     repository: "elvisbrevi/agent-workflow",
     issue: 178,
@@ -34,6 +35,29 @@ test("valida el checkpoint GitHub sin aceptar transcriptos o credenciales", () =
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), receipts: [] })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), sessionId: "ses\nsecret" })).toBeFalse();
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), phase: "unknown" })).toBeFalse();
+});
+
+test("el checkpoint GitHub nombra el CLI dueño de la sesión", () => {
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), cli: "claudecode" })).toBeTrue();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), cli: "gemini" })).toBeFalse();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), cli: undefined })).toBeFalse();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), schemaVersion: 1 })).toBeFalse();
+});
+
+test("un checkpoint GitHub de la versión anterior se lee como OpenCode y se reescribe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-github-checkpoint-legacy-"));
+  const store = new GitHubDeliveryCheckpointStore();
+  try {
+    await runGit(["init"], root);
+    const { schemaVersion: _version, cli: _cli, ...rest } = checkpoint();
+    const path = join(root, (await runGit(["rev-parse", "--git-path", "lazy-workflow/github-code-checkpoint.json"], root)).trim());
+    await Bun.write(path, `${JSON.stringify({ schemaVersion: 1, ...rest })}\n`);
+
+    expect(await store.read(root)).toEqual(checkpoint());
+    expect(await Bun.file(path).json()).toEqual(checkpoint());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 for (const phase of GITHUB_DELIVERY_PHASES) {

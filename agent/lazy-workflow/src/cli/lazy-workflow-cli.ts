@@ -27,6 +27,7 @@ import {
 } from "../azure/autocode-checkpoint.ts";
 import { AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
+import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -85,8 +86,6 @@ import { authorityConfigPath, authorityProfile } from "../prompts/authority-prof
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
-  DEFAULT_CLI,
-  type AgentCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
   type CliParser,
@@ -401,6 +400,26 @@ export class LazyWorkflowCli {
     return this.activeAgent;
   }
 
+  /**
+   * A checkpoint owns the CLI that opened its session, so recovery resumes
+   * against that one without the operator declaring it. An explicit `--cli` that
+   * contradicts the checkpoint fails closed, with the checkpoint untouched, so a
+   * session is never resumed against the wrong binary (ADR-0023).
+   *
+   * The adopted CLI comes back as the run's own, because everything the run does
+   * afterwards — the sessions it opens, the checkpoints it writes, the CLI it
+   * names to the operator — is executed by the agent this resolved. Returns null
+   * when the run must stop.
+   */
+  private adoptCheckpointCli(cli: AgentCli, options: CliOptions): CliOptions | null {
+    if (options.hasCli && options.cli !== cli) {
+      reportOperator(`lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado.`);
+      return null;
+    }
+    this.resolveAgent(cli);
+    return options.cli === cli ? options : { ...options, cli };
+  }
+
   async run(args: string[]): Promise<number> {
     const parsed = parseCli(args, this.cliParser);
     if (parsed.kind === "help") {
@@ -417,11 +436,10 @@ export class LazyWorkflowCli {
 
     const command = options.command;
 
-    // Delivery pins its session in a checkpoint that does not record the CLI yet,
-    // and the Azure login handshake still reads OpenCode events only. Until both
-    // land, a Claude Code run is limited to the flow it can complete.
-    if (options.cli === "claudecode" && (command !== "plan" || options.hu !== null)) {
-      reportOperator("--cli claudecode solo esta disponible en plan sin --hu");
+    // The SAG workflows still resolve their session outside the `--cli` seam, so
+    // a Claude Code run is limited to the flows it can complete until they do.
+    if (options.cli === "claudecode" && command.endsWith("-sag")) {
+      reportOperator(`--cli claudecode todavia no esta disponible en ${command}`);
       return 1;
     }
 
@@ -824,8 +842,10 @@ export class LazyWorkflowCli {
 
     if (command === "code") {
       if (githubRecovery) {
-        const code = await this.runGitHubRecovery(options, githubRecovery);
-        return code === 0 ? this.continueQueueAfterRecovery(options, false) : code;
+        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options);
+        if (!adopted) return 1;
+        const code = await this.runGitHubRecovery(adopted, githubRecovery);
+        return code === 0 ? this.continueQueueAfterRecovery(adopted, false) : code;
       }
       if (isAzureHuRun) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
@@ -971,6 +991,11 @@ export class LazyWorkflowCli {
       reportOperator(`lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+    if (checkpoint) {
+      const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+      if (!adopted) return 1;
+      options = adopted;
+    }
     if (options.session !== null && (!checkpoint || checkpoint.sessionId !== options.session)) {
       reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
       return 1;
@@ -992,7 +1017,7 @@ export class LazyWorkflowCli {
         baseBranch: options.baseBranch,
       });
       const ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
-        hu: options.hu,
+        hu,
         ticket,
         integrationBranch: topology.integrationBranch,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
@@ -1013,7 +1038,7 @@ export class LazyWorkflowCli {
       };
       if (!checkpoint) {
         // Write the intent before the first external effect so a crashed session is recoverable.
-        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology);
+        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology, options.cli);
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
@@ -1031,7 +1056,7 @@ export class LazyWorkflowCli {
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
         if (session.failed) return 1;
         if (!terminal) {
-          reportOperator(`lazy-workflow: la sesión OpenCode workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          reportOperator(`lazy-workflow: la sesión ${options.cli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
           return 1;
         }
       }
@@ -1057,7 +1082,7 @@ export class LazyWorkflowCli {
       terminalMarker: IMPLEMENTATION_READY_MARKER,
     }, true);
     if (execution.failed) {
-      reportOperator(`lazy-workflow: OpenCode falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+      reportOperator(`lazy-workflow: ${options.cli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
     }
     return { text: execution.result.text, sessionId: execution.result.sessionId ?? null, failed: !!execution.failed };
   }
@@ -1111,9 +1136,11 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
+    cli: AgentCli,
   ): AzureWorkspaceCheckpoint {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      cli,
       workflow: "azure-workspace-code",
       hu,
       ticket,
@@ -1492,6 +1519,11 @@ export class LazyWorkflowCli {
         for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
       }
       const existing = await this.githubWorkspaceCheckpoint.read(scope.stateDirectory);
+      if (existing) {
+        const adopted = this.adoptCheckpointCli(existing.cli, options);
+        if (!adopted) return 1;
+        options = adopted;
+      }
       if (options.session !== null && (!existing || existing.sessionId !== options.session)) {
         reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace fijado.");
         return 1;
@@ -1508,7 +1540,7 @@ export class LazyWorkflowCli {
         throw new Error("el Issue seleccionado no pertenece al primer repositorio del workspace");
       }
       if (!this.githubManagedQueue.claimSelectedIssue) throw new Error("el coordinador workspace no puede verificar el claim del Issue");
-      const selectedCheckpoint = this.createWorkspaceCheckpoint(scope, selection.issue.number);
+      const selectedCheckpoint = this.createWorkspaceCheckpoint(scope, selection.issue.number, options.cli);
       await this.githubWorkspaceCheckpoint.write(selectedCheckpoint, scope.stateDirectory);
       const issue = await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path);
       return await this.deliverWorkspaceCode(options, scope, issue, null);
@@ -1601,9 +1633,10 @@ export class LazyWorkflowCli {
     return this.deliverWorkspaceCode(options, scope, null, checkpoint);
   }
 
-  private createWorkspaceCheckpoint(scope: WorkspaceScope, issue: number): GitHubWorkspaceCheckpoint {
+  private createWorkspaceCheckpoint(scope: WorkspaceScope, issue: number, cli: AgentCli): GitHubWorkspaceCheckpoint {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      cli,
       workflow: "github-workspace-code",
       issue,
       phase: "selected",
@@ -1630,7 +1663,7 @@ export class LazyWorkflowCli {
     const issueNumber = issue?.number ?? checkpoint?.issue;
     if (!issueNumber) throw new Error("falta el Issue fijado para el workspace");
     if (!checkpoint) {
-      checkpoint = this.createWorkspaceCheckpoint(scope, issueNumber);
+      checkpoint = this.createWorkspaceCheckpoint(scope, issueNumber, options.cli);
       await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
     }
     if (checkpoint.units.length < scope.repositories.length) {
@@ -1814,6 +1847,9 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
+        const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+        if (!adopted) return 1;
+        options = adopted;
         let code: number;
         if (checkpoint.sessionId) {
           code = await this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
@@ -1873,7 +1909,8 @@ export class LazyWorkflowCli {
         if (selection.kind === "candidate") {
           receipts = {};
           await store.write({
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: selection.repository.nameWithOwner,
             issue: selection.issue.number,
@@ -1895,7 +1932,8 @@ export class LazyWorkflowCli {
           }
           receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
           await store.write({
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: selection.repository.nameWithOwner,
             issue: selection.issue.number,
@@ -1941,7 +1979,8 @@ export class LazyWorkflowCli {
       let intent: GitHubDeliveryCheckpoint["intent"] = null;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          cli: options.cli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -1999,7 +2038,8 @@ export class LazyWorkflowCli {
       await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          cli: options.cli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -2020,7 +2060,8 @@ export class LazyWorkflowCli {
         }
         try {
           await this.completeGitHubDelivery(options, {
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: repository.nameWithOwner,
             issue: issue.number,
@@ -2537,8 +2578,9 @@ export class LazyWorkflowCli {
 
   /**
    * Azure login continuation for the Azure HU planning run: preserve the
-   * OpenCode session, wait for Azure access, and resume it exactly once with
-   * `continue` and the same authority profile it started with. The
+   * session, wait for Azure access, and resume it exactly once with `continue`
+   * and the same authority profile it started with. Both CLIs report the
+   * handshake, so the continuation is the same in either. The
    * mono-repository and workspace planning modes share this one owner; the
    * working directory the resumed session runs from is the only fact that
    * differs by mode.
@@ -2550,7 +2592,7 @@ export class LazyWorkflowCli {
     agent: AgentAuthority,
   ): Promise<AgentExecution["result"]> {
     if (!execution.azureLoginRequired || run.kind !== "azure-hu-run") return execution.result;
-    reportOperator(`Sesion OpenCode detenida: ${execution.result.sessionId}`);
+    reportOperator(`Sesion detenida a la espera de az login: ${execution.result.sessionId}`);
     await this.huInfoService.waitForAccess(run.hu);
     return this.codingAgent.resume(execution.result.sessionId, "continue", workingDirectory, undefined, { agent });
   }
@@ -2705,7 +2747,7 @@ export class LazyWorkflowCli {
       const execution = await this.codingAgent.run({ ...options, ...run, session: null }, options.hu !== null);
       let result = execution.result;
       if (execution.azureLoginRequired && options.hu !== null) {
-        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        reportOperator(`Sesion detenida a la espera de az login: ${result.sessionId}`);
         await this.huInfoService.waitForAccess(options.hu);
         result = await this.codingAgent.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
       }
@@ -2945,8 +2987,14 @@ export class LazyWorkflowCli {
   ): Promise<number> {
     const now = (): number => this.clock.now();
     const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
+    if (migrated) {
+      const adopted = this.adoptCheckpointCli(migrated.cli, options);
+      if (!adopted) return 1;
+      options = adopted;
+    }
     let checkpoint: VersionedAutocodeCheckpoint = migrated ?? {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      cli: options.cli,
       workflow: "autocode",
       phase: "preflight-hu",
       hu: options.hu!,
@@ -3359,7 +3407,7 @@ export class LazyWorkflowCli {
           reportOperator(`lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`);
           return 1;
         }
-        if (execution.failed) throw new Error("OpenCode termino con error");
+        if (execution.failed) throw new Error(`la sesión ${options.cli} termino con error`);
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       } catch (error) {
@@ -3369,7 +3417,7 @@ export class LazyWorkflowCli {
           reportOperator(`lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`);
           return 1;
         }
-        reportOperator(`lazy-workflow: OpenCode falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
+        reportOperator(`lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       }

@@ -3,7 +3,7 @@
  * coding agent once per run instead of branching per call site (ADR-0023).
  */
 
-import type { AgentCli } from "../cli/parse-cli-options.ts";
+import type { AgentCli } from "./agent-cli.ts";
 import { ClaudeCodeService } from "../claude-code/claude-code-service.ts";
 import { OpenCodeService } from "../opencode/open-code-service.ts";
 import type { CodingAgent } from "./coding-agent.ts";

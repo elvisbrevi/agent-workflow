@@ -1,3 +1,4 @@
+import { isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { areReceipts, isBranchRef, WorkspaceCheckpointStore, writeWorkspaceManifest } from "../workspace/workspace-checkpoint-store.ts";
 
 export const GITHUB_WORKSPACE_PHASES = [
@@ -31,7 +32,9 @@ export interface GitHubWorkspaceUnit {
 }
 
 export interface GitHubWorkspaceCheckpoint {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
+  cli: AgentCli;
   workflow: "github-workspace-code";
   issue: number;
   phase: GitHubWorkspacePhase;
@@ -83,7 +86,8 @@ export function isGitHubWorkspaceCheckpoint(value: unknown): value is GitHubWork
   const checkpoint = value as Partial<GitHubWorkspaceCheckpoint>;
   const repositories = checkpoint.repositories;
   const units = checkpoint.units;
-  return checkpoint.schemaVersion === 1
+  return checkpoint.schemaVersion === 2
+    && isAgentCli(checkpoint.cli)
     && checkpoint.workflow === "github-workspace-code"
     && Number.isInteger(checkpoint.issue) && (checkpoint.issue ?? 0) > 0
     && GITHUB_WORKSPACE_PHASES.includes(checkpoint.phase as GitHubWorkspacePhase)
@@ -136,4 +140,8 @@ export class GitHubWorkspaceCheckpointStore extends WorkspaceCheckpointStore<Git
   protected readonly fileName = FILE_NAME;
   protected readonly label = "GitHub workspace";
   protected isCheckpoint = isGitHubWorkspaceCheckpoint;
+
+  protected override upgrade(value: unknown): unknown {
+    return withOwnerCli(value, 1, 2);
+  }
 }

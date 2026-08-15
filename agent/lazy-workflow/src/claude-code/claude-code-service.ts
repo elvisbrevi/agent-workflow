@@ -18,6 +18,7 @@ import {
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
 import { AgentResult, type AgentTokens } from "../coding-agent/agent-result.ts";
+import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import type {
   AgentAuthority,
   AgentExecution,
@@ -113,13 +114,26 @@ function renderEvent(line: string): ReportedEvent[] {
   return [];
 }
 
-function decodeStream(output: string): AgentResult {
-  const events = output
+/**
+ * The Azure login handshake as Claude Code emits it: the session either called
+ * the shell to authenticate, or said in its own text that the operator must.
+ */
+function requiresAzureLogin(events: ClaudeCodeEventData[]): boolean {
+  return events.some((event) => blocks(event).some((block) =>
+    (block.type === "tool_use" && runsAzureLogin(block.input?.command ?? ""))
+    || (block.type === "text" && asksForAzureLogin(block.text ?? ""))
+  ) || asksForAzureLogin(event.result ?? ""));
+}
+
+function parseEvents(output: string): ClaudeCodeEventData[] {
+  return output
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .map(parseEvent)
     .filter((event): event is ClaudeCodeEventData => event !== null);
+}
 
+function decodeStream(events: ClaudeCodeEventData[]): AgentResult {
   const sessionId = events.find((event) => event.type === "system" && event.subtype === "init")?.session_id;
   if (!sessionId) throw new Error("Claude Code no devolvió un identificador de sesión");
 
@@ -175,13 +189,18 @@ async function readLines(
   return lines;
 }
 
+/**
+ * Closing a session is a documented no-op here: Claude Code keeps no remote
+ * session to release, so a run that reached its terminal marker releases
+ * nothing, where OpenCode still deletes its own session (ADR-0023).
+ */
 export class ClaudeCodeService implements CodingAgent {
   constructor(
     private readonly spawn: AgentSpawner = spawnAgentProcess,
     private readonly reporter: Reporter = getDefaultReporter(),
   ) {}
 
-  async run(options: AgentRunOptions): Promise<AgentExecution> {
+  async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
     return this.execute(
       [
         ...this.sessionCommand(options.agent),
@@ -193,6 +212,8 @@ export class ClaudeCodeService implements CodingAgent {
         options.prompt,
       ],
       options.workingDirectory,
+      options.model,
+      detectAzureLogin,
     );
   }
 
@@ -203,6 +224,11 @@ export class ClaudeCodeService implements CodingAgent {
     _terminalMarker?: string,
     overrides: AgentResumeOverrides = {},
   ): Promise<AgentResult> {
+    // A resumed session keeps the model it was opened with unless the run
+    // overrides it, so the operator is told which of the two is running.
+    this.reporter.info(
+      `Claude Code reanuda la sesión ${sessionId} con el modelo ${overrides.model ?? "con el que se abrió"}`,
+    );
     const execution = await this.execute(
       [
         // A resumed session keeps the authority it started with, so the profile
@@ -215,7 +241,12 @@ export class ClaudeCodeService implements CodingAgent {
         prompt,
       ],
       workingDirectory,
+      overrides.model,
+      true,
     );
+    if (execution.azureLoginRequired) {
+      throw new Error("Azure sigue requiriendo autenticacion despues de reanudar Claude Code");
+    }
     if (execution.failed) throw new Error("Claude Code terminó con error");
     return execution.result;
   }
@@ -245,8 +276,13 @@ export class ClaudeCodeService implements CodingAgent {
     return variant;
   }
 
-  private async execute(command: string[], workingDirectory?: string): Promise<AgentExecution> {
-    this.reporter.info(`Claude Code iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
+  private async execute(
+    command: string[],
+    workingDirectory?: string,
+    model?: string,
+    detectAzureLogin = false,
+  ): Promise<AgentExecution> {
+    this.reporter.info(`Claude Code iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
     const child: AgentProcess = this.spawn(command, { cwd: workingDirectory });
     const reportStdout = (line: string) => {
       for (const { message, severity } of renderEvent(line)) {
@@ -256,17 +292,18 @@ export class ClaudeCodeService implements CodingAgent {
     };
     const reportStderr = (line: string) => this.reporter.info(`Claude Code stderr: ${line}`);
 
-    const [lines, , exitCode] = await Promise.all([
+    const [lines, errorLines, exitCode] = await Promise.all([
       readLines(child.stdout, reportStdout),
       readLines(child.stderr, reportStderr),
       child.exited,
     ]);
 
+    const events = parseEvents(lines.join("\n"));
     return {
-      result: decodeStream(lines.join("\n")),
-      // Provider exhaustion and the Azure login handshake are classified where
-      // their own issues land; today every Claude Code session reports neither.
-      azureLoginRequired: false,
+      result: decodeStream(events),
+      azureLoginRequired: detectAzureLogin
+        && (requiresAzureLogin(events) || asksForAzureLogin(errorLines.join("\n"))),
+      // Provider exhaustion is classified where its own issue lands.
       failed: exitCode !== 0,
     };
   }
