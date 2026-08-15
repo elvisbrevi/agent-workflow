@@ -12,8 +12,8 @@ const topology = { integrationBranch: "refs/heads/hu/1", ticketBranch: "refs/hea
 const specs: Array<[WorkflowPromptSpec, string]> = [
   [{ kind: "github-plan" }, "lazy-github-plan"],
   [{ kind: "azure-plan", huInfo: { id: 1 } as never }, "lazy-azure-plan"],
-  [{ kind: "workspace-plan", scope: scope as never, huInfo: null }, "lazy-github-plan"],
-  [{ kind: "workspace-plan", scope: scope as never, huInfo: { id: 1 } as never }, "lazy-azure-plan"],
+  [{ kind: "workspace-plan", scope: scope as never, run: { kind: "github-repository-run" }, huInfo: null }, "lazy-github-plan"],
+  [{ kind: "workspace-plan", scope: scope as never, run: { kind: "azure-hu-run", hu: 1 }, huInfo: { id: 1 } as never }, "lazy-azure-plan"],
   [{ kind: "github-delivery", issue: issue as never, repository, branch: "b", manifestPath: "m" }, "lazy-github-code"],
   [{ kind: "github-code-uncoordinated", issue: issue as never, repository }, "lazy-github-code"],
   [{ kind: "github-workspace-delivery", scope: scope as never, issue: issue as never, units: [] }, "lazy-github-code"],
