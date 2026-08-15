@@ -23,7 +23,7 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeResumeOverrides, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeAuthority, type OpenCodeResumeOverrides, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -76,6 +76,7 @@ import {
   type SagContext,
   type WorkflowPromptSpec,
 } from "../prompts/workflow-prompt.ts";
+import { authorityConfigPath, authorityProfile } from "../prompts/authority-profile.ts";
 import {
   buildCli,
   type CliOptions as ParsedCliOptions,
@@ -729,9 +730,9 @@ export class LazyWorkflowCli {
     const norms = await this.loadSagNorms(options, "planning");
     if (options.normasSag && norms === null) return 1;
 
-    const prompt = await this.prompt({ kind: "azure-plan", huInfo }, options, norms);
+    const run = await this.prompt({ kind: "azure-plan", huInfo }, options, norms);
 
-    const execution = await this.openCodeService.run({ ...options, prompt }, true);
+    const execution = await this.openCodeService.run({ ...options, ...run }, true);
     let result = execution.result;
     if (execution.azureLoginRequired && options.hu > 0) {
       reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
@@ -755,8 +756,8 @@ export class LazyWorkflowCli {
     if (command === "plan") {
       const norms = await this.loadSagNorms(options, "planning");
       if (options.normasSag && norms === null) return 1;
-      const prompt = await this.prompt({ kind: "github-plan" }, options, norms);
-      const execution = await this.openCodeService.run({ ...options, prompt, session: null }, false);
+      const run = await this.prompt({ kind: "github-plan" }, options, norms);
+      const execution = await this.openCodeService.run({ ...options, ...run, session: null }, false);
       console.log(JSON.stringify(execution.result, null, 2));
       return execution.failed ? 1 : 0;
     }
@@ -906,11 +907,11 @@ export class LazyWorkflowCli {
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
   ): Promise<{ text: string; sessionId: string | null; failed: boolean }> {
-    const prompt = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
+    const run = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
     const execution = await this.openCodeService.run({
       ...options,
       workingDirectory: scope.parentDirectory,
-      prompt,
+      ...run,
       session: null,
       terminalMarker: IMPLEMENTATION_READY_MARKER,
     }, true);
@@ -993,7 +994,7 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
-  ): Promise<string> {
+  ): Promise<{ prompt: string; agent: OpenCodeAuthority }> {
     return this.prompt(
       { kind: "azure-workspace-delivery", scope, hu: options.hu, ticket: options.ticket, topology, ticketTopology },
       options,
@@ -1306,7 +1307,7 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     issue: SelectedManagedIssue | null,
     units: GitHubWorkspaceUnit[] = [],
-  ): Promise<string> {
+  ): Promise<{ prompt: string; agent: OpenCodeAuthority }> {
     return this.prompt({ kind: "github-workspace-delivery", scope, issue, units }, options);
   }
 
@@ -1318,8 +1319,8 @@ export class LazyWorkflowCli {
       const norms = await this.loadSagNorms({ ...options, workingDirectory: scope.repositories[0]!.path }, "planning");
       if (options.normasSag && norms === null) return 1;
       const huInfo = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
-      const prompt = await this.prompt({ kind: "workspace-plan", scope, huInfo }, options, norms);
-      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, options.hu !== null);
+      const run = await this.prompt({ kind: "workspace-plan", scope, huInfo }, options, norms);
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, options.hu !== null);
       let result = execution.result;
       // Same Azure login continuation as the single-repository HU planning run: keep the session,
       // wait for access, resume it exactly once.
@@ -1506,7 +1507,7 @@ export class LazyWorkflowCli {
       throw new Error("el checkpoint workspace no conserva una sesión reanudable");
     }
     if (checkpoint.phase === "started" && !checkpoint.sessionId) {
-      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt: await this.workspacePrompt(options, scope, issue, units), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...(await this.workspacePrompt(options, scope, issue, units)), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
       reportOperator(JSON.stringify(execution.result, null, 2));
       const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
       checkpoint = { ...checkpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId };
@@ -1827,7 +1828,7 @@ export class LazyWorkflowCli {
       // Without a coordinator-owned branch and manifest there is no delivery contract
       // to state, so the run uses the explicit uncoordinated shape rather than a
       // delivery prompt silently missing its manifest and marker clauses.
-      const prompt = this.githubDelivery && branch && manifestPath
+      const run = this.githubDelivery && branch && manifestPath
         ? await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms)
         : await this.prompt({ kind: "github-code-uncoordinated", issue, repository: queueOutcome.repository }, options, norms);
       if (!this.githubDelivery) await saveCheckpoint("started");
@@ -1835,7 +1836,7 @@ export class LazyWorkflowCli {
       try {
         execution = await this.openCodeService.run({
           ...options,
-          prompt,
+          ...run,
           session: null,
           terminalMarker: IMPLEMENTATION_READY_MARKER,
         }, false);
@@ -1911,7 +1912,7 @@ export class LazyWorkflowCli {
     branch: string,
     manifestPath: string,
     norms: SagContext | null,
-  ): Promise<string> {
+  ): Promise<{ prompt: string; agent: OpenCodeAuthority }> {
     return this.prompt({ kind: "github-delivery", issue, repository, branch, manifestPath }, options, norms);
   }
 
@@ -1924,7 +1925,7 @@ export class LazyWorkflowCli {
     manifestPath: string,
     originalCommit: string,
     baseCommit: string,
-  ): Promise<string> {
+  ): Promise<{ prompt: string; agent: OpenCodeAuthority }> {
     return this.prompt(
       {
         kind: "github-reconciliation",
@@ -1962,7 +1963,7 @@ export class LazyWorkflowCli {
       throw new Error("No se puede reconstruir el Issue fijado para reconciliar el PR");
     }
     const issue = await readIssue(context.issue, context.issueWorkingDirectory);
-    const prompt = await this.buildGitHubReconciliationPrompt(
+    const run = await this.buildGitHubReconciliationPrompt(
       { ...options, workingDirectory: context.workingDirectory },
       issue,
       context.repository,
@@ -1974,8 +1975,8 @@ export class LazyWorkflowCli {
     );
     let failed = false;
     const result = sessionId
-      ? await this.openCodeService.resume(sessionId, prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options))
-      : await this.openCodeService.run({ ...options, workingDirectory: context.workingDirectory, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false)
+      ? await this.openCodeService.resume(sessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent })
+      : await this.openCodeService.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false)
         .then((execution) => {
           failed = execution.failed === true;
           return execution.result;
@@ -2203,8 +2204,8 @@ export class LazyWorkflowCli {
         }
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
-        const prompt = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
-        const execution = await this.openCodeService.run({ ...options, prompt, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+        const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
+        const execution = await this.openCodeService.run({ ...options, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);
         if (execution.failed || !terminal) {
@@ -2532,13 +2533,13 @@ export class LazyWorkflowCli {
         ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
         : { tracker: "github", issue: issueScope };
       const context = await this.sagNormsService.loadArchitectureReview(options.workingDirectory);
-      const prompt = await this.prompt({ kind: "architecture-review-sag", scope, context }, options);
-      const execution = await this.openCodeService.run({ ...options, prompt, session: null }, options.hu !== null);
+      const run = await this.prompt({ kind: "architecture-review-sag", scope, context }, options);
+      const execution = await this.openCodeService.run({ ...options, ...run, session: null }, options.hu !== null);
       let result = execution.result;
       if (execution.azureLoginRequired && options.hu !== null) {
         reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
         await this.huInfoService.waitForAccess(options.hu);
-        result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory);
+        result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
       }
       const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
       if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
@@ -2577,20 +2578,27 @@ export class LazyWorkflowCli {
   }
 
   /**
-   * Compose the prompt for one run. Every coordinator-fixed fact travels through
-   * `spec`; the operator request stays supplemental.
+   * Prepare one run: what OpenCode is told, and what it is allowed to do. Both
+   * come from the same spec and travel together, so a run can never carry the
+   * delivery prompt without the matching authority profile.
+   *
+   * Every coordinator-fixed fact travels through `spec`; the operator request
+   * stays supplemental.
    */
-  private prompt(
+  private async prompt(
     spec: WorkflowPromptSpec,
     options: CliOptions,
     norms: SagContext | null = null,
-  ): Promise<string> {
-    return buildWorkflowPrompt(spec, {
-      operatorRequest: options.prompt,
-      workingDirectory: options.workingDirectory,
-      norms,
-      questions: options.numberOfQuestions,
-    });
+  ): Promise<{ prompt: string; agent: OpenCodeAuthority }> {
+    return {
+      prompt: await buildWorkflowPrompt(spec, {
+        operatorRequest: options.prompt,
+        workingDirectory: options.workingDirectory,
+        norms,
+        questions: options.numberOfQuestions,
+      }),
+      agent: { profile: authorityProfile(spec), configPath: authorityConfigPath() },
+    };
   }
 
   private async runTicketRead(command: string, options: CliOptions): Promise<number> {
@@ -3085,19 +3093,20 @@ export class LazyWorkflowCli {
     while (true) {
       try {
         const authoritativeResumePrompt = buildResumePrompt(resumePrompt, norms);
+        const run = await this.prompt({
+          kind: "azure-delivery",
+          context,
+          ticketBranch,
+          evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
+          manifestPath,
+          workflowPhase: checkpoint.phase,
+          completionGates: Object.values(COMPLETION_GATE),
+        }, options, norms);
         const execution = await track(null, async () => sessionId
-          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), azureLoginRequired: false, failed: false }
+          ? { result: await this.openCodeService.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }), azureLoginRequired: false, failed: false }
           : this.openCodeService.run({
             ...options,
-            prompt: await this.prompt({
-              kind: "azure-delivery",
-              context,
-              ticketBranch,
-              evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
-              manifestPath,
-              workflowPhase: checkpoint.phase,
-              completionGates: Object.values(COMPLETION_GATE),
-            }, options, norms),
+            ...run,
             session: null,
             terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, true));
