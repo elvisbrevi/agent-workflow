@@ -85,6 +85,7 @@ import { authorityConfigPath, authorityProfile } from "../prompts/authority-prof
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
+  DEFAULT_CLI,
   type AgentCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
@@ -392,7 +393,7 @@ export class LazyWorkflowCli {
 
   /** The agent executing this run; every call site reads the one already resolved. */
   private get codingAgent(): CodingAgent {
-    return this.activeAgent ?? this.resolveAgent("opencode");
+    return this.activeAgent ?? this.resolveAgent(DEFAULT_CLI);
   }
 
   private resolveAgent(cli: AgentCli): CodingAgent {
@@ -415,6 +416,14 @@ export class LazyWorkflowCli {
     this.resolveAgent(options.cli);
 
     const command = options.command;
+
+    // Delivery pins its session in a checkpoint that does not record the CLI yet,
+    // and the Azure login handshake still reads OpenCode events only. Until both
+    // land, a Claude Code run is limited to the flow it can complete.
+    if (options.cli === "claudecode" && (command !== "plan" || options.hu !== null)) {
+      reportOperator("--cli claudecode solo esta disponible en plan sin --hu");
+      return 1;
+    }
 
     if (options.verbose && options.quiet) {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");
