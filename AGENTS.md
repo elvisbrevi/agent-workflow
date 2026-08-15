@@ -18,8 +18,8 @@ inside that directory rather than a skill directory.
 | Add a new skill | A category directory, `SKILL.md`, optional `agents/openai.yaml`, and README catalog entries |
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
-| Change the coding agent seam, its options, authority, result, or session errors | `agent/lazy-workflow/src/coding-agent/` |
-| Change OpenCode invocation or JSONL decoding | `agent/lazy-workflow/src/opencode/` |
+| Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
+| Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
 | Change what OpenCode is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
 | Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
 | Change what a run is permitted to execute | `agent/lazy-workflow/opencode/authority.json` and `agent/lazy-workflow/src/prompts/authority-profile.ts` |
