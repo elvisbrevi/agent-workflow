@@ -245,6 +245,15 @@ describe("ClaudeCodeService continuidad de az login", () => {
 
     expect((await service.run(standardOptions, true)).azureLoginRequired).toBeFalse();
   });
+
+  test("una sesion reanudada que sigue pidiendo az login falla en vez de continuar", async () => {
+    const service = new ClaudeCodeService(() => stubProcess([
+      initEvent("ses_login_resume"),
+      assistantText("ses_login_resume", "Todavia no hay sesion: ejecuta az login --use-device-code"),
+    ].join("\n")));
+
+    await expect(service.resume("ses_login_resume")).rejects.toThrow(/autenticacion/i);
+  });
 });
 
 describe("ClaudeCodeService cierre de sesion", () => {
