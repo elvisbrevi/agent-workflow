@@ -9,6 +9,14 @@ export interface OpenCodeRunOptions {
   prompt: string;
   workingDirectory?: string;
   terminalMarker?: string;
+  /** OpenCode agent whose permissions bound what this run may do. */
+  agent?: OpenCodeAuthority;
+}
+
+/** The agent profile and the config that defines it, injected per run. */
+export interface OpenCodeAuthority {
+  profile: string;
+  configPath: string;
 }
 
 export interface OpenCodeExecution {
@@ -17,7 +25,7 @@ export interface OpenCodeExecution {
   failed?: boolean;
 }
 
-export type OpenCodeResumeOverrides = Partial<Pick<OpenCodeRunOptions, "model" | "variant">>;
+export type OpenCodeResumeOverrides = Partial<Pick<OpenCodeRunOptions, "model" | "variant" | "agent">>;
 
 export interface OpenCodeProcess {
   stdout: ReadableStream<Uint8Array>;
@@ -46,12 +54,22 @@ export class OpenCodeSessionNotFoundError extends Error {
 
 export interface OpenCodeSpawnOptions {
   cwd?: string;
+  /** Extra environment for the child; merged over the inherited environment. */
+  env?: Record<string, string>;
 }
 
 export type OpenCodeSpawner = (command: string[], options?: OpenCodeSpawnOptions) => OpenCodeProcess;
 
 const spawnOpenCode: OpenCodeSpawner = (command, options) => {
-  const process = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", ...options });
+  const { env, ...rest } = options ?? {};
+  const process = Bun.spawn(command, {
+    stdout: "pipe",
+    stderr: "pipe",
+    ...rest,
+    // OPENCODE_CONFIG merges with the target repository's own configuration
+    // rather than replacing it, so injecting the authority profiles is additive.
+    ...(env ? { env: { ...Bun.env, ...env } } : {}),
+  });
   return {
     stdout: process.stdout,
     stderr: process.stderr,
@@ -215,6 +233,7 @@ export class OpenCodeService {
       "opencode",
       "run",
       "--auto",
+      ...(options.agent ? ["--agent", options.agent.profile] : []),
       "--model",
       options.model,
       "--variant",
@@ -224,7 +243,7 @@ export class OpenCodeService {
       "json",
       "--thinking",
       options.prompt,
-    ], detectAzureLogin, options.workingDirectory, options.terminalMarker);
+    ], detectAzureLogin, options.workingDirectory, options.terminalMarker, options.agent);
   }
 
   async resume(
@@ -240,13 +259,16 @@ export class OpenCodeService {
       "--auto",
       "--session",
       sessionId,
+      // A resumed session keeps the authority it started with, so the profile and
+      // its config must travel with the resume too.
+      ...(overrides.agent ? ["--agent", overrides.agent.profile] : []),
       ...(overrides.model ? ["--model", overrides.model] : []),
       ...(overrides.variant ? ["--variant", overrides.variant] : []),
       "--format",
       "json",
       "--thinking",
       prompt,
-    ], true, workingDirectory, terminalMarker);
+    ], true, workingDirectory, terminalMarker, overrides.agent);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
@@ -259,9 +281,13 @@ export class OpenCodeService {
     detectAzureLogin: boolean,
     workingDirectory?: string,
     terminalMarker?: string,
+    authority?: OpenCodeAuthority,
   ): Promise<OpenCodeExecution> {
     this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}`);
-    const child = this.spawn(command, { cwd: workingDirectory });
+    const child = this.spawn(command, {
+      cwd: workingDirectory,
+      ...(authority ? { env: { OPENCODE_CONFIG: authority.configPath } } : {}),
+    });
     let spinner: ReturnType<Reporter["start"]> | null = this.reporter.start(SPINNER_TEXT);
     let restartTimer: ReturnType<typeof setTimeout> | null = null;
     const stopSpinner = () => {

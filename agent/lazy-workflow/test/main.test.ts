@@ -15,6 +15,7 @@ import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
 import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { authorityConfigPath } from "../src/prompts/authority-profile.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
@@ -1549,7 +1550,12 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
 
   expect(code).toBe(1);
   expect(markers).toEqual(["IMPLEMENTATION_READY"]);
-  expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
+  // A resumed session keeps the authority profile it started with.
+  expect(resumeOverrides).toEqual({
+    model: "openai/gpt-5.6-luna",
+    variant: "high",
+    agent: { profile: "lazy-azure-code", configPath: authorityConfigPath() },
+  });
   expect(writes.some(({ schemaVersion, phase }) => schemaVersion === 2 && phase === "implementing")).toBeTrue();
   expect(verificationCalls).toBe(0);
 });

@@ -8,10 +8,6 @@ Do not select, refresh, or replace the fixed issue, and do not close or
 reconcile parent or epic issues. The coordinator, not this session, decides what
 work follows and will start a fresh session for the next eligible issue.
 
-Every remote effect belongs to the coordinator. Do not push, create or delete
-branches, create, merge, close, or reopen pull requests, or mutate the issue's
-assignees, labels, comments, or state.
-
 When the local implementation, validation, review, commit, and manifest are
 complete, print the exact marker `{{IMPLEMENTATION_READY}}` and stop. Do not
 declare remote delivery complete, and never print the coordinator's own
