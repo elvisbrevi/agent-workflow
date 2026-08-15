@@ -75,8 +75,10 @@ import {
 import {
   buildResumePrompt,
   buildWorkflowPrompt,
+  resolveWorkflowRun,
   type SagContext,
   type WorkflowPromptSpec,
+  type WorkflowRun,
 } from "../prompts/workflow-prompt.ts";
 import { authorityConfigPath, authorityProfile } from "../prompts/authority-profile.ts";
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
@@ -786,7 +788,11 @@ export class LazyWorkflowCli {
       }
     }
     const recoveringAzureCode = command === "code" && options.session !== null && githubRecovery === null;
-    if (options.hu === null && !recoveringAzureCode && (options.branch !== null || options.baseBranch !== null)) {
+    // Resolved once: an explicit --hu or a recovered Azure checkpoint both mean
+    // this "code" invocation is an Azure HU run; every branch below consumes
+    // this instead of reinspecting --hu or recovery state again.
+    const isAzureHuRun = recoveringAzureCode || options.hu !== null;
+    if (!isAzureHuRun && (options.branch !== null || options.baseBranch !== null)) {
       reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }
@@ -796,7 +802,7 @@ export class LazyWorkflowCli {
         const code = await this.runGitHubRecovery(options, githubRecovery);
         return code === 0 ? this.continueQueueAfterRecovery(options, false) : code;
       }
-      if (recoveringAzureCode || options.hu !== null) return this.runAzureCode(options);
+      if (isAzureHuRun) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
     }
 
@@ -809,7 +815,7 @@ export class LazyWorkflowCli {
     const run = await this.prompt({ kind: "azure-plan", huInfo }, options, norms);
 
     const execution = await this.openCodeService.run({ ...options, ...run }, true);
-    const result = await this.continuePlanAfterAzureLogin(execution, options.hu, options.workingDirectory, run.agent);
+    const result = await this.continuePlanAfterAzureLogin(execution, resolveWorkflowRun(options.hu), options.workingDirectory, run.agent);
     console.log(JSON.stringify(result, null, 2));
     if (execution.failed) return 1;
     return this.publishAzurePlan(options.hu, result.text);
@@ -1423,24 +1429,27 @@ export class LazyWorkflowCli {
 
   private async runWorkspacePlan(options: CliOptions): Promise<number> {
     try {
-      // Azure scope with --hu, GitHub scope without it: the same single-provider rule as `code`.
-      const scope = options.hu !== null ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
+      // The provider is resolved once here; every branch below consumes it
+      // instead of reinspecting `--hu`.
+      const provider = resolveWorkflowRun(options.hu);
+      // Azure scope for an Azure HU run, GitHub scope for a GitHub repository run: the same single-provider rule as `code`.
+      const scope = provider.kind === "azure-hu-run" ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
       // The CSV list is not a path: SAG norms live in the anchor repository.
       const norms = await this.loadSagNorms({ ...options, workingDirectory: scope.repositories[0]!.path }, "planning");
       if (options.normasSag && norms === null) return 1;
       let huInfo: HuInfo | null = null;
-      if (options.hu !== null) {
+      if (provider.kind === "azure-hu-run") {
         try {
-          huInfo = await this.huInfoService.getHuInfo(options.hu);
+          huInfo = await this.huInfoService.getHuInfo(provider.hu);
         } catch (error) {
           // Distinct from the outer catch: this is a tracker read failure, not a workspace one.
           reportOperator(`lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
           return 1;
         }
       }
-      const run = await this.prompt({ kind: "workspace-plan", scope, huInfo }, options, norms);
-      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, options.hu !== null);
-      const result = await this.continuePlanAfterAzureLogin(execution, options.hu, scope.parentDirectory, run.agent);
+      const run = await this.prompt({ kind: "workspace-plan", scope, run: provider, huInfo }, options, norms);
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, provider.kind === "azure-hu-run");
+      const result = await this.continuePlanAfterAzureLogin(execution, provider, scope.parentDirectory, run.agent);
       reportOperator(JSON.stringify(result, null, 2));
       return execution.failed ? 1 : 0;
     } catch (error) {
@@ -2509,13 +2518,13 @@ export class LazyWorkflowCli {
    */
   private async continuePlanAfterAzureLogin(
     execution: Pick<OpenCodeExecution, "result" | "azureLoginRequired">,
-    hu: number | null,
+    run: WorkflowRun,
     workingDirectory: string,
     agent: OpenCodeAuthority,
   ): Promise<OpenCodeExecution["result"]> {
-    if (!execution.azureLoginRequired || hu === null) return execution.result;
+    if (!execution.azureLoginRequired || run.kind !== "azure-hu-run") return execution.result;
     reportOperator(`Sesion OpenCode detenida: ${execution.result.sessionId}`);
-    await this.huInfoService.waitForAccess(hu);
+    await this.huInfoService.waitForAccess(run.hu);
     return this.openCodeService.resume(execution.result.sessionId, "continue", workingDirectory, undefined, { agent });
   }
 
