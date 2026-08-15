@@ -102,8 +102,8 @@ bun run main.ts plan --cli claudecode --model claude-opus-5 --variant high --wor
 `opencode` or `claude` — while the arguments are parsed. Omitting `--cli` keeps
 the OpenCode behavior unchanged.
 
-Every command that opens a session accepts `--cli`, including the SAG-scoped
-workflows, and each run resolves it once:
+Every workflow command accepts `--cli`, including the three SAG-scoped ones, and
+each run resolves it once:
 
 ```bash
 bun run main.ts code --cli claudecode --model claude-opus-5 --working-directory /path/to/repository

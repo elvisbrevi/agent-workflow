@@ -462,9 +462,10 @@ rolled back or reverted after a partial merge — fix the cause and rerun.
 
 ## Coding agent CLI
 
-Every command that opens a session — `plan`, `code`, and the SAG-scoped
-workflows — runs it through one coding agent CLI, selected once per run with
-`--cli`. The default is `opencode`; omitting the flag behaves exactly as before.
+Every workflow command — `plan`, `code`, and the three SAG-scoped ones — resolves
+one coding agent CLI per run with `--cli`, and every session it opens runs
+through that one. The default is `opencode`; omitting the flag behaves exactly as
+before.
 
 ```bash
 lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high \
@@ -483,9 +484,8 @@ session identifier from the CLI's own initialization event, and never use
 available. Its events reach the Reporter with the same severities as OpenCode's:
 assistant text as info, reasoning and tool calls as debug.
 
-`--cli` is accepted by every command that opens a session — `plan`, `code`, and
-the three SAG-scoped workflows — and each keeps its own rules whichever CLI runs
-it:
+The three SAG-scoped workflows accept `--cli` too, and each keeps its own rules
+whichever CLI runs it:
 
 ```bash
 lazy-workflow architecture-review-sag --issue 154 --cli claudecode \
@@ -494,11 +494,12 @@ lazy-workflow deploy-sag --issue 157 --environment qa --cli claudecode \
   --working-directory /path/to/repository
 ```
 
-The review session runs with the `lazy-review` authority in the format of its own
-CLI, so it cannot modify the reviewed tree in either; `deploy-sag` refuses PROD
-and its aliases before any external effect; and `infra-sag` and `deploy-sag`
-verify and deploy without opening a session at all, so `--cli` only names the CLI
-their run resolves.
+`architecture-review-sag` is the one that opens a session: it runs with the
+`lazy-review` authority in the format of its own CLI, so it cannot modify the
+reviewed tree in either. `infra-sag` and `deploy-sag` verify and deploy through
+their own adapters without opening a session, so `--cli` only names the CLI their
+run resolves — and `deploy-sag` refuses PROD and its aliases before any external
+effect whichever CLI that is.
 
 Delivery records the owning CLI in its checkpoint, so `--session <id>` resumes
 against the CLI that opened the session, and a `--cli` that contradicts the
