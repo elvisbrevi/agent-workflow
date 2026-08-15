@@ -1365,12 +1365,15 @@ export class LazyWorkflowCli {
     try {
       // Azure scope with --hu, GitHub scope without it: the same single-provider rule as `code`.
       const scope = options.hu !== null ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
+      const norms = await this.loadSagNorms(options, "planning");
+      if (options.normasSag && norms === null) return 1;
       const prompt = [
         await readPrompt("default"),
         "Selected workflow: plan",
         ...(options.hu !== null
           ? [JSON.stringify(await this.huInfoService.getHuInfo(options.hu)), await readPrompt("autoplan"), `The number of questions must be ${options.numberOfQuestions}`]
           : []),
+        ...(norms ? [this.formatSagContext(norms)] : []),
         `Workspace parent directory: ${scope.parentDirectory}`,
         "Ordered participant repositories:",
         ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
@@ -1378,8 +1381,16 @@ export class LazyWorkflowCli {
         "Operator request:",
         options.prompt,
       ].join("\n");
-      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, false);
-      reportOperator(JSON.stringify(execution.result, null, 2));
+      const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, prompt, session: null }, options.hu !== null);
+      let result = execution.result;
+      // Same Azure login continuation as the single-repository HU planning run: keep the session,
+      // wait for access, resume it exactly once.
+      if (execution.azureLoginRequired && options.hu !== null) {
+        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
+        await this.huInfoService.waitForAccess(options.hu);
+        result = await this.openCodeService.resume(result.sessionId, "continue", scope.parentDirectory);
+      }
+      reportOperator(JSON.stringify(result, null, 2));
       return execution.failed ? 1 : 0;
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`);
