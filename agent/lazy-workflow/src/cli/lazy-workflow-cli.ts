@@ -13,7 +13,7 @@ import {
 } from "../azure/autocode-service.ts";
 import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
-import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
+import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
   GitAutocodeCheckpointStore,
   migrateAutocodeCheckpoint,
@@ -1305,7 +1305,28 @@ export class LazyWorkflowCli {
       clean: uncleaned.length === 0,
     };
     console.log(JSON.stringify(summary, null, 2));
-    if (uncleaned.length === 0) await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
+    // The aggregate manifest is the only proof left once the checkpoint goes: write it first, and
+    // only when the delivery is clean, so a `clean: true` manifest never outlives an unclean run.
+    if (uncleaned.length === 0) {
+      try {
+        await writeAzureWorkspaceManifest({
+          hu,
+          ticket,
+          integrationBranch,
+          ticketBranch,
+          primaryRepository,
+          repositories: checkpoint.units,
+          summary: `${delivered.length} repositorios entregados`,
+          clean: true,
+        }, scope.stateDirectory);
+      } catch (error) {
+        // The delivery already landed: keep the checkpoint as the surviving evidence rather than
+        // clearing it behind an unwritable manifest.
+        reportOperator(`lazy-workflow: no se pudo escribir el manifest agregado del workspace (${errorMessage(error)}); el checkpoint se conservó.`);
+        return 1;
+      }
+      await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
+    }
     return 0;
   }
 

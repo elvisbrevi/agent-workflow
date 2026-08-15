@@ -14,6 +14,27 @@ export function areReceipts(value: unknown): value is Record<string, { verifiedA
 }
 
 /**
+ * Atomic write of one aggregate workspace manifest, re-read and re-validated afterwards so the
+ * proof of a finished delivery is never a file nobody checked.
+ */
+export async function writeWorkspaceManifest<T>(
+  manifest: T,
+  stateDirectory: string,
+  fileName: string,
+  isManifest: (value: unknown) => value is T,
+  label: string,
+): Promise<void> {
+  if (!isManifest(manifest)) throw new Error(`El manifest agregado del workspace ${label} es inválido`);
+  const path = resolve(stateDirectory, fileName);
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.tmp-${process.pid}`;
+  await Bun.write(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await rename(temporaryPath, path);
+  const written: unknown = await Bun.file(path).json();
+  if (!isManifest(written)) throw new Error(`El manifest agregado del workspace ${label} no se pudo verificar tras escribirse`);
+}
+
+/**
  * Atomic read, validated write and clear of one workspace checkpoint file. A checkpoint that does
  * not validate is never overwritten, so a corrupted run stays inspectable.
  */

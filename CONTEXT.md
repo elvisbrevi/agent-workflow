@@ -124,6 +124,16 @@ the only authority on which repositories were already delivered, so recovery
 resumes the same run instead of restarting or reselecting work.
 _Avoid_: per-repository Azure checkpoints, restarting a partial delivery
 
+**Aggregate workspace manifest**:
+The validated proof, written to the workspace state directory once every changed
+repository carries a delivery receipt and every tracker gate passes, that a whole
+transversal delivery landed. It records the tracker identity, the integration and
+ticket branches, the primary repository, and one entry per participant repository
+with its changed status, commit, pull request and merge commit. It is written and
+re-read before the delivery checkpoint is cleared, so it outlives the checkpoint
+and the per-repository receipts the checkpoint carried.
+_Avoid_: clearing the checkpoint without a manifest, a manifest nobody re-read
+
 **Delivery receipt**:
 The verified record that a repository's external delivery effect already
 happened. A repository unit carrying one is reused as-is rather than repeated,
