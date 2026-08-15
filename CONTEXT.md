@@ -6,8 +6,8 @@ agent.
 ## Language
 
 **Lazy workflow**:
-The Bun-based workflow in `agent/lazy-workflow/` that sends a prompt to
-OpenCode and emits a normalized JSON result.
+The Bun-based workflow in `agent/lazy-workflow/` that sends a prompt to the
+run's coding agent CLI and emits a normalized JSON result.
 _Avoid_: issue runner, queue supervisor
 
 **Reporter**:
@@ -93,6 +93,50 @@ per authority — GitHub and Azure planning, GitHub and Azure delivery, and revi
 — and it is derived from the same specification as the prompt, so the two cannot
 drift apart.
 _Avoid_: prohibitions enforced only by prompt prose
+
+**Coding agent CLI**:
+The external command-line agent that executes one lazy-workflow session:
+`opencode` or `claudecode`, selected per run with `--cli` and defaulting to
+`opencode`. Every command that opens a session resolves it once and runs through
+the same seam. It names the executor, never the authority: the agent authority
+profile still states what a session may do, expressed in the format its own CLI
+enforces.
+_Avoid_: agent, agent authority profile, runner
+
+**Agent rung**:
+One executable position in a run's fallback order: a coding agent CLI, a model,
+and a variant declared together. The primary rung is the run's own `--cli`,
+`--model`, and `--variant`.
+_Avoid_: fallback model, model override
+
+**Fallback chain**:
+The ordered agent rungs a run may descend to, declared with a repeatable
+`--fallback <cli>:<model>:<variant>` whose declaration order is its priority.
+The binaries of every rung are verified present when arguments are parsed.
+_Avoid_: implicit fallback, configuration-file chain
+
+**Provider exhaustion**:
+The class of failures in which the active agent rung cannot be retried at all —
+usage or rate limit, quota, billing, or authentication. It is the only condition
+that descends the fallback chain. A session that fails its task is not
+exhaustion and never descends.
+_Avoid_: failed session, non-zero exit
+
+**Cross-CLI handoff**:
+The continuation of fixed work in a fallback rung whose coding agent CLI differs
+from the exhausted one, where no session can be resumed. The coordinator starts
+a fresh session with its own rebuilt prompt for the same fixed work plus a
+progress section assembled from verified state — checkpoint phase, branch, last
+commit, uncommitted worktree, completion manifest — and never from the outgoing
+session's text.
+_Avoid_: session summary handoff, resumed session across CLIs
+
+**Agent result**:
+The normalized JSON representation of a coding agent CLI's event stream,
+including the session identifier, final text, stop reason, token counts, and
+cost when available. Both CLIs reduce to this shape, so coordination reads one
+result regardless of which agent produced it.
+_Avoid_: raw transcript, CLI-specific result shape
 
 **Default workflow prompt**:
 The GitHub-only instructions used by a GitHub repository run for its selected
@@ -242,9 +286,8 @@ Azure mutation, and rereads Azure after the update without invoking OpenCode.
 _Avoid_: inferring a base branch or replacing an existing integration branch
 
 **OpenCode result**:
-The normalized JSON representation of OpenCode JSONL output, including the
-session identifier, final text, stop reason, token counts, and cost when
-available.
+The agent result produced from OpenCode's JSONL output. It is one CLI's instance
+of the shared shape, not a second vocabulary.
 _Avoid_: raw transcript
 
 **Azure login continuation**:
