@@ -6,6 +6,7 @@ import { GitHubArchitectureReviewService } from "../src/github/architecture-revi
 import { OpenCodeResult } from "../src/opencode/open-code-result.ts";
 import type { OpenCodeRunOptions } from "../src/opencode/open-code-service.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
 
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-sag-${crypto.randomUUID()}`;
 
@@ -449,6 +450,7 @@ test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async ()
       undefined,
       undefined,
       queueAdapter([fakeSelectedOutcome(201)]),
+      ...fakeCoordinatedGitHubDeps(),
     ).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);

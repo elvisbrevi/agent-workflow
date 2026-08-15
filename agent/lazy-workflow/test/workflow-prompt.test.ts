@@ -205,17 +205,6 @@ test("un plan de workspace GitHub conserva el alcance GitHub", async () => {
   expect(prompt).not.toContain("child work items");
 });
 
-test("el shape no coordinado omite el contrato de manifest en vez de degradarlo en silencio", async () => {
-  const prompt = await buildWorkflowPrompt({
-    kind: "github-code-uncoordinated",
-    issue,
-    repository: { nameWithOwner: "o/api" },
-  }, context);
-  expect(prompt).toContain('"number":201');
-  expect(prompt).not.toContain("Coordinator-fixed issue branch:");
-  expect(prompt).not.toContain(MANIFEST_VALIDATION_SHAPE);
-});
-
 test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "azure-workspace-delivery",
