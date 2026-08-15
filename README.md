@@ -100,9 +100,19 @@ bun run main.ts plan --cli claudecode --model claude-opus-5 --variant high --wor
 `--variant` is the effort level of the selected CLI (`low`, `medium`, `high`,
 `xhigh`, or `max` for Claude Code), and naming a `--cli` verifies its binary —
 `opencode` or `claude` — while the arguments are parsed. Omitting `--cli` keeps
-the OpenCode behavior unchanged. `--cli claudecode` currently runs the GitHub
-`plan` workflow only; delivery and the Azure workflows still require OpenCode
-and reject the flag instead of starting a session they cannot finish.
+the OpenCode behavior unchanged.
+
+Every workflow command accepts `--cli`, including the three SAG-scoped ones, and
+each run resolves it once:
+
+```bash
+bun run main.ts code --cli claudecode --model claude-opus-5 --working-directory /path/to/repository
+bun run main.ts architecture-review-sag --issue 154 --cli claudecode --working-directory /path/to/repository
+```
+
+Each workflow keeps its own rules whichever CLI runs it: the review session may
+not modify the reviewed tree, and `deploy-sag` still refuses PROD and its
+aliases before any external effect.
 
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
