@@ -389,12 +389,10 @@ export class LazyWorkflowCli {
         reportOperator("--working-directory CSV solo se permite con plan o code");
         return 1;
       }
-      if (options.hu !== null) {
-        return this.runAzureWorkspaceCode(options);
-      }
-      return command === "plan"
-        ? this.runWorkspacePlan(options)
-        : this.runWorkspaceCode(options);
+      // `plan` never mutates branches or tracker state, in either provider.
+      if (command === "plan") return this.runWorkspacePlan(options);
+      if (options.hu !== null) return this.runAzureWorkspaceCode(options);
+      return this.runWorkspaceCode(options);
     }
 
     if (options.normasSag && command !== "plan" && command !== "code") {
@@ -1365,10 +1363,14 @@ export class LazyWorkflowCli {
 
   private async runWorkspacePlan(options: CliOptions): Promise<number> {
     try {
-      const scope = await this.workspaceScope(options);
+      // Azure scope with --hu, GitHub scope without it: the same single-provider rule as `code`.
+      const scope = options.hu !== null ? await this.azureWorkspaceScope(options) : await this.workspaceScope(options);
       const prompt = [
         await readPrompt("default"),
         "Selected workflow: plan",
+        ...(options.hu !== null
+          ? [JSON.stringify(await this.huInfoService.getHuInfo(options.hu)), await readPrompt("autoplan"), `The number of questions must be ${options.numberOfQuestions}`]
+          : []),
         `Workspace parent directory: ${scope.parentDirectory}`,
         "Ordered participant repositories:",
         ...scope.repositories.map(({ path, remote }, index) => `${index + 1}. ${path} (${remote})`),
