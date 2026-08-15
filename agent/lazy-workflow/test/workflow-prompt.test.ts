@@ -12,6 +12,7 @@ import {
 import {
   buildResumePrompt,
   buildWorkflowPrompt,
+  resolveWorkflowRun,
   type WorkflowPromptContext,
 } from "../src/prompts/workflow-prompt.ts";
 import type { SelectedManagedIssue } from "../src/github/managed-queue-service.ts";
@@ -70,6 +71,11 @@ test("ningun asset de prompt fija un literal del contrato", async () => {
   }
 });
 
+test("resolveWorkflowRun resuelve el proveedor una sola vez desde --hu", () => {
+  expect(resolveWorkflowRun(null)).toEqual({ kind: "github-repository-run" });
+  expect(resolveWorkflowRun(23438)).toEqual({ kind: "azure-hu-run", hu: 23438 });
+});
+
 test("el plan GitHub fija el workflow y prohibe Azure", async () => {
   const prompt = await buildWorkflowPrompt({ kind: "github-plan" }, context);
   expect(prompt).toContain("default GitHub repository workflow");
@@ -108,7 +114,7 @@ test("el run mono-repositorio y el workspace reciben las mismas secciones de pla
   const huInfo = { id: 23438, title: "HU compartida" } as never;
 
   const monoRepo = await buildWorkflowPrompt({ kind: "azure-plan", huInfo }, context);
-  const workspace = await buildWorkflowPrompt({ kind: "workspace-plan", scope, huInfo }, context);
+  const workspace = await buildWorkflowPrompt({ kind: "workspace-plan", scope, run: { kind: "azure-hu-run", hu: 23438 }, huInfo }, context);
 
   // The HU data, the autoplan prompt, and the question budget are the Azure HU
   // planning run's own sections: both modes must receive the exact same text,
@@ -175,7 +181,7 @@ test("la entrega workspace GitHub declara el orden y un manifest por repositorio
 test("un run Azure nunca recibe el alcance GitHub", async () => {
   const huInfo = { id: 23438 } as never;
 
-  const workspacePlan = await buildWorkflowPrompt({ kind: "workspace-plan", scope, huInfo }, context);
+  const workspacePlan = await buildWorkflowPrompt({ kind: "workspace-plan", scope, run: { kind: "azure-hu-run", hu: 23438 }, huInfo }, context);
   expect(workspacePlan).toContain("address the current User Story");
   expect(workspacePlan).toContain("PLAN_READY");
   expect(workspacePlan).not.toContain("Use GitHub and `gh` for");
@@ -193,7 +199,7 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
 });
 
 test("un plan de workspace GitHub conserva el alcance GitHub", async () => {
-  const prompt = await buildWorkflowPrompt({ kind: "workspace-plan", scope, huInfo: null }, context);
+  const prompt = await buildWorkflowPrompt({ kind: "workspace-plan", scope, run: { kind: "github-repository-run" }, huInfo: null }, context);
   expect(prompt).toContain("Do not use Azure DevOps");
   expect(prompt).toContain("Selected workflow: plan");
   expect(prompt).not.toContain("child work items");
