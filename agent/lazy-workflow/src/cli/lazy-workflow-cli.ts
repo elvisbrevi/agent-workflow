@@ -24,7 +24,7 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeAuthority, type OpenCodeResumeOverrides, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
+import { OpenCodeService, OpenCodeSessionCloseError, OpenCodeSessionNotFoundError, type OpenCodeAuthority, type OpenCodeExecution, type OpenCodeResumeOverrides, type OpenCodeRunOptions } from "../opencode/open-code-service.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -808,12 +808,7 @@ export class LazyWorkflowCli {
     const run = await this.prompt({ kind: "azure-plan", huInfo }, options, norms);
 
     const execution = await this.openCodeService.run({ ...options, ...run }, true);
-    let result = execution.result;
-    if (execution.azureLoginRequired && options.hu > 0) {
-      reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
-      await this.huInfoService.waitForAccess(options.hu);
-      result = await this.openCodeService.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
-    }
+    const result = await this.continuePlanAfterAzureLogin(execution, options.hu, options.workingDirectory, run.agent);
     console.log(JSON.stringify(result, null, 2));
     if (execution.failed) return 1;
     return this.publishAzurePlan(options.hu, result.text);
@@ -1435,14 +1430,7 @@ export class LazyWorkflowCli {
       const huInfo = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
       const run = await this.prompt({ kind: "workspace-plan", scope, huInfo }, options, norms);
       const execution = await this.openCodeService.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, options.hu !== null);
-      let result = execution.result;
-      // Same Azure login continuation as the single-repository HU planning run: keep the session,
-      // wait for access, resume it exactly once.
-      if (execution.azureLoginRequired && options.hu !== null) {
-        reportOperator(`Sesion OpenCode detenida: ${result.sessionId}`);
-        await this.huInfoService.waitForAccess(options.hu);
-        result = await this.openCodeService.resume(result.sessionId, "continue", scope.parentDirectory);
-      }
+      const result = await this.continuePlanAfterAzureLogin(execution, options.hu, scope.parentDirectory, run.agent);
       reportOperator(JSON.stringify(result, null, 2));
       return execution.failed ? 1 : 0;
     } catch (error) {
@@ -2499,6 +2487,26 @@ export class LazyWorkflowCli {
     } finally {
       if (release) await release();
     }
+  }
+
+  /**
+   * Azure login continuation for the Azure HU planning run: preserve the
+   * OpenCode session, wait for Azure access, and resume it exactly once with
+   * `continue` and the same authority profile it started with. The
+   * mono-repository and workspace planning modes share this one owner; the
+   * working directory the resumed session runs from is the only fact that
+   * differs by mode.
+   */
+  private async continuePlanAfterAzureLogin(
+    execution: Pick<OpenCodeExecution, "result" | "azureLoginRequired">,
+    hu: number | null,
+    workingDirectory: string,
+    agent: OpenCodeAuthority,
+  ): Promise<OpenCodeExecution["result"]> {
+    if (!execution.azureLoginRequired || hu === null) return execution.result;
+    reportOperator(`Sesion OpenCode detenida: ${execution.result.sessionId}`);
+    await this.huInfoService.waitForAccess(hu);
+    return this.openCodeService.resume(execution.result.sessionId, "continue", workingDirectory, undefined, { agent });
   }
 
   private async loadSagNorms(options: CliOptions, phase: "planning" | "coding"): Promise<SagContext | null> {
