@@ -313,7 +313,7 @@ const TICKET_MUTATION_COMMANDS = new Set([
 ]);
 const INFRASTRUCTURE_FLAGS = new Set([
   "--hu", "--issue",
-  "--model", "--variant", "--prompt",
+  "--cli", "--model", "--variant", "--prompt",
   "--working-directory",
   "--verbose", "--quiet", "--no-color",
 ]);
@@ -435,13 +435,6 @@ export class LazyWorkflowCli {
     this.resolveAgent(options.cli);
 
     const command = options.command;
-
-    // The SAG workflows still resolve their session outside the `--cli` seam, so
-    // a Claude Code run is limited to the flows it can complete until they do.
-    if (options.cli === "claudecode" && command.endsWith("-sag")) {
-      reportOperator(`--cli claudecode todavia no esta disponible en ${command}`);
-      return 1;
-    }
 
     if (options.verbose && options.quiet) {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");

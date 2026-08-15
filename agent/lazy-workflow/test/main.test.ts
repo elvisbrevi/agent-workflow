@@ -22,6 +22,9 @@ import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
 import { authorityConfigPath } from "../src/prompts/authority-profile.ts";
+import type { SagArchitectureReviewContext, SagDeploymentContext, SagInfrastructureContext } from "../src/sag/sag-norms-service.ts";
+import type { InfrastructureObservation } from "../src/sag/infrastructure-service.ts";
+import type { DeploymentEnvironment } from "../src/sag/deployment-service.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
@@ -1812,6 +1815,8 @@ test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
   expect(output[0]).toContain("code [options]");
   expect(output[0]).toContain("--verbose");
   expect(output[0]).toContain("--quiet");
+  expect(output[0]).toContain("Agente de codificacion:");
+  expect(output[0]).toContain('[choices: "opencode", "claudecode"] [default: "opencode"]');
 });
 
 test("createCodingAgent construye el adaptador de cada CLI soportado", () => {
@@ -1948,31 +1953,176 @@ test("code --cli claudecode entrega la cola gestionada y fija el CLI en el check
   expect(checkpoints.map(({ phase }) => phase)).toContain("implementation-ready");
 });
 
-test("claudecode todavia no esta disponible en los workflows SAG", async () => {
-  let sessions = 0;
-  const runWith = (args: string[]) => new LazyWorkflowCli(
+const reviewContext: SagArchitectureReviewContext = {
+  phase: "architecture-review",
+  sourceRepository: "https://example.test/sag",
+  branch: "master",
+  commit: "review-commit",
+  component: "api",
+  explicitFacts: { changeKind: "feature", artifacts: ["source"], capabilities: null, significantChange: null, environment: null },
+  reviewFamilies: [],
+  selectedRules: [],
+  guidance: [],
+  needsDecision: [],
+};
+
+const infrastructureContext: SagInfrastructureContext = {
+  phase: "infrastructure",
+  sourceRepository: "https://example.test/sag",
+  branch: "master",
+  commit: "infra-commit",
+  component: "api",
+  explicitFacts: { changeKind: "infrastructure", artifacts: ["consul"], capabilities: null, significantChange: null, environment: "none" },
+  selectedRules: [],
+  guidance: [],
+  needsDecision: [],
+};
+
+const infrastructureObservations: InfrastructureObservation = {
+  repository: { id: "project/repository", baseBranch: "main", exists: true, baseBranchExists: true },
+  consul: { deployKey: "project/deploy", variables: ["DATABASE_URL"], available: true },
+  database: { id: "database-1", available: true },
+  pipeline: { id: "pipeline-7", available: true },
+  releaseDefinition: { id: "release-1", available: true },
+};
+
+const deploymentContext: SagDeploymentContext = {
+  phase: "delivery",
+  sourceRepository: "https://example.test/sag",
+  branch: "master",
+  commit: "sag-commit",
+  component: "api",
+  explicitFacts: { changeKind: "feature", artifacts: ["pipeline"], capabilities: null, significantChange: null, environment: "dev" },
+  selectedRules: [],
+  guidance: [],
+  needsDecision: [],
+};
+
+test("architecture-review-sag --cli claudecode revisa con la autoridad de review de Claude Code", async () => {
+  const requested: AgentCli[] = [];
+  let received: AgentRunOptions | null = null;
+  const result = AgentResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_review_claude",
+    part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"clean"}' },
+  }));
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let code: number;
+  try {
+    code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => { throw new Error("must not use Azure"); },
+        waitForAccess: async () => undefined,
+      },
+      (cli: AgentCli) => {
+        requested.push(cli);
+        return {
+          run: async (options: AgentRunOptions) => { received = options; return { result, azureLoginRequired: false }; },
+          resume: async () => { throw new Error("must not resume"); },
+        };
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => reviewContext },
+      async () => "",
+      { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      undefined,
+      undefined,
+      buildCli(() => true),
+    ).run(["architecture-review-sag", "--issue", "178", "--cli", "claudecode", "--model", "claude-opus-5"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(code).toBe(0);
+  expect(requested).toEqual(["claudecode"]);
+  expect(received?.agent).toEqual({
+    profile: "lazy-review",
+    configPath: authorityConfigPath("claudecode", "lazy-review"),
+  });
+});
+
+test("infra-sag acepta --cli y verifica prerequisitos sin abrir sesion", async () => {
+  const requested: AgentCli[] = [];
+  let verifications = 0;
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let code: number;
+  try {
+    code = await new LazyWorkflowCli(
+      {
+        getHuInfo: async () => { throw new Error("must not use Azure"); },
+        waitForAccess: async () => undefined,
+      },
+      (cli: AgentCli) => {
+        requested.push(cli);
+        return {
+          run: async () => { throw new Error("must not open a session"); },
+          resume: async () => { throw new Error("must not resume"); },
+        };
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => infrastructureContext },
+      undefined,
+      { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      undefined,
+      { verify: async () => { verifications += 1; return { status: "ready" as const, findings: [], observations: infrastructureObservations }; } },
+      buildCli(() => true),
+    ).run(["infra-sag", "--issue", "178", "--cli", "claudecode"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(code).toBe(0);
+  expect(requested).toEqual(["claudecode"]);
+  expect(verifications).toBe(1);
+});
+
+test("deploy-sag --cli claudecode despliega DEV y sigue prohibiendo PROD", async () => {
+  const requested: AgentCli[] = [];
+  const deployments: string[] = [];
+  const deployWith = (args: string[]) => new LazyWorkflowCli(
     {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    () => ({
-      run: async () => { sessions += 1; throw new Error("must not open a session"); },
-      resume: async () => { sessions += 1; throw new Error("must not resume"); },
-    }),
+    (cli: AgentCli) => {
+      requested.push(cli);
+      return {
+        run: async () => { throw new Error("must not open a session"); },
+        resume: async () => { throw new Error("must not resume"); },
+      };
+    },
     undefined,
     undefined,
     undefined,
     undefined,
+    { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => deploymentContext },
     undefined,
-    undefined,
-    undefined,
-    undefined,
+    { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+    { deploy: async (_scope: unknown, _directory: string, environment: DeploymentEnvironment = "dev") => {
+      deployments.push(environment);
+      throw new Error("deployment stub");
+    } },
     undefined,
     buildCli(() => true),
   ).run(args);
 
-  expect(await runWith(["infra-sag", "--issue", "178", "--cli", "claudecode"])).toBe(1);
-  expect(await runWith(["architecture-review-sag", "--issue", "178", "--cli", "claudecode"])).toBe(1);
-  expect(await runWith(["deploy-sag", "--issue", "178", "--environment", "dev", "--cli", "claudecode"])).toBe(1);
-  expect(sessions).toBe(0);
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    expect(await deployWith(["deploy-sag", "--issue", "178", "--environment", "prod", "--cli", "claudecode"])).toBe(1);
+    expect(await deployWith(["deploy-sag", "--issue", "178", "--environment", "dev", "--cli", "claudecode"])).toBe(1);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(deployments).toEqual(["dev"]);
+  expect(requested).toEqual(["claudecode", "claudecode"]);
 });
