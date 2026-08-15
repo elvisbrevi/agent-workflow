@@ -12,7 +12,8 @@ import { AgentSessionNotFoundError, type AgentRunOptions } from "../src/coding-a
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
 import { createCodingAgent } from "../src/coding-agent/create-coding-agent.ts";
-import { buildCli, type AgentCli } from "../src/cli/parse-cli-options.ts";
+import { buildCli } from "../src/cli/parse-cli-options.ts";
+import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
 import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";

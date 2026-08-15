@@ -58,13 +58,18 @@ function githubDeliveryCheckpoint(cli: AgentCli): GitHubDeliveryCheckpoint {
   };
 }
 
-function githubDeliveryCli(checkpoint: GitHubDeliveryCheckpoint, agents: ReturnType<typeof spyingAgents>) {
+function githubDeliveryCli(
+  checkpoint: GitHubDeliveryCheckpoint,
+  agents: ReturnType<typeof spyingAgents>,
+  options: { onWrite?: (checkpoint: GitHubDeliveryCheckpoint) => void; nextIssue?: number } = {},
+) {
   let current: GitHubDeliveryCheckpoint | null = checkpoint;
   const store: GitHubCheckpointStore = {
     read: async () => current,
-    write: async (value) => { current = value; },
+    write: async (value) => { current = value; options.onWrite?.(value); },
     clear: async () => { current = null; },
   };
+  const pending = options.nextIssue === undefined ? [] : [options.nextIssue];
   const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
   const cli = new LazyWorkflowCli(
     azure,
@@ -82,6 +87,13 @@ function githubDeliveryCli(checkpoint: GitHubDeliveryCheckpoint, agents: ReturnT
     undefined,
     {
       reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+      selectEligibleIssue: async () => {
+        const issue = pending.shift();
+        return issue === undefined
+          ? { kind: "empty" as const }
+          : { kind: "candidate" as const, issue: fakeSelectedIssue(issue), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async (issue: number) => fakeSelectedIssue(issue),
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
     },
     store,
@@ -113,6 +125,49 @@ test("un --cli que contradice el checkpoint GitHub falla cerrado y lo conserva",
   expect(await state.cli.run(["code", "--cli", "opencode", "--working-directory", "/repo"])).toBe(1);
   expect(agents.resumed).toEqual([]);
   expect(state.current).toEqual(checkpoint);
+});
+
+test("`code --session` reanuda con el CLI del checkpoint GitHub y rechaza uno contradictorio", async () => {
+  const adopted = spyingAgents();
+  const contradicted = spyingAgents();
+  const checkpoint = githubDeliveryCheckpoint("claudecode");
+  const state = githubDeliveryCli(checkpoint, adopted);
+  const rejected = githubDeliveryCli(githubDeliveryCheckpoint("claudecode"), contradicted);
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--session", "ses_recovered", "--prompt", "continue", "--working-directory", "/repo"]);
+    expect(await rejected.cli.run([
+      "code", "--session", "ses_recovered", "--prompt", "continue", "--cli", "opencode", "--working-directory", "/repo",
+    ])).toBe(1);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(adopted.resumed).toEqual(["claudecode"]);
+  expect(contradicted.resumed).toEqual([]);
+  expect(rejected.current).toEqual(checkpoint);
+});
+
+test("la unidad siguiente a una recuperación fija el CLI que realmente la ejecuta", async () => {
+  const agents = spyingAgents();
+  const written: string[] = [];
+  const state = githubDeliveryCli(githubDeliveryCheckpoint("claudecode"), agents, {
+    onWrite: (checkpoint) => written.push(checkpoint.cli),
+    nextIssue: 179,
+  });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--working-directory", "/repo"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.resumed).toEqual(["claudecode"]);
+  expect(written).not.toContain("opencode");
 });
 
 function autocodeCheckpoint(cli: AgentCli): VersionedAutocodeCheckpoint {

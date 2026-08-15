@@ -130,6 +130,39 @@ test("migra un checkpoint legacy sessionless a reconciliacion", () => {
   expect(migrateAutocodeCheckpoint({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: null })?.phase).toBe("reconciling");
 });
 
+test("reescribe en disco un checkpoint autocode de la versión anterior", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-checkpoint-legacy-"));
+  const store = new GitAutocodeCheckpointStore();
+  try {
+    await runGit(["init"], root);
+    const path = join(root, (await runGit(["rev-parse", "--git-path", "lazy-workflow/autocode-checkpoint.json"], root)).trim());
+    await Bun.$`mkdir -p ${join(root, ".git", "lazy-workflow")}`.quiet();
+    await Bun.write(path, `${JSON.stringify({
+      schemaVersion: 2,
+      workflow: "autocode",
+      phase: "implementing",
+      hu: 23438,
+      ticket: 51,
+      integrationBranch: "refs/heads/hu/23438",
+      ticketBranch: "refs/heads/ticket/51",
+      azureRevision: 4,
+      effortBaseline: { real: 1, realHours: 1 },
+      activeDurationMs: 25,
+      activeSince: null,
+      sessionId: "ses-51",
+      intent: null,
+      receipts: {},
+    })}\n`);
+
+    const read = await store.read(root);
+    expect(read?.schemaVersion).toBe(3);
+    expect(read?.cli).toBe("opencode");
+    expect(await Bun.file(path).json()).toEqual(read);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("guarda el checkpoint en el repositorio del working directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-checkpoint-"));
   const store = new GitAutocodeCheckpointStore();

@@ -4,8 +4,6 @@ import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 import { AGENT_CLI_BINARIES, DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 
-export { AGENT_CLI_BINARIES, DEFAULT_CLI, type AgentCli };
-
 export interface CliOptions {
   command: string;
   cli: AgentCli;

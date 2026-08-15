@@ -246,6 +246,15 @@ describe("ClaudeCodeService continuidad de az login", () => {
     expect((await service.run(standardOptions, true)).azureLoginRequired).toBeFalse();
   });
 
+  test("la peticion de az login por stderr tambien detiene la sesion", async () => {
+    const service = new ClaudeCodeService(() => stubProcess(
+      [initEvent("ses_login_stderr"), assistantText("ses_login_stderr", "sin acceso")].join("\n"),
+      "ERROR: please run az login --use-device-code",
+    ));
+
+    expect((await service.run(standardOptions, true)).azureLoginRequired).toBeTrue();
+  });
+
   test("una sesion reanudada que sigue pidiendo az login falla en vez de continuar", async () => {
     const service = new ClaudeCodeService(() => stubProcess([
       initEvent("ses_login_resume"),
@@ -253,6 +262,20 @@ describe("ClaudeCodeService continuidad de az login", () => {
     ].join("\n")));
 
     await expect(service.resume("ses_login_resume")).rejects.toThrow(/autenticacion/i);
+  });
+});
+
+describe("ClaudeCodeService sesion reanudada", () => {
+  test("la reanudacion nombra el CLI y el modelo que ejecutan la sesion", async () => {
+    const overridden = captureReporter(false);
+    const kept = captureReporter(false);
+    const spawn = () => stubProcess([initEvent("ses_named"), assistantText("ses_named", "ok")].join("\n"));
+
+    await new ClaudeCodeService(spawn, overridden.reporter).resume("ses_named", "continue", "/repo", undefined, { model: "claude-sonnet-5" });
+    await new ClaudeCodeService(spawn, kept.reporter).resume("ses_named", "continue", "/repo");
+
+    expect(overridden.captured.info.some((line) => line.includes("reanuda la sesión ses_named") && line.includes("claude-sonnet-5"))).toBeTrue();
+    expect(kept.captured.info.some((line) => line.includes("reanuda la sesión ses_named") && line.includes("modelo"))).toBeTrue();
   });
 });
 
@@ -365,6 +388,7 @@ describe("ClaudeCodeService enrutado por el Reporter", () => {
     await service.run(standardOptions);
 
     expect(captured.info.some((line) => line.startsWith("Claude Code iniciado en") && line.includes("con el modelo claude-opus-5"))).toBeTrue();
+    expect(captured.info).toContain("Claude Code [sesión ses_text]: avance");
     expect(captured.info).toContain("Claude Code [sesión ses_text]: avance");
   });
 

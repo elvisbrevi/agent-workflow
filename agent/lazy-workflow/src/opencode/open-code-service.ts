@@ -200,6 +200,11 @@ export class OpenCodeService implements CodingAgent {
     terminalMarker?: string,
     overrides: AgentResumeOverrides = {},
   ): Promise<AgentResult> {
+    // A resumed session keeps the model it was opened with unless the run
+    // overrides it, so the operator is told which of the two is running.
+    this.reporter.info(
+      `OpenCode reanuda la sesión ${sessionId} con el modelo ${overrides.model ?? "con el que se abrió"}`,
+    );
     const execution = await this.execute([
       "opencode",
       "run",
