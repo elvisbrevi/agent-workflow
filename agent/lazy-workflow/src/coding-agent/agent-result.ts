@@ -47,8 +47,10 @@ interface AgentResultData {
 
 /**
  * The normalized result of one coding agent session. Every CLI reduces to this
- * shape, so coordination reads one result regardless of which agent produced it;
- * each CLI contributes the decoder for its own stream.
+ * shape, so coordination reads one result regardless of which agent produced it.
+ *
+ * `fromJsonLines` decodes OpenCode's stream, the only one there is today; a
+ * second CLI adds its own decoder rather than reshaping this one.
  */
 export class AgentResult {
   readonly sessionId!: string;
