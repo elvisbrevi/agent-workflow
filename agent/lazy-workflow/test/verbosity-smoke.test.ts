@@ -5,6 +5,7 @@ import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { createReporter, type Reporter, type ReporterStream } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -95,6 +96,7 @@ const runCodeWith = (events: string[], verbose = false, quiet = false) => {
     undefined,
     undefined,
     queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+    ...fakeCoordinatedGitHubDeps(),
   );
   return cli
     .run(["code", ...(verbose ? ["--verbose"] : []), ...(quiet ? ["--quiet"] : []), "--working-directory", "/repo"])
@@ -208,6 +210,7 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
         undefined,
         undefined,
         queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+        ...fakeCoordinatedGitHubDeps(),
       );
       const code = await cli.run([
         "code",
