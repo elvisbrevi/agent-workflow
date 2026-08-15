@@ -90,6 +90,18 @@ and PR. It accepts the result only when the new manifest commit contains both
 the original implementation and fixed base; interrupted reconciliation resumes
 from its checkpoint without selecting another Issue.
 
+Sessions run with OpenCode by default. Add `--cli claudecode` to execute the
+same workflow with Claude Code instead:
+
+```bash
+bun run main.ts plan --cli claudecode --model claude-opus-5 --variant high --working-directory /path/to/repository
+```
+
+`--variant` is the effort level of the selected CLI (`low`, `medium`, `high`,
+`xhigh`, or `max` for Claude Code), and naming a `--cli` verifies its binary —
+`opencode` or `claude` — while the arguments are parsed. Omitting `--cli` keeps
+the OpenCode behavior unchanged.
+
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
 `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt

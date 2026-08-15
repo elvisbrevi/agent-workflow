@@ -135,6 +135,55 @@ describe("buildCli parser", () => {
     });
   });
 
+  describe("seleccion de agente CLI", () => {
+    test("sin --cli el agente es opencode", () => {
+      const result = parse(["plan"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.cli).toBe("opencode");
+    });
+
+    test("--cli claudecode selecciona Claude Code", () => {
+      const result = parse(["plan", "--cli", "claudecode"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.cli).toBe("claudecode");
+    });
+
+    test("un --cli no soportado falla al parsear", () => {
+      const result = parse(["plan", "--cli", "gemini"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toContain("gemini");
+    });
+
+    test("un --cli explicito cuyo binario falta falla nombrando el CLI y el binario", () => {
+      const result = captureParse(buildCli(() => false), ["plan", "--cli", "claudecode"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toContain("claudecode");
+      expect(result.message).toContain("claude");
+    });
+
+    test("un --cli explicito con binario presente parsea", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--cli", "opencode"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.cli).toBe("opencode");
+    });
+
+    test("--help documenta --cli con sus valores y su default", () => {
+      const result = parse(["plan", "--help"]);
+      expect(result.kind).toBe("help");
+      if (result.kind !== "help") return;
+      expect(result.output).toContain("--cli");
+      expect(result.output).toContain("claudecode");
+      expect(result.output).toContain("opencode");
+    });
+  });
+
   describe("flags desconocidos", () => {
     test("rechaza un flag desconocido con codigo de salida 1", () => {
       const result = parse(["plan", "--unknown-flag"]);

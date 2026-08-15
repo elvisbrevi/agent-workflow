@@ -1,3 +1,9 @@
+import {
+  spawnAgentProcess,
+  type AgentProcess,
+  type AgentSpawnOptions,
+  type AgentSpawner,
+} from "../coding-agent/agent-process.ts";
 import { AgentResult, type OpenCodeEventData } from "../coding-agent/agent-result.ts";
 import {
   AgentSessionCloseError,
@@ -11,38 +17,13 @@ import {
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
 
-export interface OpenCodeProcess {
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  exited: Promise<number>;
-  kill(signal: "SIGTERM" | "SIGKILL"): void;
-}
+export type OpenCodeProcess = AgentProcess;
+export type OpenCodeSpawnOptions = AgentSpawnOptions;
+export type OpenCodeSpawner = AgentSpawner;
 
-export interface OpenCodeSpawnOptions {
-  cwd?: string;
-  /** Extra environment for the child; merged over the inherited environment. */
-  env?: Record<string, string>;
-}
-
-export type OpenCodeSpawner = (command: string[], options?: OpenCodeSpawnOptions) => OpenCodeProcess;
-
-const spawnOpenCode: OpenCodeSpawner = (command, options) => {
-  const { env, ...rest } = options ?? {};
-  const process = Bun.spawn(command, {
-    stdout: "pipe",
-    stderr: "pipe",
-    ...rest,
-    // OPENCODE_CONFIG merges with the target repository's own configuration
-    // rather than replacing it, so injecting the authority profiles is additive.
-    ...(env ? { env: { ...Bun.env, ...env } } : {}),
-  });
-  return {
-    stdout: process.stdout,
-    stderr: process.stderr,
-    exited: process.exited,
-    kill: (signal) => process.kill(signal),
-  };
-};
+// OPENCODE_CONFIG merges with the target repository's own configuration rather
+// than replacing it, so injecting the authority profiles is additive.
+const spawnOpenCode: OpenCodeSpawner = spawnAgentProcess;
 
 const loginInstructionPattern = /(?:please\s+run|run|ejecuta|execute).{0,40}\baz\s+login\b/i;
 const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not exist|no existe)|(?:not found|does not exist|no existe).*(?:session|sesion|sesión)/i;
