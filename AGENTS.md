@@ -20,6 +20,8 @@ inside that directory rather than a skill directory.
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
+| Change how Claude Code is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/claude-code/` |
+| Change which CLI a `--cli` value resolves to | `agent/lazy-workflow/src/coding-agent/create-coding-agent.ts` |
 | Change what OpenCode is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
 | Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
 | Change what a run is permitted to execute | `agent/lazy-workflow/opencode/authority.json` and `agent/lazy-workflow/src/prompts/authority-profile.ts` |
