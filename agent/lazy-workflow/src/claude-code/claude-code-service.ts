@@ -189,6 +189,11 @@ async function readLines(
   return lines;
 }
 
+/**
+ * Closing a session is a documented no-op here: Claude Code keeps no remote
+ * session to release, so a run that reached its terminal marker releases
+ * nothing, where OpenCode still deletes its own session (ADR-0023).
+ */
 export class ClaudeCodeService implements CodingAgent {
   constructor(
     private readonly spawn: AgentSpawner = spawnAgentProcess,
@@ -219,6 +224,11 @@ export class ClaudeCodeService implements CodingAgent {
     _terminalMarker?: string,
     overrides: AgentResumeOverrides = {},
   ): Promise<AgentResult> {
+    // A resumed session keeps the model it was opened with unless the run
+    // overrides it, so the operator is told which of the two is running.
+    this.reporter.info(
+      `Claude Code reanuda la sesión ${sessionId} con el modelo ${overrides.model ?? "con el que se abrió"}`,
+    );
     const execution = await this.execute(
       [
         // A resumed session keeps the authority it started with, so the profile
@@ -266,11 +276,6 @@ export class ClaudeCodeService implements CodingAgent {
     return variant;
   }
 
-  /**
-   * A session that reached its terminal marker needs no closing: Claude Code
-   * keeps no remote session to release, so the close OpenCode owes its provider
-   * is a documented no-op here (ADR-0023).
-   */
   private async execute(
     command: string[],
     workingDirectory?: string,
@@ -287,7 +292,7 @@ export class ClaudeCodeService implements CodingAgent {
     };
     const reportStderr = (line: string) => this.reporter.info(`Claude Code stderr: ${line}`);
 
-    const [lines, , exitCode] = await Promise.all([
+    const [lines, errorLines, exitCode] = await Promise.all([
       readLines(child.stdout, reportStdout),
       readLines(child.stderr, reportStderr),
       child.exited,
@@ -296,7 +301,8 @@ export class ClaudeCodeService implements CodingAgent {
     const events = parseEvents(lines.join("\n"));
     return {
       result: decodeStream(events),
-      azureLoginRequired: detectAzureLogin && requiresAzureLogin(events),
+      azureLoginRequired: detectAzureLogin
+        && (requiresAzureLogin(events) || asksForAzureLogin(errorLines.join("\n"))),
       // Provider exhaustion is classified where its own issue lands.
       failed: exitCode !== 0,
     };

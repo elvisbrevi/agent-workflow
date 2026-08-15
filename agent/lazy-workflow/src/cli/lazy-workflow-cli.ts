@@ -27,6 +27,7 @@ import {
 } from "../azure/autocode-checkpoint.ts";
 import { AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
+import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -85,8 +86,6 @@ import { authorityConfigPath, authorityProfile } from "../prompts/authority-prof
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
-  DEFAULT_CLI,
-  type AgentCli,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
   type CliParser,
@@ -406,14 +405,19 @@ export class LazyWorkflowCli {
    * against that one without the operator declaring it. An explicit `--cli` that
    * contradicts the checkpoint fails closed, with the checkpoint untouched, so a
    * session is never resumed against the wrong binary (ADR-0023).
+   *
+   * The adopted CLI comes back as the run's own, because everything the run does
+   * afterwards — the sessions it opens, the checkpoints it writes, the CLI it
+   * names to the operator — is executed by the agent this resolved. Returns null
+   * when the run must stop.
    */
-  private adoptCheckpointCli(cli: AgentCli, options: CliOptions): boolean {
+  private adoptCheckpointCli(cli: AgentCli, options: CliOptions): CliOptions | null {
     if (options.hasCli && options.cli !== cli) {
       reportOperator(`lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado.`);
-      return false;
+      return null;
     }
     this.resolveAgent(cli);
-    return true;
+    return options.cli === cli ? options : { ...options, cli };
   }
 
   async run(args: string[]): Promise<number> {
@@ -838,8 +842,10 @@ export class LazyWorkflowCli {
 
     if (command === "code") {
       if (githubRecovery) {
-        const code = await this.runGitHubRecovery(options, githubRecovery);
-        return code === 0 ? this.continueQueueAfterRecovery(options, false) : code;
+        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options);
+        if (!adopted) return 1;
+        const code = await this.runGitHubRecovery(adopted, githubRecovery);
+        return code === 0 ? this.continueQueueAfterRecovery(adopted, false) : code;
       }
       if (isAzureHuRun) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
@@ -985,7 +991,11 @@ export class LazyWorkflowCli {
       reportOperator(`lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
-    if (checkpoint && !this.adoptCheckpointCli(checkpoint.cli, options)) return 1;
+    if (checkpoint) {
+      const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+      if (!adopted) return 1;
+      options = adopted;
+    }
     if (options.session !== null && (!checkpoint || checkpoint.sessionId !== options.session)) {
       reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
       return 1;
@@ -1007,7 +1017,7 @@ export class LazyWorkflowCli {
         baseBranch: options.baseBranch,
       });
       const ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
-        hu: options.hu,
+        hu,
         ticket,
         integrationBranch: topology.integrationBranch,
         repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
@@ -1509,7 +1519,11 @@ export class LazyWorkflowCli {
         for (const repository of scope.repositories) releases.push(await this.githubRepositoryLock.acquire(repository.path));
       }
       const existing = await this.githubWorkspaceCheckpoint.read(scope.stateDirectory);
-      if (existing && !this.adoptCheckpointCli(existing.cli, options)) return 1;
+      if (existing) {
+        const adopted = this.adoptCheckpointCli(existing.cli, options);
+        if (!adopted) return 1;
+        options = adopted;
+      }
       if (options.session !== null && (!existing || existing.sessionId !== options.session)) {
         reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace fijado.");
         return 1;
@@ -1833,7 +1847,9 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
-        if (!this.adoptCheckpointCli(checkpoint.cli, options)) return 1;
+        const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+        if (!adopted) return 1;
+        options = adopted;
         let code: number;
         if (checkpoint.sessionId) {
           code = await this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
@@ -2971,7 +2987,11 @@ export class LazyWorkflowCli {
   ): Promise<number> {
     const now = (): number => this.clock.now();
     const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
-    if (migrated && !this.adoptCheckpointCli(migrated.cli, options)) return 1;
+    if (migrated) {
+      const adopted = this.adoptCheckpointCli(migrated.cli, options);
+      if (!adopted) return 1;
+      options = adopted;
+    }
     let checkpoint: VersionedAutocodeCheckpoint = migrated ?? {
       schemaVersion: 3,
       cli: options.cli,
