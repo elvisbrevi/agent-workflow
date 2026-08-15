@@ -487,19 +487,21 @@ assistant text as info, reasoning and tool calls as debug.
 session in a checkpoint that does not record the owning CLI yet, and the `az
 login` handshake still reads OpenCode events only, so `code`, `plan --hu`, and
 the SAG workflows reject the flag rather than opening a session they could not
-recover or continue. Claude Code also runs without an injected authority profile
-until its settings mirror of `opencode/authority.json` exists; what a Claude Code
-session may do is bounded by the flow the coordinator allows, not yet by
-provider-enforced deny rules.
+recover or continue.
 
 ## Agent authority
 
 Every run carries an agent authority profile alongside its prompt. The prompt
-states what OpenCode should decide; the profile states what it may execute. The
-profiles live in `opencode/authority.json` and are injected per run through
-`OPENCODE_CONFIG`, which merges with the target repository's own OpenCode
+states what the coding agent should decide; the profile states what it may
+execute. The same five profiles exist in both formats, one per CLI, and neither
+file is generated from the other: each provider validates and enforces its own.
+
+For OpenCode the profiles live in `opencode/authority.json`, injected per run
+through `OPENCODE_CONFIG`, which merges with the target repository's own OpenCode
 configuration rather than replacing it — enforcement does not require the target
-repository to be configured for lazy-workflow.
+repository to be configured for lazy-workflow. For Claude Code each profile is
+its own settings file under `claudecode/<profile>.json`, injected per run by path
+with `--settings`.
 
 | Profile | Used by | Denies |
 |---|---|---|
@@ -509,8 +511,9 @@ repository to be configured for lazy-workflow.
 | `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |
 | `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh`, and `az` command |
 
-OpenCode runs with `--auto`, which auto-approves only what is not explicitly
-denied, so these deny rules are the enforcement surface. A denied command fails
+OpenCode runs with `--auto` and Claude Code with `--permission-mode
+bypassPermissions`, which auto-approve only what is not explicitly denied, so
+these deny rules are the enforcement surface. A denied command fails
 as a permission error rather than relying on the model to obey prose; compound
 commands are matched per sub-command, so `cd x && git push` is denied too.
 Committing stays allowed in the delivery profiles because the completion
@@ -521,7 +524,8 @@ manifest names a commit the session must produce.
 ```text
 main.ts                 CLI entrypoint
 prompts/                OpenCode prompt assets (composed by src/prompts/)
-opencode/authority.json Agent permission profiles injected per run
+opencode/authority.json Agent permission profiles injected per run (OpenCode)
+claudecode/             One settings file per profile, injected per run (Claude Code)
 src/prompts/            Prompt composition, contract vocabulary, authority profiles
 src/azure/              Azure Boards model and service
 src/github/             GitHub tracker boundaries for SAG review publication

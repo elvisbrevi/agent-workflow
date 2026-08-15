@@ -86,13 +86,15 @@ _Avoid_: prompt text assembled at the call site, contract text restated in a
 prompt asset
 
 **Agent authority profile**:
-The OpenCode agent definition whose permission deny rules bound what one run may
-execute, injected per run alongside its prompt. The prompt states what OpenCode
-should decide; the profile states what it is able to do. There is one profile
-per authority — GitHub and Azure planning, GitHub and Azure delivery, and review
-— and it is derived from the same specification as the prompt, so the two cannot
-drift apart.
-_Avoid_: prohibitions enforced only by prompt prose
+The definition whose permission deny rules bound what one run may execute,
+injected per run alongside its prompt. The prompt states what the coding agent
+should decide; the profile states what it is able to do. There is one profile per
+authority — GitHub and Azure planning, GitHub and Azure delivery, and review —
+and it is derived from the same specification as the prompt, so the two cannot
+drift apart. Each profile is written once per coding agent CLI in the format that
+CLI's own provider validates, never generated from the other.
+_Avoid_: prohibitions enforced only by prompt prose, one format translated into
+the other at run time
 
 **Coding agent CLI**:
 The external command-line agent that executes one lazy-workflow session:

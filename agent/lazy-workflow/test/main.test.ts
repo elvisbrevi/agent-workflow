@@ -1607,7 +1607,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   expect(resumeOverrides).toEqual({
     model: "openai/gpt-5.6-luna",
     variant: "high",
-    agent: { profile: "lazy-azure-code", configPath: authorityConfigPath() },
+    agent: { profile: "lazy-azure-code", configPath: authorityConfigPath("opencode", "lazy-azure-code") },
   });
   expect(writes.some(({ schemaVersion, phase }) => schemaVersion === 2 && phase === "implementing")).toBeTrue();
   expect(verificationCalls).toBe(0);
@@ -1854,6 +1854,52 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
   }
 
   expect(requested).toEqual(["claudecode", "opencode"]);
+});
+
+test("cada run recibe la autoridad de su perfil en el formato de su propio CLI", async () => {
+  const authorities: Array<{ profile: string; configPath: string } | undefined> = [];
+  const result = new AgentResult({ sessionId: "ses_auth", text: "plan" });
+  const planWith = (args: string[]) => new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    () => ({
+      run: async (options: AgentRunOptions) => {
+        authorities.push(options.agent);
+        return { result, azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(args);
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    expect(await planWith(["plan", "--cli", "claudecode"])).toBe(0);
+    expect(await planWith(["plan"])).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(authorities[0]).toEqual({
+    profile: "lazy-github-plan",
+    configPath: authorityConfigPath("claudecode", "lazy-github-plan"),
+  });
+  expect(authorities[1]).toEqual({
+    profile: "lazy-github-plan",
+    configPath: authorityConfigPath("opencode", "lazy-github-plan"),
+  });
 });
 
 test("claudecode se limita al plan GitHub mientras faltan checkpoints y deteccion de az login", async () => {

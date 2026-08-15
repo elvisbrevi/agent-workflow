@@ -1,5 +1,9 @@
 import { test, expect } from "bun:test";
-import { authorityConfigPath, authorityProfile } from "../src/prompts/authority-profile.ts";
+import {
+  AUTHORITY_PROFILES,
+  authorityConfigPath,
+  authorityProfile,
+} from "../src/prompts/authority-profile.ts";
 import type { WorkflowPromptSpec } from "../src/prompts/workflow-prompt.ts";
 import { OpenCodeService, type OpenCodeProcess } from "../src/opencode/open-code-service.ts";
 import { createReporter } from "../src/output/reporter.ts";
@@ -53,15 +57,64 @@ test("cada clase de run recibe su perfil de autoridad", () => {
 });
 
 test("todo perfil referenciado existe en la configuracion de autoridad", async () => {
-  const config = await Bun.file(authorityConfigPath()).json();
+  const config = await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json();
   const defined = Object.keys(config.agent);
   for (const [spec] of specs) {
     expect(`${spec.kind}: ${defined.includes(authorityProfile(spec))}`).toBe(`${spec.kind}: true`);
   }
 });
 
+test("cada CLI resuelve su propia autoridad para cada perfil", async () => {
+  for (const profile of AUTHORITY_PROFILES) {
+    const opencode = authorityConfigPath("opencode", profile);
+    const claudecode = authorityConfigPath("claudecode", profile);
+    expect(`${profile} opencode: ${opencode.endsWith("/opencode/authority.json")}`)
+      .toBe(`${profile} opencode: true`);
+    expect(`${profile} claudecode: ${claudecode.endsWith(`/claudecode/${profile}.json`)}`)
+      .toBe(`${profile} claudecode: true`);
+    expect(`${profile} existe: ${await Bun.file(claudecode).exists()}`).toBe(`${profile} existe: true`);
+  }
+});
+
+test("ningun flujo queda sin autoridad al usar Claude Code", async () => {
+  for (const [spec] of specs) {
+    const path = authorityConfigPath("claudecode", authorityProfile(spec));
+    expect(`${spec.kind}: ${await Bun.file(path).exists()}`).toBe(`${spec.kind}: true`);
+  }
+});
+
+/** The Claude Code spelling of an OpenCode bash pattern: `git push*` is `Bash(git push:*)`. */
+const asDenyRule = (pattern: string): string => `Bash(${pattern.replace(/\*$/, "")}:*)`;
+
+test("cada perfil de Claude Code prohibe lo mismo que su gemelo de OpenCode", async () => {
+  const opencode = await Bun.file(authorityConfigPath("opencode", "lazy-review")).json();
+  for (const profile of AUTHORITY_PROFILES) {
+    const { permissions } = await Bun.file(authorityConfigPath("claudecode", profile)).json();
+    for (const pattern of Object.keys(opencode.agent[profile].permission.bash)) {
+      const rule = asDenyRule(pattern);
+      expect(`${profile} ${rule}: ${permissions.deny.includes(rule)}`).toBe(`${profile} ${rule}: true`);
+    }
+  }
+});
+
+test("el perfil de revision de Claude Code tampoco puede editar el arbol", async () => {
+  const { permissions } = await Bun.file(authorityConfigPath("claudecode", "lazy-review")).json();
+  for (const tool of ["Edit", "Write", "NotebookEdit"]) {
+    expect(`${tool}: ${permissions.deny.includes(tool)}`).toBe(`${tool}: true`);
+  }
+});
+
+test("los perfiles de entrega de Claude Code siguen pudiendo commitear", async () => {
+  // The manifest names a commit the session itself must produce.
+  for (const profile of ["lazy-github-code", "lazy-azure-code"] as const) {
+    const { permissions } = await Bun.file(authorityConfigPath("claudecode", profile)).json();
+    const commits = permissions.deny.filter((rule: string) => rule.startsWith("Bash(git commit"));
+    expect(`${profile}: ${commits.length}`).toBe(`${profile}: 0`);
+  }
+});
+
 test("ningun perfil de entrega puede empujar, ramificar ni usar el proveedor ajeno", async () => {
-  const config = await Bun.file(authorityConfigPath()).json();
+  const config = await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json();
   for (const profile of ["lazy-github-code", "lazy-azure-code"]) {
     const bash = config.agent[profile].permission.bash;
     for (const pattern of ["git push*", "git branch*", "git checkout -b*", "git remote*"]) {
@@ -75,7 +128,7 @@ test("ningun perfil de entrega puede empujar, ramificar ni usar el proveedor aje
 });
 
 test("ningun perfil de planificacion puede mutar el tracker", async () => {
-  const config = await Bun.file(authorityConfigPath()).json();
+  const config = await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json();
   // The coordinator publishes planning work items, so no planning run needs `az`.
   expect(config.agent["lazy-azure-plan"].permission.bash["az*"]).toBe("deny");
   expect(config.agent["lazy-github-plan"].permission.bash["az*"]).toBe("deny");
@@ -85,7 +138,7 @@ test("ningun perfil de planificacion puede mutar el tracker", async () => {
 });
 
 test("el perfil de revision no puede editar", async () => {
-  const config = await Bun.file(authorityConfigPath()).json();
+  const config = await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json();
   expect(config.agent["lazy-review"].permission.edit).toBe("deny");
 });
 
