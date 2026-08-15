@@ -1013,7 +1013,7 @@ export class LazyWorkflowCli {
       };
       if (!checkpoint) {
         // Write the intent before the first external effect so a crashed session is recoverable.
-        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology);
+        checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology, options.cli);
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
@@ -1111,9 +1111,11 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
+    cli: AgentCli,
   ): AzureWorkspaceCheckpoint {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      cli,
       workflow: "azure-workspace-code",
       hu,
       ticket,
@@ -1508,7 +1510,7 @@ export class LazyWorkflowCli {
         throw new Error("el Issue seleccionado no pertenece al primer repositorio del workspace");
       }
       if (!this.githubManagedQueue.claimSelectedIssue) throw new Error("el coordinador workspace no puede verificar el claim del Issue");
-      const selectedCheckpoint = this.createWorkspaceCheckpoint(scope, selection.issue.number);
+      const selectedCheckpoint = this.createWorkspaceCheckpoint(scope, selection.issue.number, options.cli);
       await this.githubWorkspaceCheckpoint.write(selectedCheckpoint, scope.stateDirectory);
       const issue = await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path);
       return await this.deliverWorkspaceCode(options, scope, issue, null);
@@ -1601,9 +1603,10 @@ export class LazyWorkflowCli {
     return this.deliverWorkspaceCode(options, scope, null, checkpoint);
   }
 
-  private createWorkspaceCheckpoint(scope: WorkspaceScope, issue: number): GitHubWorkspaceCheckpoint {
+  private createWorkspaceCheckpoint(scope: WorkspaceScope, issue: number, cli: AgentCli): GitHubWorkspaceCheckpoint {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      cli,
       workflow: "github-workspace-code",
       issue,
       phase: "selected",
@@ -1630,7 +1633,7 @@ export class LazyWorkflowCli {
     const issueNumber = issue?.number ?? checkpoint?.issue;
     if (!issueNumber) throw new Error("falta el Issue fijado para el workspace");
     if (!checkpoint) {
-      checkpoint = this.createWorkspaceCheckpoint(scope, issueNumber);
+      checkpoint = this.createWorkspaceCheckpoint(scope, issueNumber, options.cli);
       await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
     }
     if (checkpoint.units.length < scope.repositories.length) {
@@ -1873,7 +1876,8 @@ export class LazyWorkflowCli {
         if (selection.kind === "candidate") {
           receipts = {};
           await store.write({
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: selection.repository.nameWithOwner,
             issue: selection.issue.number,
@@ -1895,7 +1899,8 @@ export class LazyWorkflowCli {
           }
           receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
           await store.write({
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: selection.repository.nameWithOwner,
             issue: selection.issue.number,
@@ -1941,7 +1946,8 @@ export class LazyWorkflowCli {
       let intent: GitHubDeliveryCheckpoint["intent"] = null;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          cli: options.cli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -1999,7 +2005,8 @@ export class LazyWorkflowCli {
       await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          cli: options.cli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -2020,7 +2027,8 @@ export class LazyWorkflowCli {
         }
         try {
           await this.completeGitHubDelivery(options, {
-            schemaVersion: 1,
+            schemaVersion: 2,
+            cli: options.cli,
             workflow: "github-code",
             repository: repository.nameWithOwner,
             issue: issue.number,
@@ -2946,7 +2954,8 @@ export class LazyWorkflowCli {
     const now = (): number => this.clock.now();
     const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
     let checkpoint: VersionedAutocodeCheckpoint = migrated ?? {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      cli: options.cli,
       workflow: "autocode",
       phase: "preflight-hu",
       hu: options.hu!,

@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
+import { DEFAULT_CLI, isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { runGit } from "../git/git-ticket-branch-cleaner.ts";
 
 export interface AutocodeCheckpoint {
@@ -14,7 +15,9 @@ export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implement
 export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "ticket-branch-checkout" | "ticket-branch-push" | "pull-request" | "pr-association" | "merge-commit" | "attachment" | "evidence" | "ticket-effort" | "ticket-done" | "ticket-completion";
 
 export interface VersionedAutocodeCheckpoint {
-  schemaVersion: 2;
+  schemaVersion: 3;
+  /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
+  cli: AgentCli;
   workflow: "autocode";
   phase: AutocodePhase;
   hu: number;
@@ -65,7 +68,8 @@ function validLegacy(value: unknown): value is AutocodeCheckpoint {
 function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
   if (typeof value !== "object" || value === null) return false;
   const checkpoint = value as Partial<VersionedAutocodeCheckpoint>;
-  return checkpoint.schemaVersion === 2
+  return checkpoint.schemaVersion === 3
+    && isAgentCli(checkpoint.cli)
     && checkpoint.workflow === "autocode"
      && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "implementation-ready" || checkpoint.phase === "integrating" || checkpoint.phase === "evidencing" || checkpoint.phase === "completing" || checkpoint.phase === "cleaning" || checkpoint.phase === "reconciling")
     && Number.isInteger(checkpoint.hu)
@@ -90,24 +94,26 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
 }
 
 export function isVersionedAutocodeCheckpoint(value: StoredAutocodeCheckpoint): value is VersionedAutocodeCheckpoint {
-  return (value as VersionedAutocodeCheckpoint).schemaVersion === 2;
+  return (value as VersionedAutocodeCheckpoint).schemaVersion === 3;
 }
 
 export function migrateAutocodeCheckpoint(value: unknown, now = Date.now()): VersionedAutocodeCheckpoint | null {
-  if (validVersioned(value)) {
-    if (!value.activeSince) return value;
-    const started = Date.parse(value.activeSince);
-    if (!Number.isFinite(started)) return { ...value, activeSince: null };
+  const upgraded = withOwnerCli(value, 2, 3);
+  if (validVersioned(upgraded)) {
+    if (!upgraded.activeSince) return upgraded;
+    const started = Date.parse(upgraded.activeSince);
+    if (!Number.isFinite(started)) return { ...upgraded, activeSince: null };
     return {
-      ...value,
-      activeDurationMs: value.activeDurationMs + Math.max(0, now - started),
+      ...upgraded,
+      activeDurationMs: upgraded.activeDurationMs + Math.max(0, now - started),
       activeSince: null,
     };
   }
   if (typeof value === "object" && value !== null && "schemaVersion" in value) return null;
   if (!validLegacy(value)) return null;
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    cli: DEFAULT_CLI,
     workflow: "autocode",
     phase: value.sessionId === null ? "reconciling" : "implementing",
     hu: value.hu,

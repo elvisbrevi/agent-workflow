@@ -47,11 +47,19 @@ export abstract class WorkspaceCheckpointStore<T> {
     return resolve(stateDirectory, this.fileName);
   }
 
+  /** How a checkpoint of an older schema reads today; the same value when it is already current. */
+  protected upgrade(value: unknown): unknown {
+    return value;
+  }
+
   async read(stateDirectory: string): Promise<T | null> {
     const path = this.path(stateDirectory);
     if (!await Bun.file(path).exists()) return null;
-    const value: unknown = await Bun.file(path).json();
+    const stored: unknown = await Bun.file(path).json();
+    const value = this.upgrade(stored);
     if (!this.isCheckpoint(value)) throw new Error(`Checkpoint ${this.label} inválido; no se sobrescribirá`);
+    // An upgraded checkpoint is written back, so an in-flight delivery survives the update.
+    if (value !== stored) await this.write(value, stateDirectory);
     return value;
   }
 

@@ -1384,7 +1384,8 @@ test("code --session rechaza una sesión sin checkpoint sin tocar Azure", async 
 
 test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni OpenCode", async () => {
   const checkpoint = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
+    cli: "opencode" as const,
     workflow: "autocode" as const,
     phase: "implementing" as const,
     hu: 23438,
@@ -1570,7 +1571,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
-  const writes: Array<{ schemaVersion?: number; phase?: string; sessionId?: string | null }> = [];
+  const writes: Array<{ schemaVersion?: number; cli?: string; phase?: string; sessionId?: string | null }> = [];
   let verificationCalls = 0;
   const code = await new LazyWorkflowCli(
     {
@@ -1609,7 +1610,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
     variant: "high",
     agent: { profile: "lazy-azure-code", configPath: authorityConfigPath("opencode", "lazy-azure-code") },
   });
-  expect(writes.some(({ schemaVersion, phase }) => schemaVersion === 2 && phase === "implementing")).toBeTrue();
+  expect(writes.some(({ schemaVersion, cli, phase }) => schemaVersion === 3 && cli === "opencode" && phase === "implementing")).toBeTrue();
   expect(verificationCalls).toBe(0);
 });
 

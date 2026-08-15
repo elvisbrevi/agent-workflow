@@ -23,7 +23,8 @@ function checkpointFor(
   overrides: Partial<AzureWorkspaceCheckpoint> = {},
 ): AzureWorkspaceCheckpoint {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    cli: "opencode",
     workflow: "azure-workspace-code",
     hu,
     ticket,

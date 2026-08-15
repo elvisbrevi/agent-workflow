@@ -1,5 +1,6 @@
 import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
 export const GITHUB_DELIVERY_PHASES = [
@@ -31,7 +32,9 @@ export interface GitHubPullRequestReconciliation {
 }
 
 export interface GitHubDeliveryCheckpoint {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
+  cli: AgentCli;
   workflow: "github-code";
   repository: string;
   issue: number;
@@ -87,6 +90,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
   const pullRequest = checkpoint.pullRequest;
   const allowedKeys = new Set([
     "schemaVersion",
+    "cli",
     "workflow",
     "repository",
     "issue",
@@ -103,7 +107,8 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "reconciliation",
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
-  return checkpoint.schemaVersion === 1
+  return checkpoint.schemaVersion === 2
+    && isAgentCli(checkpoint.cli)
     && checkpoint.workflow === "github-code"
     && typeof checkpoint.repository === "string"
     && /^[^/\s]+\/[^/\s]+$/.test(checkpoint.repository)
@@ -154,8 +159,10 @@ export class GitHubDeliveryCheckpointStore implements GitHubCheckpointStore {
   async read(workingDirectory?: string): Promise<GitHubDeliveryCheckpoint | null> {
     const path = await this.path(workingDirectory);
     if (!await Bun.file(path).exists()) return null;
-    const value: unknown = await Bun.file(path).json();
+    const stored: unknown = await Bun.file(path).json();
+    const value = withOwnerCli(stored, 1, 2);
     if (!isGitHubDeliveryCheckpoint(value)) throw new Error("Checkpoint GitHub invalido; no se sobrescribira");
+    if (value !== stored) await this.write(value, workingDirectory);
     return value;
   }
 

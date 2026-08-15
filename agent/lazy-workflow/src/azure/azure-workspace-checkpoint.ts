@@ -1,3 +1,4 @@
+import { isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { areReceipts, isBranchRef, WorkspaceCheckpointStore, writeWorkspaceManifest } from "../workspace/workspace-checkpoint-store.ts";
 
 export const AZURE_WORKSPACE_PHASES = [
@@ -24,7 +25,9 @@ export interface AzureWorkspaceCheckpointUnit {
 }
 
 export interface AzureWorkspaceCheckpoint {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
+  cli: AgentCli;
   workflow: "azure-workspace-code";
   hu: number;
   ticket: number;
@@ -61,7 +64,8 @@ export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorksp
   const checkpoint = value as Partial<AzureWorkspaceCheckpoint>;
   const repositories = checkpoint.repositories;
   const units = checkpoint.units;
-  return checkpoint.schemaVersion === 1
+  return checkpoint.schemaVersion === 2
+    && isAgentCli(checkpoint.cli)
     && checkpoint.workflow === "azure-workspace-code"
     && Number.isInteger(checkpoint.hu) && (checkpoint.hu ?? 0) > 0
     && Number.isInteger(checkpoint.ticket) && (checkpoint.ticket ?? 0) > 0
@@ -122,4 +126,8 @@ export class AzureWorkspaceCheckpointStore extends WorkspaceCheckpointStore<Azur
   protected readonly fileName = "azure-workspace-code-checkpoint.json";
   protected readonly label = "Azure workspace";
   protected isCheckpoint = isAzureWorkspaceCheckpoint;
+
+  protected override upgrade(value: unknown): unknown {
+    return withOwnerCli(value, 1, 2);
+  }
 }
