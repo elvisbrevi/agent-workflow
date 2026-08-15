@@ -15,6 +15,7 @@ import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
 import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
 import { authorityConfigPath } from "../src/prompts/authority-profile.ts";
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
@@ -511,6 +512,7 @@ test("code sin HU entrega un solo issue por sesion", async () => {
     undefined,
     undefined,
     queueAdapter(outcomes),
+    ...fakeCoordinatedGitHubDeps(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
@@ -645,6 +647,7 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
     undefined,
     undefined,
     queueAdapter([fakeSelectedOutcome(201)]),
+    ...fakeCoordinatedGitHubDeps(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
@@ -686,6 +689,7 @@ test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", as
     undefined,
     undefined,
     queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+    ...fakeCoordinatedGitHubDeps(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
@@ -720,6 +724,7 @@ test("code sin HU ignora un marcador conversacional dentro de un solo evento de 
     undefined,
     undefined,
     queueAdapter([fakeSelectedOutcome(201)]),
+    ...fakeCoordinatedGitHubDeps(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
@@ -761,10 +766,48 @@ test("code sin HU ignora los marcadores de entrega heredados", async () => {
     undefined,
     undefined,
     queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+    ...fakeCoordinatedGitHubDeps(),
   ).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(calls).toEqual(["run"]);
+});
+
+test("code sin HU falla cerrado cuando falta el adaptador de entrega coordinada", async () => {
+  const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
+  const { reporter, info } = captureReporter();
+  let openCodeCalls = 0;
+
+  try {
+    const code = await new LazyWorkflowCli(
+      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      {
+        run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
+        resume: async () => { throw new Error("must not resume"); },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (() => reporter) as typeof createReporter,
+      queueAdapter([fakeSelectedOutcome(201)]),
+      fakeGitHubCheckpointStore(),
+      fakeGitHubRepositoryLock(),
+    ).run(["code", "--working-directory", "/repo"]);
+
+    expect(code).toBe(1);
+  } finally {
+    setDefaultReporter(previous);
+  }
+
+  expect(openCodeCalls).toBe(0);
+  expect(info.some((message) => message.includes("adaptador de entrega"))).toBeTrue();
 });
 
 test.each([

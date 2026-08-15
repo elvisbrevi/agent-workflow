@@ -1946,13 +1946,15 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      // Without a coordinator-owned branch and manifest there is no delivery contract
-      // to state, so the run uses the explicit uncoordinated shape rather than a
-      // delivery prompt silently missing its manifest and marker clauses.
-      const run = this.githubDelivery && branch && manifestPath
-        ? await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms)
-        : await this.prompt({ kind: "github-code-uncoordinated", issue, repository: queueOutcome.repository }, options, norms);
-      if (!this.githubDelivery) await saveCheckpoint("started");
+      // ADR-0020 superseded the uncoordinated shape: without a coordinator-owned
+      // delivery adapter, branch, and manifest there is no delivery contract to
+      // state, so the run fails closed instead of starting a session that cannot
+      // be completed deterministically.
+      if (!this.githubDelivery || !branch || !manifestPath) {
+        reportOperator(`lazy-workflow: falta el adaptador de entrega GitHub, la rama o el manifest del Issue #${issue.number}; no se inicia una sesion sin contrato de entrega.`);
+        return 1;
+      }
+      const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
       let execution;
       try {
         execution = await this.openCodeService.run({
