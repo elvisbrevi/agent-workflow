@@ -174,6 +174,27 @@ describe("buildCli parser", () => {
       expect(result.options.cli).toBe("opencode");
     });
 
+    test("un --variant fuera de los esfuerzos de Claude Code falla al parsear", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--cli", "claudecode", "--variant", "turbo"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toContain("turbo");
+      expect(result.message).toContain("--variant");
+    });
+
+    test("los esfuerzos de Claude Code se aceptan y OpenCode conserva sus variantes libres", () => {
+      const claude = captureParse(buildCli(() => true), ["plan", "--cli", "claudecode", "--variant", "xhigh"]);
+      expect(claude.kind).toBe("options");
+      if (claude.kind !== "options") return;
+      expect(claude.options.variant).toBe("xhigh");
+
+      const opencode = parse(["plan", "--variant", "turbo"]);
+      expect(opencode.kind).toBe("options");
+      if (opencode.kind !== "options") return;
+      expect(opencode.options.variant).toBe("turbo");
+    });
+
     test("--help documenta --cli con sus valores y su default", () => {
       const result = parse(["plan", "--help"]);
       expect(result.kind).toBe("help");

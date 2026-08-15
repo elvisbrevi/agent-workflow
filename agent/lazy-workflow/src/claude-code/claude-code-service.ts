@@ -2,6 +2,11 @@
  * The Claude Code adapter: one more implementation of the coding agent seam, so
  * a run may execute its session with `--cli claudecode` (ADR-0023).
  *
+ * The authority profile a run carries is not injected here yet: Claude Code takes
+ * its deny rules from a settings file that does not exist until the authority
+ * mirror lands, so sessions are bounded by the flow the coordinator allows rather
+ * than by provider-enforced rules.
+ *
  * Claude Code streams its own JSONL, so this module owns both the command it
  * builds and the decoding of that stream into the shared `AgentResult`. Sessions
  * start without `--bare`, because bare mode never reads the operator's OAuth
@@ -24,7 +29,9 @@ import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
 
 /** The effort levels Claude Code accepts; `--variant` is passed through as one. */
-const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+export const CLAUDE_CODE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+const EFFORT_LEVELS = new Set<string>(CLAUDE_CODE_EFFORTS);
 
 interface ClaudeCodeContentBlock {
   type?: string;
@@ -67,7 +74,13 @@ function assistantText(event: ClaudeCodeEventData): string[] {
     .map((block) => block.text!);
 }
 
-function renderBlock(prefix: string, block: ClaudeCodeContentBlock): { message: string; severity: "debug" | "info" } | null {
+/** One reportable line of a stream event, already carrying the severity it deserves. */
+interface ReportedEvent {
+  message: string;
+  severity: "debug" | "info";
+}
+
+function renderBlock(prefix: string, block: ClaudeCodeContentBlock): ReportedEvent | null {
   if (block.type === "text" && block.text) return { message: `${prefix}: ${block.text}`, severity: "info" };
   if (block.type === "thinking" && block.thinking) {
     return { message: `${prefix} razonando: ${block.thinking}`, severity: "debug" };
@@ -82,8 +95,7 @@ function renderBlock(prefix: string, block: ClaudeCodeContentBlock): { message: 
   return null;
 }
 
-/** Every reportable line of one stream event, already carrying its severity. */
-function renderEvent(line: string): Array<{ message: string; severity: "debug" | "info" }> {
+function renderEvent(line: string): ReportedEvent[] {
   const event = parseEvent(line);
   if (!event) return [{ message: line, severity: "info" }];
   const prefix = event.session_id ? `Claude Code [sesión ${event.session_id}]` : "Claude Code";
@@ -96,7 +108,7 @@ function renderEvent(line: string): Array<{ message: string; severity: "debug" |
   if (event.type === "assistant") {
     return blocks(event)
       .map((block) => renderBlock(prefix, block))
-      .filter((rendered): rendered is { message: string; severity: "debug" | "info" } => rendered !== null);
+      .filter((rendered): rendered is ReportedEvent => rendered !== null);
   }
   return [];
 }
@@ -202,7 +214,7 @@ export class ClaudeCodeService implements CodingAgent {
       ],
       workingDirectory,
     );
-    if (execution.failed) throw new Error("Claude Code termino con error");
+    if (execution.failed) throw new Error("Claude Code terminó con error");
     return execution.result;
   }
 
@@ -225,7 +237,7 @@ export class ClaudeCodeService implements CodingAgent {
 
   private effort(variant: string): string {
     if (!EFFORT_LEVELS.has(variant)) {
-      throw new Error(`Claude Code no acepta el esfuerzo ${variant} (usa ${[...EFFORT_LEVELS].join(", ")})`);
+      throw new Error(`Claude Code no acepta el esfuerzo ${variant} (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
     }
     return variant;
   }

@@ -1855,3 +1855,31 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
 
   expect(requested).toEqual(["claudecode", "opencode"]);
 });
+
+test("claudecode se limita al plan GitHub mientras faltan checkpoints y deteccion de az login", async () => {
+  let sessions = 0;
+  const runWith = (args: string[]) => new LazyWorkflowCli(
+    {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    () => ({
+      run: async () => { sessions += 1; throw new Error("must not open a session"); },
+      resume: async () => { sessions += 1; throw new Error("must not resume"); },
+    }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(args);
+
+  expect(await runWith(["code", "--cli", "claudecode"])).toBe(1);
+  expect(await runWith(["plan", "--hu", "23438", "--cli", "claudecode"])).toBe(1);
+  expect(sessions).toBe(0);
+});

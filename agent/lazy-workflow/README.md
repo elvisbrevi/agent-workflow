@@ -483,6 +483,15 @@ session identifier from the CLI's own initialization event, and never use
 available. Its events reach the Reporter with the same severities as OpenCode's:
 assistant text as info, reasoning and tool calls as debug.
 
+`--cli claudecode` is accepted today by `plan` without `--hu`. Delivery pins its
+session in a checkpoint that does not record the owning CLI yet, and the `az
+login` handshake still reads OpenCode events only, so `code`, `plan --hu`, and
+the SAG workflows reject the flag rather than opening a session they could not
+recover or continue. Claude Code also runs without an injected authority profile
+until its settings mirror of `opencode/authority.json` exists; what a Claude Code
+session may do is bounded by the flow the coordinator allows, not yet by
+provider-enforced deny rules.
+
 ## Agent authority
 
 Every run carries an agent authority profile alongside its prompt. The prompt

@@ -1,6 +1,7 @@
 import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
+import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 
 /** The coding agent CLI that executes the session of this run (ADR-0023). */
 export type AgentCli = "opencode" | "claudecode";
@@ -63,7 +64,7 @@ export interface CliParserHooks {
 
 export type CliParser = (args: string[], hooks: CliParserHooks) => CliParseResult;
 
-const DEFAULT_CLI: AgentCli = "opencode";
+export const DEFAULT_CLI: AgentCli = "opencode";
 /** The binary each CLI is invoked through, so a missing one is named as the operator installs it. */
 export const AGENT_CLI_BINARIES: Record<AgentCli, string> = {
   opencode: "opencode",
@@ -254,9 +255,9 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       describe: "Agente CLI que ejecuta la sesion.",
     })
     .option("session", stringOption("session", "--session", "Sesion de agente opaca para reanudar."))
-    .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo de OpenCode.", coerce: stringCoerce("--model") })
-    .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: "Variante del modelo.", coerce: stringCoerce("--variant") })
-    .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para OpenCode.", coerce: stringCoerce("--prompt") })
+    .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo del agente CLI seleccionado.", coerce: stringCoerce("--model") })
+    .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; con claudecode es el esfuerzo (${CLAUDE_CODE_EFFORTS.join("|")}).`, coerce: stringCoerce("--variant") })
+    .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
     .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
     .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
     .option("ticket", positiveIntegerOption("ticket", "--ticket", "Identificador del ticket Azure."))
@@ -298,13 +299,27 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
  */
 function readAgentCli(parsed: Record<string, unknown>, rawArgs: string[], binaryPresent: BinaryProbe): AgentCli {
   const cli = (parsed["cli"] as AgentCli | undefined) ?? DEFAULT_CLI;
-  const named = rawArgs.some((arg) => arg === "--cli" || arg.startsWith("--cli="));
   const binary = AGENT_CLI_BINARIES[cli];
-  if (named && !binaryPresent(binary)) {
+  if (flagSupplied(rawArgs, "--cli") && !binaryPresent(binary)) {
     throw new Error(`--cli ${cli} requiere el binario ${binary} en el PATH`);
   }
   return cli;
 }
+
+/**
+ * `--variant` is the effort of the selected CLI, and Claude Code accepts a fixed
+ * set of them, so an unusable value is an argument error rather than a session
+ * that opens and dies. OpenCode variants stay free-form.
+ */
+function readVariant(cli: AgentCli, variant: string): string {
+  if (cli === "claudecode" && !CLAUDE_CODE_EFFORTS.includes(variant as typeof CLAUDE_CODE_EFFORTS[number])) {
+    throw new Error(`--variant ${variant} no es un esfuerzo de Claude Code (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
+  }
+  return variant;
+}
+
+const flagSupplied = (rawArgs: string[], flag: string): boolean =>
+  rawArgs.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 
 /** `--field <referenceName>=<value>`; the value may contain `=`. */
 function parseFields(value: unknown): Array<{ referenceName: string; value: string }> {
@@ -328,13 +343,15 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     return typeof value === "string" ? value : null;
   };
 
+  const cli = readAgentCli(parsed, rawArgs, binaryPresent);
+
   return {
     command,
-    cli: readAgentCli(parsed, rawArgs, binaryPresent),
+    cli,
     model: asString("model") ?? DEFAULT_MODEL,
-    variant: asString("variant") ?? DEFAULT_VARIANT,
-    hasModel: rawArgs.some((arg) => arg === "--model" || arg.startsWith("--model=")),
-    hasVariant: rawArgs.some((arg) => arg === "--variant" || arg.startsWith("--variant=")),
+    variant: readVariant(cli, asString("variant") ?? DEFAULT_VARIANT),
+    hasModel: flagSupplied(rawArgs, "--model"),
+    hasVariant: flagSupplied(rawArgs, "--variant"),
     session: asString("session"),
     prompt: asString("prompt") ?? DEFAULT_PROMPT,
     hu: asNumber("hu"),
