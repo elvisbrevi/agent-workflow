@@ -30,6 +30,9 @@ Conflicting existing data fails closed.
 | Attachments | `ticket-attachment-info --ticket <id>` | `ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>` | local file and evidence kind |
 | Completion evidence | `ticket-evidence-info --ticket <id>` | `ticket-evidence-set --ticket <id> --evidence-file <path>` | sanitized UTF-8 HTML or Markdown source |
 | Completion gates | `ticket-completion-info --hu <id> --ticket <id>` | `ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>` | explicit PR and completion manifest |
+| Ticket creation | included in `ticket-info` | `ticket-create --hu <id> --type <Task\|Bug> --title <title> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<value>]` | delivery type and exact title; idempotent by (HU, type, title) |
+| Hierarchy | included in `ticket-info` | `ticket-link-parent --parent <id> --child <id>` | exact ids; a different existing parent is a conflict |
+| Blocking | included in `ticket-info` | `ticket-link-predecessor --blocker <id> --blocked <id>` | exact ids; recorded as the native Successor relation |
 
 `ticket-info` is the efficient aggregate read used by the coordinator. The
 specific `*-info` commands remain available for operators and focused tests.
@@ -139,7 +142,24 @@ verification. Legacy four-field checkpoints remain readable and map
 conservatively to `implementing` or `reconciling`; all subsequent writes use the
 versioned shape.
 
+## Planning publication
+
+Planning is covered by the same rule as delivery (ADR-0022). An Azure HU
+planning run decides how to slice the User Story — judgment — and returns the
+slices as a delivery plan behind `PLAN_READY`; it creates no work items. The
+coordinator validates the plan as a whole (duplicate titles, unknown blockers,
+self-blocking tickets, and cycles all fail closed before anything is created),
+then publishes with `ticket-create` in dependency order and records blocking
+relations in a second pass, when real ids exist. Both steps are idempotent, so
+republishing reuses existing work items.
+
 ## Prompt after migration
+
+The prompt no longer carries the mechanical prohibitions. What a run may
+execute is bounded by its agent authority profile (ADR-0021), so pushes, branch
+mutation, pull-request operations, and the wrong provider's CLI fail as
+permission errors rather than depending on the model reading prose. What remains
+in the prompt is what a permission cannot express.
 
 Remove instructions to select/move tickets, create/link branches, create/merge
 PRs, upload attachments, set fields, or move tickets to `Done`. The prompt will:

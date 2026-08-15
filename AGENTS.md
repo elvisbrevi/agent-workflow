@@ -19,7 +19,9 @@ inside that directory rather than a skill directory.
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
 | Change OpenCode invocation or JSONL decoding | `agent/lazy-workflow/src/opencode/` |
-| Change the planning prompt | `agent/lazy-workflow/prompts/autoplan-prompt.md` |
+| Change what OpenCode is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
+| Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
+| Change what a run is permitted to execute | `agent/lazy-workflow/opencode/authority.json` and `agent/lazy-workflow/src/prompts/authority-profile.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
 | Change installation or symlink behavior | `install.sh` and `tests/install_test.sh` |
 | Change user-facing orientation | `README.md` and `agent/lazy-workflow/README.md` |
