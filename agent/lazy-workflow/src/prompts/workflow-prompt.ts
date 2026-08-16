@@ -97,6 +97,41 @@ export interface WorkflowPromptContext {
   norms?: SagContext | null;
   /** Question budget for the planning workflows. */
   questions?: number;
+  /** Set only when this prompt hands the same fixed work to a session in another CLI. */
+  progress?: HandoffProgress | null;
+}
+
+/**
+ * What a cross-CLI handoff can state about the work already done, and only that:
+ * the checkpoint phase and everything readable from the repository itself. The
+ * outgoing session's own account of what it did never enters here, because an
+ * exhausted account cannot be asked and its prose is not verifiable (ADR-0025).
+ */
+export interface HandoffProgress {
+  phase: string;
+  branch: string;
+  /** The HEAD commit of the fixed branch, or null when nothing was committed yet. */
+  commit: string | null;
+  /** `git status --porcelain` of the worktree, empty when it is clean. */
+  uncommitted: string;
+  /** The completion manifest already on disk, when the outgoing session wrote one. */
+  manifest: string | null;
+}
+
+/** The progress section a handed-off session starts from, appended to its own workflow prompt. */
+export function formatHandoffProgress(progress: HandoffProgress): string {
+  const uncommitted = progress.uncommitted.trim();
+  return [
+    "Traspaso entre agentes: esta unidad de trabajo ya está en curso y el estado siguiente está verificado en el repositorio.",
+    "Continúa desde este estado; no reimplementes lo que ya está hecho ni descartes lo que ya está commiteado.",
+    `Fase del checkpoint: ${progress.phase}`,
+    `Rama fijada: ${progress.branch}`,
+    `Último commit: ${progress.commit ?? "todavía no hay commits en la rama"}`,
+    uncommitted ? `Archivos sin commitear:\n${uncommitted}` : "El árbol de trabajo no tiene cambios sin commitear.",
+    progress.manifest
+      ? `Completion manifest ya escrito:\n${progress.manifest}`
+      : "Todavía no hay completion manifest escrito.",
+  ].join("\n");
 }
 
 function readAsset(name: PromptAsset): Promise<string> {
@@ -319,13 +354,21 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
   }
 }
 
-/** Compose the prompt for one coordinator-fixed run. */
+/**
+ * Compose the prompt for one coordinator-fixed run. A handoff passes the same
+ * spec with `progress`, so the session in the new CLI is told the same fixed
+ * work — issue, branch, manifest path, marker contract — plus where it stands,
+ * rather than a prompt written in parallel at the call site (ADR-0025).
+ */
 export async function buildWorkflowPrompt(
   spec: WorkflowPromptSpec,
   context: WorkflowPromptContext,
 ): Promise<string> {
   const lines = await fragments(spec, context);
-  return lines.filter((line): line is string => line !== null).join("\n");
+  return [
+    ...lines.filter((line): line is string => line !== null),
+    ...(context.progress ? [formatHandoffProgress(context.progress)] : []),
+  ].join("\n");
 }
 
 /** Append SAG norms to a resume prompt, which carries no coordinator facts of its own. */
