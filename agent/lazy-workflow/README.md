@@ -53,6 +53,10 @@ lazy-workflow plan --interview http --working-directory /path/to/repository
 # Same, answering in the terminal you launched the run from
 lazy-workflow plan --interview terminal --working-directory /path/to/repository
 
+# Same, answering through JSON files any other tool can write
+lazy-workflow plan --interview file --interview-dir /tmp/entrevista \
+  --working-directory /path/to/repository
+
 # Plan against the SAG norms of the component declared in .sag/config.json
 lazy-workflow plan --normas-sag --working-directory /path/to/repository
 
@@ -931,7 +935,7 @@ does not.
 
 A planning run answers its own clarifying questions by default: it takes the
 recommendation it would have offered and continues, which is what an unattended
-run needs. With `--interview <canal>` those decisions become yours. The session
+run needs. With `--interview <channel>` those decisions become yours. The session
 states the questions it cannot settle alone, stops, and the coordinator carries
 them to you; your answers resume that same session, until the plan is final
 (ADR-0027).
@@ -946,11 +950,11 @@ lazy-workflow plan --interview file --interview-dir /tmp/entrevista \
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--interview <off\|http\|terminal\|file>` | `off` | The channel you answer through. `off` is the historical run. |
-| `--interview-timeout <segundos>` | `900` | Deadline per round; once spent, the session's own recommendations are taken and the run continues. |
+| `--interview-timeout <seconds>` | `900` | Deadline per round; once spent, the session's own recommendations are taken and the run continues. |
 | `--interview-rounds <n>` | `8` | Bound on round trips. The last round is told to deliver the plan; one that asks again stops the run. |
 | `--interview-host <host>` | `127.0.0.1` | `http` only. |
 | `--interview-port <n>` | `0` (ephemeral) | `http` only, so two runs never collide. |
-| `--interview-dir <ruta>` | — | `file` only, and required for it. |
+| `--interview-dir <path>` | — | `file` only, and required for it. |
 
 `--number-of-questions` is unchanged: it is the budget for the whole interview,
 which the session spends across as many rounds as it needs. `--interview` only
