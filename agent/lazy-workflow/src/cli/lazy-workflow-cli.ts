@@ -25,11 +25,11 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent, type ProviderExhaustion } from "../coding-agent/coding-agent.ts";
+import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, describeExhaustion, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent, type ProviderExhaustion } from "../coding-agent/coding-agent.ts";
 import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
-import { reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
+import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
@@ -77,6 +77,7 @@ import {
   WORKFLOW_STEP_FINISHED_MARKER,
 } from "../prompts/workflow-contract.ts";
 import {
+  buildInterviewAnswersPrompt,
   buildResumePrompt,
   buildWorkflowPrompt,
   resolveWorkflowRun,
@@ -85,6 +86,9 @@ import {
   type WorkflowPromptSpec,
   type WorkflowRun,
 } from "../prompts/workflow-prompt.ts";
+import { createQuestionChannel, type QuestionChannelFactory } from "../interaction/create-question-channel.ts";
+import type { QuestionChannel } from "../interaction/question-channel.ts";
+import { readPlanTurn, recommendedAnswers, type PlanTurn, type QuestionAnswers } from "../interaction/question-round.ts";
 import { authorityConfigPath, authorityProfile } from "../prompts/authority-profile.ts";
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
@@ -178,6 +182,19 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Whether a turn opened another question round, for the one caller that only
+ * needs the yes or no: with the round bound already spent, a malformed round
+ * and no round at all end the interview the same way.
+ */
+function asksAgain(text: string): boolean {
+  try {
+    return readPlanTurn(text).kind === "questions";
+  } catch {
+    return false;
+  }
 }
 
 /** ADR 0009: active duration in hours, rounded upward to a quarter, never below one quarter. */
@@ -426,6 +443,12 @@ export class LazyWorkflowCli {
      * and must not pay for adapters it will not call (ADR-0026).
      */
     private readonly deterministicToolServices?: DeterministicToolServices,
+    /**
+     * How a planning run reaches the operator with its questions. Injected like
+     * the coding agent seam, so a test drives an interview without opening a
+     * socket or a terminal (ADR-0027).
+     */
+    private readonly createQuestionChannelFn: QuestionChannelFactory = createQuestionChannel,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -524,6 +547,20 @@ export class LazyWorkflowCli {
     if (options.verbose && options.quiet) {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");
       return 1;
+    }
+
+    if (options.interview.channel !== "off") {
+      if (command !== "plan") {
+        reportOperator("--interview solo se permite con plan");
+        return 1;
+      }
+      // Every channel announces itself through the Reporter — the URL, the tty
+      // prompt, the exchange directory — and `--quiet` silences info. A silent
+      // interactive run is a run the operator cannot answer.
+      if (options.quiet) {
+        reportOperator("--interview y --quiet son mutuamente excluyentes: el canal no podría anunciarse");
+        return 1;
+      }
     }
 
     this.reportRunHeading(options);
@@ -949,12 +986,15 @@ export class LazyWorkflowCli {
     const norms = await this.loadSagNorms(options, "planning");
     if (options.normasSag && norms === null) return 1;
 
-    const run = await this.prompt({ kind: "azure-plan", huInfo }, options, norms);
-
-    const execution = await this.codingAgent.run({ ...options, ...run }, true);
-    const result = await this.continuePlanAfterAzureLogin(execution, resolveWorkflowRun(options.hu), options.workingDirectory, run.agent);
+    const { result, failed } = await this.runPlanningSession(
+      { kind: "azure-plan", huInfo },
+      options,
+      norms,
+      resolveWorkflowRun(options.hu),
+      options.workingDirectory,
+    );
     console.log(JSON.stringify(result, null, 2));
-    if (execution.failed) return 1;
+    if (failed) return 1;
     return this.publishAzurePlan(options.hu, result.text);
   }
 
@@ -1031,6 +1071,10 @@ export class LazyWorkflowCli {
       ...(isDeterministicToolCommand(options.command)
         ? []
         : [`agente     ${options.cli} · ${options.model} · ${options.variant}`]),
+      // Silent without `--interview`, so the historical panel is unchanged; the
+      // channel's own address is announced when it opens, since an ephemeral
+      // port does not exist yet while the panel is being drawn.
+      ...(options.interview.channel === "off" ? [] : [`entrevista ${options.interview.channel}`]),
       `directorio ${options.workingDirectory}`,
       `salida     ${verbosity}`,
     ]);
@@ -1148,10 +1192,17 @@ export class LazyWorkflowCli {
     if (command === "plan") {
       const norms = await this.loadSagNorms(options, "planning");
       if (options.normasSag && norms === null) return 1;
-      const run = await this.prompt({ kind: "github-plan" }, options, norms);
-      const execution = await this.codingAgent.run({ ...options, ...run, session: null }, false);
-      console.log(JSON.stringify(execution.result, null, 2));
-      return execution.failed ? 1 : 0;
+      const { result, failed } = await this.runPlanningSession(
+        { kind: "github-plan" },
+        // A GitHub planning run has never resumed a session of its own; the
+        // interview resumes the one it just opened, not one named on the CLI.
+        { ...options, session: null },
+        norms,
+        { kind: "github-repository-run" },
+        options.workingDirectory,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      return failed ? 1 : 0;
     }
 
     return this.runDefaultCodeWorkflow(options);
@@ -1730,11 +1781,15 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      const run = await this.prompt({ kind: "workspace-plan", scope, run: provider, huInfo }, options, norms);
-      const execution = await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, provider.kind === "azure-hu-run");
-      const result = await this.continuePlanAfterAzureLogin(execution, provider, scope.parentDirectory, run.agent);
+      const { result, failed } = await this.runPlanningSession(
+        { kind: "workspace-plan", scope, run: provider, huInfo },
+        { ...options, session: null },
+        norms,
+        provider,
+        scope.parentDirectory,
+      );
       reportOperator(JSON.stringify(result, null, 2));
-      return execution.failed ? 1 : 0;
+      return failed ? 1 : 0;
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`);
       return 1;
@@ -2967,6 +3022,134 @@ export class LazyWorkflowCli {
     return this.codingAgent.resume(execution.result.sessionId, "continue", workingDirectory, undefined, { agent });
   }
 
+  /**
+   * One planning session, from its prompt to its last word — shared by the
+   * GitHub, Azure and workspace planning runs, which differ only in the spec
+   * they build and the directory they run from.
+   *
+   * Without `--interview` this is exactly the historical path: build, run,
+   * continue after an Azure login, answer with the result. With one, the
+   * session's paused turns are carried to the operator and back until the plan
+   * is final (ADR-0027).
+   */
+  private async runPlanningSession(
+    spec: WorkflowPromptSpec,
+    options: CliOptions,
+    norms: SagContext | null,
+    run: WorkflowRun,
+    workingDirectory: string,
+  ): Promise<{ result: AgentResult; failed: boolean }> {
+    const prompted = await this.prompt(spec, options, norms);
+
+    // Built before the session opens: an unusable port, a missing terminal or an
+    // unwritable directory is then an argument-shaped failure that costs no model
+    // usage, and the channel's address is already printed while the agent thinks.
+    let channel: QuestionChannel | null;
+    try {
+      channel = this.createQuestionChannelFn(options.interview, getDefaultReporter());
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo abrir el canal de preguntas (${errorMessage(error)}); ejecución detenida.`);
+      throw error;
+    }
+
+    try {
+      const execution = await this.codingAgent.run(
+        { ...options, ...prompted, workingDirectory, session: options.session },
+        run.kind === "azure-hu-run",
+      );
+      // Login first: a session parked on `az login` never got to ask anything.
+      const result = await this.continuePlanAfterAzureLogin(execution, run, workingDirectory, prompted.agent);
+      if (!channel) return { result, failed: execution.failed === true };
+      return await this.interview(channel, result, options, norms, workingDirectory, prompted.agent, execution.failed === true);
+    } finally {
+      await channel?.close();
+    }
+  }
+
+  /**
+   * Carry the session's paused turns to the operator until the plan is final.
+   *
+   * The pause is read from the finished turn's own text rather than signalled
+   * through `terminalMarker`: a terminal marker cuts the stream short and closes
+   * the session with it, and the session that must answer the next round is the
+   * very one that would be deleted.
+   */
+  private async interview(
+    channel: QuestionChannel,
+    first: AgentResult,
+    options: CliOptions,
+    norms: SagContext | null,
+    workingDirectory: string,
+    agent: AgentAuthority,
+    failedBefore: boolean,
+  ): Promise<{ result: AgentResult; failed: boolean }> {
+    let result = first;
+    let failed = failedBefore;
+
+    for (let round = 1; ; round += 1) {
+      let turn: PlanTurn;
+      try {
+        turn = readPlanTurn(result.text);
+      } catch (error) {
+        reportOperator(`lazy-workflow: la ronda de preguntas no se pudo leer (${errorMessage(error)}); ejecución detenida.`);
+        return { result, failed: true };
+      }
+      if (turn.kind === "final") return { result, failed };
+      if (failed) {
+        reportOperator("lazy-workflow: la sesión pidió responder preguntas pero terminó con error; ejecución detenida.");
+        return { result, failed: true };
+      }
+
+      const last = round >= options.interview.rounds;
+      reportOperator(
+        `Ronda ${turn.round.round}: ${turn.round.questions.length} pregunta(s) del plan [sesión ${result.sessionId}]`,
+      );
+
+      let answers: QuestionAnswers;
+      try {
+        answers = await channel.ask(turn.round);
+      } catch (error) {
+        // An expired deadline or a channel that went away resolves to what the
+        // session itself recommended, which is what a run without `--interview`
+        // would have done anyway. Interactivity is a chance to intervene, not a
+        // new way for a planning run to die.
+        reportOperator(`lazy-workflow: ${errorMessage(error)}; se aceptan las respuestas recomendadas por la sesión.`);
+        answers = recommendedAnswers(turn.round);
+      }
+      reportOperator(`Ronda ${turn.round.round} respondida (${answers.source}); reanudo la sesión ${result.sessionId}`);
+
+      try {
+        result = await this.codingAgent.resume(
+          result.sessionId,
+          buildResumePrompt(await buildInterviewAnswersPrompt(answers, last ? 0 : options.interview.rounds - round), norms),
+          workingDirectory,
+          undefined,
+          { agent },
+        );
+      } catch (error) {
+        if (error instanceof AgentExhaustionError) {
+          reportOperator(`lazy-workflow: ${describeExhaustion(error.exhaustion)}; entrevista detenida.`);
+          return { result: error.result, failed: true };
+        }
+        reportOperator(`lazy-workflow: no se pudo reanudar la sesión de planificación (${errorMessage(error)}); ejecución detenida.`);
+        return { result, failed: true };
+      }
+
+      if (last) {
+        // The bound was declared and stated to the session. One that asks again
+        // anyway is not one to keep resuming. A round that no longer parses is
+        // moot here: the interview is over either way.
+        if (asksAgain(result.text)) {
+          reportOperator(
+            `lazy-workflow: la sesión abrió otra ronda con el tope de ${options.interview.rounds} agotado; ejecución detenida.`,
+          );
+          return { result, failed: true };
+        }
+        return { result, failed };
+      }
+    }
+  }
+
   private async loadSagNorms(options: CliOptions, phase: "planning" | "coding"): Promise<SagContext | null> {
     if (!options.normasSag) return null;
     try {
@@ -3184,6 +3367,7 @@ export class LazyWorkflowCli {
         workingDirectory: options.workingDirectory,
         norms,
         questions: options.numberOfQuestions,
+        interview: options.interview.channel !== "off",
         progress,
       }),
       agent: this.authority(spec, options.cli),

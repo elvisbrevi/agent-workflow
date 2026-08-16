@@ -519,4 +519,55 @@ describe("buildCli parser", () => {
       expect(parse(["ticket-create", "--field", "sinIgual"]).kind).toBe("error");
     });
   });
+  describe("entrevista de planificacion", () => {
+    const interviewOf = (args: string[]) => {
+      const result = parse(args);
+      if (result.kind !== "options") throw new Error(`se esperaban opciones, llego ${result.kind}`);
+      return result.options.interview;
+    };
+
+    test("sin --interview no hay entrevista y los valores quedan en su default", () => {
+      expect(interviewOf(["plan"])).toEqual({
+        channel: "off",
+        host: "127.0.0.1",
+        port: 0,
+        directory: null,
+        timeoutSeconds: 900,
+        rounds: 8,
+      });
+    });
+
+    test("cada canal soportado se acepta", () => {
+      expect(interviewOf(["plan", "--interview", "http"]).channel).toBe("http");
+      expect(interviewOf(["plan", "--interview", "terminal"]).channel).toBe("terminal");
+      expect(interviewOf(["plan", "--interview", "file", "--interview-dir", "/tmp/i"]).channel).toBe("file");
+    });
+
+    test("un canal desconocido es un error de argumentos", () => {
+      expect(parse(["plan", "--interview", "telepatia"]).kind).toBe("error");
+    });
+
+    test("el canal http toma su host, su puerto y sus topes", () => {
+      expect(interviewOf([
+        "plan", "--interview", "http",
+        "--interview-host", "0.0.0.0", "--interview-port", "7777",
+        "--interview-timeout", "60", "--interview-rounds", "2",
+      ])).toMatchObject({ host: "0.0.0.0", port: 7777, timeoutSeconds: 60, rounds: 2 });
+    });
+
+    test("el puerto 0 es valido: pide uno libre al sistema", () => {
+      expect(interviewOf(["plan", "--interview", "http", "--interview-port", "0"]).port).toBe(0);
+      expect(parse(["plan", "--interview", "http", "--interview-port", "-1"]).kind).toBe("error");
+    });
+
+    test("un sub-flag que su canal nunca leeria es un error de argumentos", () => {
+      expect(parse(["plan", "--interview", "terminal", "--interview-port", "7777"]).kind).toBe("error");
+      expect(parse(["plan", "--interview", "http", "--interview-dir", "/tmp/i"]).kind).toBe("error");
+      expect(parse(["plan", "--interview-timeout", "60"]).kind).toBe("error");
+    });
+
+    test("el canal file exige su directorio de intercambio", () => {
+      expect(parse(["plan", "--interview", "file"]).kind).toBe("error");
+    });
+  });
 });

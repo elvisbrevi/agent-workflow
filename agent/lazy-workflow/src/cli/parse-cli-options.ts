@@ -3,6 +3,7 @@ import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 import { AGENT_CLI_BINARIES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
 import { DETERMINISTIC_TOOL_COMMANDS, DETERMINISTIC_TOOL_FORMS } from "./tool-commands.ts";
 
 /** One step of a declared fallback chain: the primary is rung zero, implicitly. */
@@ -60,6 +61,8 @@ export interface CliOptions {
   blocker: number | null;
   blocked: number | null;
   numberOfQuestions: number;
+  /** How this run reaches the operator with its planning questions, if at all. */
+  interview: InterviewSettings;
   normasSag: boolean;
   workingDirectory: string;
   verbose: boolean;
@@ -92,6 +95,12 @@ const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
+/** No interview unless the operator asks for one: an unattended run is the normal one. */
+const DEFAULT_INTERVIEW_CHANNEL: InterviewChannelKind = "off";
+const DEFAULT_INTERVIEW_TIMEOUT_SECONDS = 900;
+const DEFAULT_INTERVIEW_ROUNDS = 8;
+const DEFAULT_INTERVIEW_HOST = "127.0.0.1";
+const DEFAULT_INTERVIEW_PORT = 0;
 const DEFAULT_FALLBACK_WAIT_SECONDS = 300;
 const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
 const SUPPORTED_COMMANDS = new Set([
@@ -197,6 +206,22 @@ const nonNegativeNumberOption = (name: string, flag: string, describe: string) =
   coerce: nonNegativeNumberCoerce(flag),
 });
 
+/** `0` is a legitimate port: it asks the OS for a free one. */
+const nonNegativeIntegerOption = (name: string, flag: string, describe: string, defaultValue: number) => ({
+  type: "string" as const,
+  requiresArg: true,
+  default: `${defaultValue}`,
+  describe,
+  coerce: (value: unknown): number => {
+    const text = String(value ?? "");
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || `${parsed}` !== text) {
+      throw new Error(`${flag} requiere un entero no negativo (recibido: ${text})`);
+    }
+    return parsed;
+  },
+});
+
 export function buildCli(binaryPresent: BinaryProbe = binaryOnPath): CliParser {
   return (rawArgs, hooks) => {
     const command = rawArgs[0];
@@ -270,6 +295,10 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .group(["branch", "base-branch", "ticket", "pr", "commit", "manifest"], "Tickets Azure:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
+    .group(
+      ["interview", "interview-timeout", "interview-rounds", "interview-host", "interview-port", "interview-dir"],
+      "Entrevista de planificacion (solo plan):",
+    )
     .group(["normas-sag", "working-directory"], "Contexto:")
     .group(["verbose", "verbose-output", "quiet", "color"], "Reportador:")
     .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
@@ -310,6 +339,18 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
     .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
     .option("number-of-questions", positiveIntegerOption("number-of-questions", "--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
+    .option("interview", {
+      type: "string",
+      requiresArg: true,
+      default: DEFAULT_INTERVIEW_CHANNEL,
+      choices: INTERVIEW_CHANNELS,
+      describe: "Canal por el que el operador responde las preguntas del modo plan; off no pregunta nada.",
+    })
+    .option("interview-timeout", positiveIntegerOption("interview-timeout", "--interview-timeout", "Segundos de espera por ronda antes de aceptar las respuestas recomendadas.", DEFAULT_INTERVIEW_TIMEOUT_SECONDS))
+    .option("interview-rounds", positiveIntegerOption("interview-rounds", "--interview-rounds", "Maximo de rondas de preguntas antes de exigir el plan final.", DEFAULT_INTERVIEW_ROUNDS))
+    .option("interview-host", { type: "string", requiresArg: true, default: DEFAULT_INTERVIEW_HOST, describe: "Host del canal http de preguntas; fuera de loopback la URL con su token es la unica credencial.", coerce: stringCoerce("--interview-host") })
+    .option("interview-port", nonNegativeIntegerOption("interview-port", "--interview-port", "Puerto del canal http de preguntas; 0 pide uno libre al sistema.", DEFAULT_INTERVIEW_PORT))
+    .option("interview-dir", stringOption("interview-dir", "--interview-dir", "Directorio donde el canal file escribe las rondas y lee las respuestas."))
     .option("type", stringOption("type", "--type", "Tipo de work item de entrega (Task o Bug)."))
     .option("title", stringOption("title", "--title", "Titulo exacto del ticket."))
     .option("estimate", nonNegativeNumberOption("estimate", "--estimate", "Estimacion original en horas."))
@@ -495,6 +536,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     blocker: asNumber("blocker"),
     blocked: asNumber("blocked"),
     numberOfQuestions: asNumber("number-of-questions") ?? DEFAULT_NUMBER_OF_QUESTIONS,
+    interview: readInterview(parsed, rawArgs, asString, asNumber),
     normasSag: parsed["normas-sag"] === true,
     workingDirectory: asString("working-directory") ?? process.cwd(),
     // `--verbose-output` is strictly wider than `--verbose`, so it turns the
@@ -503,6 +545,49 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     verboseOutput: parsed["verbose-output"] === true,
     quiet: parsed["quiet"] === true,
     noColor: parsed["color"] === false,
+  };
+}
+
+/**
+ * The interview a run declares. A sub-flag that only one channel reads is an
+ * argument error when another channel is selected: a setting that will never be
+ * consulted is a typo, and catching it here costs nothing, where catching it
+ * later costs a session.
+ */
+function readInterview(
+  parsed: Record<string, unknown>,
+  rawArgs: string[],
+  asString: (key: string) => string | null,
+  asNumber: (key: string) => number | null,
+): InterviewSettings {
+  const channel = ((parsed["interview"] as InterviewChannelKind | undefined) ?? DEFAULT_INTERVIEW_CHANNEL);
+  const directory = asString("interview-dir");
+
+  const supplied = (flag: string) => flagSupplied(rawArgs, flag);
+  if (channel === "off") {
+    const declared = ["--interview-timeout", "--interview-rounds", "--interview-host", "--interview-port", "--interview-dir"]
+      .filter(supplied);
+    if (declared.length > 0) {
+      throw new Error(`${declared.join(", ")} requiere --interview con un canal; sin entrevista no hay ronda que acotar`);
+    }
+  }
+  if (channel !== "http" && (supplied("--interview-host") || supplied("--interview-port"))) {
+    throw new Error(`--interview-host y --interview-port solo aplican a --interview http (recibido: ${channel})`);
+  }
+  if (channel !== "file" && supplied("--interview-dir")) {
+    throw new Error(`--interview-dir solo aplica a --interview file (recibido: ${channel})`);
+  }
+  if (channel === "file" && !directory) {
+    throw new Error("--interview file requiere --interview-dir <ruta>");
+  }
+
+  return {
+    channel,
+    host: asString("interview-host") ?? DEFAULT_INTERVIEW_HOST,
+    port: asNumber("interview-port") ?? DEFAULT_INTERVIEW_PORT,
+    directory,
+    timeoutSeconds: asNumber("interview-timeout") ?? DEFAULT_INTERVIEW_TIMEOUT_SECONDS,
+    rounds: asNumber("interview-rounds") ?? DEFAULT_INTERVIEW_ROUNDS,
   };
 }
 

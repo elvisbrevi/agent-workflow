@@ -205,8 +205,40 @@ A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
 User Story, combines that data with the English autoplan prompt, and starts
 OpenCode in the selected working directory. OpenCode decides how to slice the
 User Story and returns the slices as a delivery plan; it publishes no Azure work
-items. The coordinator validates that plan and publishes it.
+items. The coordinator validates that plan and publishes it. It may hold a
+planning interview on the way, which changes who answers its questions and
+nothing about what it publishes.
 _Avoid_: Azure ticket delivery run, OpenCode-created work items
+
+**Planning interview**:
+The bounded exchange between a planning session and the operator: the session
+states the decisions it cannot settle alone and stops, the coordinator carries
+them out and back, and the same session is resumed with the answers. Off unless
+a run declares a question channel, so an unattended planning run answers itself
+exactly as it always did.
+_Avoid_: chat mode, interactive session, conversational planning
+
+**Question round**:
+One paused planning turn: the questions the session handed over together, each
+with an id, the decision it states, and the answer the session recommends. The
+round is read from the turn's own text, never from a terminal marker, because a
+terminal marker closes the session the next round must resume.
+_Avoid_: survey, prompt, questionnaire
+
+**Question channel**:
+What carries a question round to a human and the answers back — a loopback HTTP
+page, the terminal, or a pair of JSON files. The coordinator owns it and decides
+what the answers mean; the session only prints a marker and reads what it is
+handed, so a channel grants the coding agent no capability and changes no
+authority profile. Another channel is another adapter.
+_Avoid_: input adapter, UI, agent tool
+
+**Recommended answer**:
+The answer a planning session would take on its own. Mandatory in every question
+of a round, because it is what an expired deadline resolves to; answers that
+resolved this way are declared as such, so a default is never presented to the
+session as a decision the operator made.
+_Avoid_: default answer, fallback answer
 
 **Delivery plan**:
 The machine-readable result of an Azure HU planning run: the tracer-bullet

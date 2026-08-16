@@ -13,9 +13,11 @@ import type { GitHubRepositoryContext, SelectedManagedIssue } from "../github/ma
 import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.ts";
 import type { SagArchitectureReviewContext, SagCodingContext, SagNormsContext } from "../sag/sag-norms-service.ts";
 import type { WorkspaceScope } from "../workspace/repository-scope.ts";
+import type { QuestionAnswers } from "../interaction/question-round.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
   MANIFEST_VALIDATION_SHAPE,
+  QUESTIONS_ANSWERED_MARKER,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
   TICKET_COMPLETED_MARKER,
@@ -29,7 +31,10 @@ type PromptAsset =
   | "github-code"
   | "autoplan"
   | "autocode"
-  | "architecture-review-sag";
+  | "architecture-review-sag"
+  | "plan-interview-auto"
+  | "plan-interview-interactive"
+  | "plan-interview-answers";
 
 export type SagContext = SagNormsContext | SagCodingContext;
 
@@ -97,6 +102,12 @@ export interface WorkflowPromptContext {
   norms?: SagContext | null;
   /** Question budget for the planning workflows. */
   questions?: number;
+  /**
+   * Whether an operator is reachable to answer this planning run's questions.
+   * The two branches are separate assets rather than conditional prose, so the
+   * session is never told both policies and left to pick one.
+   */
+  interview?: boolean;
   /** Set only when this prompt hands the same fixed work to a session in another CLI. */
   progress?: HandoffProgress | null;
 }
@@ -155,6 +166,34 @@ async function githubWorkflow(workflow: "plan" | "code"): Promise<string[]> {
   ];
 }
 
+/**
+ * How this planning run answers its own questions. Every planning branch —
+ * GitHub, Azure, workspace — appends exactly one of the two, so the policy is
+ * stated once per run and never twice.
+ */
+function planInterviewSection(interview: boolean | undefined): Promise<string> {
+  return readPromptAsset(interview ? "plan-interview-interactive" : "plan-interview-auto");
+}
+
+/**
+ * The resume prompt of an answered round: the static reading instructions, the
+ * marker, and the payload. The marker is composed here from the contract rather
+ * than written into the asset, exactly as the delivery prompts do.
+ */
+export async function buildInterviewAnswersPrompt(
+  answers: QuestionAnswers,
+  remainingRounds: number,
+): Promise<string> {
+  return [
+    await readPromptAsset("plan-interview-answers"),
+    remainingRounds > 0
+      ? `Quedan ${remainingRounds} ronda(s) de preguntas si aún necesitas decidir algo con el operador.`
+      : "No quedan rondas de preguntas: entrega el plan final ahora, sin abrir otra ronda.",
+    QUESTIONS_ANSWERED_MARKER,
+    JSON.stringify(answers),
+  ].join("\n");
+}
+
 /** The issue facts OpenCode needs, and only those. */
 function issueContext(issue: SelectedManagedIssue): string {
   return JSON.stringify({
@@ -175,11 +214,16 @@ function issueContext(issue: SelectedManagedIssue): string {
  * workspace planning runs consume exactly this, so a change here reaches
  * both at once.
  */
-async function azureHuPlanningSections(huInfo: HuInfo, questions: number | undefined): Promise<string[]> {
+async function azureHuPlanningSections(
+  huInfo: HuInfo,
+  questions: number | undefined,
+  interview: boolean | undefined,
+): Promise<string[]> {
   return [
     JSON.stringify(huInfo),
     await readPromptAsset("autoplan"),
     `The number of questions must be ${questions}`,
+    await planInterviewSection(interview),
   ];
 }
 
@@ -209,7 +253,7 @@ export function formatArchitectureReviewContext(context: SagArchitectureReviewCo
 }
 
 async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContext): Promise<Array<string | null>> {
-  const { operatorRequest, workingDirectory, norms = null, questions } = context;
+  const { operatorRequest, workingDirectory, norms = null, questions, interview } = context;
   const sag = norms ? [formatSagContext(norms)] : [];
 
   switch (spec.kind) {
@@ -218,6 +262,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         ...(await githubWorkflow("plan")),
         ...sag,
         `The number of questions must be ${questions}`,
+        await planInterviewSection(interview),
         `The working directory is ${workingDirectory}`,
         "Operator request:",
         operatorRequest,
@@ -225,7 +270,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
 
     case "azure-plan":
       return [
-        ...(await azureHuPlanningSections(spec.huInfo, questions)),
+        ...(await azureHuPlanningSections(spec.huInfo, questions, interview)),
         ...sag,
         operatorRequest,
         `The working directory is ${workingDirectory}`,
@@ -237,8 +282,8 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // `spec.run` is the already-resolved provider; it is never reinspected here.
       return [
         ...(spec.run.kind === "azure-hu-run"
-          ? await azureHuPlanningSections(spec.huInfo!, questions)
-          : await githubWorkflow("plan")),
+          ? await azureHuPlanningSections(spec.huInfo!, questions, interview)
+          : [...(await githubWorkflow("plan")), await planInterviewSection(interview)]),
         ...sag,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
