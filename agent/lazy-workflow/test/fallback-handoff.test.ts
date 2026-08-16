@@ -207,6 +207,55 @@ test("una rama sin commits todavía se dice como ausencia, no como el commit de 
   expect(prompt).toContain("El árbol de trabajo no tiene cambios sin commitear.");
 });
 
+test("un manifest de otra issue o de otra rama no se cita como avance de esta unidad", async () => {
+  // La ruta del manifest es fija por repositorio: el que dejó una entrega
+  // anterior sigue ahí, y solo pertenece a esta unidad si la nombra.
+  const foreignIssue = join(tmpdir(), `lazy-workflow-handoff-otra-issue-${process.pid}.json`);
+  const foreignBranch = join(tmpdir(), `lazy-workflow-handoff-otra-rama-${process.pid}.json`);
+  await Bun.write(foreignIssue, JSON.stringify({ issue: 177, branch: "refs/heads/issue/177", clean: true }));
+  await Bun.write(foreignBranch, JSON.stringify({ issue: 178, branch: "refs/heads/issue/178-anterior", clean: true }));
+  const agents = { issue: scriptedAgents({ opencode: [exhausted("provider/primario")] }), branch: scriptedAgents({ opencode: [exhausted("provider/primario")] }) };
+
+  try {
+    for (const [key, manifestPath] of [["issue", foreignIssue], ["branch", foreignBranch]] as const) {
+      await runDelivery(agents[key], ["--fallback", "claudecode:claude-opus-5:high"], checkpointStore(), fakeGitHubDelivery({
+        prepareBranch: async () => ({ branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath }),
+      }));
+    }
+  } finally {
+    await unlink(foreignIssue);
+    await unlink(foreignBranch);
+  }
+
+  for (const agent of [agents.issue, agents.branch]) {
+    const prompt = agent.started[1]?.options.prompt ?? "";
+    expect(prompt).toContain("Todavía no hay completion manifest escrito.");
+    expect(prompt).not.toContain('"clean":true');
+  }
+});
+
+test("una rama sin commits propios sobre una base con historia dice la ausencia, no el commit de la base", async () => {
+  const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
+  // La base tiene historia y la rama de entrega todavía no commiteó nada propio:
+  // `log -1` sin rango contestaría el tip de la base, que no es avance de la unidad.
+  const noOwnCommits: GitRunner = async (args) => {
+    if (args[0] === "log") return args.some((arg) => arg.includes("..")) ? "" : `${COMMIT} feat: el último commit de la base\n`;
+    return "";
+  };
+
+  await runDelivery(
+    agents,
+    ["--fallback", "claudecode:claude-opus-5:high"],
+    checkpointStore(),
+    fakeGitHubDelivery(),
+    noOwnCommits,
+  );
+
+  const prompt = agents.started[1]?.options.prompt ?? "";
+  expect(prompt).toContain("todavía no hay commits en la rama");
+  expect(prompt).not.toContain(COMMIT);
+});
+
 test("la sesión traspasada arranca con el perfil de autoridad en el formato del CLI nuevo", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
 

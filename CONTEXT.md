@@ -161,8 +161,10 @@ from the exhausted one, where no session can be resumed. The coordinator starts
 a fresh session with its own rebuilt prompt for the same fixed work plus a
 progress section assembled from verified state — checkpoint phase, branch, last
 commit, uncommitted worktree, completion manifest — and never from the outgoing
-session's text.
-_Avoid_: session summary handoff, resumed session across CLIs
+session's text. Verified state is state of this unit: the commit is the one the
+branch has over its base, and the manifest is cited only when it names this issue
+and this branch; anything else is stated as the absence it is.
+_Avoid_: session summary handoff, resumed session across CLIs, base tip as unit commit, manifest of another delivery
 
 **Agent result**:
 The normalized JSON representation of a coding agent CLI's event stream,
