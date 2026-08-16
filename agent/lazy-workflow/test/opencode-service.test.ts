@@ -7,6 +7,7 @@ import {
   type ReporterStream,
 } from "../src/output/reporter.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
+import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -544,6 +545,40 @@ describe("OpenCodeService agotamiento del proveedor", () => {
 
     expect(execution.failed).toBeFalse();
     expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("una reanudacion agotada lanza el error tipado que lleva el agotamiento", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_resumed",
+      error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const error = await service
+      .resume("ses_resumed", "continue", undefined, undefined, { model: "provider/respaldo" })
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AgentExhaustionError);
+    expect((error as AgentExhaustionError).exhaustion).toEqual({
+      cli: "OpenCode",
+      model: "provider/respaldo",
+      cause: "rate_limit",
+    });
+  });
+
+  test("una reanudacion que falla sin agotamiento no lanza el error de agotamiento", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_broken",
+      error: { name: "UnknownError", data: { message: "Model not found" } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const error = await service.resume("ses_broken").catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AgentExhaustionError);
   });
 
   test("un agotamiento durante una reanudacion sin modelo explicito nombra igual el modelo con el que abrio", async () => {
