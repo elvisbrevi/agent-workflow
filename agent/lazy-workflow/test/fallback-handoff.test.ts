@@ -379,6 +379,26 @@ test("un --cli que contradice un checkpoint sin traspaso falla cerrado aunque el
   expect(store.written.at(-1)).toEqual(preserved!);
 });
 
+test("una entrega traspasada que falla al completarse sigue siendo reanudable por el mismo comando", async () => {
+  const store = checkpointStore();
+  let pushes = 0;
+  const delivery = fakeGitHubDelivery({
+    pushCommit: async () => { if (++pushes === 1) throw new Error("el push no salió"); },
+  });
+  const command = ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"];
+  const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
+
+  // El traspaso llega a IMPLEMENTATION_READY y es la integración la que falla:
+  // el checkpoint conservado sigue perteneciendo al CLI del respaldo.
+  expect(await runDelivery(agents, command, store, delivery)).toBe(1);
+  expect(store.written.at(-1)?.cli).toBe("claudecode");
+
+  // Ninguna sesión que reanudar, pero el mismo comando tiene que poder terminar
+  // la entrega en vez de quedar rechazado por el CLI que él mismo dejó fijado.
+  const rerun = scriptedAgents();
+  expect(await runDelivery(rerun, command, store, delivery, fakeGit, [])).toBe(0);
+});
+
 test("la unidad siguiente a un traspaso adoptado vuelve al CLI que el operador declaró", async () => {
   const store = checkpointStore();
   const delivery = fakeGitHubDelivery();

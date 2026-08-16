@@ -41,7 +41,7 @@ export interface GitHubDeliveryCheckpoint {
    * run's own descent contradicted from one the operator contradicted, without
    * inferring it from the chain a later command happens to declare (issue #252).
    */
-  handoffFrom?: AgentCli | null;
+  handoffFrom?: AgentCli;
   workflow: "github-code";
   repository: string;
   issue: number;
@@ -131,7 +131,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
   return checkpoint.schemaVersion === 2
     && isAgentCli(checkpoint.cli)
-    && (checkpoint.handoffFrom === undefined || checkpoint.handoffFrom === null || isAgentCli(checkpoint.handoffFrom))
+    && (checkpoint.handoffFrom === undefined || isAgentCli(checkpoint.handoffFrom))
     && checkpoint.workflow === "github-code"
     && typeof checkpoint.repository === "string"
     && /^[^/\s]+\/[^/\s]+$/.test(checkpoint.repository)
