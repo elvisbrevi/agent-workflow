@@ -203,13 +203,14 @@ function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
 
 /**
  * The overrides a recovered session resumes with: an explicit `--model` still
- * wins, and otherwise the model the checkpoint recorded when a fallback descent
- * moved the run off its primary rung, so recovery does not resume on the rung
- * that was already exhausted (issue #238).
+ * wins, and otherwise the rung the checkpoint recorded when a fallback descent
+ * moved the run off its primary one, so recovery resumes on the rung that was
+ * actually running rather than the one already exhausted (issue #238).
  */
-function getRecoveryOverrides(options: CliOptions, model: string | null | undefined): AgentResumeOverrides {
+function getRecoveryOverrides(options: CliOptions, checkpoint: Pick<GitHubDeliveryCheckpoint, "model" | "variant">): AgentResumeOverrides {
   const overrides = getResumeOverrides(options);
-  return model && !options.hasModel ? { ...overrides, model } : overrides;
+  if (!checkpoint.model || options.hasModel) return overrides;
+  return { ...overrides, model: checkpoint.model, ...(checkpoint.variant ? { variant: checkpoint.variant } : {}) };
 }
 
 /** The declared chain with the run's own rung at the head, which is where a descent always starts. */
@@ -994,7 +995,7 @@ export class LazyWorkflowCli {
         // Only exhaustion keeps descending; a missing session or any ordinary
         // failure belongs to the caller's own error handling, untouched.
         if (!(error instanceof AgentExhaustionError)) throw error;
-        current = { ...current, exhaustion: error.exhaustion };
+        current = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
       }
     }
     return current;
@@ -2064,8 +2065,8 @@ export class LazyWorkflowCli {
       let pullRequest: number | null = null;
       let mergeCommit: string | null = null;
       let intent: GitHubDeliveryCheckpoint["intent"] = null;
-      /** Written only once a descent changes it, so a run on its primary rung keeps the historical checkpoint shape. */
-      let activeModel: string | null = null;
+      /** The rung in course, written only once a descent moves it, so a run on its primary keeps the historical checkpoint shape. */
+      let activeRung: FallbackRung | null = null;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 2,
@@ -2083,7 +2084,7 @@ export class LazyWorkflowCli {
           manifestPath,
           mergeCommit,
           intent,
-          ...(activeModel ? { model: activeModel } : {}),
+          ...(activeRung ? { model: activeRung.model, variant: activeRung.variant } : {}),
         }, options.workingDirectory);
       };
       if (!checkpointWasWritten) await saveCheckpoint("selected");
@@ -2128,7 +2129,7 @@ export class LazyWorkflowCli {
             { ...overrides, agent: run.agent },
           ),
           async (rung, sessionId) => {
-            activeModel = rung.model;
+            activeRung = rung;
             await saveCheckpoint("implementing", sessionId);
           },
         );
@@ -2647,7 +2648,7 @@ export class LazyWorkflowCli {
         "continue",
         options.workingDirectory,
         IMPLEMENTATION_READY_MARKER,
-        getRecoveryOverrides(options, liveCheckpoint.model),
+        getRecoveryOverrides(options, liveCheckpoint),
       );
       console.log(JSON.stringify(result, null, 2));
       const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);

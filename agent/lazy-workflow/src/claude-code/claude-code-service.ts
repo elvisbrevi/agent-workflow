@@ -283,7 +283,7 @@ export class ClaudeCodeService implements CodingAgent {
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar Claude Code");
     }
-    if (execution.exhaustion) throw new AgentExhaustionError(execution.exhaustion);
+    if (execution.exhaustion) throw new AgentExhaustionError(execution.exhaustion, execution.result);
     if (execution.failed) throw new Error("Claude Code terminó con error");
     return execution.result;
   }

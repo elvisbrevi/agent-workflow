@@ -116,10 +116,11 @@ async function runDelivery(
   store: GitHubCheckpointStore = checkpointStore(),
   issues: number[] = [178],
   reporter?: Reporter,
+  logs: string[] = [],
 ): Promise<number> {
   const originalLog = console.log;
   const previousReporter = getDefaultReporter();
-  console.log = () => undefined;
+  console.log = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
   try {
     return await new LazyWorkflowCli(
       azure,
@@ -160,7 +161,10 @@ test("un agotamiento encadenado continúa hacia el escalón siguiente y nunca ha
   const agents = scriptedAgents({
     run: [exhausted("provider/primario")],
     resume: [
-      new AgentExhaustionError({ cli: "OpenCode", model: "provider/respaldo", cause: "billing" }),
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+        agentResult("el respaldo tampoco tiene cupo"),
+      ),
       terminal(),
     ],
   });
@@ -315,4 +319,43 @@ test("la recuperación reanuda con el modelo descendido que el checkpoint conser
   // Sin un --model explícito, la sesión recuperada no vuelve al escalón agotado.
   expect(agents.resumed.at(-1)?.overrides.model).toBe("provider/respaldo");
   expect(agents.runs).toBe(0);
+});
+
+test("la cadena agotada devuelve el resultado de la última sesión, no el de la anterior", async () => {
+  const agents = scriptedAgents({
+    run: [exhausted("provider/primario")],
+    resume: [new AgentExhaustionError(
+      { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+      agentResult("lo último que dijo el respaldo"),
+    )],
+  });
+  const store = checkpointStore();
+  const logs: string[] = [];
+
+  const code = await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium"],
+    store,
+    [178],
+    undefined,
+    logs,
+  );
+
+  expect(code).toBe(1);
+  // Lo que se reporta es la sesión que realmente terminó agotada, no el texto
+  // de la sesión anterior a ese descenso.
+  expect(logs.join("\n")).toContain("lo último que dijo el respaldo");
+  expect(logs.join("\n")).not.toContain("sin cupo");
+  expect(store.written.at(-1)?.sessionId).toBe(SESSION);
+});
+
+test("el checkpoint conserva el escalón completo, modelo y variante, para recuperarlo", async () => {
+  const agents = scriptedAgents({ run: [exhausted("provider/primario")], resume: [terminal()] });
+  const store = checkpointStore();
+
+  await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"], store);
+
+  const descended = store.written.find((checkpoint) => checkpoint.model !== undefined);
+  expect(descended?.model).toBe("provider/respaldo");
+  expect(descended?.variant).toBe("medium");
 });
