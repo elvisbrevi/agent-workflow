@@ -2236,6 +2236,7 @@ export class LazyWorkflowCli {
               issue,
               repository,
               branch: branch!,
+              baseBranch: baseBranch!,
               manifestPath: manifestPath!,
               norms,
             });
@@ -2352,6 +2353,7 @@ export class LazyWorkflowCli {
       issue: SelectedManagedIssue;
       repository: GitHubRepositoryContext;
       branch: string;
+      baseBranch: string;
       manifestPath: string;
       norms: SagContext | null;
     },
@@ -2361,7 +2363,7 @@ export class LazyWorkflowCli {
       { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch, manifestPath: work.manifestPath },
       handoffOptions,
       work.norms,
-      await this.verifiedProgress(options.workingDirectory, "implementing", work.branch, work.manifestPath),
+      await this.verifiedProgress(options.workingDirectory, "implementing", work.issue.number, work.branch, work.baseBranch, work.manifestPath),
     );
     this.resolveAgent(rung.cli);
     return {
@@ -2377,14 +2379,17 @@ export class LazyWorkflowCli {
 
   /**
    * What a handoff can state about the work already done: the checkpoint phase
-   * and what the repository itself answers. A commit that does not exist yet, an
-   * unreadable worktree, or a manifest never written are all absences the section
-   * names rather than failures that stop the handoff.
+   * and what the repository itself answers about this unit — never what belongs
+   * to another delivery. A commit that does not exist yet, an unreadable
+   * worktree, or a manifest never written (or written by another delivery) are
+   * all absences the section names rather than failures that stop the handoff.
    */
   private async verifiedProgress(
     workingDirectory: string,
     phase: GitHubDeliveryPhase,
+    issue: number,
     branch: string,
+    baseBranch: string,
     manifestPath: string,
   ): Promise<HandoffProgress> {
     const readGit = async (args: string[]): Promise<string | null> => {
@@ -2394,14 +2399,23 @@ export class LazyWorkflowCli {
         return null;
       }
     };
+    // The base is read through its remote branch: the ref `prepareBranch` creates
+    // the unit's branch from, and the one it has just fetched.
+    const base = `refs/remotes/origin/${baseBranch.replace(/^refs\/heads\//, "")}`;
     return {
       phase,
       branch,
-      // `log -1` fails on a branch with no commits yet, which is the absence the
-      // section states; `rev-parse HEAD` would answer the base tip instead.
-      commit: await readGit(["log", "-1", "--format=%H %s"]),
+      // Only what the unit's branch holds over that base is progress of this
+      // delivery; a bare `log -1` would answer the base tip instead. An empty
+      // range — or a branch with no commits yet, which makes `log` fail — is the
+      // absence the section states.
+      commit: await readGit(["log", "-1", "--format=%H %s", `${base}..${branch}`]),
       uncommitted: await readGit(["status", "--porcelain", "--untracked-files=all"]) ?? "",
-      manifest: await Bun.file(manifestPath).text().catch(() => null),
+      // The manifest path is fixed per repository, so one left by an earlier
+      // delivery is only this unit's progress when it names this issue and branch.
+      manifest: await manifestBelongsToDelivery(manifestPath, issue, branch)
+        ? await Bun.file(manifestPath).text().catch(() => null)
+        : null,
     };
   }
 
