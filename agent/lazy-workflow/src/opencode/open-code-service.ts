@@ -261,7 +261,7 @@ export class OpenCodeService implements CodingAgent {
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
-    if (execution.exhaustion) throw new AgentExhaustionError(execution.exhaustion);
+    if (execution.exhaustion) throw new AgentExhaustionError(execution.exhaustion, execution.result);
     if (execution.failed) throw new Error("OpenCode termino con error");
     return execution.result;
   }

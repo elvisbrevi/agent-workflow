@@ -77,7 +77,11 @@ export class AgentSessionCloseError extends Error {
  * without reading the message text (issue #238).
  */
 export class AgentExhaustionError extends Error {
-  constructor(readonly exhaustion: ProviderExhaustion) {
+  constructor(
+    readonly exhaustion: ProviderExhaustion,
+    /** What the exhausted session did produce, so the caller reports that one rather than the rung before it. */
+    readonly result: AgentResult,
+  ) {
     super(describeExhaustion(exhaustion));
     this.name = "AgentExhaustionError";
   }

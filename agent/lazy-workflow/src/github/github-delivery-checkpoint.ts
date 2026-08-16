@@ -42,10 +42,11 @@ export interface GitHubDeliveryCheckpoint {
   branch: string | null;
   sessionId: string | null;
   /**
-   * The model the session is running on, written only once a fallback descent
+   * The rung the session is running on, written only once a fallback descent
    * moves it off the run's own; absent means the primary rung (issue #238).
    */
   model?: string | null;
+  variant?: string | null;
   commit: string | null;
   pullRequest: number | null;
   receipts: Partial<Record<string, GitHubDeliveryReceipt>>;
@@ -80,6 +81,12 @@ function isCommit(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value));
 }
 
+/** The model or variant a descent recorded: absent, or a single-line non-empty name. */
+function isRung(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null
+    || (typeof value === "string" && value.length > 0 && !/[\r\n]/.test(value));
+}
+
 function isReceipt(value: unknown): value is GitHubDeliveryReceipt {
   return typeof value === "object"
     && value !== null
@@ -103,6 +110,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "branch",
     "sessionId",
     "model",
+    "variant",
     "commit",
     "pullRequest",
     "receipts",
@@ -125,8 +133,8 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     && (checkpoint.sessionId === null
       || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
     && isCommit(checkpoint.commit)
-    && (checkpoint.model === undefined || checkpoint.model === null
-      || (typeof checkpoint.model === "string" && checkpoint.model.length > 0 && !/[\r\n]/.test(checkpoint.model)))
+    && isRung(checkpoint.model)
+    && isRung(checkpoint.variant)
     && (checkpoint.baseBranch === undefined || isBranch(checkpoint.baseBranch))
     && (checkpoint.manifestPath === undefined || checkpoint.manifestPath === null || (typeof checkpoint.manifestPath === "string" && checkpoint.manifestPath.length > 0 && !/[\r\n]/.test(checkpoint.manifestPath)))
     && (checkpoint.mergeCommit === undefined || isCommit(checkpoint.mergeCommit))
