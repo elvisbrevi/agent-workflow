@@ -9,11 +9,13 @@ import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.t
 import {
   AgentSessionCloseError,
   AgentSessionNotFoundError,
+  describeExhaustion,
   type AgentAuthority,
   type AgentExecution,
   type AgentResumeOverrides,
   type AgentRunOptions,
   type CodingAgent,
+  type ProviderExhaustion,
 } from "../coding-agent/coding-agent.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
@@ -63,6 +65,40 @@ function parseEvent(line: string): OpenCodeEventData | null {
   } catch {
     return null;
   }
+}
+
+interface OpenCodeErrorEvent {
+  type?: string;
+  sessionID?: string;
+  error?: { name?: string; data?: { statusCode?: number } };
+}
+
+// HTTP status codes captured on a real `opencode run --format json` invocation
+// (see test/opencode-service.test.ts for the raw fragments): 401/403 mean the
+// credential itself is rejected, 402 is billing, 429 is the usage/rate limit.
+const EXHAUSTION_STATUS_CAUSES = new Map<number, string>([
+  [401, "authentication"],
+  [403, "authentication"],
+  [402, "billing"],
+  [429, "rate_limit"],
+]);
+
+function classifyExhaustion(lines: string[], model: string | undefined, failed: boolean): ProviderExhaustion | undefined {
+  if (!failed) return undefined;
+  for (const line of lines) {
+    let event: OpenCodeErrorEvent;
+    try {
+      event = JSON.parse(line) as OpenCodeErrorEvent;
+    } catch {
+      continue;
+    }
+    if (event.type !== "error" || !event.error) continue;
+    const cause = event.error.name === "ProviderAuthError"
+      ? "authentication"
+      : EXHAUSTION_STATUS_CAUSES.get(event.error.data?.statusCode ?? -1);
+    if (cause) return { cli: "OpenCode", model: model ?? "con el que se abrió", cause };
+  }
+  return undefined;
 }
 
 function eventSeverity(event: OpenCodeEventData | null): "debug" | "info" {
@@ -313,11 +349,11 @@ export class OpenCodeService implements CodingAgent {
       const result = AgentResult.fromJsonLines(streamed.lines.join("\n"));
       if (terminalMarkerReceived) await this.closeSession(result.sessionId, workingDirectory);
 
-      return {
-        result,
-        azureLoginRequired,
-        failed: exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived,
-      };
+      const failed = exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived;
+      const exhaustion = classifyExhaustion(streamed.lines, model, failed);
+      if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
+
+      return { result, azureLoginRequired, failed, exhaustion };
     } finally {
       stopSpinner();
     }
