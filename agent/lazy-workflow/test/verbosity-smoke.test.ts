@@ -6,30 +6,31 @@ import { createReporter, type Reporter, type ReporterStream } from "../src/outpu
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
+import { parseReportedChunk, type ReportedLine } from "./_helpers/reported-lines.ts";
 
 beforeAll(() => {
   chalk.level = 1;
 });
 
-type CapturedMessage = { level: "info" | "warn" | "error" | "debug"; message: string };
+type CapturedMessage = ReportedLine;
 
 const captureStream = (): { stream: ReporterStream; captured: CapturedMessage[] } => {
   const captured: CapturedMessage[] = [];
   const stream = {
     write(chunk: string): void {
-      const stripped = chunk.replace(/\u001b\[[0-9;]*m/g, "").replace(/\n$/, "");
-      const match = stripped.match(/^([ℹ⚠✗·])\s?(.*)$/s);
-      if (!match) return;
-      const iconToLevel = { "ℹ": "info", "⚠": "warn", "✗": "error", "·": "debug" } as const;
-      captured.push({ level: iconToLevel[match[1] as keyof typeof iconToLevel], message: match[2] ?? "" });
+      captured.push(...parseReportedChunk(chunk));
     },
   };
   return { stream, captured };
 };
 
-const buildReporter = (verbose: boolean, quiet = false): { reporter: Reporter; captured: CapturedMessage[] } => {
+const buildReporter = (
+  verbose: boolean,
+  quiet = false,
+  verboseOutput = false,
+): { reporter: Reporter; captured: CapturedMessage[] } => {
   const { stream, captured } = captureStream();
-  const reporter = createReporter({ verbose, quiet, noColor: true, stream });
+  const reporter = createReporter({ verbose, verboseOutput, quiet, noColor: true, stream });
   return { reporter, captured };
 };
 
@@ -51,7 +52,15 @@ const buildDeliveryEvents = (sessionId: string): string[] => [
   jsonEvent({
     type: "tool_use",
     sessionID: sessionId,
-    part: { type: "tool", tool: "edit", state: { status: "completed", input: { description: "README.md" } } },
+    part: {
+      type: "tool",
+      tool: "edit",
+      state: {
+        status: "completed",
+        input: { file_path: "src/output/reporter.ts", old_string: "antes", new_string: "despues" },
+        output: "1 archivo actualizado",
+      },
+    },
   }),
   jsonEvent({ type: "step_start", sessionID: sessionId, part: { type: "step", reason: "agent" } }),
   jsonEvent({ type: "step_finish", sessionID: sessionId, part: { type: "step", reason: "stop" } }),
@@ -64,6 +73,7 @@ const countByLevel = (captured: CapturedMessage[]) => ({
   warn: captured.filter((entry) => entry.level === "warn").length,
   error: captured.filter((entry) => entry.level === "error").length,
   debug: captured.filter((entry) => entry.level === "debug").length,
+  trace: captured.filter((entry) => entry.level === "trace").length,
 });
 
 const noAzureBoundary = {
@@ -71,8 +81,8 @@ const noAzureBoundary = {
   waitForAccess: async () => undefined,
 };
 
-const runCodeWith = (events: string[], verbose = false, quiet = false) => {
-  const capture = buildReporter(verbose, quiet);
+const runCodeWith = (events: string[], verbose = false, quiet = false, verboseOutput = false) => {
+  const capture = buildReporter(verbose, quiet, verboseOutput);
   setDefaultReporter(capture.reporter);
   const spawnWithEvents = (lines: string[]) => () => ({
     stdout: new Blob([lines.join("\n")]).stream(),
@@ -99,7 +109,14 @@ const runCodeWith = (events: string[], verbose = false, quiet = false) => {
     ...fakeCoordinatedGitHubDeps(),
   );
   return cli
-    .run(["code", ...(verbose ? ["--verbose"] : []), ...(quiet ? ["--quiet"] : []), "--working-directory", "/repo"])
+    .run([
+      "code",
+      ...(verbose ? ["--verbose"] : []),
+      ...(verboseOutput ? ["--verbose-output"] : []),
+      ...(quiet ? ["--quiet"] : []),
+      "--working-directory",
+      "/repo",
+    ])
     .then((code) => ({ code, captured: capture.captured }));
 };
 
@@ -155,6 +172,40 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
     expect(defaultCounts.total).toBeGreaterThanOrEqual(5);
     expect(defaultCounts.total).toBeLessThanOrEqual(15);
     expect(verboseCounts.total).toBeGreaterThan(defaultCounts.total);
+  });
+
+  test("--verbose names the file a tool edits, without the raw stream", async () => {
+    const { code, captured } = await runCodeWith(buildDeliveryEvents("ses_file"), true);
+
+    expect(code).toBe(0);
+    expect(captured.some((entry) =>
+      entry.level === "debug"
+      && entry.message.includes("herramienta edit")
+      && entry.message.includes("en src/output/reporter.ts"))).toBeTrue();
+    expect(countByLevel(captured).trace).toBe(0);
+  });
+
+  test("--verbose-output adds every tool input, its output and the raw event", async () => {
+    const { code, captured } = await runCodeWith(buildDeliveryEvents("ses_full"), false, false, true);
+
+    expect(code).toBe(0);
+    const traces = captured.filter((entry) => entry.level === "trace");
+    // The whole input, not only the summary the parsed line carries.
+    expect(traces.some((entry) =>
+      entry.message.includes("herramienta edit entrada:")
+      && entry.message.includes("src/output/reporter.ts")
+      && entry.message.includes("old_string"))).toBeTrue();
+    expect(traces.some((entry) => entry.message.includes("herramienta edit salida: 1 archivo actualizado"))).toBeTrue();
+    expect(traces.some((entry) => entry.message.startsWith("OpenCode evento crudo: {"))).toBeTrue();
+    // It is strictly wider than --verbose, so the reasoning and tool lines are there too.
+    expect(captured.some((entry) => entry.level === "debug" && entry.message.includes("razonando: Analyzing pending changes"))).toBeTrue();
+  });
+
+  test("--verbose-output never reduces volume relative to --verbose", async () => {
+    const { captured: verboseCaptured } = await runCodeWith(buildDeliveryEvents("ses_wide_verbose"), true);
+    const { captured: fullCaptured } = await runCodeWith(buildDeliveryEvents("ses_wide_full"), false, false, true);
+
+    expect(countByLevel(fullCaptured).total).toBeGreaterThan(countByLevel(verboseCaptured).total);
   });
 
   test("--quiet silences a successful run and emits zero lines", async () => {

@@ -3,6 +3,7 @@ import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 import { AGENT_CLI_BINARIES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { DETERMINISTIC_TOOL_COMMANDS, DETERMINISTIC_TOOL_FORMS } from "./tool-commands.ts";
 
 /** One step of a declared fallback chain: the primary is rung zero, implicitly. */
 export interface FallbackRung {
@@ -33,6 +34,8 @@ export interface CliOptions {
   baseBranch: string | null;
   ticket: number | null;
   pullRequest: number | null;
+  /** The commit a deterministic tool is pinned to; always a full object name. */
+  commit: string | null;
   manifest: string | null;
   file: string | null;
   descriptionFile: string | null;
@@ -60,6 +63,8 @@ export interface CliOptions {
   normasSag: boolean;
   workingDirectory: string;
   verbose: boolean;
+  /** The widest reading of a run: everything the agent streams, verbatim. */
+  verboseOutput: boolean;
   quiet: boolean;
   noColor: boolean;
 }
@@ -119,6 +124,7 @@ const SUPPORTED_COMMANDS = new Set([
   "ticket-create",
   "ticket-link-parent",
   "ticket-link-predecessor",
+  ...DETERMINISTIC_TOOL_COMMANDS,
 ]);
 
 const EVIDENCE_KINDS = new Set<EvidenceKind>(["http-json", "screen", "command-output"]);
@@ -148,6 +154,19 @@ const nonNegativeNumberCoerce = (flag: string) => (value: unknown): number => {
     throw new Error(`${flag} requiere un numero no negativo (recibido: ${text})`);
   }
   return parsed;
+};
+
+/**
+ * A pinned commit is a full object name, because every deterministic tool that
+ * takes one compares it against a ref: an abbreviation would make the comparison
+ * fail as if the branch had moved.
+ */
+const commitCoerce = (value: unknown): string => {
+  const text = String(value ?? "").trim();
+  if (!/^[0-9a-f]{40,64}$/i.test(text)) {
+    throw new Error(`--commit requiere el nombre de objeto completo del commit (recibido: ${text})`);
+  }
+  return text;
 };
 
 const evidenceKindCoerce = (value: unknown): EvidenceKind | null => {
@@ -248,11 +267,11 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     })
     .group(["hu", "issue", "environment"], "Alcance:")
     .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "prompt"], "Agente de codificacion:")
-    .group(["branch", "base-branch", "ticket", "pr", "manifest"], "Tickets Azure:")
+    .group(["branch", "base-branch", "ticket", "pr", "commit", "manifest"], "Tickets Azure:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
     .group(["normas-sag", "working-directory"], "Contexto:")
-    .group(["verbose", "quiet", "color"], "Reportador:")
+    .group(["verbose", "verbose-output", "quiet", "color"], "Reportador:")
     .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
     .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
     .option("cli", {
@@ -277,6 +296,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
     .option("ticket", positiveIntegerOption("ticket", "--ticket", "Identificador del ticket Azure."))
     .option("pr", positiveIntegerOption("pr", "--pr", "Identificador del pull request."))
+    .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
     .option("manifest", stringOption("manifest", "--manifest", "Ruta al manifest de completion."))
     .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
     .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
@@ -302,6 +322,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
     .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
     .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
+    .option("verbose-output", { type: "boolean", default: false, describe: "Emite todo lo que entregan los agentes, incluidas las entradas y salidas completas de cada herramienta y el evento crudo; implica --verbose." })
     .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
     .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
@@ -450,6 +471,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     baseBranch: asString("base-branch"),
     ticket: asNumber("ticket"),
     pullRequest: asNumber("pr"),
+    commit: asString("commit"),
     manifest: asString("manifest"),
     file: asString("file") ?? asString("evidence-file"),
     descriptionFile: asString("description-file"),
@@ -475,7 +497,10 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     numberOfQuestions: asNumber("number-of-questions") ?? DEFAULT_NUMBER_OF_QUESTIONS,
     normasSag: parsed["normas-sag"] === true,
     workingDirectory: asString("working-directory") ?? process.cwd(),
-    verbose: parsed["verbose"] === true,
+    // `--verbose-output` is strictly wider than `--verbose`, so it turns the
+    // narrower one on rather than standing beside it as a third mode.
+    verbose: parsed["verbose"] === true || parsed["verbose-output"] === true,
+    verboseOutput: parsed["verbose-output"] === true,
     quiet: parsed["quiet"] === true,
     noColor: parsed["color"] === false,
   };
@@ -496,6 +521,8 @@ function renderHelp(parser: YargsInstance): string {
     "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
+    "  herramientas deterministas: no abren sesion, imprimen su resultado como JSON y son las mismas que usa el workflow",
+    "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
   ].join("\n");
 }
 
@@ -531,4 +558,7 @@ const COMMAND_FORMS = [
   "  lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <titulo> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<valor>]",
   "  lazy-workflow ticket-link-parent --parent <id> --child <id>",
   "  lazy-workflow ticket-link-predecessor --blocker <id> --blocked <id>",
+  "",
+  "Herramientas deterministas (sin sesion):",
+  ...DETERMINISTIC_TOOL_FORMS,
 ];

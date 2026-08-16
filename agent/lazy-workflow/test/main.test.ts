@@ -1121,10 +1121,13 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
   ].join("\n");
   let spawnOptions: { cwd?: string } | undefined;
   const reporter = {
+    tracing: false,
     info: (message: string) => infoLines.push(message),
     warn: () => undefined,
     error: () => undefined,
     debug: (message: string) => debugLines.push(message),
+    trace: () => undefined,
+    heading: () => undefined,
     start: () => ({ stop: () => undefined }),
     stop: () => undefined,
   };
@@ -1653,15 +1656,19 @@ const captureReporter = () => {
   const warn: string[] = [];
   const error: string[] = [];
   const debug: string[] = [];
+  const trace: string[] = [];
   const reporter: Reporter = {
+    tracing: true,
     info: (message: string) => { info.push(message); },
     warn: (message: string) => { warn.push(message); },
     error: (message: string) => { error.push(message); },
     debug: (message: string) => { debug.push(message); },
+    trace: (message: string) => { trace.push(message); },
+    heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
   };
-  return { reporter, info, warn, error, debug };
+  return { reporter, info, warn, error, debug, trace };
 };
 
 type VerbosityOptions = { verbose: boolean; quiet: boolean; noColor: boolean };
