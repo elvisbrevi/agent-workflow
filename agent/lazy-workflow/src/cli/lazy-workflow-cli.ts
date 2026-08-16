@@ -89,6 +89,7 @@ import { authorityConfigPath, authorityProfile } from "../prompts/authority-prof
 import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
 import {
   buildCli,
+  variantRejection,
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
   type CliParser,
@@ -212,7 +213,11 @@ function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
 function getRecoveryOverrides(options: CliOptions, checkpoint: Pick<GitHubDeliveryCheckpoint, "model" | "variant">): AgentResumeOverrides {
   const overrides = getResumeOverrides(options);
   if (!checkpoint.model || options.hasModel) return overrides;
-  return { ...overrides, model: checkpoint.model, ...(checkpoint.variant ? { variant: checkpoint.variant } : {}) };
+  // The declared overrides land last because an explicit one always wins, and an
+  // explicit `--variant` is the value adoption validated against the CLI the
+  // checkpoint imposes — rejecting it there and then ignoring it here would name
+  // two different variants for one session (issue #253).
+  return { model: checkpoint.model, ...(checkpoint.variant ? { variant: checkpoint.variant } : {}), ...overrides };
 }
 
 /** The declared chain with the run's own rung at the head, which is where a descent always starts. */
@@ -461,6 +466,15 @@ export class LazyWorkflowCli {
         `lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado. `
         + `Reanuda con --cli ${cli}, o sin --cli, para continuar el trabajo donde quedó.`,
       );
+      return null;
+    }
+    // Parsing validated an explicit --variant against the command's own --cli,
+    // which is not the CLI adopted here. An override the adopted one cannot
+    // execute is an argument error like any other, caught with the checkpoint
+    // intact rather than spent on a session that opens to die (issue #253).
+    const rejection = options.hasVariant ? variantRejection(cli, options.variant) : null;
+    if (rejection) {
+      reportOperator(`lazy-workflow: la recuperación adopta el CLI ${cli} y ${rejection}; checkpoint conservado.`);
       return null;
     }
     this.resolveAgent(cli);
