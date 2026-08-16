@@ -12,6 +12,7 @@ import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/git
 import type { GitHubWorkspaceCheckpoint } from "../src/github/github-workspace-checkpoint.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
+import { captureReporter } from "./_helpers/reporter-capture.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
 import { createAzureWorkspaceHarness, hu, integrationBranch, remoteUrlA, remoteUrlB, repoA, repoB, ticket, ticketBranch } from "./_helpers/azure-workspace-fixtures.ts";
 
@@ -71,6 +72,7 @@ function githubDeliveryCli(
   };
   const pending = options.nextIssue === undefined ? [] : [options.nextIssue];
   const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
+  const { reporterFn, messages: reported } = captureReporter();
   const cli = new LazyWorkflowCli(
     azure,
     agents.source,
@@ -84,7 +86,7 @@ function githubDeliveryCli(
     undefined,
     undefined,
     buildCli(() => true),
-    undefined,
+    reporterFn,
     {
       reconcileClaimedIssue: async () => fakeSelectedIssue(178),
       selectEligibleIssue: async () => {
@@ -99,7 +101,7 @@ function githubDeliveryCli(
     store,
     lock,
   );
-  return { cli, store, get current() { return current; } };
+  return { cli, store, reported, get current() { return current; } };
 }
 
 test("la entrega GitHub reanuda con el CLI que fijó el checkpoint", async () => {
@@ -125,6 +127,16 @@ test("un --cli que contradice el checkpoint GitHub falla cerrado y lo conserva",
   expect(await state.cli.run(["code", "--cli", "opencode", "--working-directory", "/repo"])).toBe(1);
   expect(agents.resumed).toEqual([]);
   expect(state.current).toEqual(checkpoint);
+});
+
+test("el rechazo de un --cli contradictorio nombra el CLI del checkpoint y cómo reanudar", async () => {
+  const state = githubDeliveryCli(githubDeliveryCheckpoint("claudecode"), spyingAgents());
+
+  await state.cli.run(["code", "--cli", "opencode", "--working-directory", "/repo"]);
+
+  const rejection = state.reported.join("");
+  expect(rejection).toContain("el checkpoint pertenece al CLI claudecode");
+  expect(rejection).toContain("--cli claudecode");
 });
 
 test("`code --session` reanuda con el CLI del checkpoint GitHub y rechaza uno contradictorio", async () => {
