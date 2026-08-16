@@ -436,3 +436,125 @@ describe("OpenCodeService reporter routing", () => {
     expect(execution.result.text).toBe("Voy a emitir IMPLEMENTATION_READY pronto");
   });
 });
+
+// Fragments captured from a real `opencode run --format json` invocation against
+// live providers (invalid credentials / unsupported model), see
+// src/opencode/open-code-service.ts for the citation of each shape.
+describe("OpenCodeService agotamiento del proveedor", () => {
+  const stub = (output: string, exitCode = 1) => ({
+    stdout: new Blob([output]).stream(),
+    stderr: new Blob([]).stream(),
+    exited: Promise.resolve(exitCode),
+    kill: () => undefined,
+  });
+
+  test("un ProviderAuthError real se clasifica como agotamiento por autenticacion", async () => {
+    // Captured running `opencode run` with DEEPSEEK_API_KEY set to an invalid value:
+    // {"type":"error","sessionID":"ses_x","error":{"name":"APIError","data":{"message":"Authentication Fails, Your api key: ****-000 is invalid","statusCode":401,"isRetryable":false}}}
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_auth",
+      error: { name: "APIError", data: { message: "Authentication Fails, Your api key: ****-000 is invalid", statusCode: 401, isRetryable: false } },
+    });
+    const { reporter, captured } = captureReporter(false);
+    const service = new OpenCodeService(() => stub(output), reporter);
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toEqual({ cli: "OpenCode", model: standardOptions.model, cause: "authentication" });
+    expect(execution.failed).toBeTrue();
+    expect(captured.warn.some((line) =>
+      line.includes("OpenCode") && line.includes(standardOptions.model) && line.includes("authentication"),
+    )).toBeTrue();
+  });
+
+  test("un APIError con statusCode 429 se clasifica como agotamiento por limite de uso", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_rate",
+      error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toEqual({ cli: "OpenCode", model: standardOptions.model, cause: "rate_limit" });
+  });
+
+  test("un APIError con statusCode 402 se clasifica como agotamiento por facturacion", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_billing",
+      error: { name: "APIError", data: { message: "Payment Required", statusCode: 402, isRetryable: false } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toEqual({ cli: "OpenCode", model: standardOptions.model, cause: "billing" });
+  });
+
+  test("un error ambiguo del proveedor no se clasifica como agotamiento", async () => {
+    // Captured running `opencode run --model openai/gpt-4o-fake-model-xyz`:
+    // {"type":"error","sessionID":"ses_x","error":{"name":"UnknownError","data":{"message":"Model not found: openai/gpt-4o-fake-model-xyz..."}}}
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_unknown",
+      error: { name: "UnknownError", data: { message: "Model not found: openai/gpt-4o-fake-model-xyz." } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+    expect(execution.failed).toBeTrue();
+  });
+
+  test("un APIError con statusCode 500 no se clasifica como agotamiento", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_server",
+      error: { name: "APIError", data: { message: "Unexpected server error.", statusCode: 500, isRetryable: true } },
+    });
+    const service = new OpenCodeService(() => stub(output));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("una sesion exitosa no tiene agotamiento del proveedor", async () => {
+    const output = jsonEvent({ type: "text", sessionID: "ses_ok", part: { type: "text", text: "listo" } });
+    const service = new OpenCodeService(() => stub(output, 0));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+    expect(execution.failed).toBeFalse();
+  });
+
+  test("un evento de error que no impide terminar con exito no se clasifica como agotamiento", async () => {
+    const output = [
+      jsonEvent({ type: "error", sessionID: "ses_recovered", error: { name: "APIError", data: { statusCode: 429 } } }),
+      jsonEvent({ type: "text", sessionID: "ses_recovered", part: { type: "text", text: "se recupero" } }),
+    ].join("\n");
+    const service = new OpenCodeService(() => stub(output, 0));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("un agotamiento durante una reanudacion sin modelo explicito nombra igual el modelo con el que abrio", async () => {
+    const output = jsonEvent({ type: "error", sessionID: "ses_resumed", error: { name: "ProviderAuthError" } });
+    const { reporter, captured } = captureReporter(false);
+    const service = new OpenCodeService(() => stub(output), reporter);
+
+    await expect(service.resume("ses_resumed")).rejects.toThrow();
+
+    expect(captured.warn.some((line) =>
+      line.includes("OpenCode") && line.includes("authentication") && !line.includes("modelo ,"),
+    )).toBeTrue();
+  });
+});
