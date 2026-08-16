@@ -77,7 +77,10 @@ the cross-CLI handoff of a GitHub delivery moves a session off the declared
 command adopts the CLI now holding its work — for that unit only, since the next
 one starts on the declared rung. The distinction is what the checkpoint recorded,
 never what the rerun's chain declares. Every other checkpoint has no handoff to
-record and fails closed on any contradiction. A checkpoint written before the
+record and fails closed on any contradiction. Adopting a CLI revalidates an
+explicit `--variant` against it, since parsing validated that value against the
+`--cli` of the command: one the adopted CLI cannot execute stops the run before
+the session opens, with the checkpoint preserved. A checkpoint written before the
 session-owning CLI existed reads as OpenCode and is
 rewritten in the current schema, so a delivery in flight survives the update.
 _Avoid_: inferring the CLI from the current invocation, a second checkpoint file
@@ -124,7 +127,10 @@ _Avoid_: agent, agent authority profile, runner
 **Agent rung**:
 One executable position in a run's fallback order: a coding agent CLI, a model,
 and a variant declared together. The primary rung is the run's own `--cli`,
-`--model`, and `--variant`.
+`--model`, and `--variant`. Recovery resumes on the rung its checkpoint recorded,
+except where the command declares that field explicitly: an explicit `--model` or
+`--variant` still wins, and the variant is the one adoption validated against the
+CLI the checkpoint imposes.
 _Avoid_: fallback model, model override
 
 **Fallback chain**:

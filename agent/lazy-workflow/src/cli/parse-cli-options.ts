@@ -325,14 +325,25 @@ const isValidVariant = (cli: AgentCli, variant: string): boolean =>
   cli !== "claudecode" || CLAUDE_CODE_EFFORTS.includes(variant as typeof CLAUDE_CODE_EFFORTS[number]);
 
 /**
+ * Why `cli` cannot execute `variant`, or null when it can. It is exported
+ * because parsing is not the last word on which CLI runs the value: recovery
+ * adopts the CLI its checkpoint imposes, and that one may reject a variant the
+ * command's `--cli` accepted (issue #253). One definition keeps both rejections
+ * naming the same CLI, value, and accepted set.
+ */
+export function variantRejection(cli: AgentCli, variant: string): string | null {
+  if (isValidVariant(cli, variant)) return null;
+  return `--variant ${variant} no es un esfuerzo de ${cli} (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`;
+}
+
+/**
  * `--variant` is the effort of the selected CLI, and Claude Code accepts a fixed
  * set of them, so an unusable value is an argument error rather than a session
  * that opens and dies. OpenCode variants stay free-form.
  */
 function readVariant(cli: AgentCli, variant: string): string {
-  if (!isValidVariant(cli, variant)) {
-    throw new Error(`--variant ${variant} no es un esfuerzo de Claude Code (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
-  }
+  const rejection = variantRejection(cli, variant);
+  if (rejection) throw new Error(rejection);
   return variant;
 }
 
@@ -364,9 +375,8 @@ function parseFallbackRung(entry: unknown, binaryPresent: BinaryProbe): Fallback
   if (!binaryPresent(binary)) {
     throw new Error(`--fallback ${entry} requiere el binario ${binary} en el PATH`);
   }
-  if (!isValidVariant(cliText, variant)) {
-    throw new Error(`--fallback ${entry}: --variant ${variant} no es un esfuerzo de Claude Code (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`);
-  }
+  const rejection = variantRejection(cliText, variant);
+  if (rejection) throw new Error(`--fallback ${entry}: ${rejection}`);
   return { cli: cliText, model, variant };
 }
 
