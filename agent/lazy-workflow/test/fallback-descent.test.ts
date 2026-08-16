@@ -181,7 +181,7 @@ test("un agotamiento encadenado continúa hacia el escalón siguiente y nunca ha
   ]);
 });
 
-test("un escalón intermedio de otro CLI se salta y el orden declarado se respeta", async () => {
+test("el orden declarado se respeta aunque el escalón siguiente sea de otro CLI", async () => {
   const agents = scriptedAgents({ run: [exhausted("provider/primario")], resume: [terminal()] });
 
   const code = await runDelivery(agents, [
@@ -190,10 +190,13 @@ test("un escalón intermedio de otro CLI se salta y el orden declarado se respet
   ]);
 
   expect(code).toBe(0);
-  // Sin sesión que reanudar en el otro CLI, el escalón no es usable todavía; el
-  // descenso sigue el orden declarado hasta el primero que sí lo es.
-  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual(["provider/ultimo"]);
-  expect(agents.requested).toEqual(["opencode"]);
+  // El escalón de otro CLI no tiene sesión que reanudar: se alcanza con un
+  // traspaso, y el escalón siguiente ni se toca. El traspaso vive en
+  // fallback-handoff.test.ts.
+  expect(agents.resumed).toEqual([]);
+  // El último agente resuelto vuelve a ser el primario, listo para la unidad siguiente.
+  expect(agents.requested).toEqual(["opencode", "claudecode", "opencode"]);
+  expect(agents.started).toEqual(["opencode-go/deepseek-v4-pro", "claude-opus-5"]);
 });
 
 test("el checkpoint refleja el modelo activo cuando el descenso lo cambia", async () => {

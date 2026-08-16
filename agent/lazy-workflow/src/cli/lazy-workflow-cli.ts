@@ -47,6 +47,7 @@ import {
   GitHubDeliveryCheckpointStore,
   type GitHubCheckpointStore,
   type GitHubDeliveryCheckpoint,
+  type GitHubDeliveryPhase,
 } from "../github/github-delivery-checkpoint.ts";
 import {
   GitHubDeliveryService,
@@ -79,6 +80,7 @@ import {
   buildResumePrompt,
   buildWorkflowPrompt,
   resolveWorkflowRun,
+  type HandoffProgress,
   type SagContext,
   type WorkflowPromptSpec,
   type WorkflowRun,
@@ -219,18 +221,15 @@ function fallbackChainOf(options: ParsedCliOptions): FallbackRung[] {
 }
 
 /**
- * The rung a descent from `fromIndex` lands on: the declared order is walked
- * forward, and today only a rung sharing the active CLI is usable, because
- * descending resumes the session that CLI owns. A rung naming another CLI has no
- * session to resume, so it is skipped without reordering the chain (issue #238).
+ * The rung a descent from `fromIndex` lands on: the next one in declared order,
+ * whichever CLI it names. A rung sharing the active CLI resumes its session; a
+ * rung naming another one has no session to resume and is reached through a
+ * handoff instead, so the declared order is never reordered (issues #238, #239).
  */
-function nextUsableRung(options: CliOptions, fromIndex: number): { rung: FallbackRung; index: number } | null {
-  const chain = fallbackChainOf(options);
-  for (let index = fromIndex + 1; index < chain.length; index += 1) {
-    const rung = chain[index]!;
-    if (rung.cli === options.cli) return { rung, index };
-  }
-  return null;
+function nextRung(options: CliOptions, fromIndex: number): { rung: FallbackRung; index: number } | null {
+  const index = fromIndex + 1;
+  const rung = fallbackChainOf(options)[index];
+  return rung ? { rung, index } : null;
 }
 
 function describeRung(rung: FallbackRung): string {
@@ -962,35 +961,45 @@ export class LazyWorkflowCli {
 
   /**
    * Provider exhaustion descends the declared chain instead of ending the unit of
-   * work: the next usable rung resumes the same session with its model and
-   * variant, so the work continues with the context already built. The descent is
-   * sticky — the chain is only walked forward, never back — and it keeps
-   * descending while each new rung exhausts too. An ordinary failure, a chain with
-   * no usable rung left, and a run without `--fallback` all come back untouched,
-   * so the caller decides exactly as it does today (issue #238).
+   * work. A rung sharing the active CLI resumes the same session with its model
+   * and variant, so the work continues with the context already built; a rung
+   * naming another CLI has no session to resume and continues the same unit
+   * through `handOff`. The descent is sticky — the chain is only walked forward,
+   * never back — and it keeps descending while each new rung exhausts too. An
+   * ordinary failure, an exhausted chain, and a run without `--fallback` all come
+   * back untouched, so the caller decides exactly as it does today (issues #238,
+   * #239).
    */
   private async descendFallbackChain(
     options: CliOptions,
     execution: AgentExecution,
     resume: (sessionId: string, overrides: AgentResumeOverrides) => Promise<AgentResult>,
-    onDescent?: (rung: FallbackRung, sessionId: string) => Promise<void>,
+    onDescent: (rung: FallbackRung, sessionId: string) => Promise<void>,
+    handOff: (rung: FallbackRung) => Promise<AgentExecution>,
   ): Promise<AgentExecution> {
     let current = execution;
     let active: FallbackRung = { cli: options.cli, model: options.model, variant: options.variant };
     let index = 0;
     while (current.exhaustion) {
-      const next = nextUsableRung(options, index);
+      const next = nextRung(options, index);
       if (!next) return current;
       const sessionId = current.result.sessionId;
+      const handedOff = next.rung.cli !== active.cli;
       reportOperator(
-        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} reanudando la sesión ${sessionId}.`,
+        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} ${
+          handedOff ? "traspasando el trabajo a una sesión nueva" : `reanudando la sesión ${sessionId}`
+        }.`,
       );
       active = next.rung;
       index = next.index;
-      await onDescent?.(next.rung, sessionId);
       try {
-        const result = await resume(sessionId, { model: next.rung.model, variant: next.rung.variant });
-        current = { result, azureLoginRequired: false, failed: false };
+        if (handedOff) {
+          current = await handOff(next.rung);
+        } else {
+          await onDescent(next.rung, sessionId);
+          const result = await resume(sessionId, { model: next.rung.model, variant: next.rung.variant });
+          current = { result, azureLoginRequired: false, failed: false };
+        }
       } catch (error) {
         // Only exhaustion keeps descending; a missing session or any ordinary
         // failure belongs to the caller's own error handling, untouched.
@@ -2067,10 +2076,12 @@ export class LazyWorkflowCli {
       let intent: GitHubDeliveryCheckpoint["intent"] = null;
       /** The rung in course, written only once a descent moves it, so a run on its primary keeps the historical checkpoint shape. */
       let activeRung: FallbackRung | null = null;
+      /** The CLI that owns the session in course: the run's own until a handoff moves the work to another one. */
+      let activeCli = options.cli;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 2,
-          cli: options.cli,
+          cli: activeCli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -2110,6 +2121,10 @@ export class LazyWorkflowCli {
         return 1;
       }
       const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
+      /** The authority of the session in course, restated by a handoff in the new CLI's own format. */
+      let activeAuthority = run.agent;
+      /** The session `activeCli` owns once a handoff opened a new one, so the two are never checkpointed crossed. */
+      let activeSessionId: string | null = null;
       let execution;
       try {
         execution = await this.codingAgent.run({
@@ -2126,11 +2141,29 @@ export class LazyWorkflowCli {
             "continue",
             options.workingDirectory,
             IMPLEMENTATION_READY_MARKER,
-            { ...overrides, agent: run.agent },
+            { ...overrides, agent: activeAuthority },
           ),
           async (rung, sessionId) => {
             activeRung = rung;
             await saveCheckpoint("implementing", sessionId);
+          },
+          async (rung) => {
+            const handedOff = await this.handOffGitHubDelivery(options, rung, {
+              issue,
+              repository,
+              branch: branch!,
+              manifestPath: manifestPath!,
+              norms,
+            });
+            activeRung = rung;
+            activeCli = rung.cli;
+            activeAuthority = handedOff.agent;
+            activeSessionId = handedOff.execution.result.sessionId;
+            // El CLI nuevo y la sesión nueva quedan en el checkpoint en una sola
+            // escritura, en cuanto el CLI nuevo devuelve el identificador: antes
+            // de correr la sesión todavía no existe ninguno que registrar.
+            await saveCheckpoint("implementing", activeSessionId);
+            return handedOff.execution;
           },
         );
       } catch (error) {
@@ -2139,11 +2172,14 @@ export class LazyWorkflowCli {
         // CLI declares gone goes back sessionless, as recovery already does.
         await saveCheckpoint(
           "reconciling",
-          error instanceof AgentSessionNotFoundError ? null : execution?.result.sessionId ?? null,
+          error instanceof AgentSessionNotFoundError ? null : activeSessionId ?? execution?.result.sessionId ?? null,
         );
         reportOperator(`lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`);
         return 1;
       }
+      // El descenso es sticky solo dentro de esta unidad: la siguiente vuelve a
+      // arrancar en el escalón primario, también cuando un traspaso cambió de CLI.
+      if (activeCli !== options.cli) this.resolveAgent(options.cli);
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
       const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
@@ -2151,7 +2187,7 @@ export class LazyWorkflowCli {
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({
           schemaVersion: 2,
-          cli: options.cli,
+          cli: activeCli,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -2173,7 +2209,7 @@ export class LazyWorkflowCli {
         try {
           await this.completeGitHubDelivery(options, {
             schemaVersion: 2,
-            cli: options.cli,
+            cli: activeCli,
             workflow: "github-code",
             repository: repository.nameWithOwner,
             issue: issue.number,
@@ -2215,6 +2251,73 @@ export class LazyWorkflowCli {
     norms: SagContext | null,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
     return this.prompt({ kind: "github-delivery", issue, repository, branch, manifestPath }, options, norms);
+  }
+
+  /**
+   * The cross-CLI handoff: a fresh session in the rung's CLI continuing the same
+   * fixed unit of work. It receives the coordinator's own delivery prompt —
+   * same issue, branch, manifest path and marker contract — plus the progress
+   * already verified on disk, and the authority profile in the format the new CLI
+   * enforces. Nothing the exhausted session said travels with it (ADR-0025).
+   */
+  private async handOffGitHubDelivery(
+    options: CliOptions,
+    rung: FallbackRung,
+    work: {
+      issue: SelectedManagedIssue;
+      repository: GitHubRepositoryContext;
+      branch: string;
+      manifestPath: string;
+      norms: SagContext | null;
+    },
+  ): Promise<{ execution: AgentExecution; agent: AgentAuthority }> {
+    const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
+    const run = await this.prompt(
+      { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch, manifestPath: work.manifestPath },
+      handoffOptions,
+      work.norms,
+      await this.verifiedProgress(options.workingDirectory, "implementing", work.branch, work.manifestPath),
+    );
+    this.resolveAgent(rung.cli);
+    return {
+      execution: await this.codingAgent.run({
+        ...handoffOptions,
+        ...run,
+        session: null,
+        terminalMarker: IMPLEMENTATION_READY_MARKER,
+      }, false),
+      agent: run.agent,
+    };
+  }
+
+  /**
+   * What a handoff can state about the work already done: the checkpoint phase
+   * and what the repository itself answers. A commit that does not exist yet, an
+   * unreadable worktree, or a manifest never written are all absences the section
+   * names rather than failures that stop the handoff.
+   */
+  private async verifiedProgress(
+    workingDirectory: string,
+    phase: GitHubDeliveryPhase,
+    branch: string,
+    manifestPath: string,
+  ): Promise<HandoffProgress> {
+    const readGit = async (args: string[]): Promise<string | null> => {
+      try {
+        return (await this.git(args, workingDirectory)).trim() || null;
+      } catch {
+        return null;
+      }
+    };
+    return {
+      phase,
+      branch,
+      // `log -1` fails on a branch with no commits yet, which is the absence the
+      // section states; `rev-parse HEAD` would answer the base tip instead.
+      commit: await readGit(["log", "-1", "--format=%H %s"]),
+      uncommitted: await readGit(["status", "--porcelain", "--untracked-files=all"]) ?? "",
+      manifest: await Bun.file(manifestPath).text().catch(() => null),
+    };
   }
 
   private async buildGitHubReconciliationPrompt(
@@ -2917,6 +3020,8 @@ export class LazyWorkflowCli {
     spec: WorkflowPromptSpec,
     options: CliOptions,
     norms: SagContext | null = null,
+    /** Set only by a cross-CLI handoff, so the same spec also states where the work stands. */
+    progress: HandoffProgress | null = null,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
     return {
       prompt: await buildWorkflowPrompt(spec, {
@@ -2924,6 +3029,7 @@ export class LazyWorkflowCli {
         workingDirectory: options.workingDirectory,
         norms,
         questions: options.numberOfQuestions,
+        progress,
       }),
       agent: this.authority(spec, options.cli),
     };
