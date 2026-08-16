@@ -503,7 +503,12 @@ effect whichever CLI that is.
 
 Delivery records the owning CLI in its checkpoint, so `--session <id>` resumes
 against the CLI that opened the session, and a `--cli` that contradicts the
-checkpoint fails closed with the checkpoint preserved.
+checkpoint fails closed with the checkpoint preserved, naming the CLI that owns
+it so you can resume with that one or drop `--cli`. The exception is a
+contradiction the run itself created: when a cross-CLI handoff moved a GitHub
+delivery off the `--cli` you declared, relaunching the same command resumes the
+work on the CLI holding it instead of failing closed, and the unit after it
+starts on your declared CLI again.
 
 ## Fallback chain
 

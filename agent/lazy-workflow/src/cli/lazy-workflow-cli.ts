@@ -455,7 +455,7 @@ export class LazyWorkflowCli {
    * names to the operator — is executed by the agent this resolved. Returns null
    * when the run must stop.
    */
-  private adoptCheckpointCli(cli: AgentCli, options: CliOptions, handoffFrom: AgentCli | null = null): CliOptions | null {
+  private adoptCheckpointCli(cli: AgentCli, options: CliOptions, handoffFrom?: AgentCli): CliOptions | null {
     if (options.hasCli && options.cli !== cli && options.cli !== handoffFrom) {
       reportOperator(
         `lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado. `
@@ -895,7 +895,7 @@ export class LazyWorkflowCli {
 
     if (command === "code") {
       if (githubRecovery) {
-        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options, githubRecovery.handoffFrom ?? null);
+        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options, githubRecovery.handoffFrom);
         if (!adopted) return 1;
         const code = await this.runGitHubRecovery(adopted, githubRecovery);
         return code === 0 ? this.continueQueueAfterRecovery(this.restoreDeclaredCli(options, adopted), false) : code;
@@ -2008,7 +2008,7 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
-        const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom ?? null);
+        const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom);
         if (!adopted) return 1;
         let code: number;
         if (checkpoint.sessionId) {
@@ -2141,13 +2141,17 @@ export class LazyWorkflowCli {
       let activeRung: FallbackRung | null = null;
       /** The CLI that owns the session in course: the run's own until a handoff moves the work to another one. */
       let activeCli = options.cli;
+      /**
+       * Escrito mientras un traspaso tiene el trabajo en otro CLI, y en cada
+       * checkpoint que la unidad deje atrás hasta cerrarla: es lo que deja al
+       * comando original reanudar su propio trabajo (issue #252).
+       */
+      const handoffOrigin = (): { handoffFrom?: AgentCli } => activeCli === options.cli ? {} : { handoffFrom: options.cli };
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 2,
           cli: activeCli,
-          // Escrito solo mientras un traspaso tiene la sesión en otro CLI: es lo
-          // que deja al comando original reanudar su propio trabajo (issue #252).
-          ...(activeCli !== options.cli ? { handoffFrom: options.cli } : {}),
+          ...handoffOrigin(),
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
@@ -2276,6 +2280,7 @@ export class LazyWorkflowCli {
           await this.completeGitHubDelivery(options, {
             schemaVersion: 2,
             cli: activeCli,
+            ...handoffOrigin(),
             workflow: "github-code",
             repository: repository.nameWithOwner,
             issue: issue.number,
