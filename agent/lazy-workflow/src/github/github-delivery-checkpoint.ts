@@ -41,6 +41,11 @@ export interface GitHubDeliveryCheckpoint {
   phase: GitHubDeliveryPhase;
   branch: string | null;
   sessionId: string | null;
+  /**
+   * The model the session is running on, written only once a fallback descent
+   * moves it off the run's own; absent means the primary rung (issue #238).
+   */
+  model?: string | null;
   commit: string | null;
   pullRequest: number | null;
   receipts: Partial<Record<string, GitHubDeliveryReceipt>>;
@@ -97,6 +102,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "phase",
     "branch",
     "sessionId",
+    "model",
     "commit",
     "pullRequest",
     "receipts",
@@ -119,6 +125,8 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     && (checkpoint.sessionId === null
       || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
     && isCommit(checkpoint.commit)
+    && (checkpoint.model === undefined || checkpoint.model === null
+      || (typeof checkpoint.model === "string" && checkpoint.model.length > 0 && !/[\r\n]/.test(checkpoint.model)))
     && (checkpoint.baseBranch === undefined || isBranch(checkpoint.baseBranch))
     && (checkpoint.manifestPath === undefined || checkpoint.manifestPath === null || (typeof checkpoint.manifestPath === "string" && checkpoint.manifestPath.length > 0 && !/[\r\n]/.test(checkpoint.manifestPath)))
     && (checkpoint.mergeCommit === undefined || isCommit(checkpoint.mergeCommit))

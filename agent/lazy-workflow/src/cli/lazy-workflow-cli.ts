@@ -25,7 +25,8 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
+import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
+import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
@@ -89,6 +90,7 @@ import {
   type CliOptions as ParsedCliOptions,
   type CliParseResult,
   type CliParser,
+  type FallbackRung,
 } from "./parse-cli-options.ts";
 
 type CliOptions = AgentRunOptions & ParsedCliOptions;
@@ -197,6 +199,41 @@ function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
     ...(options.hasModel ? { model: options.model } : {}),
     ...(options.hasVariant ? { variant: options.variant } : {}),
   };
+}
+
+/**
+ * The overrides a recovered session resumes with: an explicit `--model` still
+ * wins, and otherwise the model the checkpoint recorded when a fallback descent
+ * moved the run off its primary rung, so recovery does not resume on the rung
+ * that was already exhausted (issue #238).
+ */
+function getRecoveryOverrides(options: CliOptions, model: string | null | undefined): AgentResumeOverrides {
+  const overrides = getResumeOverrides(options);
+  return model && !options.hasModel ? { ...overrides, model } : overrides;
+}
+
+/** The declared chain with the run's own rung at the head, which is where a descent always starts. */
+function fallbackChainOf(options: ParsedCliOptions): FallbackRung[] {
+  return [{ cli: options.cli, model: options.model, variant: options.variant }, ...options.fallbackChain];
+}
+
+/**
+ * The rung a descent from `fromIndex` lands on: the declared order is walked
+ * forward, and today only a rung sharing the active CLI is usable, because
+ * descending resumes the session that CLI owns. A rung naming another CLI has no
+ * session to resume, so it is skipped without reordering the chain (issue #238).
+ */
+function nextUsableRung(options: CliOptions, fromIndex: number): { rung: FallbackRung; index: number } | null {
+  const chain = fallbackChainOf(options);
+  for (let index = fromIndex + 1; index < chain.length; index += 1) {
+    const rung = chain[index]!;
+    if (rung.cli === options.cli) return { rung, index };
+  }
+  return null;
+}
+
+function describeRung(rung: FallbackRung): string {
+  return `${rung.cli}:${rung.model}:${rung.variant}`;
 }
 
 function deploymentErrorMessage(error: unknown): string {
@@ -915,11 +952,52 @@ export class LazyWorkflowCli {
    */
   private reportFallbackChain(options: ParsedCliOptions): void {
     if (options.fallbackChain.length === 0) return;
-    const rungs = [{ cli: options.cli, model: options.model, variant: options.variant }, ...options.fallbackChain];
+    const rungs = fallbackChainOf(options);
     rungs.forEach((rung, index) => {
       const label = index === 0 ? "primario" : `respaldo ${index}`;
       reportOperator(`lazy-workflow: cadena de fallback escalon ${index + 1}/${rungs.length} (${label}): ${rung.cli} modelo=${rung.model} variante=${rung.variant}`);
     });
+  }
+
+  /**
+   * Provider exhaustion descends the declared chain instead of ending the unit of
+   * work: the next usable rung resumes the same session with its model and
+   * variant, so the work continues with the context already built. The descent is
+   * sticky — the chain is only walked forward, never back — and it keeps
+   * descending while each new rung exhausts too. An ordinary failure, a chain with
+   * no usable rung left, and a run without `--fallback` all come back untouched,
+   * so the caller decides exactly as it does today (issue #238).
+   */
+  private async descendFallbackChain(
+    options: CliOptions,
+    execution: AgentExecution,
+    resume: (sessionId: string, overrides: AgentResumeOverrides) => Promise<AgentResult>,
+    onDescent?: (rung: FallbackRung, sessionId: string) => Promise<void>,
+  ): Promise<AgentExecution> {
+    let current = execution;
+    let active: FallbackRung = { cli: options.cli, model: options.model, variant: options.variant };
+    let index = 0;
+    while (current.exhaustion) {
+      const next = nextUsableRung(options, index);
+      if (!next) return current;
+      const sessionId = current.result.sessionId;
+      reportOperator(
+        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} reanudando la sesión ${sessionId}.`,
+      );
+      active = next.rung;
+      index = next.index;
+      await onDescent?.(next.rung, sessionId);
+      try {
+        const result = await resume(sessionId, { model: next.rung.model, variant: next.rung.variant });
+        current = { result, azureLoginRequired: false, failed: false };
+      } catch (error) {
+        // Only exhaustion keeps descending; a missing session or any ordinary
+        // failure belongs to the caller's own error handling, untouched.
+        if (!(error instanceof AgentExhaustionError)) throw error;
+        current = { ...current, exhaustion: error.exhaustion };
+      }
+    }
+    return current;
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
@@ -1986,6 +2064,8 @@ export class LazyWorkflowCli {
       let pullRequest: number | null = null;
       let mergeCommit: string | null = null;
       let intent: GitHubDeliveryCheckpoint["intent"] = null;
+      /** Written only once a descent changes it, so a run on its primary rung keeps the historical checkpoint shape. */
+      let activeModel: string | null = null;
       const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
         if (store) await store.write({
           schemaVersion: 2,
@@ -2003,6 +2083,7 @@ export class LazyWorkflowCli {
           manifestPath,
           mergeCommit,
           intent,
+          ...(activeModel ? { model: activeModel } : {}),
         }, options.workingDirectory);
       };
       if (!checkpointWasWritten) await saveCheckpoint("selected");
@@ -2036,8 +2117,29 @@ export class LazyWorkflowCli {
           session: null,
           terminalMarker: IMPLEMENTATION_READY_MARKER,
         }, false);
+        execution = await this.descendFallbackChain(
+          options,
+          execution,
+          (sessionId, overrides) => this.codingAgent.resume(
+            sessionId,
+            "continue",
+            options.workingDirectory,
+            IMPLEMENTATION_READY_MARKER,
+            { ...overrides, agent: run.agent },
+          ),
+          async (rung, sessionId) => {
+            activeModel = rung.model;
+            await saveCheckpoint("implementing", sessionId);
+          },
+        );
       } catch (error) {
-        await saveCheckpoint("reconciling");
+        // A descent that failed still leaves a live session behind, so the
+        // checkpoint keeps it and recovery resumes that one; only a session the
+        // CLI declares gone goes back sessionless, as recovery already does.
+        await saveCheckpoint(
+          "reconciling",
+          error instanceof AgentSessionNotFoundError ? null : execution?.result.sessionId ?? null,
+        );
         reportOperator(`lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`);
         return 1;
       }
@@ -2545,7 +2647,7 @@ export class LazyWorkflowCli {
         "continue",
         options.workingDirectory,
         IMPLEMENTATION_READY_MARKER,
-        getResumeOverrides(options),
+        getRecoveryOverrides(options, liveCheckpoint.model),
       );
       console.log(JSON.stringify(result, null, 2));
       const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);

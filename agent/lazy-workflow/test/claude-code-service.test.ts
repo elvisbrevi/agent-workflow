@@ -7,6 +7,7 @@ import {
   type ReporterStream,
 } from "../src/output/reporter.ts";
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
+import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
 import { AUTHORITY_PROFILES, authorityConfigPath } from "../src/prompts/authority-profile.ts";
 
 beforeAll(() => {
@@ -445,6 +446,32 @@ describe("ClaudeCodeService agotamiento del proveedor", () => {
 
     expect(execution.failed).toBeFalse();
     expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("una reanudacion agotada lanza el error tipado que lleva el agotamiento", async () => {
+    const output = [initEvent("ses_resumed"), retryEvent("ses_resumed", "rate_limit")].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const error = await service
+      .resume("ses_resumed", "continue", "/repo", undefined, { model: "claude-sonnet-5" })
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AgentExhaustionError);
+    expect((error as AgentExhaustionError).exhaustion).toEqual({
+      cli: "Claude Code",
+      model: "claude-sonnet-5",
+      cause: "rate_limit",
+    });
+  });
+
+  test("una reanudacion que falla sin agotamiento no lanza el error de agotamiento", async () => {
+    const output = [initEvent("ses_broken"), assistantText("ses_broken", "algo salio mal")].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const error = await service.resume("ses_broken").catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AgentExhaustionError);
   });
 
   test("un agotamiento durante una reanudacion sin modelo explicito nombra igual el modelo con el que abrio", async () => {

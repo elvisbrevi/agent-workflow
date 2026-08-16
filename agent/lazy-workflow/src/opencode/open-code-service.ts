@@ -7,6 +7,7 @@ import {
 import { AgentResult, type OpenCodeEventData } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
+  AgentExhaustionError,
   AgentSessionCloseError,
   AgentSessionNotFoundError,
   describeExhaustion,
@@ -260,6 +261,7 @@ export class OpenCodeService implements CodingAgent {
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
+    if (execution.exhaustion) throw new AgentExhaustionError(execution.exhaustion);
     if (execution.failed) throw new Error("OpenCode termino con error");
     return execution.result;
   }
