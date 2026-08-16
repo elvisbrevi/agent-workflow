@@ -12,16 +12,11 @@ dependencies in its managed cache. Use the `lazy-workflow` command directly:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
-lazy-workflow code --prompt "deliver GitHub issue 123" --working-directory /path/to/repository
-lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
-lazy-workflow architecture-review-sag --hu 23438 --working-directory /path/to/repository
-lazy-workflow infra-sag --issue 155 --working-directory /path/to/repository
-lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
-lazy-workflow plan --hu 23438 --working-directory /path/to/repository
-lazy-workflow hu-branch-info --hu 23438
-lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
-  --base-branch main --working-directory /path/to/repository
+lazy-workflow code --working-directory /path/to/repository
 ```
+
+Every command has a runnable example in [Practical examples](#practical-examples);
+the sections after it explain what each one does.
 
 OpenCode events and periodic no-output heartbeats are printed with local
 `dd/mm/yy HH:mm:ss` timestamps while the workflow runs. Events show their
@@ -29,6 +24,195 @@ session ID, reasoning summaries, tool status, and sanitized tool input such as
 the shell command reported by OpenCode. The working directory is passed as
 OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
 retry messages are printed when a transient failure causes a retry.
+
+## Practical examples
+
+Every use of lazy-workflow, one runnable command each. Inside this directory
+`bun run main.ts <command>` and the globally installed `lazy-workflow <command>`
+are interchangeable. Every command below also accepts the coding agent flags
+(`--cli`, `--model`, `--variant`, `--fallback`) and the reporter flags
+(`--verbose`, `--quiet`, `--no-color`); the sections after this one explain the
+behaviour behind each example.
+
+### Planning
+
+```bash
+# Plan the GitHub backlog of one repository
+lazy-workflow plan --prompt "plan the requested GitHub work" \
+  --working-directory /path/to/repository
+
+# Ask a different number of clarifying questions (default 5)
+lazy-workflow plan --number-of-questions 8 --working-directory /path/to/repository
+
+# Plan against the SAG norms of the component declared in .sag/config.json
+lazy-workflow plan --normas-sag --working-directory /path/to/repository
+
+# Slice an Azure HU and publish its work items in dependency order
+lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+
+# Plan one unit of work across several repositories in a single session
+lazy-workflow plan --working-directory /path/to/repo-a,/path/to/repo-b
+```
+
+### Delivering
+
+```bash
+# Drain the eligible GitHub issues, each in its own fresh session
+lazy-workflow code --working-directory /path/to/repository
+
+# Same, with the SAG coding norms loaded
+lazy-workflow code --normas-sag --working-directory /path/to/repository
+
+# Drain the direct Task and Bug tickets of an Azure HU
+lazy-workflow code --hu 23438 --working-directory /path/to/repository
+
+# First delivery of an HU whose hu/<HU> branch does not exist yet
+lazy-workflow code --hu 23438 --base-branch main \
+  --working-directory /path/to/repository
+
+# Deliver one Azure ticket across a multi-repository workspace
+lazy-workflow code --hu 23438 --ticket 51 \
+  --working-directory /path/to/repo-a,/path/to/repo-b
+```
+
+### Resuming an interrupted run
+
+```bash
+# The issue or HU, the ticket and the branch come from the checkpoint,
+# so no --hu and no --working-directory are needed
+lazy-workflow code --session <session-id> --prompt continue
+
+# Resume the preserved session on a different model and effort
+lazy-workflow code --session <session-id> \
+  --model openai/gpt-5.6-luna --variant high --prompt continue
+
+# Reconcile a delivery that already reached IMPLEMENTATION_READY: rerun the
+# original command, which resumes the coordinator phase instead of selecting
+# replacement work
+lazy-workflow code --hu 23438 --working-directory /path/to/repository
+```
+
+### SAG-scoped workflows
+
+```bash
+# Architecture review: the only SAG workflow that opens a session
+lazy-workflow architecture-review-sag --issue 154 --working-directory /path/to/repository
+lazy-workflow architecture-review-sag --hu 23438 --working-directory /path/to/repository
+
+# Infrastructure prerequisites, verified read-only through the adapter
+lazy-workflow infra-sag --issue 155 --working-directory /path/to/repository
+lazy-workflow infra-sag --hu 23438 --working-directory /path/to/repository
+
+# Deploy through the adapter; dev is the default and PROD always fails closed
+lazy-workflow deploy-sag --issue 157 --working-directory /path/to/repository
+lazy-workflow deploy-sag --issue 157 --environment qa --working-directory /path/to/repository
+```
+
+### Azure reads — no session is opened
+
+```bash
+lazy-workflow hu-info --hu 23438
+lazy-workflow hu-branch-info --hu 23438
+lazy-workflow ticket-info --hu 23438 --ticket 23459
+lazy-workflow ticket-description-info --ticket 23459
+lazy-workflow ticket-state-info --ticket 23459
+lazy-workflow ticket-effort-info --ticket 23459
+lazy-workflow ticket-attachment-info --ticket 23459
+lazy-workflow ticket-evidence-info --ticket 23459
+lazy-workflow ticket-branch-info --hu 23438 --ticket 23459
+lazy-workflow ticket-pr-info --hu 23438 --ticket 23459
+lazy-workflow ticket-completion-info --hu 23438 --ticket 23459
+```
+
+### Azure writes — no session is opened
+
+```bash
+# Branch links
+lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --working-directory /path/to/repository
+lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 \
+  --base-branch main --working-directory /path/to/repository
+lazy-workflow ticket-branch-set --hu 23438 --ticket 23459 \
+  --branch ticket/23459 --working-directory /path/to/repository
+
+# Work items and their relations
+lazy-workflow ticket-create --hu 23438 --type Task --title "Slice uno" \
+  --description-file ./description.html --estimate 8 \
+  --assignee persona@empresa.cl --field Custom.Componente=api
+lazy-workflow ticket-link-parent --parent 23438 --child 23459
+lazy-workflow ticket-link-predecessor --blocker 23459 --blocked 23460
+
+# Ticket fields
+lazy-workflow ticket-description-set --ticket 23459 --description-file ./description.html
+lazy-workflow ticket-state-set --ticket 23459 --state "En progreso" --expected-state New
+lazy-workflow ticket-effort-set --ticket 23459 \
+  --real-effort 6 --real-effort-hh 6 --expected-rev 12
+
+# Completion evidence
+lazy-workflow ticket-pr-link --hu 23438 --ticket 23459 --pr 123
+lazy-workflow ticket-commit-link --ticket 23459 --pr 123
+lazy-workflow ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json
+lazy-workflow ticket-evidence-set --ticket 23459 --evidence-file completion.html
+lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 \
+  --manifest /path/to/completion.json
+```
+
+`--file` and `--kind` accept `--evidence-file` and `--evidence-kind` as aliases,
+and `--field <referenceName>=<value>` is repeatable — Azure reference names are
+never inferred from display labels.
+
+The two mutations that move a ticket are optimistic: `ticket-state-set` requires
+the `--expected-state` it will find and refuses a transition the board does not
+allow, and `ticket-effort-set` requires the `--expected-rev` it was read at, so a
+ticket that moved underneath you fails instead of being overwritten. `Done` is
+never reachable from `ticket-state-set`: only the coordinator applies it, after
+verifying every completion gate.
+
+### Choosing the CLI, the model and the effort
+
+```bash
+# OpenCode is the default; naming it explicitly is equivalent
+lazy-workflow code --working-directory /path/to/repository
+lazy-workflow code --cli opencode --model opencode-go/deepseek-v4-pro --variant high \
+  --working-directory /path/to/repository
+
+# Claude Code with Sonnet 5 at high effort
+lazy-workflow code --cli claudecode --model claude-sonnet-5 --variant high \
+  --working-directory /path/to/repository
+
+# The SAG workflows resolve a CLI the same way
+lazy-workflow architecture-review-sag --issue 154 --cli claudecode \
+  --model claude-sonnet-5 --variant high --working-directory /path/to/repository
+```
+
+### Surviving an exhausted account
+
+```bash
+# Claude Code on Sonnet 5, backed by the same model through GitHub Copilot
+lazy-workflow code --working-directory /path/to/repository \
+  --cli claudecode --model claude-sonnet-5 --variant high \
+  --fallback opencode:github-copilot/claude-sonnet-5:high
+
+# Several rungs; declaration order is the descent order
+lazy-workflow code --working-directory /path/to/repository \
+  --cli claudecode --model claude-sonnet-5 --variant high \
+  --fallback opencode:github-copilot/claude-sonnet-5:high \
+  --fallback opencode:opencode-go/deepseek-v4-pro:high \
+  --fallback-wait 300 --fallback-wait-max 3600
+```
+
+The walkthrough of the first one is in
+[Claude Code on Sonnet 5, backed by GitHub Copilot](#end-to-end-claude-code-on-sonnet-5-backed-by-github-copilot).
+
+### Operator output
+
+```bash
+lazy-workflow code --working-directory /path/to/repository             # info, warn, error
+lazy-workflow code --verbose  --working-directory /path/to/repository  # + reasoning and tool calls
+lazy-workflow code --quiet    --working-directory /path/to/repository  # errors only
+lazy-workflow code --no-color --working-directory /path/to/repository  # ANSI stripped
+lazy-workflow                                                          # full command help
+```
 
 ## Reporter and verbosity
 
@@ -267,6 +451,9 @@ bun run main.ts ticket-state-info --ticket 23459
 bun run main.ts ticket-effort-info --ticket 23459
 bun run main.ts ticket-attachment-info --ticket 23459
 bun run main.ts ticket-evidence-info --ticket 23459
+bun run main.ts ticket-description-set --ticket 23459 --description-file ./description.html
+bun run main.ts ticket-state-set --ticket 23459 --state "En progreso" --expected-state New
+bun run main.ts ticket-effort-set --ticket 23459 --real-effort 6 --real-effort-hh 6 --expected-rev 12
 bun run main.ts ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 --manifest /path/to/completion.json
 bun run main.ts ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 bun run main.ts ticket-commit-link --ticket 23459 --pr 123
@@ -278,6 +465,12 @@ bun run main.ts ticket-branch-set --hu 23438 --ticket 23459 \
 bun run main.ts ticket-pr-info --hu 23438 --ticket 23459
 bun run main.ts ticket-completion-info --hu 23438 --ticket 23459
 ```
+
+`ticket-state-set` and `ticket-effort-set` are optimistic writes: the first
+requires the `--expected-state` it will find and refuses a transition the board
+does not allow, the second requires the `--expected-rev` the ticket was read at.
+`Done` is not reachable from `ticket-state-set` — only the coordinator applies
+it, after verifying every completion gate.
 
 Each command emits one normalized JSON object. The aggregate response includes
 the direct ticket identity, description, state, revision, effort, ticket and
@@ -595,6 +788,44 @@ lazy-workflow code --working-directory /path/to/repository \
 Had Claude Code been exhausted too, the run would have waited 300s, reported
 `quedan 3600s hasta el tope`, and retried from OpenCode — and, after 3600s of
 waiting without a rung recovering, failed closed with the checkpoint preserved.
+
+### End to end: Claude Code on Sonnet 5, backed by GitHub Copilot
+
+The same model can be reached through two different accounts. Running Sonnet 5
+at high effort on a Claude Code subscription, with the identical model billed to
+a GitHub Copilot seat as the backup, means the run keeps its model when the
+first account hits its limit and only changes which account pays for it:
+
+```bash
+lazy-workflow code --working-directory /path/to/repository \
+  --cli claudecode --model claude-sonnet-5 --variant high \
+  --fallback opencode:github-copilot/claude-sonnet-5:high
+```
+
+1. Both binaries are verified while the arguments are parsed — `claude` for the
+   primary rung, `opencode` for the backup — and the chain is reported: rung 1/2
+   `claudecode` with `claude-sonnet-5`, rung 2/2 `opencode` with
+   `github-copilot/claude-sonnet-5`.
+2. The run claims an issue and implements it in a Claude Code session at `high`
+   effort.
+3. The Claude subscription hits its usage limit. Claude Code's adapter
+   classifies the exhaustion from its own event stream, and the descent is
+   reported with the rung left, the rung taken, and the cause.
+4. The backup names a different CLI, so there is no session to resume: a fresh
+   OpenCode session starts on the Copilot-provided Sonnet 5 with the same
+   delivery prompt for the same issue, branch and manifest path, the equivalent
+   authority profile in OpenCode's format, and the progress already verified on
+   disk. The checkpoint is rewritten to `opencode` and the new session id, so
+   `--session <id>` later resumes against the CLI that actually holds the work.
+5. The next issue in the queue starts again on Claude Code, the primary rung, so
+   the run returns to the subscription as soon as its quota renews.
+
+Both rungs run at `high` because the variant is per rung: `high` is a Claude Code
+effort level on the primary and the OpenCode variant on the backup. Write each
+rung's model id exactly as its own CLI exposes it — `claude-sonnet-5` for Claude
+Code, and the `<provider>/<model>` id OpenCode lists for the Copilot-backed one,
+which is why the backup rung carries the `github-copilot/` prefix and the primary
+does not.
 
 ## Agent authority
 
