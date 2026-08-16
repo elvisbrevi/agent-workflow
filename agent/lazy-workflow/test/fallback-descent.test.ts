@@ -110,6 +110,20 @@ function captureReporter(): { reporter: Reporter; info: string[] } {
   return { reporter, info };
 }
 
+/**
+ * The clock the fake timer advances: every wait is observed as a duration, so a
+ * bounded wait-and-retry cycle is exercised without any test sleeping.
+ */
+function fakeTimers(): { waits: number[]; retryTimer: { wait(ms: number): Promise<void> }; clock: { now(): number } } {
+  const waits: number[] = [];
+  let now = 0;
+  return {
+    waits,
+    retryTimer: { wait: async (ms: number) => { waits.push(ms); now += ms; } },
+    clock: { now: () => now },
+  };
+}
+
 async function runDelivery(
   agents: ReturnType<typeof scriptedAgents>,
   args: string[],
@@ -117,6 +131,7 @@ async function runDelivery(
   issues: number[] = [178],
   reporter?: Reporter,
   logs: string[] = [],
+  timers: ReturnType<typeof fakeTimers> = fakeTimers(),
 ): Promise<number> {
   const originalLog = console.log;
   const previousReporter = getDefaultReporter();
@@ -125,7 +140,7 @@ async function runDelivery(
     return await new LazyWorkflowCli(
       azure,
       agents.source,
-      undefined, undefined, undefined, undefined, undefined,
+      undefined, timers.retryTimer, undefined, timers.clock, undefined,
       undefined, undefined, undefined, undefined,
       buildCli(() => true),
       reporter ? ((() => reporter) as never) : undefined,
@@ -327,17 +342,27 @@ test("la recuperación reanuda con el modelo descendido que el checkpoint conser
 test("la cadena agotada devuelve el resultado de la última sesión, no el de la anterior", async () => {
   const agents = scriptedAgents({
     run: [exhausted("provider/primario")],
-    resume: [new AgentExhaustionError(
-      { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
-      agentResult("lo último que dijo el respaldo"),
-    )],
+    resume: [
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/primario", cause: "rate_limit" },
+        agentResult("el respaldo tampoco tiene cupo"),
+      ),
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/primario", cause: "rate_limit" },
+        agentResult("el primario reintentado sigue sin cupo"),
+      ),
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+        agentResult("lo último que dijo el respaldo"),
+      ),
+    ],
   });
   const store = checkpointStore();
   const logs: string[] = [];
 
   const code = await runDelivery(
     agents,
-    ["--fallback", "opencode:provider/respaldo:medium"],
+    ["--fallback", "opencode:provider/respaldo:medium", "--fallback-wait", "60", "--fallback-wait-max", "60"],
     store,
     [178],
     undefined,
@@ -350,6 +375,111 @@ test("la cadena agotada devuelve el resultado de la última sesión, no el de la
   expect(logs.join("\n")).toContain("lo último que dijo el respaldo");
   expect(logs.join("\n")).not.toContain("sin cupo");
   expect(store.written.at(-1)?.sessionId).toBe(SESSION);
+});
+
+test("con toda la cadena agotada el run espera y reintenta el escalón primario", async () => {
+  const agents = scriptedAgents({
+    run: [exhausted("provider/primario")],
+    resume: [
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+        agentResult("el respaldo tampoco tiene cupo"),
+      ),
+      terminal(),
+    ],
+  });
+  const timers = fakeTimers();
+
+  const code = await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium", "--fallback-wait", "60"],
+    checkpointStore(),
+    [178],
+    undefined,
+    [],
+    timers,
+  );
+
+  expect(code).toBe(0);
+  expect(timers.waits).toEqual([60_000]);
+  // Tras la espera el reintento vuelve al primario, no al respaldo ya agotado.
+  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual([
+    "provider/respaldo",
+    "opencode-go/deepseek-v4-pro",
+  ]);
+});
+
+test("cada espera se reporta con el escalón agotado y el tiempo restante hasta el tope", async () => {
+  const agents = scriptedAgents({
+    run: [exhausted("provider/primario")],
+    resume: [
+      new AgentExhaustionError(
+        { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+        agentResult("el respaldo tampoco tiene cupo"),
+      ),
+      terminal(),
+    ],
+  });
+  const { reporter, info } = captureReporter();
+
+  const code = await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium", "--fallback-wait", "60", "--fallback-wait-max", "180"],
+    checkpointStore(),
+    [178],
+    reporter,
+  );
+
+  expect(code).toBe(0);
+  const waiting = info.find((line) => line.includes("espero"));
+  expect(waiting).toContain("opencode:provider/respaldo:medium");
+  expect(waiting).toContain("billing");
+  expect(waiting).toContain("60s");
+  expect(waiting).toContain("180s");
+});
+
+test("alcanzado el tope el run falla cerrado nombrando el último escalón y su causa", async () => {
+  const exhaustedResume = (): AgentExhaustionError => new AgentExhaustionError(
+    { cli: "OpenCode", model: "provider/respaldo", cause: "billing" },
+    agentResult("el respaldo tampoco tiene cupo"),
+  );
+  const agents = scriptedAgents({
+    run: [exhausted("provider/primario")],
+    resume: [exhaustedResume(), exhaustedResume(), exhaustedResume()],
+  });
+  const store = checkpointStore();
+  const { reporter, info } = captureReporter();
+  const timers = fakeTimers();
+
+  const code = await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium", "--fallback-wait", "60", "--fallback-wait-max", "60"],
+    store,
+    [178],
+    reporter,
+    [],
+    timers,
+  );
+
+  expect(code).toBe(1);
+  expect(timers.waits).toEqual([60_000]);
+  const failure = info.find((line) => line.includes("tope"));
+  expect(failure).toContain("opencode:provider/respaldo:medium");
+  expect(failure).toContain("billing");
+  // El checkpoint queda intacto: misma sesión viva, lista para reanudar.
+  expect(store.written.at(-1)?.phase).toBe("reconciling");
+  expect(store.written.at(-1)?.sessionId).toBe(SESSION);
+});
+
+test("sin --fallback un agotamiento no espera y termina como siempre", async () => {
+  const agents = scriptedAgents({ run: [exhausted("provider/primario")], resume: [terminal()] });
+  const timers = fakeTimers();
+
+  const code = await runDelivery(agents, [], checkpointStore(), [178], undefined, [], timers);
+
+  expect(code).toBe(1);
+  expect(timers.waits).toEqual([]);
+  expect(agents.resumed).toEqual([]);
 });
 
 test("el checkpoint conserva el escalón completo, modelo y variante, para recuperarlo", async () => {

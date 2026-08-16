@@ -25,7 +25,7 @@ import {
   type StoredAutocodeCheckpoint,
   type VersionedAutocodeCheckpoint,
 } from "../azure/autocode-checkpoint.ts";
-import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent } from "../coding-agent/coding-agent.ts";
+import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent, type ProviderExhaustion } from "../coding-agent/coding-agent.ts";
 import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
@@ -980,9 +980,18 @@ export class LazyWorkflowCli {
     let current = execution;
     let active: FallbackRung = { cli: options.cli, model: options.model, variant: options.variant };
     let index = 0;
+    /** When the bounded wait ends, set on the first exhausted chain rather than at the start of the run. */
+    let waitDeadline: number | null = null;
     while (current.exhaustion) {
-      const next = nextRung(options, index);
-      if (!next) return current;
+      let next = nextRung(options, index);
+      if (!next) {
+        waitDeadline ??= this.clock.now() + options.fallbackWaitMaxSeconds * 1000;
+        if (!await this.waitForPrimaryRetry(options, active, current.exhaustion, waitDeadline)) return current;
+        // The retry starts over at the head of the chain, so whichever rung
+        // recovers its quota first is the one the unit continues on.
+        index = -1;
+        next = nextRung(options, index)!;
+      }
       const sessionId = current.result.sessionId;
       const handedOff = next.rung.cli !== active.cli;
       reportOperator(
@@ -1008,6 +1017,39 @@ export class LazyWorkflowCli {
       }
     }
     return current;
+  }
+
+  /**
+   * Every rung of the declared chain is exhausted for the unit in course. Usage
+   * lapses on its own, so the run waits a fixed interval and retries the chain
+   * from its primary rung, up to a total bound counted from the first wait. When
+   * the bound is spent it answers false and the caller fails closed with the
+   * checkpoint intact, so a failure misclassified as exhaustion — a stale
+   * credential, a revoked key — surfaces instead of waiting forever (ADR-0024).
+   *
+   * A run without `--fallback` declared no chain to exhaust, so it never waits
+   * and ends exactly as it does today.
+   */
+  private async waitForPrimaryRetry(
+    options: CliOptions,
+    active: FallbackRung,
+    exhaustion: ProviderExhaustion,
+    deadline: number,
+  ): Promise<boolean> {
+    if (options.fallbackChain.length === 0) return false;
+    const remaining = deadline - this.clock.now();
+    const exhausted = `escalón ${describeRung(active)} (causa ${exhaustion.cause})`;
+    if (remaining < options.fallbackWaitSeconds * 1000) {
+      reportOperator(
+        `lazy-workflow: la cadena de fallback sigue agotada al alcanzar el tope de ${options.fallbackWaitMaxSeconds}s de espera; último ${exhausted}; checkpoint conservado.`,
+      );
+      return false;
+    }
+    reportOperator(
+      `lazy-workflow: cadena de fallback agotada, último ${exhausted}; espero ${options.fallbackWaitSeconds}s y reintento el escalón primario; quedan ${Math.round(remaining / 1000)}s hasta el tope.`,
+    );
+    await this.retryTimer.wait(options.fallbackWaitSeconds * 1000);
+    return true;
   }
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
