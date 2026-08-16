@@ -19,12 +19,14 @@ import {
 } from "../coding-agent/agent-process.ts";
 import { AgentResult, type AgentTokens } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
-import type {
-  AgentAuthority,
-  AgentExecution,
-  AgentResumeOverrides,
-  AgentRunOptions,
-  CodingAgent,
+import {
+  describeExhaustion,
+  type AgentAuthority,
+  type AgentExecution,
+  type AgentResumeOverrides,
+  type AgentRunOptions,
+  type CodingAgent,
+  type ProviderExhaustion,
 } from "../coding-agent/coding-agent.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
@@ -55,6 +57,39 @@ interface ClaudeCodeEventData {
     cache_read_input_tokens?: number;
   };
   message?: { content?: ClaudeCodeContentBlock[] };
+  /** Only on `system`/`api_retry` events: the categorized cause the stream itself assigned the retry. */
+  error?: string;
+}
+
+/**
+ * The causes Claude Code's own `api_retry` events categorize as the provider itself
+ * running out, rather than a transient or ordinary failure (per the SDK's
+ * `SDKAssistantMessageError` union). `overloaded` is a busy server, not exhaustion.
+ */
+const PROVIDER_EXHAUSTION_CAUSES = new Set([
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "billing_error",
+  "rate_limit",
+]);
+
+/**
+ * `api_retry` only announces a retry in flight — the stream may still recover and the
+ * run may still succeed — so this only applies once the run has actually failed.
+ */
+function classifyExhaustion(
+  events: ClaudeCodeEventData[],
+  model: string | undefined,
+  failed: boolean,
+): ProviderExhaustion | undefined {
+  if (!failed) return undefined;
+  const retry = events.find((event) =>
+    event.type === "system"
+    && event.subtype === "api_retry"
+    && event.error
+    && PROVIDER_EXHAUSTION_CAUSES.has(event.error));
+  if (!retry) return undefined;
+  return { cli: "Claude Code", model: model ?? "con el que se abrió", cause: retry.error! };
 }
 
 function parseEvent(line: string): ClaudeCodeEventData | null {
@@ -299,12 +334,14 @@ export class ClaudeCodeService implements CodingAgent {
     ]);
 
     const events = parseEvents(lines.join("\n"));
+    const exhaustion = classifyExhaustion(events, model, exitCode !== 0);
+    if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
     return {
       result: decodeStream(events),
       azureLoginRequired: detectAzureLogin
         && (requiresAzureLogin(events) || asksForAzureLogin(errorLines.join("\n"))),
-      // Provider exhaustion is classified where its own issue lands.
       failed: exitCode !== 0,
+      exhaustion,
     };
   }
 }

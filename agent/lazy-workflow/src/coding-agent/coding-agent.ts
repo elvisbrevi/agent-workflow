@@ -25,10 +25,24 @@ export interface AgentAuthority {
   configPath: string;
 }
 
+/** Provider exhaustion: the run failed because the provider itself ran out — usage limit, quota, billing, or auth — not because of an ordinary failure. */
+export interface ProviderExhaustion {
+  cli: string;
+  model: string;
+  cause: string;
+}
+
+/** The one line shown to the operator, naming the CLI, model, and cause behind an exhaustion. */
+export function describeExhaustion(exhaustion: ProviderExhaustion): string {
+  return `${exhaustion.cli} agotó al proveedor (modelo ${exhaustion.model}, causa ${exhaustion.cause})`;
+}
+
 export interface AgentExecution {
   result: AgentResult;
   azureLoginRequired: boolean;
   failed?: boolean;
+  /** Set only when `failed` is provider exhaustion rather than an ordinary failure. */
+  exhaustion?: ProviderExhaustion;
 }
 
 export type AgentResumeOverrides = Partial<Pick<AgentRunOptions, "model" | "variant" | "agent">>;

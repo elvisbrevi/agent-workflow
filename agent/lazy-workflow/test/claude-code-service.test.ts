@@ -365,6 +365,101 @@ describe("ClaudeCodeService normalizacion del stream", () => {
   });
 });
 
+describe("ClaudeCodeService agotamiento del proveedor", () => {
+  const retryEvent = (sessionId: string, error: string) =>
+    jsonEvent({
+      type: "system",
+      subtype: "api_retry",
+      session_id: sessionId,
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 1000,
+      error_status: 429,
+      error,
+    });
+
+  test("un evento de reintento por limite de uso se clasifica como agotamiento del proveedor", async () => {
+    const output = [
+      initEvent("ses_exhausted"),
+      retryEvent("ses_exhausted", "rate_limit"),
+      assistantText("ses_exhausted", "sigo intentando"),
+    ].join("\n");
+    const { reporter, captured } = captureReporter(false);
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1), reporter);
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toEqual({
+      cli: "Claude Code",
+      model: standardOptions.model,
+      cause: "rate_limit",
+    });
+    expect(execution.failed).toBeTrue();
+    expect(captured.warn.some((line) =>
+      line.includes("Claude Code") && line.includes(standardOptions.model) && line.includes("rate_limit"),
+    )).toBeTrue();
+  });
+
+  test("un fallo ordinario sin eventos de reintento no se clasifica como agotamiento", async () => {
+    const output = [initEvent("ses_ordinary"), assistantText("ses_ordinary", "algo salio mal")].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+    expect(execution.failed).toBeTrue();
+  });
+
+  test("una causa de reintento desconocida o ambigua no se clasifica como agotamiento", async () => {
+    const output = [
+      initEvent("ses_overloaded"),
+      retryEvent("ses_overloaded", "overloaded"),
+      assistantText("ses_overloaded", "sigo intentando"),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("una sesion exitosa no tiene agotamiento del proveedor", async () => {
+    const output = [initEvent("ses_ok"), assistantText("ses_ok", "listo")].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("un reintento que finalmente tiene exito no se clasifica como agotamiento", async () => {
+    // api_retry solo anuncia un reintento en curso; el stream puede seguir y terminar en exito.
+    const output = [
+      initEvent("ses_recovered"),
+      retryEvent("ses_recovered", "rate_limit"),
+      assistantText("ses_recovered", "se recupero y siguio"),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 0));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("un agotamiento durante una reanudacion sin modelo explicito nombra igual el modelo con el que abrio", async () => {
+    const output = [initEvent("ses_resumed"), retryEvent("ses_resumed", "billing_error")].join("\n");
+    const { reporter, captured } = captureReporter(false);
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1), reporter);
+
+    await expect(service.resume("ses_resumed")).rejects.toThrow();
+
+    expect(captured.warn.some((line) =>
+      line.includes("Claude Code") && line.includes("billing_error") && !line.includes("modelo ,"),
+    )).toBeTrue();
+  });
+});
+
 describe("ClaudeCodeService enrutado por el Reporter", () => {
   let originalNoColor: string | undefined;
 
