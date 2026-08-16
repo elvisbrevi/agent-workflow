@@ -23,10 +23,15 @@ already landed.
 
 The progress section is assembled from what can be verified: the checkpoint
 phase, the branch, the last commit, the uncommitted worktree state, and the
-completion manifest when one exists. It is not assembled from the outgoing
-session's own text. ADR-0020 already refused provider prose as a control plane
-for queue outcomes, and the same holds here — a model's account of what it did
-may name work that never reached the tree. Asking the outgoing session to write
+completion manifest when one exists. Verified also means belonging to this unit:
+the commit is read as the tip of the range the unit's branch has over its base,
+so a branch that has not committed anything of its own states the absence instead
+of naming the base tip, and the manifest — whose path is fixed per repository —
+is cited only when it names this issue and this branch, the same guard the rest
+of the delivery applies. It is not assembled from the outgoing session's own
+text. ADR-0020 already refused provider prose as a control plane for queue
+outcomes, and the same holds here — a model's account of what it did may name
+work that never reached the tree. Asking the outgoing session to write
 its own handoff would produce the richest summary of all and is exactly what an
 exhausted account cannot do.
 
