@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
-import type { CodingAgent } from "../src/coding-agent/coding-agent.ts";
+import type { AgentResumeOverrides, CodingAgent } from "../src/coding-agent/coding-agent.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AutocodeCheckpointStore, VersionedAutocodeCheckpoint } from "../src/azure/autocode-checkpoint.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
@@ -17,9 +17,15 @@ import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
 import { createAzureWorkspaceHarness, hu, integrationBranch, remoteUrlA, remoteUrlB, repoA, repoB, ticket, ticketBranch } from "./_helpers/azure-workspace-fixtures.ts";
 
 /** Records which CLI the run resolved and never lets a session actually open. */
-function spyingAgents(): { requested: AgentCli[]; resumed: AgentCli[]; source: (cli: AgentCli) => CodingAgent } {
+function spyingAgents(): {
+  requested: AgentCli[];
+  resumed: AgentCli[];
+  overrides: AgentResumeOverrides[];
+  source: (cli: AgentCli) => CodingAgent;
+} {
   const requested: AgentCli[] = [];
   const resumed: AgentCli[] = [];
+  const overrides: AgentResumeOverrides[] = [];
   // The resumed session reports its terminal marker, so a recovery run ends
   // instead of retrying while the assertion only cares about which CLI resumed.
   const result = AgentResult.fromJsonLines(JSON.stringify({
@@ -28,11 +34,16 @@ function spyingAgents(): { requested: AgentCli[]; resumed: AgentCli[]; source: (
   return {
     requested,
     resumed,
+    overrides,
     source: (cli) => {
       requested.push(cli);
       return {
         run: async () => { throw new Error("recovery must resume, never start a session"); },
-        resume: async () => { resumed.push(cli); return result; },
+        resume: async (_session, _prompt, _directory, _marker, resumeOverrides = {}) => {
+          resumed.push(cli);
+          overrides.push(resumeOverrides);
+          return result;
+        },
       };
     },
   };
@@ -137,6 +148,77 @@ test("el rechazo de un --cli contradictorio nombra el CLI del checkpoint y cómo
   const rejection = state.reported.join("");
   expect(rejection).toContain("el checkpoint pertenece al CLI claudecode");
   expect(rejection).toContain("--cli claudecode");
+});
+
+test("un --variant que el CLI adoptado no acepta detiene el run antes de reanudar y conserva el checkpoint", async () => {
+  const agents = spyingAgents();
+  const checkpoint = githubDeliveryCheckpoint("claudecode");
+  const state = githubDeliveryCli(checkpoint, agents);
+
+  expect(await state.cli.run(["code", "--variant", "turbo", "--working-directory", "/repo"])).toBe(1);
+  expect(agents.resumed).toEqual([]);
+  expect(state.current).toEqual(checkpoint);
+
+  const rejection = state.reported.join("");
+  expect(rejection).toContain("claudecode");
+  expect(rejection).toContain("turbo");
+  expect(rejection).toContain("xhigh");
+});
+
+test("un --model y un --variant que el CLI adoptado acepta le ganan al escalón del checkpoint", async () => {
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    { ...githubDeliveryCheckpoint("claudecode"), model: "claude-sonnet-5", variant: "low" },
+    agents,
+  );
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--model", "claude-opus-5", "--variant", "xhigh", "--working-directory", "/repo"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.resumed).toEqual(["claudecode"]);
+  expect(agents.overrides).toEqual([{ model: "claude-opus-5", variant: "xhigh" }]);
+});
+
+test("un --variant explícito sin --model le gana a la variante del escalón, que es lo que se validó al adoptar", async () => {
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    { ...githubDeliveryCheckpoint("claudecode"), model: "claude-sonnet-5", variant: "low" },
+    agents,
+  );
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--variant", "xhigh", "--working-directory", "/repo"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.overrides).toEqual([{ model: "claude-sonnet-5", variant: "xhigh" }]);
+});
+
+test("sin overrides explícitos la recuperación reanuda con el escalón que el checkpoint conserva", async () => {
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    { ...githubDeliveryCheckpoint("claudecode"), model: "claude-sonnet-5", variant: "low" },
+    agents,
+  );
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--working-directory", "/repo"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.resumed).toEqual(["claudecode"]);
+  expect(agents.overrides).toEqual([{ model: "claude-sonnet-5", variant: "low" }]);
 });
 
 test("`code --session` reanuda con el CLI del checkpoint GitHub y rechaza uno contradictorio", async () => {
