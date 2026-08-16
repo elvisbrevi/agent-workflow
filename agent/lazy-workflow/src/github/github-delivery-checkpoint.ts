@@ -35,6 +35,13 @@ export interface GitHubDeliveryCheckpoint {
   schemaVersion: 2;
   /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
   cli: AgentCli;
+  /**
+   * The CLI the run itself declared before a cross-CLI handoff moved the session
+   * off it; absent when no handoff moved it. It is what separates a `--cli` the
+   * run's own descent contradicted from one the operator contradicted, without
+   * inferring it from the chain a later command happens to declare (issue #252).
+   */
+  handoffFrom?: AgentCli;
   workflow: "github-code";
   repository: string;
   issue: number;
@@ -103,6 +110,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
   const allowedKeys = new Set([
     "schemaVersion",
     "cli",
+    "handoffFrom",
     "workflow",
     "repository",
     "issue",
@@ -123,6 +131,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
   return checkpoint.schemaVersion === 2
     && isAgentCli(checkpoint.cli)
+    && (checkpoint.handoffFrom === undefined || isAgentCli(checkpoint.handoffFrom))
     && checkpoint.workflow === "github-code"
     && typeof checkpoint.repository === "string"
     && /^[^/\s]+\/[^/\s]+$/.test(checkpoint.repository)

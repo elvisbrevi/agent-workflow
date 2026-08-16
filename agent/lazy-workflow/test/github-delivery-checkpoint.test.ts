@@ -44,6 +44,13 @@ test("el checkpoint GitHub nombra el CLI dueño de la sesión", () => {
   expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), schemaVersion: 1 })).toBeFalse();
 });
 
+test("el checkpoint GitHub registra el CLI del que un traspaso movió la sesión", () => {
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), cli: "claudecode", handoffFrom: "opencode" })).toBeTrue();
+  // Ausente es el caso normal: ningún traspaso movió la sesión.
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), handoffFrom: undefined })).toBeTrue();
+  expect(isGitHubDeliveryCheckpoint({ ...checkpoint(), handoffFrom: "gemini" })).toBeFalse();
+});
+
 test("un checkpoint GitHub de la versión anterior se lee como OpenCode y se reescribe", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-github-checkpoint-legacy-"));
   const store = new GitHubDeliveryCheckpointStore();

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
-import { createReporter, type Reporter } from "../src/output/reporter.ts";
+import { captureReporter } from "./_helpers/reporter-capture.ts";
 
 const hu = 192;
 const repoA = "repo-a";
@@ -18,19 +18,6 @@ const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
 const integrationBranch = `refs/heads/hu/${hu}`;
 const huBranchUri = `vstfs:///Git/Ref/${projectId}%2F${repoAId}%2FGBhu%2F${hu}`;
-
-function captureReporter(): { reporterFn: typeof createReporter; messages: string[] } {
-  const messages: string[] = [];
-  const reporter: Reporter = {
-    info: (message: string) => { messages.push(message); },
-    warn: () => undefined,
-    error: () => undefined,
-    debug: () => undefined,
-    start: () => ({ stop: () => undefined }) as never,
-    stop: () => undefined,
-  };
-  return { reporterFn: (() => reporter) as typeof createReporter, messages };
-}
 
 async function seedRepo(root: string, name: string): Promise<string> {
   const path = join(root, name);
