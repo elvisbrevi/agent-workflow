@@ -70,6 +70,23 @@ export class AgentSessionCloseError extends Error {
   }
 }
 
+/**
+ * A resumed session failed because the provider ran out. `resume` answers with a
+ * result rather than an execution, so the cause travels as this typed error and a
+ * caller descending its fallback chain tells exhaustion from an ordinary failure
+ * without reading the message text (issue #238).
+ */
+export class AgentExhaustionError extends Error {
+  constructor(
+    readonly exhaustion: ProviderExhaustion,
+    /** What the exhausted session did produce, so the caller reports that one rather than the rung before it. */
+    readonly result: AgentResult,
+  ) {
+    super(describeExhaustion(exhaustion));
+    this.name = "AgentExhaustionError";
+  }
+}
+
 /** The session a checkpoint points at is gone, so it can no longer be resumed. */
 export class AgentSessionNotFoundError extends Error {
   constructor(
