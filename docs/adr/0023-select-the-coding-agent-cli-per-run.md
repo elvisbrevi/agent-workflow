@@ -43,7 +43,20 @@ CLIs behave differently in the one place recovery depends on.
 Because a session identifier alone does not say which binary produced it, the
 delivery checkpoints carry the CLI that owns the session and their schema
 version rises accordingly. A recovery whose `--cli` contradicts its checkpoint
-fails closed rather than resuming against the wrong binary.
+fails closed rather than resuming against the wrong binary, and says which CLI
+owns it so the operator can resume rather than guess.
+
+Failing closed protects the operator from their own contradiction, not from the
+run's. A cross-CLI handoff (ADR-0025) moves the session off the `--cli` that
+started it, so the command that originated the work would otherwise contradict a
+checkpoint it wrote itself and keep failing on every retry. The GitHub delivery
+checkpoint therefore records the CLI the handoff moved the session away from,
+and that declared CLI is accepted: the original command resumes its own work on
+the CLI holding it. The exception is scoped to the checkpointed unit, exactly as
+a fallback descent is — the next unit starts on the declared rung again. It is
+the checkpoint's own record that grants it, never the fallback chain the rerun
+happens to declare, because a chain is what a command asks for and a checkpoint
+is what actually happened.
 
 Terminal-marker session closure is a no-op for Claude Code. `opencode session
 delete` releases server-side session state; Claude Code sessions are local

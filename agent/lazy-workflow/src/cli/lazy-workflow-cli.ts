@@ -443,18 +443,40 @@ export class LazyWorkflowCli {
    * contradicts the checkpoint fails closed, with the checkpoint untouched, so a
    * session is never resumed against the wrong binary (ADR-0023).
    *
+   * The exception is the contradiction the run itself created: a cross-CLI
+   * handoff moved the session off the `--cli` the operator declared, and the
+   * checkpoint says so in `handoffFrom`. That same command has to be able to
+   * resume its own work where it stands, so it adopts the CLI holding it instead
+   * of failing closed on itself (issue #252). The distinction is the checkpoint's
+   * record, never the chain the rerun happens to declare.
+   *
    * The adopted CLI comes back as the run's own, because everything the run does
    * afterwards — the sessions it opens, the checkpoints it writes, the CLI it
    * names to the operator — is executed by the agent this resolved. Returns null
    * when the run must stop.
    */
-  private adoptCheckpointCli(cli: AgentCli, options: CliOptions): CliOptions | null {
-    if (options.hasCli && options.cli !== cli) {
-      reportOperator(`lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado.`);
+  private adoptCheckpointCli(cli: AgentCli, options: CliOptions, handoffFrom: AgentCli | null = null): CliOptions | null {
+    if (options.hasCli && options.cli !== cli && options.cli !== handoffFrom) {
+      reportOperator(
+        `lazy-workflow: el checkpoint pertenece al CLI ${cli}, no a ${options.cli}; checkpoint conservado. `
+        + `Reanuda con --cli ${cli}, o sin --cli, para continuar el trabajo donde quedó.`,
+      );
       return null;
     }
     this.resolveAgent(cli);
     return options.cli === cli ? options : { ...options, cli };
+  }
+
+  /**
+   * The CLI a run goes back to once the checkpointed unit is done. Adopting a
+   * handoff is scoped to that unit, exactly as a descent is: the next one starts
+   * on the rung the operator declared. Without an explicit `--cli` there is
+   * nothing declared to go back to, so the adopted CLI stays the run's own.
+   */
+  private restoreDeclaredCli(declared: CliOptions, adopted: CliOptions): CliOptions {
+    if (!declared.hasCli || declared.cli === adopted.cli) return adopted;
+    this.resolveAgent(declared.cli);
+    return declared;
   }
 
   async run(args: string[]): Promise<number> {
@@ -873,10 +895,10 @@ export class LazyWorkflowCli {
 
     if (command === "code") {
       if (githubRecovery) {
-        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options);
+        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options, githubRecovery.handoffFrom ?? null);
         if (!adopted) return 1;
         const code = await this.runGitHubRecovery(adopted, githubRecovery);
-        return code === 0 ? this.continueQueueAfterRecovery(adopted, false) : code;
+        return code === 0 ? this.continueQueueAfterRecovery(this.restoreDeclaredCli(options, adopted), false) : code;
       }
       if (isAzureHuRun) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
@@ -1986,19 +2008,18 @@ export class LazyWorkflowCli {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
       if (checkpoint) {
-        const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+        const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom ?? null);
         if (!adopted) return 1;
-        options = adopted;
         let code: number;
         if (checkpoint.sessionId) {
-          code = await this.runGitHubRecovery({ ...options, session: checkpoint.sessionId }, checkpoint, true);
+          code = await this.runGitHubRecovery({ ...adopted, session: checkpoint.sessionId }, checkpoint, true);
         } else if (this.githubDelivery && ["started", "implementation-ready", "integrating", "conflict-resolving", "reconciling", "cleaning"].includes(checkpoint.phase)) {
-          code = await this.runGitHubRecovery(options, checkpoint, true);
+          code = await this.runGitHubRecovery(adopted, checkpoint, true);
         } else {
           this.reportGitHubReconciliationRequired(checkpoint);
           return 1;
         }
-        return code === 0 ? this.continueQueueAfterRecovery(options, true) : code;
+        return code === 0 ? this.continueQueueAfterRecovery(this.restoreDeclaredCli(options, adopted), true) : code;
       }
       await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
       return this.runDefaultCodeWorkflowLoop(options, store);
@@ -2124,6 +2145,9 @@ export class LazyWorkflowCli {
         if (store) await store.write({
           schemaVersion: 2,
           cli: activeCli,
+          // Escrito solo mientras un traspaso tiene la sesión en otro CLI: es lo
+          // que deja al comando original reanudar su propio trabajo (issue #252).
+          ...(activeCli !== options.cli ? { handoffFrom: options.cli } : {}),
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,

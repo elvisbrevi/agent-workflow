@@ -313,6 +313,95 @@ test("un fallo posterior al traspaso conserva la sesión traspasada, no la agota
   expect(store.written.at(-1)?.sessionId).toBe("ses_claudecode");
 });
 
+test("un rerun del mismo comando que declaró --cli reanuda el traspaso interrumpido en el CLI del checkpoint", async () => {
+  const store = checkpointStore();
+  const delivery = fakeGitHubDelivery();
+  const command = ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"];
+  const interrupted = scriptedAgents({
+    opencode: [exhausted("provider/primario")],
+    claudecode: [{
+      result: agentResult("la sesión traspasada se cortó", "ses_claudecode"),
+      azureLoginRequired: false,
+      failed: true,
+    }],
+  });
+
+  expect(await runDelivery(interrupted, command, store, delivery)).toBe(1);
+  expect(store.written.at(-1)?.cli).toBe("claudecode");
+
+  const rerun = scriptedAgents();
+  await runDelivery(rerun, command, store, delivery);
+
+  expect(rerun.resumed[0]?.cli).toBe("claudecode");
+  expect(rerun.resumed[0]?.sessionId).toBe("ses_claudecode");
+});
+
+test("el traspaso deja registrado en el checkpoint el CLI del que movió la sesión", async () => {
+  const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
+  const store = checkpointStore();
+
+  await runDelivery(agents, ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"], store);
+
+  expect(store.written.find(({ cli }) => cli === "claudecode")?.handoffFrom).toBe("opencode");
+  // Antes del traspaso no hay nada que registrar: la sesión sigue en el CLI del run.
+  expect(store.written.filter(({ cli }) => cli === "opencode").every(({ handoffFrom }) => handoffFrom === undefined)).toBeTrue();
+});
+
+test("un --cli que contradice un checkpoint sin traspaso falla cerrado aunque el comando declare la cadena", async () => {
+  const agents = scriptedAgents();
+  const store = checkpointStore();
+  await store.write({
+    schemaVersion: 2,
+    cli: "claudecode",
+    workflow: "github-code",
+    repository: "owner/repo",
+    issue: 178,
+    phase: "implementing",
+    branch: "refs/heads/issue/178",
+    sessionId: "ses_claudecode",
+    commit: null,
+    pullRequest: null,
+    receipts: {},
+    baseBranch: "refs/heads/main",
+    manifestPath: "/tmp/lazy-workflow-fake-manifest-178.json",
+  });
+  const preserved = store.written.at(-1);
+
+  // La cadena declarada nombra el CLI del checkpoint, pero el checkpoint no dice
+  // que un traspaso lo haya movido: la contradicción sigue siendo del operador.
+  const code = await runDelivery(agents, [
+    "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high",
+  ], store);
+
+  expect(code).toBe(1);
+  expect(agents.resumed).toEqual([]);
+  expect(agents.started).toEqual([]);
+  expect(store.written.at(-1)).toEqual(preserved!);
+});
+
+test("la unidad siguiente a un traspaso adoptado vuelve al CLI que el operador declaró", async () => {
+  const store = checkpointStore();
+  const delivery = fakeGitHubDelivery();
+  const command = ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"];
+  const interrupted = scriptedAgents({
+    opencode: [exhausted("provider/primario")],
+    claudecode: [{
+      result: agentResult("la sesión traspasada se cortó", "ses_claudecode"),
+      azureLoginRequired: false,
+      failed: true,
+    }],
+  });
+  await runDelivery(interrupted, command, store, delivery);
+
+  const rerun = scriptedAgents();
+  await runDelivery(rerun, command, store, delivery, fakeGit, [179]);
+
+  // El traspaso se adoptó para la unidad que el checkpoint tenía en curso; la
+  // siguiente arranca en el escalón primario, igual que tras un descenso.
+  expect(rerun.resumed.map(({ cli }) => cli)).toEqual(["claudecode"]);
+  expect(rerun.started.map(({ cli }) => cli)).toEqual(["opencode"]);
+});
+
 test("la unidad siguiente vuelve a arrancar en el CLI primario", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
 
