@@ -1,6 +1,5 @@
-Use `/grill-with-docs` to address the current User Story. Accept the
-recommended answer for each question, and create or update the relevant
-documentation.
+Use `/grill-with-docs` to address the current User Story, and create or update
+the relevant documentation.
 
 Then break the User Story into delivery tickets with `/to-tickets` semantics:
 tracer-bullet vertical slices, each sized for one fresh session, each declaring

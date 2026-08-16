@@ -31,5 +31,11 @@ Azure planning is semantic in the same way: OpenCode decides how to slice the
 User Story and returns a delivery plan behind `PLAN_READY`, and the coordinator
 creates and links the work items.
 
+Planning answers its own clarifying questions by default. With
+`--interview <off|http|terminal|file>` it stops instead, states the decisions it
+cannot settle alone, and the coordinator carries them to the operator and
+resumes that same session with the answers. An expired round takes the answers
+the session recommended, so an unattended run behaves exactly as it always did.
+
 Each run also carries an agent authority profile whose permission deny rules
 OpenCode enforces, so the boundary does not rest on prompt prose.
