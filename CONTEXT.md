@@ -70,9 +70,14 @@ _Avoid_: selecting replacement work after partial delivery
 The coding agent CLI recorded next to the session identifier in every checkpoint
 that keeps one. Recovery resumes against the CLI the checkpoint names rather than
 the run's default, and an explicit `--cli` that contradicts it fails closed with
-the checkpoint preserved. A checkpoint written before the field existed reads as
-OpenCode and is rewritten in the current schema, so a delivery in flight survives
-the update.
+the checkpoint preserved, naming the CLI that owns it and how to resume. The one
+contradiction that does not fail closed is the one the run itself created: when a
+cross-CLI handoff moved the session off the declared `--cli`, the checkpoint also
+records the CLI it came from, and the same command adopts the CLI now holding its
+work — for that unit only, since the next one starts on the declared rung. The
+distinction is what the checkpoint recorded, never what the rerun's chain
+declares. A checkpoint written before the field existed reads as OpenCode and is
+rewritten in the current schema, so a delivery in flight survives the update.
 _Avoid_: inferring the CLI from the current invocation, a second checkpoint file
 
 **GitHub queue outcome**:
