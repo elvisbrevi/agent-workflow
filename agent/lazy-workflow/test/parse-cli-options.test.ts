@@ -102,6 +102,51 @@ describe("buildCli parser", () => {
       if (result.kind !== "options") return;
       expect(result.options.normasSag).toBeTrue();
     });
+
+    test("--verbose-output activa tambien --verbose, porque es mas ancho", () => {
+      const result = parse(["plan", "--verbose-output"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.verboseOutput).toBeTrue();
+      expect(result.options.verbose).toBeTrue();
+    });
+
+    test("--verbose no activa --verbose-output", () => {
+      const result = parse(["plan", "--verbose"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.verbose).toBeTrue();
+      expect(result.options.verboseOutput).toBeFalse();
+    });
+
+    test("sin flags la salida es la parseada", () => {
+      const result = parse(["plan"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.verboseOutput).toBeFalse();
+    });
+  });
+
+  describe("--commit", () => {
+    test("acepta el nombre de objeto completo", () => {
+      const commit = "a".repeat(40);
+      const result = parse(["github-commit-push", "--branch", "issue/1", "--commit", commit]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.commit).toBe(commit);
+    });
+
+    test("rechaza una abreviatura, que no compara contra una referencia", () => {
+      const result = parse(["github-commit-push", "--branch", "issue/1", "--commit", "abc1234"]);
+      expect(result.kind).toBe("error");
+    });
+
+    test("sin --commit queda nulo", () => {
+      const result = parse(["plan"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.commit).toBeNull();
+    });
   });
 
   describe("validacion de tipo", () => {

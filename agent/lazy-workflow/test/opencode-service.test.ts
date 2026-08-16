@@ -8,6 +8,7 @@ import {
 } from "../src/output/reporter.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
+import { parseReportedChunk } from "./_helpers/reported-lines.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -18,21 +19,16 @@ type Captured = {
   warn: string[];
   error: string[];
   debug: string[];
+  trace: string[];
 };
 
 const captureStream = (): { stream: ReporterStream; captured: Captured } => {
-  const captured: Captured = { info: [], warn: [], error: [], debug: [] };
+  const captured: Captured = { info: [], warn: [], error: [], debug: [], trace: [] };
   const stream = new Writable({
     write(chunk, _encoding, callback) {
-      const text = chunk.toString();
-      const stripped = text.replace(/\u001b\[[0-9;]*m/g, "").replace(/\n$/, "");
-      const match = stripped.match(/^[^\s]+(\s|$)/);
-      const icon = match ? match[0].trimEnd() : "";
-      const rest = stripped.replace(/^[^\s]+\s?/, "");
-      if (icon === "ℹ") captured.info.push(rest);
-      else if (icon === "⚠") captured.warn.push(rest);
-      else if (icon === "✗") captured.error.push(rest);
-      else if (icon === "·") captured.debug.push(rest);
+      for (const { level, message } of parseReportedChunk(chunk.toString())) {
+        captured[level].push(message);
+      }
       callback();
     },
   }) as unknown as ReporterStream;
@@ -317,10 +313,13 @@ describe("OpenCodeService reporter routing", () => {
     let stopped = 0;
     const ticks: string[] = [];
     const trackingReporter: Reporter = {
+      tracing: false,
       info: (message: string) => ticks.push(`info:${message}`),
       warn: () => undefined,
       error: () => undefined,
       debug: () => undefined,
+      trace: () => undefined,
+      heading: () => undefined,
       start: (message: string) => {
         started += 1;
         return { text: message, stop: () => { stopped += 1; } };

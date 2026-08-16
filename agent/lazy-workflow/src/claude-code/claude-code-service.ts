@@ -17,7 +17,7 @@ import {
   type AgentProcess,
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
-import { AgentResult, type AgentTokens } from "../coding-agent/agent-result.ts";
+import { AgentResult, type AgentTokens, type AgentToolInput } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
   AgentExhaustionError,
@@ -29,6 +29,7 @@ import {
   type CodingAgent,
   type ProviderExhaustion,
 } from "../coding-agent/coding-agent.ts";
+import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
 
@@ -42,7 +43,11 @@ interface ClaudeCodeContentBlock {
   text?: string;
   thinking?: string;
   name?: string;
-  input?: { command?: string; description?: string };
+  /** Whatever arguments the named tool takes; the edited file is one of them. */
+  input?: AgentToolInput;
+  /** Present on `tool_result` blocks, which arrive on `user` events. */
+  content?: unknown;
+  is_error?: boolean;
 }
 
 interface ClaudeCodeEventData {
@@ -114,7 +119,7 @@ function assistantText(event: ClaudeCodeEventData): string[] {
 /** One reportable line of a stream event, already carrying the severity it deserves. */
 interface ReportedEvent {
   message: string;
-  severity: "debug" | "info";
+  severity: "debug" | "info" | "trace";
 }
 
 function renderBlock(prefix: string, block: ClaudeCodeContentBlock): ReportedEvent | null {
@@ -123,11 +128,7 @@ function renderBlock(prefix: string, block: ClaudeCodeContentBlock): ReportedEve
     return { message: `${prefix} razonando: ${block.thinking}`, severity: "debug" };
   }
   if (block.type === "tool_use") {
-    const detail = block.input?.command?.trim() ?? block.input?.description?.trim();
-    return {
-      message: `${prefix} herramienta ${block.name ?? "desconocida"}${detail ? `: ${JSON.stringify(detail)}` : ""}`,
-      severity: "debug",
-    };
+    return { message: renderToolCall(prefix, block.name, undefined, block.input), severity: "debug" };
   }
   return null;
 }
@@ -148,6 +149,29 @@ function renderEvent(line: string): ReportedEvent[] {
       .filter((rendered): rendered is ReportedEvent => rendered !== null);
   }
   return [];
+}
+
+/**
+ * What the parsed stream leaves out, for `--verbose-output`: the whole input of
+ * every tool call, the result each one returned — both of which arrive on
+ * events the parsed stream drops entirely — and the raw line itself.
+ */
+function renderEventTrace(line: string, event: ClaudeCodeEventData | null): string[] {
+  const traced: string[] = [];
+  const prefix = event?.session_id ? `Claude Code [sesión ${event.session_id}]` : "Claude Code";
+  for (const block of event ? blocks(event) : []) {
+    const tool = block.name ?? "desconocida";
+    if (block.type === "tool_use") {
+      const input = renderToolInput(block.input);
+      if (input) traced.push(`${prefix} herramienta ${tool} entrada: ${input}`);
+    }
+    if (block.type === "tool_result") {
+      const output = renderToolOutput(block.content);
+      if (output) traced.push(`${prefix} herramienta${block.is_error ? " (error)" : ""} resultado: ${output}`);
+    }
+  }
+  traced.push(`Claude Code evento crudo: ${line}`);
+  return traced;
 }
 
 /**
@@ -325,6 +349,9 @@ export class ClaudeCodeService implements CodingAgent {
       for (const { message, severity } of renderEvent(line)) {
         if (severity === "debug") this.reporter.debug(message);
         else this.reporter.info(message);
+      }
+      if (this.reporter.tracing) {
+        for (const message of renderEventTrace(line, parseEvent(line))) this.reporter.trace(message);
       }
     };
     const reportStderr = (line: string) => this.reporter.info(`Claude Code stderr: ${line}`);

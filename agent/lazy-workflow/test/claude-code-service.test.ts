@@ -9,6 +9,7 @@ import {
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
 import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
 import { AUTHORITY_PROFILES, authorityConfigPath } from "../src/prompts/authority-profile.ts";
+import { parseReportedChunk } from "./_helpers/reported-lines.ts";
 
 beforeAll(() => {
   chalk.level = 1;
@@ -19,30 +20,25 @@ type Captured = {
   warn: string[];
   error: string[];
   debug: string[];
+  trace: string[];
 };
 
 const captureStream = (): { stream: ReporterStream; captured: Captured } => {
-  const captured: Captured = { info: [], warn: [], error: [], debug: [] };
+  const captured: Captured = { info: [], warn: [], error: [], debug: [], trace: [] };
   const stream = new Writable({
     write(chunk, _encoding, callback) {
-      const text = chunk.toString();
-      const stripped = text.replace(/\[[0-9;]*m/g, "").replace(/\n$/, "");
-      const match = stripped.match(/^[^\s]+(\s|$)/);
-      const icon = match ? match[0].trimEnd() : "";
-      const rest = stripped.replace(/^[^\s]+\s?/, "");
-      if (icon === "ℹ") captured.info.push(rest);
-      else if (icon === "⚠") captured.warn.push(rest);
-      else if (icon === "✗") captured.error.push(rest);
-      else if (icon === "·") captured.debug.push(rest);
+      for (const { level, message } of parseReportedChunk(chunk.toString())) {
+        captured[level].push(message);
+      }
       callback();
     },
   }) as unknown as ReporterStream;
   return { stream, captured };
 };
 
-const captureReporter = (verbose: boolean): { reporter: Reporter; captured: Captured } => {
+const captureReporter = (verbose: boolean, verboseOutput = false): { reporter: Reporter; captured: Captured } => {
   const { stream, captured } = captureStream();
-  const reporter = createReporter({ verbose, stream });
+  const reporter = createReporter({ verbose, verboseOutput, stream });
   return { reporter, captured };
 };
 
@@ -554,5 +550,57 @@ describe("ClaudeCodeService enrutado por el Reporter", () => {
     await service.run(standardOptions);
 
     expect(captured.info).toContain("Claude Code stderr: línea de error");
+  });
+
+  test("una herramienta nombra el archivo que edita ya en modo verbose", async () => {
+    const { reporter, captured } = captureReporter(true);
+    const service = new ClaudeCodeService(
+      () => stubProcess([
+        initEvent("ses_file"),
+        jsonEvent({
+          type: "assistant",
+          session_id: "ses_file",
+          message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/cli/parse-cli-options.ts", old_string: "a", new_string: "b" } }] },
+        }),
+        assistantText("ses_file", "listo"),
+      ].join("\n")),
+      reporter,
+    );
+
+    await service.run(standardOptions);
+
+    expect(captured.debug.some((line) =>
+      line.includes("herramienta Edit") && line.includes("en src/cli/parse-cli-options.ts"))).toBeTrue();
+    expect(captured.trace).toEqual([]);
+  });
+
+  test("verboseOutput agrega la entrada completa, el resultado y el evento crudo", async () => {
+    const { reporter, captured } = captureReporter(false, true);
+    const service = new ClaudeCodeService(
+      () => stubProcess([
+        initEvent("ses_full"),
+        jsonEvent({
+          type: "assistant",
+          session_id: "ses_full",
+          message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/output/reporter.ts", old_string: "antes", new_string: "despues" } }] },
+        }),
+        jsonEvent({
+          type: "user",
+          session_id: "ses_full",
+          message: { content: [{ type: "tool_result", content: "El archivo fue actualizado" }] },
+        }),
+        assistantText("ses_full", "listo"),
+      ].join("\n")),
+      reporter,
+    );
+
+    await service.run(standardOptions);
+
+    expect(captured.trace.some((line) =>
+      line.includes("herramienta Edit entrada:")
+      && line.includes("src/output/reporter.ts")
+      && line.includes("old_string"))).toBeTrue();
+    expect(captured.trace.some((line) => line.includes("herramienta resultado: El archivo fue actualizado"))).toBeTrue();
+    expect(captured.trace.some((line) => line.startsWith("Claude Code evento crudo: {"))).toBeTrue();
   });
 });

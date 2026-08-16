@@ -43,7 +43,16 @@ lazy-workflow hu-branch-info --hu 23438
 lazy-workflow hu-branch-set --hu 23438 --branch feature/hu-23438 --working-directory /path/to/repository
 lazy-workflow ticket-info --hu 23438 --ticket 23459
 lazy-workflow ticket-state-info --ticket 23459
+lazy-workflow github-issue-list --working-directory /path/to/repository
+lazy-workflow github-branch-prepare --issue 201 --working-directory /path/to/repository
 ```
+
+Every deterministic operation the workflows perform against Azure Boards,
+GitHub or git is also a command of its own: it opens no session, prints what
+its adapter answered as JSON, and shares the adapter the workflow uses, so it
+validates identically (see
+[Deterministic tools as commands](agent/lazy-workflow/README.md#deterministic-tools-as-commands)
+and [ADR-0026](docs/adr/0026-run-deterministic-tools-as-standalone-commands.md)).
 
 ## Skills
 

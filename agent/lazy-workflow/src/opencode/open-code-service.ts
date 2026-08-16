@@ -18,6 +18,7 @@ import {
   type CodingAgent,
   type ProviderExhaustion,
 } from "../coding-agent/coding-agent.ts";
+import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
 
@@ -33,6 +34,19 @@ const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not 
 const SPINNER_RESTART_MS = 2_000;
 const SPINNER_TEXT = "OpenCode ejecutándose";
 
+/**
+ * The arguments of a tool call as OpenCode reports them. A call may carry them
+ * on the part, on its state, or only as the title the state gave it; the state's
+ * own input is the most specific, so it is the one that wins.
+ */
+function toolInputOf(part: OpenCodeEventData["part"]): Record<string, unknown> {
+  return {
+    ...(part?.state?.title ? { title: part.state.title } : {}),
+    ...(part?.input ?? {}),
+    ...(part?.state?.input ?? {}),
+  };
+}
+
 function renderEvent(line: string): string {
   try {
     const event = JSON.parse(line) as OpenCodeEventData;
@@ -42,12 +56,7 @@ function renderEvent(line: string): string {
     if (event.type === "reasoning" && part?.text) return `${prefix} razonando: ${part.text}`;
     if (event.type === "step_start") return `${prefix} inició un paso`;
     if (event.type === "tool_use" || part?.type === "tool") {
-      const status = part?.state?.status ? ` (${part.state.status})` : "";
-      const detail = part?.state?.input?.command?.trim()
-        ?? part?.input?.command?.trim()
-        ?? part?.state?.input?.description?.trim()
-        ?? part?.state?.title?.trim();
-      return `${prefix} herramienta ${part?.tool ?? "desconocida"}${status}${detail ? `: ${JSON.stringify(detail)}` : ""}`;
+      return renderToolCall(prefix, part?.tool, part?.state?.status, toolInputOf(part));
     }
     if (event.type === "step_finish") {
       return `${prefix} terminó un paso${part?.reason ? ` (${part.reason})` : ""}`;
@@ -58,6 +67,26 @@ function renderEvent(line: string): string {
   } catch {
     return line;
   }
+}
+
+/**
+ * Everything one event carries beyond the line the parsed stream shows: the
+ * whole tool input, the output the tool returned, and the raw event itself.
+ * Only `--verbose-output` asks for it, so it is built only when it is wanted.
+ */
+function renderEventTrace(line: string, event: OpenCodeEventData | null): string[] {
+  const traced: string[] = [];
+  const part = event?.part;
+  const prefix = event?.sessionID ? `OpenCode [sesión ${event.sessionID}]` : "OpenCode";
+  if (part && (event?.type === "tool_use" || part.type === "tool")) {
+    const tool = part.tool ?? "desconocida";
+    const input = renderToolInput(toolInputOf(part));
+    if (input) traced.push(`${prefix} herramienta ${tool} entrada: ${input}`);
+    const output = renderToolOutput(part.state?.output ?? part.output);
+    if (output) traced.push(`${prefix} herramienta ${tool} salida: ${output}`);
+  }
+  traced.push(`OpenCode evento crudo: ${line}`);
+  return traced;
 }
 
 function parseEvent(line: string): OpenCodeEventData | null {
@@ -305,6 +334,9 @@ export class OpenCodeService implements CodingAgent {
         this.reporter.debug(rendered);
       } else {
         this.reporter.info(rendered);
+      }
+      if (this.reporter.tracing) {
+        for (const traced of renderEventTrace(line, event)) this.reporter.trace(traced);
       }
     };
     const reportStdout = (line: string) => {

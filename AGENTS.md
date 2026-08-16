@@ -17,6 +17,9 @@ inside that directory rather than a skill directory.
 | Add or change a workflow used by an AI session | The relevant `<category>/<skill>/SKILL.md` and adjacent references |
 | Add a new skill | A category directory, `SKILL.md`, optional `agents/openai.yaml`, and README catalog entries |
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
+| Add or change a deterministic tool exposed as its own command | `agent/lazy-workflow/src/cli/tool-commands.ts` (the names) and `agent/lazy-workflow/src/cli/deterministic-tools.ts` (the dispatch) |
+| Change what the operator sees — the stamped line format, the levels, or the run panel | `agent/lazy-workflow/src/output/reporter.ts` |
+| Change what a tool call reports about the artifact it touches | `agent/lazy-workflow/src/output/agent-tool-detail.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
