@@ -33,7 +33,9 @@ the accepted cost is one exhausted attempt per unit while the limit persists.
 
 When every rung is exhausted for the unit in progress, the run waits and retries
 the primary at a fixed interval up to a bounded total, then fails closed with
-the checkpoint preserved. Waiting is what the failure calls for, because the
+the checkpoint preserved. The retry starts over at the head of the chain rather
+than at the primary alone: the rungs are exhausted independently and recover
+independently, so the unit continues on whichever one has its quota back first. Waiting is what the failure calls for, because the
 resource returns by itself. The bound is what keeps it honest: a failure
 misclassified as exhaustion — a stale credential, a revoked key — must surface
 as an operator-visible stop rather than an agent that waits forever.

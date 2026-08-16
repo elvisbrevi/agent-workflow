@@ -505,6 +505,92 @@ Delivery records the owning CLI in its checkpoint, so `--session <id>` resumes
 against the CLI that opened the session, and a `--cli` that contradicts the
 checkpoint fails closed with the checkpoint preserved.
 
+## Fallback chain
+
+A run may declare an ordered chain of backup rungs with a repeatable
+`--fallback <cli>:<model>:<variant>`. Its primary rung is the run's own `--cli`,
+`--model`, and `--variant`, and the order you declare the backups in is the
+order they are used:
+
+```bash
+lazy-workflow code --working-directory /path/to/repository \
+  --model opencode-go/deepseek-v4-pro --variant high \
+  --fallback opencode:openai/gpt-5.6-luna:high \
+  --fallback claudecode:claude-opus-5:high
+```
+
+Every rung's binary is verified while the arguments are parsed, so a typo or a
+missing installation is reported before the primary spends any usage, and the
+resolved chain is reported at start-up so you know what the run will end on.
+
+The chain descends only on **provider exhaustion** — usage or rate limit, quota,
+billing, or authentication — as each CLI's own adapter classifies it. A session
+that merely fails its task never descends (ADR-0024). Each descent is reported
+with the rung it left, the rung it moved to, and the cause.
+
+A backup that shares the active CLI resumes the same session with the new model
+and variant, so the context already built survives. A backup naming another CLI
+has no session to resume: the work continues through a **handoff**, a fresh
+session in the new CLI that receives the coordinator's own prompt for the same
+fixed unit of work — same issue, branch, manifest path, marker contract, and
+authority profile in the new CLI's format — plus a progress section built from
+verified state: checkpoint phase, branch, last commit, uncommitted worktree, and
+the manifest if it exists. Nothing the exhausted session said travels with it
+(ADR-0025). The checkpoint records the new CLI and the new session identifier in
+a single write, so recovery resumes against the CLI that actually holds the work.
+
+The descent is sticky for the unit of work in progress and no further: the next
+issue in the managed queue starts again at the primary rung, so the run returns
+to your preferred model as soon as its quota renews.
+
+### When the whole chain is exhausted
+
+With every rung exhausted for the unit in progress, the run waits at a fixed
+interval and retries the chain from its primary rung, up to a total bound:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--fallback-wait <seconds>` | `300` | Interval between retries of the primary rung. |
+| `--fallback-wait-max <seconds>` | `3600` | Total bound of the wait-and-retry cycle, from the first wait. |
+
+The bound is wall-clock time from the first wait, so it covers the retries as
+well as the waits: it is how long the run may spend trying to outlast the
+limit, not a count of intervals. Each wait is reported with the exhausted rung,
+its cause, and the time left until the bound; the last one is skipped when what
+remains no longer covers a full interval. A bound smaller than one interval is
+an argument error, since it could never retry anything. When the bound is spent the run fails closed:
+the message names the last rung attempted and its cause, and the checkpoint is
+left intact, so `--session <id>` resumes exactly where the work stopped.
+
+### End to end: an OpenCode run that finishes the issue in Claude Code
+
+```bash
+lazy-workflow code --working-directory /path/to/repository \
+  --model opencode-go/deepseek-v4-pro --variant high \
+  --fallback claudecode:claude-opus-5:high \
+  --fallback-wait 300 --fallback-wait-max 3600
+```
+
+1. The chain is reported: rung 1/2 `opencode`, rung 2/2 `claudecode`.
+2. The run selects and claims an issue, prepares its branch and manifest path,
+   and starts an OpenCode session on the primary rung.
+3. Mid-implementation the OpenCode account hits its usage limit. The adapter
+   classifies it as exhaustion, and the descent is reported: `escalón
+   opencode:opencode-go/deepseek-v4-pro:high agotado (rate_limit); desciendo a
+   claudecode:claude-opus-5:high traspasando el trabajo a una sesión nueva`.
+4. Claude Code has no session to resume, so a fresh one starts with the same
+   delivery prompt for the same issue, branch, and manifest, plus the progress
+   already on disk — phase `implementing`, the branch, the last commit, the
+   uncommitted worktree, the manifest if written. The checkpoint now names
+   `claudecode` and the new session identifier.
+5. Claude Code finishes the implementation and emits `IMPLEMENTATION_READY`; the
+   coordinator completes the delivery deterministically as always.
+6. The next issue in the queue starts again on OpenCode, the primary rung.
+
+Had Claude Code been exhausted too, the run would have waited 300s, reported
+`quedan 3600s hasta el tope`, and retried from OpenCode — and, after 3600s of
+waiting without a rung recovering, failed closed with the checkpoint preserved.
+
 ## Agent authority
 
 Every run carries an agent authority profile alongside its prompt. The prompt
