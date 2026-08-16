@@ -123,6 +123,17 @@ bun run main.ts code --working-directory /path/to/repository \
   --fallback claudecode:claude-opus-5:high
 ```
 
+A chain may also reach the same model through a second account. Sonnet 5 at high
+effort on a Claude Code subscription, backed by the identical model billed to a
+GitHub Copilot seat through OpenCode, keeps the model and only changes who pays
+for it when the first account runs out:
+
+```bash
+bun run main.ts code --working-directory /path/to/repository \
+  --cli claudecode --model claude-sonnet-5 --variant high \
+  --fallback opencode:github-copilot/claude-sonnet-5:high
+```
+
 Declaration order is the descent order, and every rung's binary is verified
 while the arguments are parsed. Only provider exhaustion — usage or rate limit,
 quota, billing, or authentication — descends the chain; a session that fails its
@@ -138,7 +149,9 @@ With every rung exhausted, the run waits `--fallback-wait` seconds (default
 (default `3600`), reporting the time left until the bound on each wait. Once the
 bound is spent — wall clock from the first wait, retries included — it fails
 closed with the checkpoint intact. The full walkthrough
-is in [`agent/lazy-workflow/README.md`](agent/lazy-workflow/README.md#fallback-chain).
+is in [`agent/lazy-workflow/README.md`](agent/lazy-workflow/README.md#fallback-chain),
+and a runnable example of every lazy-workflow command is in
+[Practical examples](agent/lazy-workflow/README.md#practical-examples).
 
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
