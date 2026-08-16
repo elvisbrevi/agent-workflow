@@ -46,6 +46,15 @@ version rises accordingly. A recovery whose `--cli` contradicts its checkpoint
 fails closed rather than resuming against the wrong binary, and says which CLI
 owns it so the operator can resume rather than guess.
 
+Adopting a checkpoint's CLI revalidates the explicit `--variant` of the command
+against it. Arguments are validated against the `--cli` the command names, which
+after a handoff is not the CLI that ends up running them, so a variant the
+adopted CLI cannot execute is rejected there too — an argument error with the
+checkpoint intact, naming the adopted CLI and the efforts it accepts, rather than
+a resumed session that opens to die. `--model` has no such check because no CLI
+publishes the set of models it accepts; an unusable one still surfaces as a
+failed session.
+
 Failing closed protects the operator from their own contradiction, not from the
 run's. A cross-CLI handoff (ADR-0025) moves the session off the `--cli` that
 started it, so the command that originated the work would otherwise contradict a
