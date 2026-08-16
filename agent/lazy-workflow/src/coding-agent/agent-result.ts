@@ -9,19 +9,28 @@ export interface AgentTokens {
   };
 }
 
+/**
+ * A tool call reports whatever arguments its own tool takes, so the shape stays
+ * open: the keys named here are the ones coordination reads, and the rest are
+ * what `--verbose-output` shows the operator — the edited file among them.
+ */
+export type AgentToolInput = Record<string, unknown> & {
+  command?: string;
+  description?: string;
+  file_path?: string;
+};
+
 interface OpenCodePartData {
   type?: string;
   tool?: string;
-  input?: {
-    command?: string;
-  };
+  input?: AgentToolInput;
   state?: {
     status?: string;
     title?: string;
-    input?: {
-      command?: string;
-      description?: string;
-    };
+    input?: AgentToolInput;
+    output?: string;
+    error?: string;
+    metadata?: Record<string, unknown>;
   };
   text?: string;
   output?: string;

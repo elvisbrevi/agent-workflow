@@ -29,7 +29,7 @@ import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError
 import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
-import { reportOperator, setDefaultReporter } from "../output/operator-output.ts";
+import { reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter } from "../output/reporter.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
@@ -95,6 +95,12 @@ import {
   type CliParser,
   type FallbackRung,
 } from "./parse-cli-options.ts";
+import {
+  createDeterministicToolServices,
+  isDeterministicToolCommand,
+  runDeterministicTool,
+  type DeterministicToolServices,
+} from "./deterministic-tools.ts";
 
 type CliOptions = AgentRunOptions & ParsedCliOptions;
 
@@ -414,6 +420,12 @@ export class LazyWorkflowCli {
     githubDelivery?: GitHubDeliveryAdapter,
     githubParentReconciliation?: GitHubParentReconciliationAdapter,
     private readonly azureWorkspaceCheckpoint: AzureWorkspaceCheckpointStore = new AzureWorkspaceCheckpointStore(),
+    /**
+     * The boundaries the standalone deterministic tools run against. They are
+     * built on demand rather than here, because a workflow run never uses them
+     * and must not pay for adapters it will not call (ADR-0026).
+     */
+    private readonly deterministicToolServices?: DeterministicToolServices,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -506,7 +518,6 @@ export class LazyWorkflowCli {
     const options = parsed.options;
     this.applyReporter(options);
     this.resolveAgent(options.cli);
-    this.reportFallbackChain(options);
 
     const command = options.command;
 
@@ -514,6 +525,9 @@ export class LazyWorkflowCli {
       reportOperator("--verbose y --quiet son mutuamente excluyentes");
       return 1;
     }
+
+    this.reportRunHeading(options);
+    this.reportFallbackChain(options);
 
     if (options.workingDirectory.includes(",")) {
       if (command !== "plan" && command !== "code") {
@@ -529,6 +543,17 @@ export class LazyWorkflowCli {
     if (options.normasSag && command !== "plan" && command !== "code") {
       reportOperator("--normas-sag solo se permite con plan o code");
       return 1;
+    }
+
+    // A deterministic tool is the workflow's own step run on its own, so it is
+    // dispatched before any rule that only governs a session-opening command
+    // (ADR-0026).
+    if (isDeterministicToolCommand(command)) {
+      return runDeterministicTool(
+        command,
+        options,
+        this.deterministicToolServices ?? createDeterministicToolServices(this.huInfoService),
+      );
     }
 
     if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "infra-sag") {
@@ -974,10 +999,41 @@ export class LazyWorkflowCli {
   private applyReporter(options: ParsedCliOptions): void {
     const reporter = this.createReporterFn({
       verbose: options.verbose,
+      verboseOutput: options.verboseOutput,
       quiet: options.quiet,
       noColor: options.noColor,
     });
     setDefaultReporter(reporter);
+  }
+
+  /**
+   * The panel that opens a run: what it is doing, against which tracker and
+   * repository, and how loudly it will report. It is the first thing the
+   * operator reads, so everything that decides the run's shape is in it.
+   */
+  private reportRunHeading(options: ParsedCliOptions): void {
+    const scope = options.hu !== null
+      ? `HU ${options.hu}`
+      : options.issue !== null
+        ? `Issue ${options.issue}`
+        : "GitHub";
+    const verbosity = options.quiet
+      ? "quiet"
+      : options.verboseOutput
+        ? "verbose-output"
+        : options.verbose
+          ? "verbose"
+          : "parseada";
+    reportOperatorHeading(`lazy-workflow · ${options.command}`, [
+      `alcance    ${scope}`,
+      // A deterministic tool opens no session, so naming an agent it will never
+      // run would be the one false line in the panel.
+      ...(isDeterministicToolCommand(options.command)
+        ? []
+        : [`agente     ${options.cli} · ${options.model} · ${options.variant}`]),
+      `directorio ${options.workingDirectory}`,
+      `salida     ${verbosity}`,
+    ]);
   }
 
   /**

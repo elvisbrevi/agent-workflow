@@ -6,10 +6,16 @@ import {
   type Reporter,
   type ReporterStream,
 } from "../src/output/reporter.ts";
+import { parseReportedChunk } from "./_helpers/reported-lines.ts";
 
 beforeAll(() => {
   chalk.level = 1;
 });
+
+/** A clock the reporter reads instead of the wall one, so a stamp is assertable. */
+const FIXED_DATE = new Date(2026, 7, 10, 16, 23, 5);
+const FIXED_STAMP = "10/08/26 16:23:05";
+const now = () => FIXED_DATE;
 
 const captureStream = (): { stream: ReporterStream; chunks: string[] } => {
   const chunks: string[] = [];
@@ -24,65 +30,134 @@ const captureStream = (): { stream: ReporterStream; chunks: string[] } => {
   };
 };
 
+const stripAnsi = (text: string): string => text.replace(/\[[0-9;]*m/g, "");
+const plain = (chunks: string[]): string[] => chunks.map(stripAnsi);
+
 describe("createReporter", () => {
-  describe("info", () => {
-    test("emite una sola linea con icono informativo", () => {
+  describe("linea parseada", () => {
+    test("estampa fecha, hora, minuto y segundo antes del glifo", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("hola");
 
-      expect(chunks).toHaveLength(1);
-      expect(chunks[0]).toBe("\u001b[34mℹ hola\u001b[39m\n");
+      expect(chunks).toEqual([`${FIXED_STAMP} │ ● hola\n`]);
+    });
+
+    test("cada nivel tiene su propio glifo en la misma columna", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: true, verboseOutput: true, noColor: true, stream, now });
+      reporter.info("uno");
+      reporter.warn("dos");
+      reporter.error("tres");
+      reporter.debug("cuatro");
+      reporter.trace("cinco");
+
+      expect(chunks).toEqual([
+        `${FIXED_STAMP} │ ● uno\n`,
+        `${FIXED_STAMP} │ ▲ dos\n`,
+        `${FIXED_STAMP} │ ✖ tres\n`,
+        `${FIXED_STAMP} │ · cuatro\n`,
+        `${FIXED_STAMP} │ ⋮ cinco\n`,
+      ]);
     });
 
     test("multiples llamadas escriben lineas independientes", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("uno");
       reporter.info("dos");
 
       expect(chunks).toEqual([
-        "\u001b[34mℹ uno\u001b[39m\n",
-        "\u001b[34mℹ dos\u001b[39m\n",
+        `${FIXED_STAMP} │ ● uno\n`,
+        `${FIXED_STAMP} │ ● dos\n`,
+      ]);
+    });
+
+    test("las lineas se leen de vuelta con su nivel", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: true, noColor: true, stream, now });
+      reporter.info("a");
+      reporter.debug("b");
+      reporter.warn("c");
+
+      expect(chunks.flatMap(parseReportedChunk)).toEqual([
+        { level: "info", message: "a" },
+        { level: "debug", message: "b" },
+        { level: "warn", message: "c" },
       ]);
     });
   });
 
-  describe("warn", () => {
-    test("emite una linea amarilla con icono de advertencia", () => {
+  describe("color", () => {
+    test("cada nivel pinta su glifo y su texto", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
-      reporter.warn("cuidado");
+      const reporter = createReporter({ verbose: false, noColor: false, stream, now });
+      reporter.info("hola");
 
-      expect(chunks).toEqual(["\u001b[33m⚠ cuidado\u001b[39m\n"]);
+      expect(chunks[0]).toContain("[");
+      expect(stripAnsi(chunks[0]!)).toBe(`${FIXED_STAMP} │ ● hola\n`);
     });
-  });
 
-  describe("error", () => {
-    test("emite una linea roja con icono de error", () => {
+    test("info, warn y error no comparten el mismo color", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
-      reporter.error("fallo");
+      const reporter = createReporter({ verbose: false, noColor: false, stream, now });
+      reporter.info("uno");
+      reporter.warn("dos");
+      reporter.error("tres");
 
-      expect(chunks).toEqual(["\u001b[31m✗ fallo\u001b[39m\n"]);
+      const codes = chunks.map((chunk) => chunk.match(/\[[0-9;]*m/g)?.join(",") ?? "");
+      expect(new Set(codes).size).toBe(3);
     });
   });
 
   describe("debug", () => {
     test("se silencia cuando verbose es false", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.debug("traza");
 
       expect(chunks).toEqual([]);
     });
 
-    test("emite linea gris cuando verbose es true", () => {
+    test("se emite cuando verbose es true", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: true, stream });
+      const reporter = createReporter({ verbose: true, noColor: true, stream, now });
       reporter.debug("traza");
 
-      expect(chunks).toEqual(["\u001b[90m· traza\u001b[39m\n"]);
+      expect(chunks).toEqual([`${FIXED_STAMP} │ · traza\n`]);
+    });
+  });
+
+  describe("trace", () => {
+    test("se silencia con verbose solo, porque es la salida completa", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: true, noColor: true, stream, now });
+      reporter.trace("evento crudo");
+
+      expect(chunks).toEqual([]);
+      expect(reporter.tracing).toBeFalse();
+    });
+
+    test("verboseOutput lo habilita y tambien habilita debug", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, verboseOutput: true, noColor: true, stream, now });
+      reporter.debug("herramienta");
+      reporter.trace("evento crudo");
+
+      expect(chunks).toEqual([
+        `${FIXED_STAMP} │ · herramienta\n`,
+        `${FIXED_STAMP} │ ⋮ evento crudo\n`,
+      ]);
+      expect(reporter.tracing).toBeTrue();
+    });
+
+    test("quiet apaga tracing incluso con verboseOutput", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: true, verboseOutput: true, quiet: true, noColor: true, stream, now });
+      reporter.trace("evento crudo");
+
+      expect(chunks).toEqual([]);
+      expect(reporter.tracing).toBeFalse();
     });
   });
 
@@ -90,15 +165,14 @@ describe("createReporter", () => {
     test("info, warn y error se emiten independientemente del flag verbose", () => {
       const quietStream = captureStream();
       const loudStream = captureStream();
-      const quiet = createReporter({ verbose: false, stream: quietStream.stream });
-      const loud = createReporter({ verbose: true, stream: loudStream.stream });
+      const quiet = createReporter({ verbose: false, noColor: true, stream: quietStream.stream, now });
+      const loud = createReporter({ verbose: true, noColor: true, stream: loudStream.stream, now });
 
-      quiet.info("a");
-      quiet.warn("b");
-      quiet.error("c");
-      loud.info("a");
-      loud.warn("b");
-      loud.error("c");
+      for (const reporter of [quiet, loud]) {
+        reporter.info("a");
+        reporter.warn("b");
+        reporter.error("c");
+      }
 
       expect(quietStream.chunks).toEqual(loudStream.chunks);
     });
@@ -117,87 +191,45 @@ describe("createReporter", () => {
       else process.env.NO_COLOR = originalNoColor;
     });
 
-    test("info emite texto plano sin codigos ANSI", () => {
+    test("cada nivel emite texto plano sin codigos ANSI", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: true, verboseOutput: true, stream, now });
       reporter.info("hola");
-
-      expect(chunks).toEqual(["ℹ hola\n"]);
-    });
-
-    test("warn emite texto plano sin codigos ANSI", () => {
-      const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
       reporter.warn("cuidado");
-
-      expect(chunks).toEqual(["⚠ cuidado\n"]);
-    });
-
-    test("error emite texto plano sin codigos ANSI", () => {
-      const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
       reporter.error("fallo");
-
-      expect(chunks).toEqual(["✗ fallo\n"]);
-    });
-
-    test("debug verbose emite texto plano sin codigos ANSI", () => {
-      const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: true, stream });
       reporter.debug("traza");
+      reporter.trace("crudo");
 
-      expect(chunks).toEqual(["· traza\n"]);
+      expect(chunks).toEqual([
+        `${FIXED_STAMP} │ ● hola\n`,
+        `${FIXED_STAMP} │ ▲ cuidado\n`,
+        `${FIXED_STAMP} │ ✖ fallo\n`,
+        `${FIXED_STAMP} │ · traza\n`,
+        `${FIXED_STAMP} │ ⋮ crudo\n`,
+      ]);
     });
   });
 
   describe("quiet", () => {
-    test("silencia info, warn y debug pero conserva error", () => {
+    test("silencia info, warn, debug y trace pero conserva error", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: true, quiet: true, stream });
+      const reporter = createReporter({ verbose: true, verboseOutput: true, quiet: true, noColor: true, stream, now });
       reporter.info("uno");
       reporter.warn("dos");
       reporter.debug("tres");
-      reporter.error("cuatro");
+      reporter.trace("cuatro");
+      reporter.heading("titulo");
+      reporter.error("cinco");
 
-      expect(chunks).toEqual(["\u001b[31m✗ cuatro\u001b[39m\n"]);
-    });
-
-    test("quiet con verbose false coincide con quiet con verbose true en errores", () => {
-      const quietStream = captureStream();
-      const quietLoudStream = captureStream();
-      const quietReporter = createReporter({ verbose: false, quiet: true, stream: quietStream.stream });
-      const quietLoudReporter = createReporter({ verbose: true, quiet: true, stream: quietLoudStream.stream });
-
-      quietReporter.info("a");
-      quietReporter.warn("b");
-      quietReporter.error("c");
-      quietReporter.debug("d");
-      quietLoudReporter.info("a");
-      quietLoudReporter.warn("b");
-      quietLoudReporter.error("c");
-      quietLoudReporter.debug("d");
-
-      expect(quietStream.chunks).toEqual(quietLoudStream.chunks);
-    });
-
-    test("quiet false mantiene el comportamiento original de info y warn", () => {
-      const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, quiet: false, stream });
-      reporter.info("hola");
-      reporter.warn("cuidado");
-
-      expect(chunks).toEqual([
-        "\u001b[34mℹ hola\u001b[39m\n",
-        "\u001b[33m⚠ cuidado\u001b[39m\n",
-      ]);
+      expect(chunks).toEqual([`${FIXED_STAMP} │ ✖ cinco\n`]);
     });
 
     test("quiet por defecto es false", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("visible");
 
-      expect(chunks).toEqual(["\u001b[34mℹ visible\u001b[39m\n"]);
+      expect(chunks).toEqual([`${FIXED_STAMP} │ ● visible\n`]);
     });
   });
 
@@ -216,19 +248,22 @@ describe("createReporter", () => {
 
     test("noColor=true fuerza texto plano aunque NO_COLOR no este definido", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, noColor: true, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("hola");
       reporter.error("fallo");
 
-      expect(chunks).toEqual(["ℹ hola\n", "✗ fallo\n"]);
+      expect(chunks).toEqual([
+        `${FIXED_STAMP} │ ● hola\n`,
+        `${FIXED_STAMP} │ ✖ fallo\n`,
+      ]);
     });
 
     test("noColor=false preserva los colores cuando NO_COLOR no esta definido", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, noColor: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: false, stream, now });
       reporter.info("hola");
 
-      expect(chunks).toEqual(["\u001b[34mℹ hola\u001b[39m\n"]);
+      expect(chunks[0]).toContain("[");
     });
 
     test("el spinner arranca silencioso con noColor=true", () => {
@@ -241,32 +276,56 @@ describe("createReporter", () => {
     });
   });
 
+  describe("heading", () => {
+    test("dibuja un panel redondeado con el titulo y sus detalles", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
+      reporter.heading("lazy-workflow · code", ["alcance    GitHub"]);
+
+      expect(plain(chunks)).toEqual([
+        [
+          "╭──────────────────────╮",
+          "│ lazy-workflow · code │",
+          "│ alcance    GitHub    │",
+          "╰──────────────────────╯",
+          "",
+        ].join("\n"),
+      ]);
+    });
+
+    test("el ancho lo fija la fila mas larga", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
+      reporter.heading("corto", ["una fila bastante mas larga"]);
+
+      const rendered = stripAnsi(chunks[0]!).split("\n");
+      const widths = new Set(rendered.filter(Boolean).map((line) => [...line].length));
+      expect(widths.size).toBe(1);
+    });
+  });
+
   describe("factory", () => {
     test("acepta un booleano para usos publicos", () => {
       const reporter = createReporter(false);
-      const loud = createReporter(true);
 
       expect(typeof reporter.info).toBe("function");
-      expect(typeof reporter.warn).toBe("function");
-      expect(typeof reporter.error).toBe("function");
-      expect(typeof reporter.debug).toBe("function");
-      expect(typeof reporter.start).toBe("function");
-      expect(typeof reporter.stop).toBe("function");
-      expect(typeof loud.debug).toBe("function");
+      expect(typeof reporter.trace).toBe("function");
+      expect(typeof reporter.heading).toBe("function");
+      expect(reporter.tracing).toBeFalse();
     });
 
     test("las instancias son independientes", () => {
       const a = captureStream();
       const b = captureStream();
-      const reporterA = createReporter({ verbose: false, stream: a.stream });
-      const reporterB = createReporter({ verbose: true, stream: b.stream });
+      const reporterA = createReporter({ verbose: false, noColor: true, stream: a.stream, now });
+      const reporterB = createReporter({ verbose: true, noColor: true, stream: b.stream, now });
 
       reporterA.info("uno");
       reporterA.debug("ignorado");
       reporterB.debug("dos");
 
-      expect(a.chunks).toEqual(["\u001b[34mℹ uno\u001b[39m\n"]);
-      expect(b.chunks).toEqual(["\u001b[90m· dos\u001b[39m\n"]);
+      expect(a.chunks).toEqual([`${FIXED_STAMP} │ ● uno\n`]);
+      expect(b.chunks).toEqual([`${FIXED_STAMP} │ · dos\n`]);
     });
   });
 
@@ -295,78 +354,55 @@ describe("createReporter", () => {
 
       expect(() => reporter.stop(spinner)).not.toThrow();
     });
-
-    test("con NO_COLOR el spinner arranca silencioso", () => {
-      const originalNoColor = process.env.NO_COLOR;
-      process.env.NO_COLOR = "1";
-      try {
-        const { stream } = captureStream();
-        const reporter = createReporter({ verbose: false, stream });
-        const spinner = reporter.start("cargando");
-
-        expect(spinner.isSilent).toBeTrue();
-        spinner.stop();
-      } finally {
-        if (originalNoColor === undefined) delete process.env.NO_COLOR;
-        else process.env.NO_COLOR = originalNoColor;
-      }
-    });
   });
 
-  describe("multi-line messages", () => {
-    test("info aplica color por linea, con icono solo en la primera", () => {
+  describe("mensajes multilinea", () => {
+    test("solo la primera linea se estampa; el resto cuelga del mismo canal", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("uno\ndos\ntres");
 
       expect(chunks).toEqual([
-        "\u001b[34mℹ uno\u001b[39m\n\u001b[34mdos\u001b[39m\n\u001b[34mtres\u001b[39m\n",
+        [
+          `${FIXED_STAMP} │ ● uno`,
+          `${" ".repeat(FIXED_STAMP.length)} │   dos`,
+          `${" ".repeat(FIXED_STAMP.length)} │   tres`,
+          "",
+        ].join("\n"),
       ]);
     });
 
-    test("warn preserva saltos de linea internos con color por linea", () => {
+    test("un mensaje multilinea se lee de vuelta como uno solo", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.warn("primera\nsegunda");
 
-      expect(chunks).toEqual(["\u001b[33m⚠ primera\u001b[39m\n\u001b[33msegunda\u001b[39m\n"]);
+      expect(chunks.flatMap(parseReportedChunk)).toEqual([
+        { level: "warn", message: "primera\nsegunda" },
+      ]);
     });
 
-    test("error con texto vacio emite icono y linea vacia", () => {
+    test("error con texto vacio emite el glifo y una linea vacia", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.error("");
 
-      expect(chunks).toEqual(["\u001b[31m✗ \u001b[39m\n"]);
+      expect(chunks).toEqual([`${FIXED_STAMP} │ ✖ \n`]);
     });
   });
 
   describe("orden de niveles", () => {
     test("info, warn y error producen lineas en orden", () => {
       const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: false, stream });
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
       reporter.info("primero");
       reporter.warn("segundo");
       reporter.error("tercero");
 
-      expect(chunks).toEqual([
-        "\u001b[34mℹ primero\u001b[39m\n",
-        "\u001b[33m⚠ segundo\u001b[39m\n",
-        "\u001b[31m✗ tercero\u001b[39m\n",
-      ]);
-    });
-
-    test("debug verbose se intercala con info sin perder orden", () => {
-      const { stream, chunks } = captureStream();
-      const reporter = createReporter({ verbose: true, stream });
-      reporter.info("a");
-      reporter.debug("b");
-      reporter.warn("c");
-
-      expect(chunks).toEqual([
-        "\u001b[34mℹ a\u001b[39m\n",
-        "\u001b[90m· b\u001b[39m\n",
-        "\u001b[33m⚠ c\u001b[39m\n",
+      expect(plain(chunks)).toEqual([
+        `${FIXED_STAMP} │ ● primero\n`,
+        `${FIXED_STAMP} │ ▲ segundo\n`,
+        `${FIXED_STAMP} │ ✖ tercero\n`,
       ]);
     });
   });
@@ -381,15 +417,15 @@ describe("reportOperator shim", () => {
     delete process.env.NO_COLOR;
   });
 
-  test("routea al info del reporter por defecto y emite texto plano", async () => {
-    const { reportOperator, setDefaultReporter } = await import("../src/output/operator-output.ts");
+  test("routea al info del reporter por defecto y emite una linea estampada", async () => {
+    const { reportOperator, setDefaultReporter, getDefaultReporter } = await import("../src/output/operator-output.ts");
     const { stream, chunks } = captureStream();
-    const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
-    setDefaultReporter(createReporter({ verbose: false, stream }));
+    const previous = getDefaultReporter();
+    setDefaultReporter(createReporter({ verbose: false, stream, now }));
 
     try {
       reportOperator("hola");
-      expect(chunks).toEqual(["ℹ hola\n"]);
+      expect(chunks).toEqual([`${FIXED_STAMP} │ ● hola\n`]);
     } finally {
       setDefaultReporter(previous);
     }

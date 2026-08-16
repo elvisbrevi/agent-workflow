@@ -18,12 +18,14 @@ lazy-workflow code --working-directory /path/to/repository
 Every command has a runnable example in [Practical examples](#practical-examples);
 the sections after it explain what each one does.
 
-OpenCode events and periodic no-output heartbeats are printed with local
-`dd/mm/yy HH:mm:ss` timestamps while the workflow runs. Events show their
-session ID, reasoning summaries, tool status, and sanitized tool input such as
-the shell command reported by OpenCode. The working directory is passed as
-OpenCode's real process directory, so tools operate in the selected repository. Azure and OpenCode
-retry messages are printed when a transient failure causes a retry.
+Every reported line is stamped with the local `dd/mm/yy HH:mm:ss` date and
+time, and hangs from a gutter styled after the [Bagels](https://github.com/EnhancedJax/Bagels)
+TUI, so a long run reads as one column. Events show their session ID, reasoning
+summaries, tool status, and the artifact each tool touches — the file an edit is
+writing among them. `--verbose-output` widens that to everything the agent
+streams. The working directory is passed as the agent's real process directory,
+so tools operate in the selected repository. Azure and agent retry messages are
+printed when a transient failure causes a retry.
 
 ## Practical examples
 
@@ -31,8 +33,9 @@ Every use of lazy-workflow, one runnable command each. Inside this directory
 `bun run main.ts <command>` and the globally installed `lazy-workflow <command>`
 are interchangeable. Every command below also accepts the coding agent flags
 (`--cli`, `--model`, `--variant`, `--fallback`) and the reporter flags
-(`--verbose`, `--quiet`, `--no-color`); the sections after this one explain the
-behaviour behind each example.
+(`--verbose`, `--verbose-output`, `--quiet`, `--no-color`); the sections after
+this one explain the behaviour behind each example. The deterministic tools take
+the reporter flags only: they open no session.
 
 ### Planning
 
@@ -207,75 +210,163 @@ The walkthrough of the first one is in
 ### Operator output
 
 ```bash
-lazy-workflow code --working-directory /path/to/repository             # info, warn, error
-lazy-workflow code --verbose  --working-directory /path/to/repository  # + reasoning and tool calls
-lazy-workflow code --quiet    --working-directory /path/to/repository  # errors only
-lazy-workflow code --no-color --working-directory /path/to/repository  # ANSI stripped
-lazy-workflow                                                          # full command help
+lazy-workflow code --working-directory /path/to/repository                  # info, warn, error
+lazy-workflow code --verbose --working-directory /path/to/repository        # + reasoning and tool calls
+lazy-workflow code --verbose-output --working-directory /path/to/repository # + every tool input, output and raw event
+lazy-workflow code --quiet    --working-directory /path/to/repository       # errors only
+lazy-workflow code --no-color --working-directory /path/to/repository       # ANSI stripped
+lazy-workflow                                                               # full command help
 ```
+
+## Deterministic tools as commands
+
+Every operation the workflow performs against Azure Boards, GitHub or git
+without opening a session is also a command of its own (ADR-0026). Each one
+takes its arguments as flags, prints what its adapter answered as JSON, and
+exits zero or one. They share the workflow's adapters, so a tool command
+validates exactly as the workflow step it mirrors does.
+
+```bash
+# GitHub queue: what a code run would take, and why it would skip the rest
+lazy-workflow github-auth-info --working-directory /path/to/repository
+lazy-workflow github-repo-info --working-directory /path/to/repository
+lazy-workflow github-issue-list --working-directory /path/to/repository
+lazy-workflow github-issue-select --working-directory /path/to/repository
+lazy-workflow github-issue-info --issue 201 --working-directory /path/to/repository
+lazy-workflow github-issue-claim --issue 201 --working-directory /path/to/repository
+lazy-workflow github-issue-release --issue 201 --working-directory /path/to/repository
+
+# GitHub delivery: the branch, the manifest, the commit, the PR, the closure
+lazy-workflow github-branch-prepare --issue 201 --working-directory /path/to/repository
+lazy-workflow github-branch-checkout --branch issue/201 --base-branch main \
+  --working-directory /path/to/repository
+lazy-workflow github-branch-verify --branch issue/201 --base-branch main \
+  --working-directory /path/to/repository
+lazy-workflow github-manifest-info --manifest /path/to/github-completion-manifest.json \
+  --working-directory /path/to/repository
+lazy-workflow github-commit-push --branch issue/201 --commit <sha> \
+  --working-directory /path/to/repository
+lazy-workflow github-pr-create --issue 201 --branch issue/201 --base-branch main \
+  --commit <sha> --working-directory /path/to/repository
+lazy-workflow github-pr-merge --pr 9 --issue 201 --branch issue/201 --base-branch main \
+  --commit <sha> --working-directory /path/to/repository
+lazy-workflow github-issue-close --issue 201 --pr 9 --commit <merge-sha> \
+  --working-directory /path/to/repository
+lazy-workflow github-branch-cleanup --branch issue/201 --base-branch main --commit <sha> \
+  --working-directory /path/to/repository
+
+# Azure operations the ticket-* commands did not yet expose
+lazy-workflow hu-children-info --hu 23438
+lazy-workflow hu-state-set --hu 23438 --state Done --expected-state "En progreso" --expected-rev 12
+lazy-workflow hu-branch-ensure --hu 23438 --base-branch main --working-directory /path/to/repository
+lazy-workflow ticket-type-info --ticket 23459
+lazy-workflow ticket-pr-create --hu 23438 --ticket 23459
+lazy-workflow ticket-branch-checkout --branch ticket/23459 --working-directory /path/to/repository
+lazy-workflow ticket-branch-push --branch ticket/23459 --working-directory /path/to/repository
+
+# git
+lazy-workflow git-branch-delete --branch ticket/23459 --base-branch hu/23438 \
+  --commit <sha> --working-directory /path/to/repository
+```
+
+`--branch` and `--base-branch` accept the short name (`issue/201`) or the full
+ref (`refs/heads/issue/201`). `--commit` requires the full object name, because
+every tool that takes one compares it against a ref and an abbreviation would
+fail that comparison as if the branch had moved. These commands open no session,
+so `--cli`, `--model`, `--variant` and `--fallback` do not apply to them.
 
 ## Reporter and verbosity
 
-The lazy-workflow Reporter is the typed abstraction that emits operator
-output. Three global flags select its mode and propagate through every
-workflow:
+The lazy-workflow Reporter is the typed abstraction that emits operator output.
+Four global flags select its mode and propagate through every workflow:
 
 ```bash
-lazy-workflow code --working-directory /path/to/repository        # default (info, warn, error)
-lazy-workflow code --verbose --working-directory /path/to/repository   # info, warn, error, debug
-lazy-workflow code --quiet   --working-directory /path/to/repository   # error only
-lazy-workflow code --no-color --working-directory /path/to/repository  # ANSI stripped
+lazy-workflow code --working-directory /path/to/repository                  # default (info, warn, error)
+lazy-workflow code --verbose --working-directory /path/to/repository        # + debug
+lazy-workflow code --verbose-output --working-directory /path/to/repository # + debug and trace
+lazy-workflow code --quiet   --working-directory /path/to/repository        # error only
+lazy-workflow code --no-color --working-directory /path/to/repository       # ANSI stripped
 ```
 
-`--verbose` and `--quiet` are mutually exclusive. `--no-color` is independent
-and stacks with either verbosity. The Reporter keeps the existing
+`--verbose` and `--quiet` are mutually exclusive. `--verbose-output` is strictly
+wider than `--verbose` and turns it on, so it can never show less. `--no-color`
+is independent and stacks with any verbosity. The Reporter keeps the existing
 `operator-output` file module name as a compat shim, so `reportOperator(...)`
 continues to route to `info` regardless of which verbosity flag is active.
 
-A single `code` GitHub run against a delivery that includes one reasoning
-step, three tool uses, and one terminal `IMPLEMENTATION_READY` text event
-produces a different volume of operator output per mode. The blocks below
-show the full transcript each flag emits, with ANSI stripped so the examples
-are copy-pasteable:
+### The parsed line
 
-**Default** (`code --working-directory /repo`) — info + warn + error only,
-5 to 15 lines for a typical ticket delivery, GitHub-Actions style:
+Every line carries the local date, hour, minute and second, then a gutter, then
+the glyph of its level, and continuation lines hang from that same gutter. The
+palette is Bagels' own default theme (tokyo-night), and a run opens with a
+rounded panel naming what it is about to do:
 
 ```text
-ℹ OpenCode iniciado en /repo
-ℹ OpenCode [sesión ses_delivery] inició un paso
-ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
-ℹ OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
-ℹ lazy-workflow: no quedan issues GitHub elegibles.
+╭──────────────────────────────────────────────────────────╮
+│ lazy-workflow · code                                     │
+│ alcance    GitHub                                        │
+│ agente     opencode · opencode-go/deepseek-v4-pro · high │
+│ directorio /repo                                         │
+│ salida     parseada                                      │
+╰──────────────────────────────────────────────────────────╯
+16/08/26 21:03:48 │ ● OpenCode iniciado en /repo
+```
+
+The glyphs are `●` info, `▲` warn, `✖` error, `·` debug and `⋮` trace.
+
+A single `code` GitHub run against a delivery that includes one reasoning step,
+three tool uses, and one terminal `IMPLEMENTATION_READY` text event produces a
+different volume of operator output per mode. The blocks below show what each
+flag emits, with ANSI stripped so the examples are copy-pasteable:
+
+**Default** (`code --working-directory /repo`) — info + warn + error only,
+5 to 15 lines for a typical ticket delivery:
+
+```text
+16/08/26 21:03:48 │ ● OpenCode iniciado en /repo
+16/08/26 21:03:49 │ ● OpenCode [sesión ses_delivery] inició un paso
+16/08/26 21:04:11 │ ● OpenCode [sesión ses_delivery] terminó un paso (stop)
+16/08/26 21:04:11 │ ● OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
+16/08/26 21:04:12 │ ● lazy-workflow: no quedan issues GitHub elegibles.
 ```
 
 **Verbose** (`code --verbose --working-directory /repo`) — preserves the full
-event stream; reasoning and tool_use surface as debug lines that the default
-mode hides:
+event stream; reasoning and tool calls surface as debug lines that the default
+mode hides, each naming the artifact it touches:
 
 ```text
-ℹ OpenCode iniciado en /repo
-· OpenCode [sesión ses_delivery] razonando: Analizando cambios pendientes
-· OpenCode [sesión ses_delivery] herramienta bash (completed): "git status --short"
-· OpenCode [sesión ses_delivery] herramienta read (completed): "/repo/AGENTS.md"
-· OpenCode [sesión ses_delivery] herramienta edit (completed): "/repo/README.md"
-ℹ OpenCode [sesión ses_delivery] inició un paso
-ℹ OpenCode [sesión ses_delivery] terminó un paso (stop)
-ℹ OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
-ℹ lazy-workflow: no quedan issues GitHub elegibles.
+16/08/26 21:03:48 │ ● OpenCode iniciado en /repo
+16/08/26 21:03:50 │ · OpenCode [sesión ses_delivery] razonando: Analizando cambios pendientes
+16/08/26 21:03:52 │ · OpenCode [sesión ses_delivery] herramienta bash (completed): "git status --short"
+16/08/26 21:03:55 │ · OpenCode [sesión ses_delivery] herramienta read (completed) en AGENTS.md
+16/08/26 21:04:02 │ · OpenCode [sesión ses_delivery] herramienta edit (completed) en src/output/reporter.ts
+16/08/26 21:04:11 │ ● OpenCode [sesión ses_delivery]: IMPLEMENTATION_READY
 ```
 
-**Quiet** (`code --quiet --working-directory /repo`) — only error lines
-reach the operator; info and warn are silenced, and the run is silent
-unless something fails:
+**Verbose output** (`code --verbose-output --working-directory /repo`) — adds
+the whole input of every tool call, the output it returned, and the raw event
+the agent emitted, so nothing the agent streamed is dropped:
 
 ```text
-✗ lazy-workflow: OpenCode terminó con error.
+16/08/26 21:04:02 │ · OpenCode [sesión ses_delivery] herramienta edit (completed) en src/output/reporter.ts
+16/08/26 21:04:02 │ ⋮ OpenCode [sesión ses_delivery] herramienta edit entrada: {"file_path":"src/output/reporter.ts","old_string":"…","new_string":"…"}
+16/08/26 21:04:02 │ ⋮ OpenCode [sesión ses_delivery] herramienta edit salida: 1 archivo actualizado
+16/08/26 21:04:02 │ ⋮ OpenCode evento crudo: {"type":"tool_use","sessionID":"ses_delivery",…}
 ```
 
-`--no-color` can be stacked on top of any of the three modes above and
-strips ANSI from every line, leaving only the icon, the space, and the
-message.
+Long values are shortened before they are printed, so a file rewrite is reported
+as a call with its arguments rather than as the file echoed back to the terminal.
+
+**Quiet** (`code --quiet --working-directory /repo`) — only error lines reach
+the operator; info, warn, debug, trace and the run panel are silenced, and the
+run is silent unless something fails:
+
+```text
+16/08/26 21:04:11 │ ✖ lazy-workflow: OpenCode terminó con error.
+```
+
+`--no-color` can be stacked on top of any of the modes above and strips ANSI
+from every line, leaving the stamp, the gutter, the glyph and the message.
 
 ## Default GitHub workflows
 

@@ -100,10 +100,13 @@ function checkpointStore(): GitHubCheckpointStore & { written: GitHubDeliveryChe
 function captureReporter(): { reporter: Reporter; info: string[] } {
   const info: string[] = [];
   const reporter: Reporter = {
+    tracing: false,
     info: (message: string) => { info.push(message); },
     warn: (message: string) => { info.push(message); },
     error: (message: string) => { info.push(message); },
     debug: () => undefined,
+    trace: () => undefined,
+    heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
   };

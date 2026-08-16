@@ -14,10 +14,32 @@ _Avoid_: issue runner, queue supervisor
 The typed severity-aware output abstraction used by `agent/lazy-workflow/`.
 Every workflow constructs a single `Reporter` via `createReporter()` and
 funnels all operator messages through its `info`, `warn`, `error`, `debug`,
-`start`, and `stop` methods. The Reporter decides whether each message
-reaches the operator based on three global flags (`--verbose`, `--quiet`,
-`--no-color`) and respects the `NO_COLOR=1` environment variable.
+`trace`, `heading`, `start`, and `stop` methods. The Reporter decides whether
+each message reaches the operator based on four global flags (`--verbose`,
+`--verbose-output`, `--quiet`, `--no-color`) and respects the `NO_COLOR=1`
+environment variable.
 _Avoid_: ad-hoc console output, parallel log streams
+
+**Parsed output**:
+The Reporter's default rendering: every line stamped with the local
+`dd/mm/yy HH:mm:ss` date and time, a gutter its continuation lines hang from,
+one glyph per level, and a rounded panel opening the run — the style of the
+Bagels TUI, on its tokyo-night palette.
+_Avoid_: unstamped lines, per-workflow formatting
+
+**Verbose output**:
+The widest reading of a run, selected with `--verbose-output`. It implies
+`--verbose` and adds the `trace` level: the whole input of every tool call, the
+output the tool returned, and the raw event the agent CLI emitted. It is what
+answers which file a session is editing while it edits it.
+_Avoid_: a third mode narrower than `--verbose`, raw dumps in the parsed stream
+
+**Deterministic tool**:
+An operation a workflow performs against Azure Boards, GitHub or git without
+opening a session. Every one of them is reachable as its own command, shares the
+adapter the workflow uses, prints what that adapter answered as JSON, and opens
+no session (ADR-0026).
+_Avoid_: reimplemented tool commands, session-opening tools
 
 **operator-output**:
 The name of the file module (`src/output/operator-output.ts`) that hosts
