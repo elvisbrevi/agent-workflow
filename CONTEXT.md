@@ -133,6 +133,15 @@ that descends the fallback chain. A session that fails its task is not
 exhaustion and never descends.
 _Avoid_: failed session, non-zero exit
 
+**Bounded fallback wait**:
+The wait a run enters when every rung of its declared chain is exhausted for the
+unit of work in progress: it pauses `--fallback-wait` seconds and retries the
+chain from its primary rung, up to the `--fallback-wait-max` wall-clock total
+counted from the first wait, which covers the retries as well as the waits. Every wait is reported with the exhausted rung, its cause, and
+the time left; once the bound is spent the run fails closed with the checkpoint
+intact. A run that declared no chain never waits.
+_Avoid_: unbounded retry, backoff schedule
+
 **Cross-CLI handoff**:
 The continuation of fixed work in a fallback rung whose coding agent CLI differs
 from the exhausted one, where no session can be resumed. The coordinator starts

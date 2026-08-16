@@ -21,6 +21,10 @@ export interface CliOptions {
   hasVariant: boolean;
   /** Declared with `--fallback`, in declaration order; empty when the run has none. */
   fallbackChain: FallbackRung[];
+  /** Seconds between retries of the primary rung once the whole chain is exhausted. */
+  fallbackWaitSeconds: number;
+  /** Total bound in seconds for the wait-and-retry cycle — waits and retries alike — after which the run fails closed. */
+  fallbackWaitMaxSeconds: number;
   session: string | null;
   prompt: string;
   hu: number | null;
@@ -83,6 +87,8 @@ const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
+const DEFAULT_FALLBACK_WAIT_SECONDS = 300;
+const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
 const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
@@ -241,7 +247,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       reportError(error?.message ?? message ?? "argumento invalido");
     })
     .group(["hu", "issue", "environment"], "Alcance:")
-    .group(["cli", "session", "model", "variant", "fallback", "prompt"], "Agente de codificacion:")
+    .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "manifest"], "Tickets Azure:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
@@ -264,6 +270,8 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       requiresArg: true,
       describe: "Escalon de respaldo <cli>:<modelo>:<variante>; repetible, el orden de declaracion es la prioridad de descenso.",
     })
+    .option("fallback-wait", positiveIntegerOption("fallback-wait", "--fallback-wait", "Segundos entre reintentos del escalon primario con la cadena agotada.", DEFAULT_FALLBACK_WAIT_SECONDS))
+    .option("fallback-wait-max", positiveIntegerOption("fallback-wait-max", "--fallback-wait-max", "Tope total en segundos del ciclo de espera y reintento; alcanzado, el run falla cerrado.", DEFAULT_FALLBACK_WAIT_MAX_SECONDS))
     .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
     .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
     .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
@@ -405,6 +413,13 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
   const cli = readAgentCli(parsed, rawArgs, binaryPresent);
   const model = asString("model") ?? DEFAULT_MODEL;
   const variant = readVariant(cli, asString("variant") ?? DEFAULT_VARIANT);
+  const waitSeconds = asNumber("fallback-wait") ?? DEFAULT_FALLBACK_WAIT_SECONDS;
+  const waitMaxSeconds = asNumber("fallback-wait-max") ?? DEFAULT_FALLBACK_WAIT_MAX_SECONDS;
+  // A bound below one interval would fail closed before ever retrying the primary,
+  // which is a declared policy that cannot do what it says.
+  if (waitMaxSeconds < waitSeconds) {
+    throw new Error(`--fallback-wait-max ${waitMaxSeconds} no puede ser menor que --fallback-wait ${waitSeconds}`);
+  }
 
   return {
     command,
@@ -415,6 +430,8 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     hasModel: flagSupplied(rawArgs, "--model"),
     hasVariant: flagSupplied(rawArgs, "--variant"),
     fallbackChain: parseFallbackChain(parsed["fallback"], { cli, model, variant }, binaryPresent),
+    fallbackWaitSeconds: waitSeconds,
+    fallbackWaitMaxSeconds: waitMaxSeconds,
     session: asString("session"),
     prompt: asString("prompt") ?? DEFAULT_PROMPT,
     hu: asNumber("hu"),

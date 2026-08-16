@@ -114,6 +114,32 @@ Each workflow keeps its own rules whichever CLI runs it: the review session may
 not modify the reviewed tree, and `deploy-sag` still refuses PROD and its
 aliases before any external effect.
 
+A long run can survive its account running out by declaring an ordered fallback
+chain with a repeatable `--fallback <cli>:<model>:<variant>`:
+
+```bash
+bun run main.ts code --working-directory /path/to/repository \
+  --model opencode-go/deepseek-v4-pro --variant high \
+  --fallback claudecode:claude-opus-5:high
+```
+
+Declaration order is the descent order, and every rung's binary is verified
+while the arguments are parsed. Only provider exhaustion — usage or rate limit,
+quota, billing, or authentication — descends the chain; a session that fails its
+task never does. A backup sharing the active CLI resumes the same session with
+the new model; a backup naming another CLI continues the same issue in a fresh
+session that receives the coordinator's prompt plus the progress verified on
+disk, so an OpenCode run can finish the same issue in Claude Code without
+reimplementing what is already committed. The descent lasts only for the issue
+in progress: the next one starts again on the primary rung.
+
+With every rung exhausted, the run waits `--fallback-wait` seconds (default
+`300`) and retries from the primary rung, up to `--fallback-wait-max` seconds
+(default `3600`), reporting the time left until the bound on each wait. Once the
+bound is spent — wall clock from the first wait, retries included — it fails
+closed with the checkpoint intact. The full walkthrough
+is in [`agent/lazy-workflow/README.md`](agent/lazy-workflow/README.md#fallback-chain).
+
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
 `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt

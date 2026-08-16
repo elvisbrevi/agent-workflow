@@ -285,6 +285,38 @@ describe("buildCli parser", () => {
     });
   });
 
+  describe("espera de la cadena agotada", () => {
+    test("sin flags la espera y su tope traen los valores por defecto", () => {
+      const result = parse(["code"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.fallbackWaitSeconds).toBe(300);
+      expect(result.options.fallbackWaitMaxSeconds).toBe(3600);
+    });
+
+    test("--fallback-wait y --fallback-wait-max ajustan el intervalo y el tope", () => {
+      const result = parse(["code", "--fallback-wait", "60", "--fallback-wait-max", "900"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.fallbackWaitSeconds).toBe(60);
+      expect(result.options.fallbackWaitMaxSeconds).toBe(900);
+    });
+
+    test("un intervalo no positivo falla al parsear", () => {
+      const result = parse(["code", "--fallback-wait", "0"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("--fallback-wait");
+    });
+
+    test("un tope menor que el intervalo falla al parsear", () => {
+      const result = parse(["code", "--fallback-wait", "600", "--fallback-wait-max", "300"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("--fallback-wait-max");
+    });
+  });
+
   describe("flags desconocidos", () => {
     test("rechaza un flag desconocido con codigo de salida 1", () => {
       const result = parse(["plan", "--unknown-flag"]);
