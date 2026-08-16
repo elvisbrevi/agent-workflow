@@ -16,6 +16,10 @@ export const WORKFLOW_STEP_FINISHED_MARKER = "WORKFLOW_STEP_FINISHED";
 export const RECONCILIATION_REQUIRED_MARKER = "RECONCILIATION_REQUIRED";
 export const ARCHITECTURE_REVIEW_RESULT_MARKER = "ARCHITECTURE_REVIEW_RESULT";
 export const PLAN_READY_MARKER = "PLAN_READY";
+/** A planning session pauses here and hands its open decisions to the coordinator. */
+export const QUESTIONS_PENDING_MARKER = "QUESTIONS_PENDING";
+/** The coordinator hands the operator's answers back when it resumes that session. */
+export const QUESTIONS_ANSWERED_MARKER = "QUESTIONS_ANSWERED";
 
 // Coordinator/manifest contract: validators require `validation` to be an array of
 // {command, result} objects (github-delivery-service.ts, ticket-info-service.ts).
@@ -32,6 +36,8 @@ const CONTRACT_VALUES: Record<string, string> = {
   RECONCILIATION_REQUIRED: RECONCILIATION_REQUIRED_MARKER,
   ARCHITECTURE_REVIEW_RESULT: ARCHITECTURE_REVIEW_RESULT_MARKER,
   PLAN_READY: PLAN_READY_MARKER,
+  QUESTIONS_PENDING: QUESTIONS_PENDING_MARKER,
+  QUESTIONS_ANSWERED: QUESTIONS_ANSWERED_MARKER,
   MANIFEST_VALIDATION_SHAPE,
 };
 

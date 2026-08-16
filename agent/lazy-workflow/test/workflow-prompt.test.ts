@@ -4,17 +4,21 @@ import {
   CONTRACT_LITERALS,
   IMPLEMENTATION_READY_MARKER,
   MANIFEST_VALIDATION_SHAPE,
+  QUESTIONS_ANSWERED_MARKER,
+  QUESTIONS_PENDING_MARKER,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
   UnknownContractPlaceholderError,
   renderContract,
 } from "../src/prompts/workflow-contract.ts";
 import {
+  buildInterviewAnswersPrompt,
   buildResumePrompt,
   buildWorkflowPrompt,
   resolveWorkflowRun,
   type WorkflowPromptContext,
 } from "../src/prompts/workflow-prompt.ts";
+import { HuInfo } from "../src/azure/hu-info.ts";
 import type { SelectedManagedIssue } from "../src/github/managed-queue-service.ts";
 import type { WorkspaceScope } from "../src/workspace/repository-scope.ts";
 
@@ -255,4 +259,67 @@ test("buildResumePrompt solo adjunta normas SAG cuando existen", () => {
   expect(withNorms).toContain("continue");
   expect(withNorms).toContain("SAG norms context");
   expect(withNorms).toContain("unknown applicability remains an explicit decision");
+});
+
+test("un plan sin entrevista ordena aceptar la recomendación y no menciona rondas", async () => {
+  for (const spec of [
+    { kind: "github-plan" } as const,
+    { kind: "azure-plan", huInfo: new HuInfo({ id: 23438, title: "HU" }) } as const,
+  ]) {
+    const prompt = await buildWorkflowPrompt(spec, context);
+
+    expect(prompt).toContain("Nobody is available to answer questions");
+    expect(prompt).toContain("Do not ask the operator");
+    expect(prompt).not.toContain(QUESTIONS_PENDING_MARKER);
+  }
+});
+
+test("un plan con entrevista fija el protocolo de rondas y su marcador", async () => {
+  for (const spec of [
+    { kind: "github-plan" } as const,
+    { kind: "azure-plan", huInfo: new HuInfo({ id: 23438, title: "HU" }) } as const,
+  ]) {
+    const prompt = await buildWorkflowPrompt(spec, { ...context, interview: true });
+
+    expect(prompt).toContain("An operator is available to answer questions");
+    expect(prompt).toContain(QUESTIONS_PENDING_MARKER);
+    expect(prompt).toContain(QUESTIONS_ANSWERED_MARKER);
+    expect(prompt).not.toContain("Nobody is available to answer questions");
+  }
+});
+
+test("el plan workspace lleva la política de respuestas en ambos proveedores", async () => {
+  const github = await buildWorkflowPrompt(
+    { kind: "workspace-plan", scope, run: resolveWorkflowRun(null), huInfo: null },
+    { ...context, interview: true },
+  );
+  const azure = await buildWorkflowPrompt(
+    { kind: "workspace-plan", scope, run: resolveWorkflowRun(23438), huInfo: new HuInfo({ id: 23438, title: "HU" }) },
+    context,
+  );
+
+  expect(github).toContain("An operator is available to answer questions");
+  expect(azure).toContain("Nobody is available to answer questions");
+});
+
+test("una entrega nunca recibe la política de respuestas de planificación", async () => {
+  const prompt = await buildWorkflowPrompt(
+    { kind: "github-delivery", issue, repository: { nameWithOwner: "o/api" } as never, branch: "issue/201", manifestPath: "/m.json" },
+    { ...context, interview: true },
+  );
+
+  expect(prompt).not.toContain("An operator is available to answer questions");
+  expect(prompt).not.toContain("Nobody is available to answer questions");
+});
+
+test("el prompt de respuestas lleva el marcador, el payload y cuántas rondas quedan", async () => {
+  const answers = { round: 2, source: "operator" as const, answers: [{ id: "q1", answer: "dos" }] };
+
+  const remaining = await buildInterviewAnswersPrompt(answers, 3);
+  const last = await buildInterviewAnswersPrompt(answers, 0);
+
+  expect(remaining).toContain(QUESTIONS_ANSWERED_MARKER);
+  expect(remaining).toContain(JSON.stringify(answers));
+  expect(remaining).toContain("Quedan 3 ronda(s)");
+  expect(last).toContain("No quedan rondas de preguntas");
 });
