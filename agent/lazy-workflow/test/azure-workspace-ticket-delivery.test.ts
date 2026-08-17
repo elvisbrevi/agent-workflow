@@ -91,7 +91,62 @@ test("deliverAzureWorkspaceTicket accrues real effort from the measured active d
   expect(harness.effortCalls[0]!.realEffortHours).toBe(2);
 });
 
-test("deliverAzureWorkspaceTicket sets effort with the revision observed after setState(Done)", async () => {
+test("deliverAzureWorkspaceTicket satisfies the real-effort gates before it judges completion", async () => {
+  // The default harness stubs gates.unmet as permanently empty, which is exactly why this bug shipped
+  // past the suite: it never modeled Azure's actual contract, where real-effort/real-effort-hours stay
+  // unmet until setEffort has landed. This fixture does model that, so a regression that checks gates
+  // before setting effort fails closed here with "gates incumplidos: real-effort, real-effort-hours"
+  // instead of exit 0.
+  const harness = createHarness();
+  let ticketState = "En progreso";
+  let ticketRevision = 4;
+  let effortSet = false;
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getTicketInfo: async (huId, ticketId) => ({
+        hu: { id: huId, title: "HU" },
+        ticket: { id: ticketId, type: "Task" as const, title: "Ticket", state: ticketState, revision: ticketRevision },
+        branch: ticketBranch,
+        integrationBranch,
+        effort: { estimated: 1, real: 1, realHours: 1 },
+        pullRequests: [],
+        canonicalPullRequest: null,
+        mergeCommit: null,
+        attachments: [],
+        completionEvidence: "evidence",
+        gates: { satisfied: [], unmet: effortSet ? [] : ["real-effort", "real-effort-hours"] },
+      }),
+      getState: async (id: number) => id === ticket
+        ? { ticket: id, state: ticketState, revision: ticketRevision }
+        : { ticket: id, state: "En Desarrollo", revision: 7 },
+      setState: async (id: number, desiredState: string) => {
+        if (id === ticket) {
+          ticketState = desiredState;
+          ticketRevision += 1;
+        }
+        return { ticket: id, state: desiredState, revision: ticketRevision };
+      },
+      setEffort: async (_ticketId, realEffort: number, realEffortHours: number, expectedRevision: number) => {
+        effortSet = true;
+        harness.effortCalls.push({ realEffort, realEffortHours, expectedRevision });
+        return undefined;
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.effortCalls).toHaveLength(1);
+  expect(harness.effortCalls[0]!.expectedRevision).toBe(4);
+  expect(ticketState).toBe("Done");
+});
+
+test("deliverAzureWorkspaceTicket sets effort before transitioning the ticket to Done", async () => {
+  // The real-effort and real-effort-hours gates only clear once this write lands, so setting effort
+  // after judging completion gates meant they could never be satisfied on a first run. Effort has to
+  // be reconciled — and tested against the ticket's pre-transition revision — before Done is set.
   const harness = createHarness();
   let exit = -1;
   try {
@@ -103,7 +158,8 @@ test("deliverAzureWorkspaceTicket sets effort with the revision observed after s
   expect(exit).toBe(0);
   expect(harness.ticketStateCalls.map(({ desiredState }) => desiredState)).toEqual(["Done"]);
   expect(harness.effortCalls).toHaveLength(1);
-  expect(harness.effortCalls[0]!.expectedRevision).toBe(5);
+  // The pre-transition revision: Done had not been set yet when effort was written.
+  expect(harness.effortCalls[0]!.expectedRevision).toBe(4);
 });
 
 test("deliverAzureWorkspaceTicket blocks HU transition when a direct child remains open", async () => {

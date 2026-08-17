@@ -203,11 +203,6 @@ function activeEffortHours(activeDurationMs: number): number {
   return Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
 }
 
-function revisionOf(result: unknown): number | null {
-  const revision = (result as { revision?: unknown } | null)?.revision;
-  return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
-}
-
 async function manifestBelongsToDelivery(manifestPath: string, issue: number, branch: string): Promise<boolean> {
   try {
     if (!(await Bun.file(manifestPath).exists())) return false;
@@ -1700,6 +1695,23 @@ export class LazyWorkflowCli {
       await boundary.setEvidence!(ticket, textEvidence.path);
     }
 
+    // Effort has to be reconciled before the completion gates are judged, not after: real-effort and
+    // real-effort-hours only clear once this write lands, so checking gates first meant they could
+    // never be satisfied on a first run — the single-repository path and ticket-completion-apply both
+    // require effort to already be settled before they judge completion, for the same reason.
+    if (!checkpoint.receipts.effort) {
+      const effortInfo = await boundary.getTicketInfo!(hu, ticket);
+      const activeHours = activeEffortHours(checkpoint.activeDurationMs + accrue());
+      await boundary.setEffort!(
+        ticket,
+        baselineReal + activeHours,
+        baselineRealHours + activeHours,
+        effortInfo.ticket.revision ?? ticketStateBefore.revision ?? 0,
+      );
+      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, effort: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
+      await save();
+    }
+
     const finalInfo = await boundary.getTicketInfo!(hu, ticket);
     const unmetBeforeDone = finalInfo.gates.unmet.filter((gate) => gate !== COMPLETION_GATE.ticketState);
     if (unmetBeforeDone.length > 0) {
@@ -1716,20 +1728,9 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "completing" };
     await save();
 
-    let effortRevision = finalInfo.ticket.revision ?? ticketStateBefore.revision ?? 0;
     if (finalInfo.ticket.state !== "Done") {
       const currentState = await boundary.getState!(ticket);
-      const done = await boundary.setState!(ticket, "Done", currentState.state ?? ticketStateBefore.state ?? "Active", true, currentState.revision ?? ticketStateBefore.revision ?? 0);
-      // The state change advances the work item revision; setEffort must test against the new one.
-      effortRevision = revisionOf(done) ?? (await boundary.getState!(ticket)).revision ?? effortRevision;
-    }
-    // Effort is cumulative and published exactly once: a receipt stops a rerun from adding the
-    // accrued hours on top of the value it already published.
-    if (!checkpoint.receipts.effort) {
-      const activeHours = activeEffortHours(checkpoint.activeDurationMs + accrue());
-      await boundary.setEffort!(ticket, baselineReal + activeHours, baselineRealHours + activeHours, effortRevision);
-      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, effort: { verifiedAt: new Date(this.clock.now()).toISOString() } } };
-      await save();
+      await boundary.setState!(ticket, "Done", currentState.state ?? ticketStateBefore.state ?? "Active", true, currentState.revision ?? ticketStateBefore.revision ?? 0);
     }
 
     const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
