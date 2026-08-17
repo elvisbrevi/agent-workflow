@@ -1450,6 +1450,66 @@ test("un archivo sin trackear que el agente dejó para validar no invalida el co
   expect(statuses).not.toBeEmpty();
 });
 
+function manifestVerificationService(head: string, remoteTip: string | null, contains: boolean) {
+  return new AzureTicketInfoService(async () => "", async (args) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD") return `${head}\n`;
+    if (args[0] === "rev-parse") {
+      if (remoteTip === null) throw new Error("unknown revision");
+      return `${remoteTip}\n`;
+    }
+    if (args[0] === "merge-base") {
+      if (!contains) throw new Error("not an ancestor");
+      return "";
+    }
+    if (args[0] === "symbolic-ref") return "ticket/23574\n";
+    if (args[0] === "status") return "";
+    return "";
+  });
+}
+
+function completionManifest(commit: string) {
+  return {
+    ticket: 23574,
+    ticketBranch: "refs/heads/ticket/23574",
+    commit,
+    validation: [{ command: "bun test", result: "59 passed" }],
+    evidence: [],
+  } as any;
+}
+
+const ticketInfoForManifest = { branch: "refs/heads/ticket/23574" } as any;
+
+test("el manifest sigue siendo verificable cuando la entrega ya adelantó la rama hasta el merge", async () => {
+  // Completado el PR, Azure adelanta la rama del ticket y el checkout la alcanza:
+  // HEAD pasa a ser el merge que contiene el commit declarado. Exigir la igualdad
+  // dejaba el manifest inverificable para siempre tras una entrega interrumpida.
+  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const merge = "1faa46968a4fd05d63979fdf84f6327a8bf17ac8";
+  const service = manifestVerificationService(merge, merge, true);
+
+  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
+    .resolves.toBeUndefined();
+});
+
+test("un commit local más allá del manifest no pasa por la puerta del avance", async () => {
+  // HEAD contiene el commit declarado pero el remoto no lo tiene: es trabajo local
+  // que nadie revisó y que el manifest no describe.
+  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const service = manifestVerificationService("a".repeat(40), "1faa46968a4fd05d63979fdf84f6327a8bf17ac8", true);
+
+  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
+    .rejects.toThrow("El commit del manifest no coincide con HEAD");
+});
+
+test("una rama remota que no contiene el commit declarado no verifica el manifest", async () => {
+  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const merge = "1faa46968a4fd05d63979fdf84f6327a8bf17ac8";
+  const service = manifestVerificationService(merge, merge, false);
+
+  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
+    .rejects.toThrow("El commit del manifest no coincide con HEAD");
+});
+
 test("un cambio sin commitear en un archivo trackeado sí invalida el completion manifest", async () => {
   const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
   const service = new AzureTicketInfoService(async () => "", async (args) => {

@@ -31,8 +31,9 @@ export async function seedRepo(root: string, name: string, remote: string): Prom
   return path;
 }
 
-export function staticGit(remotes: Map<string, string> = new Map()): GitRunner {
+export function staticGit(remotes: Map<string, string> = new Map(), unpublishedIn: string[] = []): GitRunner {
   return async (args, directory) => {
+    if (args[0] === "rev-list") return unpublishedIn.includes(basename(directory)) ? "1\n" : "0\n";
     if (args[0] === "remote" && args[1] === "get-url") {
       const name = basename(directory);
       return `${remotes.get(name) ?? (name === repoA ? remoteUrlA : remoteUrlB)}\n`;
@@ -60,6 +61,8 @@ export interface AzureWorkspaceHarnessOptions {
   pullRequestFailsIn?: string;
   /** Remote URLs to report per repository directory name, overriding the seeded ones. */
   remotes?: Map<string, string>;
+  /** Repositories (by directory name) carrying commits que el remoto no tiene. */
+  unpublishedIn?: string[];
   /** Repository (by directory name) already carrying the ticket's Branch ArtifactLink. */
   resolvedPrimary?: string;
   terminal?: boolean;
@@ -342,7 +345,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
         },
         clock,
         undefined,
-        staticGit(options.remotes),
+        staticGit(options.remotes, options.unpublishedIn),
         undefined,
         undefined,
         undefined,

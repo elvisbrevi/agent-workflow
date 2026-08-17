@@ -1073,8 +1073,24 @@ export class AzureTicketInfoService {
     const manifestTicket = manifest.ticket as number;
     if (manifestTicket !== ticket) throw new Error(`El manifest pertenece al ticket ${manifestTicket}, no al ticket ${ticket}`);
     if (info.branch !== manifest.ticketBranch) throw new Error("La rama del manifest no coincide con la rama del ticket");
+    if (!manifest.ticketBranch.startsWith("refs/heads/")) {
+      throw new Error("La rama activa no coincide con la rama del manifest");
+    }
+    const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);
     const head = (await this.git(["rev-parse", "HEAD"], workingDirectory)).trim();
-    if (head !== manifest.commit) throw new Error("El commit del manifest no coincide con HEAD");
+    if (head !== manifest.commit) {
+      // Entregar mueve la rama: al completarse el PR, Azure adelanta la rama del
+      // ticket hasta el merge y el checkout la alcanza, así que HEAD deja de ser
+      // el commit declarado aunque lo contenga. Exigir la igualdad volvía el
+      // manifest inverificable para siempre en cuanto la entrega se interrumpía
+      // después de ese avance. Solo se acepta lo que el remoto ya tiene: HEAD en
+      // la punta remota de la rama del ticket, con el commit declarado contenido
+      // ahí. Ningún commit local que nadie revisó puede colarse por esa puerta.
+      const remoteTip = await this.readCommit(`refs/remotes/origin/${expectedBranch}^{commit}`, workingDirectory);
+      if (remoteTip !== head || !await this.contains(head, manifest.commit, workingDirectory)) {
+        throw new Error("El commit del manifest no coincide con HEAD");
+      }
+    }
     // Tracked changes only. A coding agent routinely leaves untracked scratch
     // behind to reach its own validation — a .env.test to run the suite, a
     // coverage directory, a throwaway script — and none of it is unsaved work:
@@ -1084,10 +1100,7 @@ export class AzureTicketInfoService {
     const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se aplicará el completion manifest");
     const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-    const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);
-    if (!manifest.ticketBranch.startsWith("refs/heads/") || branch !== expectedBranch) {
-      throw new Error("La rama activa no coincide con la rama del manifest");
-    }
+    if (branch !== expectedBranch) throw new Error("La rama activa no coincide con la rama del manifest");
 
     const root = await realpath(workingDirectory);
     const seen = new Set<string>();
@@ -1104,6 +1117,25 @@ export class AzureTicketInfoService {
       if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${evidence.path}`);
       const digest = await sha256(new Uint8Array(await file.arrayBuffer()));
       if (digest !== expectedDigest) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
+    }
+  }
+
+  /** Un ref ausente no es un fallo que deba propagarse: es la respuesta "no lo tengo". */
+  private async readCommit(ref: string, workingDirectory: string): Promise<string | null> {
+    try {
+      return (await this.git(["rev-parse", ref], workingDirectory)).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  /** `merge-base --is-ancestor` responde por exit code, que GitRunner convierte en throw. */
+  private async contains(descendant: string, candidate: string, workingDirectory: string): Promise<boolean> {
+    try {
+      await this.git(["merge-base", "--is-ancestor", candidate, descendant], workingDirectory);
+      return true;
+    } catch {
+      return false;
     }
   }
 
