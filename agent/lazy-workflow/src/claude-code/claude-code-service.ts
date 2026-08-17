@@ -80,6 +80,15 @@ const PROVIDER_EXHAUSTION_CAUSES = new Set([
 ]);
 
 /**
+ * Claude Code's own plan/session limit has nothing to retry, so it never raises the
+ * `api_retry` event the causes above come from — it just ends the turn as ordinary assistant
+ * text ("You've hit your session limit · resets ..."). The phrase is Anthropic's own fixed
+ * wording for that refusal, specific enough that code or prose discussing session limits as a
+ * topic is not expected to open with it verbatim.
+ */
+const SESSION_LIMIT_TEXT = /you've hit your (?:session|usage) limit/i;
+
+/**
  * `api_retry` only announces a retry in flight — the stream may still recover and the
  * run may still succeed — so this only applies once the run has actually failed.
  */
@@ -94,8 +103,10 @@ function classifyExhaustion(
     && event.subtype === "api_retry"
     && event.error
     && PROVIDER_EXHAUSTION_CAUSES.has(event.error));
-  if (!retry) return undefined;
-  return { cli: "Claude Code", model: model ?? "con el que se abrió", cause: retry.error! };
+  if (retry) return { cli: "Claude Code", model: model ?? "con el que se abrió", cause: retry.error! };
+  const limited = events.some((event) =>
+    event.type === "assistant" && assistantText(event).some((text) => SESSION_LIMIT_TEXT.test(text)));
+  return limited ? { cli: "Claude Code", model: model ?? "con el que se abrió", cause: "session_limit" } : undefined;
 }
 
 function parseEvent(line: string): ClaudeCodeEventData | null {

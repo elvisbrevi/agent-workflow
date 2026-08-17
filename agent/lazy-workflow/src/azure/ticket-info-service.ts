@@ -18,24 +18,35 @@ const HU_WORK_ITEM_TYPES = new Set(["User Story", "Product Backlog Item"]);
 const SUPPORTED_STATES = new Set([
   "New",
   "Active",
+  "En espera",
   "En progreso",
   "In Progress",
+  "En revisión",
   "Resolved",
   "Done",
   "Closed",
   "Removed",
+  "Removido",
   "En Desarrollo",
   "Desarrollo Terminado",
 ]);
 const STATE_TRANSITIONS: Record<string, readonly string[]> = {
   New: ["Active", "En progreso", "In Progress", "Removed"],
   Active: ["En progreso", "In Progress", "Resolved", "Done", "Removed"],
-  "En progreso": ["Active", "Resolved", "Done", "Removed"],
+  // "En espera" is Scrum SAG's Proposed-category state for Task/Bug: the process starts work
+  // items there instead of "New" (ADR: process/workItemTypes/ScrumSAG.Task/states), so it needs
+  // the same direct-to-Done reach the stock "New"/"Active" states already have for automation.
+  "En espera": ["En progreso", "En revisión", "Done", "Removido"],
+  "En progreso": ["Active", "Resolved", "Done", "Removed", "En revisión", "Removido"],
   "In Progress": ["Active", "Resolved", "Done", "Removed"],
+  // "En revisión" is Scrum SAG's Resolved-category state for Task/Bug, the counterpart of the
+  // stock "Resolved" above.
+  "En revisión": ["En progreso", "Done", "Removido"],
   Resolved: ["Active", "En progreso", "In Progress", "Done", "Closed"],
   Done: ["Done"],
   Closed: ["Closed"],
   Removed: ["Removed"],
+  Removido: ["Removido"],
   "En Desarrollo": ["Desarrollo Terminado"],
   "Desarrollo Terminado": ["Desarrollo Terminado"],
 };
@@ -43,8 +54,10 @@ const STATE_TRANSITIONS: Record<string, readonly string[]> = {
 const HU_OPEN_DELIVERY_STATES = new Set([
   "New",
   "Active",
+  "En espera",
   "En progreso",
   "In Progress",
+  "En revisión",
   "Resolved",
 ]);
 
@@ -725,6 +738,22 @@ export class AzureTicketInfoService {
     return { ticket, state: text(item, "System.State") ?? null, revision: item.rev ?? null };
   }
 
+  /**
+   * The HU-typed counterpart of `getState`: the multi-repository workspace coordinator has to
+   * read and verify the HU's own state (to decide, and later confirm, its transition to
+   * "Desarrollo Terminado"), and `getState`/`readWorkItemValidated` reject anything that isn't a
+   * Task or Bug — so reading the HU through it always threw "no es un Task o Bug de entrega".
+   * This validates the HU type the same way `setHuState` already does instead.
+   */
+  async getHuState(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }> {
+    positiveId(hu, "La HU");
+    const item = await this.readWorkItem(hu);
+    if (!HU_WORK_ITEM_TYPES.has(text(item, "System.WorkItemType") ?? "")) {
+      throw new Error(`El work item ${hu} no es una User Story ni un Product Backlog Item`);
+    }
+    return { hu, state: text(item, TICKET_FIELDS.state) ?? null, revision: item.rev ?? null };
+  }
+
   async getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }> {
     const item = await this.readWorkItemValidated(ticket);
     return {
@@ -1291,7 +1320,9 @@ export class AzureTicketInfoService {
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
-    if (existing && existing !== content) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+    if (existing && evidenceTextContent(existing) !== evidenceTextContent(content)) {
+      throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+    }
   }
 
   async setEvidence(ticket: number, filePath: string): Promise<{ ticket: number; completionEvidence: string }> {

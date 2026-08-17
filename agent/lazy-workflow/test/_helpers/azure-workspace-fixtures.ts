@@ -196,8 +196,11 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
         getDescription: async () => ({ ticket, description: null }),
         getState: async (id: number) => {
           if (id === ticket) return { ticket: id, state: currentTicketState, revision: currentTicketRevision };
-          if (id === hu) return { ticket: id, state: currentHuState, revision: 7 };
           throw new Error(`unexpected state for ${id}`);
+        },
+        getHuState: async (id: number) => {
+          if (id === hu) return { hu: id, state: currentHuState, revision: 7 };
+          throw new Error(`unexpected hu state for ${id}`);
         },
         getEffort: async () => ({ ticket, effort: { estimated: 1, real: 1, realHours: 1 } }),
         getAttachments: async () => ({ ticket, attachments: [] }),

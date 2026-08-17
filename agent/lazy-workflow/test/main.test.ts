@@ -1565,6 +1565,117 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   expect(openCodePrompt).toContain('"completionGates":["pinned-ticket-context"');
 });
 
+/**
+ * The same single-repository delivery boundary as the completion test above, minus the coding
+ * agent: each fallback test scripts its own, and none of them need the completion gates to
+ * actually get simulated to prove the chain descends — the manifest never has to write once
+ * the run stays on `implementing`.
+ */
+function singleRepoAzureFallbackBoundary() {
+  const events: string[] = [];
+  let state = "En progreso";
+  return {
+    events,
+    boundary: {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task" as const, state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true }),
+      getState: async () => ({ ticket: 51, state, revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async (_ticket: number, desiredState: string) => { events.push("state"); state = desiredState; },
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => { events.push("ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
+      checkoutTicketBranch: async () => { events.push("checkout"); },
+    },
+  };
+}
+
+test("code versionado desciende a otro CLI cuando la sesión fresca se agota", async () => {
+  const { events, boundary } = singleRepoAzureFallbackBoundary();
+  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null }> = [];
+  const agent = (cli: AgentCli) => ({
+    run: async (options: AgentRunOptions) => {
+      started.push({ cli, model: options.model, variant: options.variant, session: options.session });
+      if (cli === "opencode") {
+        return {
+          result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_exhausted", part: { type: "text", text: "agotado" } })),
+          azureLoginRequired: false,
+          failed: true,
+          exhaustion: { cli: "OpenCode", model: options.model ?? "x", cause: "rate_limit" as const },
+        };
+      }
+      // The unit continues in a fresh session on the handed-off CLI: proven by reaching here at
+      // all. What happens next belongs to another test; throwing a typed, recognized error is
+      // the fastest deterministic way to stop the outer while(true) without an infinite retry.
+      events.push("handoff-run");
+      throw new AgentSessionNotFoundError("ses_new", "stop here on purpose");
+    },
+    resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
+  });
+  const exit = await new LazyWorkflowCli(
+    boundary,
+    agent,
+    { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    undefined,
+    { deleteTicketBranch: async () => undefined },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high", "--working-directory", "/repo"]);
+
+  expect(exit).toBe(1);
+  expect(started.map(({ cli }) => cli)).toEqual(["opencode", "claudecode"]);
+  expect(started[1]?.model).toBe("claude-opus-5");
+  expect(started[1]?.variant).toBe("high");
+  expect(started[1]?.session).toBeNull();
+  expect(events).toContain("handoff-run");
+});
+
+test("code versionado reanuda con el modelo del escalón cuando el respaldo es el mismo CLI", async () => {
+  const { boundary } = singleRepoAzureFallbackBoundary();
+  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
+  const agent = () => ({
+    run: async () => ({
+      result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses1", part: { type: "text", text: "agotado" } })),
+      azureLoginRequired: false,
+      failed: true,
+      exhaustion: { cli: "OpenCode", model: "primario", cause: "rate_limit" as const },
+    }),
+    resume: async (sessionId: string, _prompt: string, _workingDirectory: string, _marker: string | undefined, overrides: { model?: string; variant?: string } = {}) => {
+      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
+      // Same deterministic stop as the handoff test above, once the resume with the new rung's
+      // overrides is proven to have happened at all.
+      throw new AgentSessionNotFoundError(sessionId, "stop here on purpose");
+    },
+  });
+  const exit = await new LazyWorkflowCli(
+    boundary,
+    agent,
+    { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    undefined,
+    { deleteTicketBranch: async () => undefined },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    buildCli(() => true),
+  ).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", "/repo"]);
+
+
+  expect(exit).toBe(1);
+  expect(resumed).toHaveLength(1);
+  expect(resumed[0]?.sessionId).toBe("ses1");
+  expect(resumed[0]?.model).toBe("opencode-cheap");
+  expect(resumed[0]?.variant).toBe("high");
+});
+
 test("code migra un checkpoint legacy y conserva el marcador al reanudar", async () => {
   const context: AutocodeContext = {
     hu: { id: 23438 },

@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { buildCli } from "../src/cli/parse-cli-options.ts";
+import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
+import type { CodingAgent } from "../src/coding-agent/coding-agent.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 import { captureReporter } from "./_helpers/reporter-capture.ts";
 
@@ -40,7 +43,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => {
@@ -122,7 +125,10 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     setEvidence: async () => undefined,
     getState: async (id: number) => {
       if (id === 51) return { ticket: id, state: currentTicketState, revision: 4 };
-      if (id === hu) return { ticket: id, state: currentHuState, revision: 7 };
+      throw new Error(`unexpected ${id}`);
+    },
+    getHuState: async (id: number) => {
+      if (id === hu) return { hu: id, state: currentHuState, revision: 7 };
       throw new Error(`unexpected ${id}`);
     },
     getEffort: async () => ({ ticket: 51, effort: { estimated: 1, real: 1, realHours: 1 } }),
@@ -179,6 +185,219 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     expect(prepared).toHaveLength(1);
     expect(prepared[0]!.hu).toBe(hu);
     expect(prepared[0]!.repositories.map(({ path }) => path).sort()).toEqual([realpathA, realpathB].sort());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The same workspace fixture as the test above, minus the coding agent: each fallback test
+ * scripts its own, since that is exactly what varies between a same-CLI descent, a cross-CLI
+ * handoff, and no `--fallback` declared at all.
+ */
+async function setupWorkspaceFallbackFixture() {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-fallback-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const realpathA = await realpath(pathA);
+  const realpathB = await realpath(pathB);
+  const ticketBranch = `refs/heads/ticket/51`;
+  let currentTicketState = "En progreso";
+  let currentHuState = "En Desarrollo";
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+    getHuInfo: async () => ({ id: hu }),
+    waitForAccess: async () => undefined,
+    prepareWorkspaceBranches: async (options) => ({
+      hu: options.hu,
+      ticket: null,
+      integrationBranch,
+      anchor: { workingDirectory: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, projectId, repositoryId: repoAId },
+      ticketBranchAnchor: null,
+      units: [
+        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+      ],
+    }),
+    prepareWorkspaceTicketBranches: async () => ({
+      hu,
+      ticket: 51,
+      integrationBranch,
+      ticketBranch,
+      anchor: { workingDirectory: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, projectId, repositoryId: repoAId },
+      ticketBranchAnchor: realpathA,
+      units: [
+        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+      ],
+    }),
+    createOrReusePullRequest: async () => ({ pullRequest: 1, mergeCommit: "merge-1" }),
+    checkoutTicketBranch: async () => undefined,
+    pushTicketBranch: async () => undefined,
+    linkPullRequest: async () => ({ hu, ticket: 51, pullRequest: 1, mergeCommit: "merge-1" }),
+    linkCommit: async () => ({ ticket: 51, pullRequest: 1, mergeCommit: "merge-1", artifactLink: "vstfs:///Git/Commit/x" }),
+    getTicketInfo: async () => ({
+      hu: { id: hu, title: "HU" },
+      ticket: { id: 51, type: "Task" as const, title: "Ticket", state: currentTicketState, revision: 4 },
+      branch: ticketBranch,
+      integrationBranch,
+      effort: { estimated: 1, real: 1, realHours: 1 },
+      pullRequests: [],
+      canonicalPullRequest: null,
+      mergeCommit: null,
+      attachments: [],
+      completionEvidence: null,
+      gates: { satisfied: [], unmet: [] },
+    }),
+    setEffort: async () => undefined,
+    setState: async (id: number, desiredState: string) => {
+      if (id === 51) currentTicketState = desiredState;
+      if (id === hu) currentHuState = desiredState;
+      return { ticket: id, state: desiredState, revision: 5 };
+    },
+    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
+    readCompletionManifest: async () => ({
+      ticket: 51,
+      ticketBranch,
+      commit: "a".repeat(40),
+      validation: [{ command: "bun test", result: "passed" }],
+      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
+    }),
+    validateCompletionManifest: async () => undefined,
+    getBranch: async () => ({ hu, ticket: 51, branch: ticketBranch, integrationBranch }),
+    validateEvidenceFile: async () => undefined,
+    addAttachment: async () => ({ ticket: 51, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
+    setEvidence: async () => undefined,
+    getState: async (id: number) => {
+      if (id === 51) return { ticket: id, state: currentTicketState, revision: 4 };
+      throw new Error(`unexpected ${id}`);
+    },
+    getHuState: async (id: number) => {
+      if (id === hu) return { hu: id, state: currentHuState, revision: 7 };
+      throw new Error(`unexpected ${id}`);
+    },
+    getEffort: async () => ({ ticket: 51, effort: { estimated: 1, real: 1, realHours: 1 } }),
+    validateEvidence: async () => undefined,
+    setHuState: async (id: number, desiredState: string) => {
+      currentHuState = desiredState;
+      return { hu: id, state: desiredState, revision: 8 };
+    },
+    hasOpenDeliveryChildren: async () => false,
+    getAutocodeContextForTicket: async () => null,
+    getTicket: async () => ({ id: 51, type: "Task" as const }),
+    getDescription: async () => ({ ticket: 51, description: null }),
+    getAttachments: async () => ({ ticket: 51, attachments: [] }),
+    getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
+    validateDirectTicketContext: async () => undefined,
+    linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return directory;
+    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return `${directory}/.git`;
+    if (args[0] === "rev-parse" && args[1] === "HEAD") return "a".repeat(40);
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const writeManifests = () => Promise.all([
+    Bun.write(join(realpathA, "lazy-workflow/completion-manifest.json"), "{}"),
+    Bun.write(join(realpathB, "lazy-workflow/completion-manifest.json"), "{}"),
+  ]);
+  return { root, pathA, pathB, azureBoundary, git, writeManifests };
+}
+
+test("un agotamiento con respaldo de otro CLI continúa el workspace en una sesión fresca del CLI nuevo", async () => {
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
+  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, model: options.model, variant: options.variant, session: options.session });
+      if (cli === "opencode") {
+        return {
+          result: { text: "agotado", sessionId: "ses_exhausted", failed: true } as never,
+          azureLoginRequired: false,
+          failed: true,
+          exhaustion: { cli: "OpenCode", model: options.model ?? "x", cause: "rate_limit" },
+        };
+      }
+      await writeManifests();
+      return { result: { text: "IMPLEMENTATION_READY", sessionId: "ses_new", failed: false } as never, azureLoginRequired: false, failed: false };
+    },
+    resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true),
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["opencode", "claudecode"]);
+    expect(started[1]?.model).toBe("claude-opus-5");
+    expect(started[1]?.variant).toBe("high");
+    expect(started[1]?.session).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un agotamiento con respaldo del mismo CLI reanuda la sesión con el modelo del escalón nuevo", async () => {
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
+  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
+  const agentSource = (): CodingAgent => ({
+    run: async () => ({
+      result: { text: "agotado", sessionId: "ses1", failed: true } as never,
+      azureLoginRequired: false,
+      failed: true,
+      exhaustion: { cli: "OpenCode", model: "primario", cause: "rate_limit" },
+    }),
+    resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
+      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
+      await writeManifests();
+      return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
+    },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true),
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]?.sessionId).toBe("ses1");
+    expect(resumed[0]?.model).toBe("opencode-cheap");
+    expect(resumed[0]?.variant).toBe("high");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un agotamiento sin --fallback declarado sigue fallando cerrado, igual que antes", async () => {
+  const { root, pathA, pathB, azureBoundary, git } = await setupWorkspaceFallbackFixture();
+  const { reporterFn, messages } = captureReporter();
+  const agentSource = (): CodingAgent => ({
+    run: async () => ({
+      result: { text: "agotado", sessionId: "ses1", failed: true } as never,
+      azureLoginRequired: false,
+      failed: true,
+      exhaustion: { cli: "OpenCode", model: "primario", cause: "rate_limit" },
+    }),
+    resume: async () => { throw new Error("must not resume: nothing to descend to"); },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true), reporterFn,
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(1);
+    expect(messages.some((line) => line.includes("falló durante la entrega workspace Azure"))).toBeTrue();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

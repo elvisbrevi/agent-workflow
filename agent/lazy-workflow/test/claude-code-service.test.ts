@@ -481,7 +481,69 @@ describe("ClaudeCodeService agotamiento del proveedor", () => {
       line.includes("Claude Code") && line.includes("billing_error") && !line.includes("modelo ,"),
     )).toBeTrue();
   });
+
+  test("el limite de sesion/uso de Claude Code se clasifica como agotamiento aunque llegue como texto plano, no como api_retry", async () => {
+    // Claude Code no tiene nada que reintentar cuando choca con su propio limite de plan, asi
+    // que nunca emite el evento system/api_retry estructurado: solo termina el turno con este
+    // texto de asistente y un exit code distinto de cero.
+    const output = [
+      initEvent("ses_limited"),
+      assistantText("ses_limited", "You've hit your session limit · resets 11:20am (America/Santiago)"),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.failed).toBeTrue();
+    expect(execution.exhaustion).toEqual({
+      cli: "Claude Code",
+      model: standardOptions.model,
+      cause: "session_limit",
+    });
+  });
+
+  test("el limite de uso semanal tambien se clasifica, sin importar la redaccion exacta despues de la frase fija", async () => {
+    const output = [
+      initEvent("ses_weekly"),
+      assistantText("ses_weekly", "You've hit your usage limit for this week."),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.exhaustion?.cause).toBe("session_limit");
+  });
+
+  test("mencionar 'session limit' como tema de la conversacion, no como rechazo de Claude Code, no se clasifica como agotamiento", async () => {
+    // La frase fija de Anthropic siempre abre con "You've hit your"; una discusion ordinaria
+    // sobre limites de sesion (justamente el dominio de esta HU) no debe confundirse con eso.
+    const output = [
+      initEvent("ses_discussing"),
+      assistantText("ses_discussing", "El ticket define PAYMENT_START_STATUSES y un session limit configurable en el gateway."),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 1));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.failed).toBeTrue();
+    expect(execution.exhaustion).toBeUndefined();
+  });
+
+  test("el texto de limite de sesion en una corrida exitosa no se clasifica como agotamiento", async () => {
+    // Solo aplica una vez que la corrida ya fallo, igual que api_retry.
+    const output = [
+      initEvent("ses_recovered_text"),
+      assistantText("ses_recovered_text", "You've hit your session limit · resets 11:20am, pero igual seguí y termine el ticket."),
+    ].join("\n");
+    const service = new ClaudeCodeService(() => stubProcess(output, "", 0));
+
+    const execution = await service.run(standardOptions);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.exhaustion).toBeUndefined();
+  });
 });
+
 
 describe("ClaudeCodeService enrutado por el Reporter", () => {
   let originalNoColor: string | undefined;

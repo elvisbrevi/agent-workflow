@@ -18,6 +18,11 @@ export interface VersionedAutocodeCheckpoint {
   schemaVersion: 3;
   /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
   cli: AgentCli;
+  /**
+   * The CLI the run itself declared before a cross-CLI fallback handoff moved the session off
+   * it; absent when no handoff moved it (mirrors GitHubDeliveryCheckpoint, issue #252).
+   */
+  handoffFrom?: AgentCli;
   workflow: "autocode";
   phase: AutocodePhase;
   hu: number;
@@ -29,6 +34,12 @@ export interface VersionedAutocodeCheckpoint {
   activeDurationMs: number;
   activeSince: string | null;
   sessionId: string | null;
+  /**
+   * The rung the session is running on, written only once a fallback descent moves it off the
+   * run's own primary; absent means the primary rung (mirrors GitHubDeliveryCheckpoint, issue #238).
+   */
+  model?: string | null;
+  variant?: string | null;
   intent: { effect: AutocodeEffect; target: string } | null;
   receipts: Partial<Record<AutocodeEffect, { verifiedAt: string }>>;
   manifestPath?: string | null;
@@ -37,6 +48,7 @@ export interface VersionedAutocodeCheckpoint {
   mergeCommit?: string | null;
   manifestDigests?: string[];
 }
+
 
 export type StoredAutocodeCheckpoint = AutocodeCheckpoint | VersionedAutocodeCheckpoint;
 
@@ -51,6 +63,12 @@ const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-sel
 
 function validBranch(value: string | null): boolean {
   return value === null || (/^refs\/heads\/[^\s]+$/.test(value) && !value.includes("//"));
+}
+
+/** The model or variant a descent recorded: absent, or a single-line non-empty name. */
+function isRung(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null
+    || (typeof value === "string" && value.length > 0 && !/[\r\n]/.test(value));
 }
 
 function validLegacy(value: unknown): value is AutocodeCheckpoint {
@@ -70,6 +88,7 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
   const checkpoint = value as Partial<VersionedAutocodeCheckpoint>;
   return checkpoint.schemaVersion === 3
     && isAgentCli(checkpoint.cli)
+    && (checkpoint.handoffFrom === undefined || isAgentCli(checkpoint.handoffFrom))
     && checkpoint.workflow === "autocode"
      && (checkpoint.phase === "preflight-hu" || checkpoint.phase === "selected" || checkpoint.phase === "started" || checkpoint.phase === "implementing" || checkpoint.phase === "implementation-ready" || checkpoint.phase === "integrating" || checkpoint.phase === "evidencing" || checkpoint.phase === "completing" || checkpoint.phase === "cleaning" || checkpoint.phase === "reconciling")
     && Number.isInteger(checkpoint.hu)
@@ -85,6 +104,8 @@ function validVersioned(value: unknown): value is VersionedAutocodeCheckpoint {
     && Number.isFinite(checkpoint.activeDurationMs)
     && (checkpoint.activeSince === null || typeof checkpoint.activeSince === "string")
     && (checkpoint.sessionId === null || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.trim().length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
+    && isRung(checkpoint.model)
+    && isRung(checkpoint.variant)
     && (checkpoint.intent === null || (typeof checkpoint.intent === "object" && checkpoint.intent !== null && EFFECTS.includes(checkpoint.intent.effect) && typeof checkpoint.intent.target === "string" && checkpoint.intent.target.length > 0))
     && typeof checkpoint.receipts === "object"
     && checkpoint.receipts !== null

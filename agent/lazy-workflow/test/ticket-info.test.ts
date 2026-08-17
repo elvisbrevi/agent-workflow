@@ -858,6 +858,67 @@ test("ticket state setter rejects stale and unsupported transitions before Azure
   await expect(service.setState(51, "Done", "Active")).rejects.toThrow("gates");
 });
 
+test("ticket state setter reaches Done from Scrum SAG's own states, not only the stock ones", async () => {
+  // ScrumSAG.Task starts work items in "En espera" (Proposed) instead of "New", and resolves
+  // them through "En revisión" (Resolved) instead of "Resolved" — the coordinator's own
+  // completion step (`En espera` -> `Done` with `allowCompletion`) has to reach across both.
+  const stateSetterFixture = (initialState: string) => {
+    let state = initialState;
+    let revision = 4;
+    const service = new AzureTicketInfoService(async (args) => {
+      if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+        id: 51,
+        rev: revision,
+        fields: { "System.WorkItemType": "Task", "System.State": state },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+      });
+      if (args[0] === "boards") return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": "User Story" },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+      });
+      if (args[0] === "rest" && args.includes("patch")) {
+        state = "Done";
+        revision = 5;
+        return JSON.stringify({ id: 51, rev: revision, fields: { "System.WorkItemType": "Task", "System.State": state } });
+      }
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    });
+    return service;
+  };
+
+  await expect(stateSetterFixture("En espera").setState(51, "Done", "En espera", true, 4)).resolves.toEqual({
+    ticket: 51,
+    state: "Done",
+    revision: 5,
+  });
+  await expect(stateSetterFixture("En revisión").setState(51, "Done", "En revisión", true, 4)).resolves.toEqual({
+    ticket: 51,
+    state: "Done",
+    revision: 5,
+  });
+});
+
+
+test("hasOpenDeliveryChildren treats Scrum SAG's En espera and En revisión as open, not just Active/Resolved", async () => {
+  const childInState = (state: string) => new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "Product Backlog Item" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    return JSON.stringify({
+      id: 51,
+      fields: { "System.WorkItemType": "Task", "System.State": state, "System.Title": "Child" },
+      relations: [],
+    });
+  });
+
+  await expect(childInState("En espera").hasOpenDeliveryChildren(23438)).resolves.toBeTrue();
+  await expect(childInState("En revisión").hasOpenDeliveryChildren(23438)).resolves.toBeTrue();
+  await expect(childInState("Done").hasOpenDeliveryChildren(23438)).resolves.toBeFalse();
+});
+
 test("ticket state setter reconciles a patch that applied before its response was lost", async () => {
   let state = "Active";
   let revision = 4;
@@ -1018,6 +1079,27 @@ test("setHuState accepts a Product Backlog Item HU and still rejects other types
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).setHuState(23438, "Active", "Active", 7))
     .resolves.toEqual({ hu: 23438, state: "Active", revision: 7 });
   await expect(new AzureTicketInfoService(az("Epic")).setHuState(23438, "Active", "Active", 7))
+    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
+test("getHuState reads a Product Backlog Item HU that getState (Task/Bug-only) rejects", async () => {
+  // The multi-repository workspace coordinator has to read and verify the HU's own state
+  // around its "Desarrollo Terminado" transition — getState/readWorkItemValidated only accept
+  // Task or Bug, so calling it on the HU itself always threw "no es un Task o Bug de entrega".
+  const az = (workItemType: string) => async () => JSON.stringify({
+    id: 23438,
+    rev: 7,
+    fields: { "System.WorkItemType": workItemType, "System.State": "En Desarrollo" },
+    relations: [],
+  });
+
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).getHuState(23438))
+    .resolves.toEqual({ hu: 23438, state: "En Desarrollo", revision: 7 });
+  await expect(new AzureTicketInfoService(az("User Story")).getHuState(23438))
+    .resolves.toEqual({ hu: 23438, state: "En Desarrollo", revision: 7 });
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).getState(23438))
+    .rejects.toThrow("no es un Task o Bug de entrega");
+  await expect(new AzureTicketInfoService(az("Epic")).getHuState(23438))
     .rejects.toThrow("no es una User Story ni un Product Backlog Item");
 });
 
@@ -1586,6 +1668,37 @@ test("completion-evidence distinta sigue siendo un conflicto", async () => {
       existing: "<div>Otra evidencia completamente distinta.</div>",
     });
     await expect(service.setEvidence(51, path)).rejects.toThrow("conflicto");
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("validateEvidence no confunde el re-serializado html de Azure con un conflicto", async () => {
+  // The coordinator calls validateEvidence on every rerun, including one where setEvidence
+  // already landed successfully in an earlier session: Azure hands the same text back with
+  // markup the writer never sent, and that must not read as a distinct conflicting value.
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test & npm run build.\n");
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: "<div>Validaciones ejecutadas: npm test &amp; npm run build.</div>",
+    });
+    await expect(service.validateEvidence(51, path)).resolves.toBeUndefined();
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("validateEvidence sigue rechazando una completion-evidence realmente distinta", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: "<div>Otra evidencia completamente distinta.</div>",
+    });
+    await expect(service.validateEvidence(51, path)).rejects.toThrow("conflicto");
   } finally {
     await unlink(path).catch(() => undefined);
   }
