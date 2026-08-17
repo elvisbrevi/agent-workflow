@@ -5,6 +5,7 @@ import {
   isDeterministicToolCommand,
   runDeterministicTool,
   toBranchRef,
+  type AzureToolBoundary,
   type DeterministicToolServices,
 } from "../src/cli/deterministic-tools.ts";
 import { DETERMINISTIC_TOOL_COMMANDS } from "../src/cli/tool-commands.ts";
@@ -61,6 +62,59 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
   };
   return { services, calls };
 }
+
+/**
+ * A boundary that is a class, like the production one: `AzureAutocodeService`
+ * answers every Azure tool operation by delegating through `this`. The recording
+ * boundary above is an object of arrow functions, which cannot lose its
+ * receiver, so only a class proves a tool command still calls its operation with
+ * the owner attached.
+ */
+class StatefulAzureBoundary implements AzureToolBoundary {
+  readonly seen: string[] = [];
+  private readonly delegate = { hu: 23438, ticket: 51, branch: "hu/23438", commit: COMMIT };
+
+  private record<T>(operation: string, result: T): Promise<T> {
+    this.seen.push(operation);
+    return Promise.resolve(result);
+  }
+
+  getHuChildren(): Promise<Array<{ id: number; type: string; state: string }>> {
+    return this.record("getHuChildren", [{ id: this.delegate.ticket, type: "Task", state: "New" }]);
+  }
+  setHuState(hu: number, desiredState: string): Promise<{ hu: number; state: string; revision: number }> {
+    return this.record("setHuState", { hu: this.delegate.hu, state: desiredState, revision: 13 });
+  }
+  ensureIntegrationBranch(): Promise<string | null> {
+    return this.record("ensureIntegrationBranch", this.delegate.branch);
+  }
+  getTicket(): Promise<{ id: number; type: "Task" | "Bug" }> {
+    return this.record("getTicket", { id: this.delegate.ticket, type: "Task" });
+  }
+  createOrReusePullRequest(): Promise<{ pullRequest: number; mergeCommit: string }> {
+    return this.record("createOrReusePullRequest", { pullRequest: 7, mergeCommit: this.delegate.commit });
+  }
+  pushTicketBranch(): Promise<void> {
+    return this.record("pushTicketBranch", undefined);
+  }
+  checkoutTicketBranch(): Promise<void> {
+    return this.record("checkoutTicketBranch", undefined);
+  }
+}
+
+/** Every Azure tool command, with the boundary operation it must reach. */
+const AZURE_TOOL_INVOCATIONS: Array<{ args: string[]; operation: string }> = [
+  { args: ["hu-children-info", "--hu", "23438"], operation: "getHuChildren" },
+  {
+    args: ["hu-state-set", "--hu", "23438", "--state", "Done", "--expected-state", "En progreso", "--expected-rev", "12"],
+    operation: "setHuState",
+  },
+  { args: ["hu-branch-ensure", "--hu", "23438", "--working-directory", "/repo"], operation: "ensureIntegrationBranch" },
+  { args: ["ticket-type-info", "--ticket", "51"], operation: "getTicket" },
+  { args: ["ticket-pr-create", "--hu", "23438", "--ticket", "51"], operation: "createOrReusePullRequest" },
+  { args: ["ticket-branch-push", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "pushTicketBranch" },
+  { args: ["ticket-branch-checkout", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "checkoutTicketBranch" },
+];
 
 /** The options a real invocation would produce, so the tools read what the parser writes. */
 function parseOptions(args: string[]): CliOptions {
@@ -308,6 +362,27 @@ describe("herramientas deterministas como comandos", () => {
     });
   });
 
+  describe("receptor del boundary", () => {
+    test("cada herramienta Azure alcanza su operacion con el boundary como receptor", async () => {
+      for (const { args, operation } of AZURE_TOOL_INVOCATIONS) {
+        const azure = new StatefulAzureBoundary();
+        const { services } = recordingServices();
+        const options = parseOptions(args);
+
+        const code = await runDeterministicTool(
+          options.command as never,
+          options,
+          { ...services, azure },
+          () => undefined,
+        );
+
+        expect({ command: options.command, code, seen: azure.seen })
+          .toEqual({ command: options.command, code: 0, seen: [operation] });
+      }
+      expect(messages).toEqual([]);
+    });
+  });
+
   describe("argumentos y fallos", () => {
     test("un argumento faltante se reporta y devuelve 1 sin llamar al adaptador", async () => {
       const { code, calls } = await runTool(["github-issue-info", "--working-directory", "/repo"]);
@@ -369,6 +444,44 @@ describe("herramientas deterministas como comandos", () => {
 
       expect(code).toBe(0);
       expect(calls).toEqual([{ operation: "verifyAuthentication", args: ["/repo"] }]);
+    });
+
+    test("la CLI arma sus servicios con el servicio Azure real y la herramienta lo alcanza", async () => {
+      // No injected services: the CLI builds them from its own Azure service, as
+      // a real invocation does. That service is a class, so this is the path
+      // where a detached operation loses `this` (issue #256).
+      class AzureServiceLikeProduction {
+        private readonly children = [{ id: 51, type: "Task", state: "New" }];
+        getHuInfo(): Promise<never> { throw new Error("una herramienta determinista no consulta la HU"); }
+        async waitForAccess(): Promise<void> { return undefined; }
+        getHuChildren(): Promise<Array<{ id: number; type: string; state: string }>> {
+          return Promise.resolve(this.children);
+        }
+      }
+      const agent = {
+        run: async () => { throw new Error("una herramienta determinista no abre sesion"); },
+        resume: async () => { throw new Error("una herramienta determinista no abre sesion"); },
+      };
+      const cli = new LazyWorkflowCli(new AzureServiceLikeProduction(), agent);
+
+      // The CLI prints the tool result itself, and the payload is what proves the
+      // receiver survived: `children` only exists behind `this`.
+      const printed: string[] = [];
+      const log = console.log;
+      console.log = (line: string) => { printed.push(line); };
+      let code: number;
+      try {
+        code = await cli.run(["hu-children-info", "--hu", "23438"]);
+      } finally {
+        console.log = log;
+      }
+
+      expect(code).toBe(0);
+      expect(messages).toEqual([]);
+      expect(JSON.parse(printed[0] ?? "null")).toEqual({
+        hu: 23438,
+        children: [{ id: 51, type: "Task", state: "New" }],
+      });
     });
 
     test("sin boundaries inyectados la CLI construye los adaptadores reales", () => {
