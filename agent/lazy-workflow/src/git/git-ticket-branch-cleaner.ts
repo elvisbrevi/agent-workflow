@@ -66,7 +66,14 @@ export async function checkoutGitBranch(
   if (local.trim()) {
     const localSha = (await git(["rev-parse", `refs/heads/${branch}^{commit}`], workingDirectory)).trim();
     const remoteSha = (await git(["rev-parse", `refs/remotes/origin/${branch}^{commit}`], workingDirectory)).trim();
-    if (localSha !== remoteSha) throw new Error(`La rama local ${branchRef} no coincide con su rama remota`);
+    // Adelantada respecto del remoto es la forma que deja una corrida reanudada:
+    // el agente commiteó y el push todavía no ocurrió — exactamente lo que el
+    // paso siguiente va a subir. Solo la divergencia (el remoto con commits que
+    // el local no tiene) puede perder trabajo al cambiar de rama, y esa sigue
+    // siendo un rechazo: el merge-base solo coincide con el remoto si el remoto
+    // es ancestro del local.
+    const mergeBase = (await git(["merge-base", localSha, remoteSha], workingDirectory)).trim();
+    if (mergeBase !== remoteSha) throw new Error(`La rama local ${branchRef} no coincide con su rama remota`);
     await git(["switch", branch], workingDirectory);
   } else {
     await git(["switch", "--create", branch, "--track", `refs/remotes/origin/${branch}`], workingDirectory);
