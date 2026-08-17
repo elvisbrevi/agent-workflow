@@ -227,6 +227,27 @@ function attachmentDigest(comment: string | undefined): string | undefined {
   return digest && /^[0-9a-f]{64}$/.test(digest) ? digest : undefined;
 }
 
+/**
+ * Some projects define the completion-evidence field as html, so Azure stores its own normalization
+ * of whatever was written and reads it back with markup the writer never sent. Judging "already
+ * written" by exact equality then turns a second run of the same delivery into a false conflict, so
+ * equality is judged on the text the field carries rather than on its markup.
+ */
+function evidenceTextContent(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:div|p|li|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#3(?:9|4);/g, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function hasEvidenceCapture(item: WorkItem): boolean {
   return (item.relations ?? []).some(({ rel, url, attributes }) =>
     rel === "AttachedFile"
@@ -1281,9 +1302,11 @@ export class AzureTicketInfoService {
     validateEvidenceContent(content, "command-output");
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
-    const fieldName = COMPLETION_FIELDS.find((name) => text(item, name)) ?? COMPLETION_FIELDS[0];
+    const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
-    if (existing === content) return { ticket, completionEvidence: existing };
+    if (existing && evidenceTextContent(existing) === evidenceTextContent(content)) {
+      return { ticket, completionEvidence: existing };
+    }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     await this.patchWorkItem(item, [{
       op: "test", path: "/rev", value: item.rev,
@@ -1291,6 +1314,35 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  /**
+   * The same logical field lives under different reference names across projects — a readable one in
+   * some, a GUID in others — which is why there is a candidate list. A first write has no value to
+   * follow, so defaulting to the head of the list writes to a name the project may not define at
+   * all: Azure answers TF51535 and the whole delivery stops. Resolve against what the project
+   * actually defines, preferring a candidate that already carries this ticket's evidence.
+   */
+  private async resolveCompletionField(item: WorkItem): Promise<string> {
+    const carrying = COMPLETION_FIELDS.find((name) => text(item, name));
+    if (carrying) return carrying;
+    for (const name of COMPLETION_FIELDS) {
+      if (await this.fieldExists(name)) return name;
+    }
+    throw new Error(`El proyecto Azure no define ningún campo de completion-evidence: ${COMPLETION_FIELDS.join(", ")}`);
+  }
+
+  private async fieldExists(name: string): Promise<boolean> {
+    try {
+      const payload = JSON.parse(await this.az([
+        "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get",
+        "--uri", `${ORGANIZATION}/_apis/wit/fields/${encodeURIComponent(name)}?api-version=${API_VERSION}`,
+        "--output", "json",
+      ])) as { referenceName?: string };
+      return payload.referenceName === name;
+    } catch {
+      return false;
+    }
   }
 
   private async readEvidenceFile(filePath: string, kind: EvidenceKind): Promise<ValidatedEvidenceFile> {
