@@ -28,11 +28,23 @@ export interface AzureWorkspaceCheckpoint {
   schemaVersion: 2;
   /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
   cli: AgentCli;
+  /**
+   * The CLI the run itself declared before a cross-CLI fallback handoff moved the session off
+   * it; absent when no handoff moved it. Separates a `--cli` the run's own descent contradicted
+   * from one the operator contradicted (mirrors GitHubDeliveryCheckpoint, issue #252).
+   */
+  handoffFrom?: AgentCli;
   workflow: "azure-workspace-code";
   hu: number;
   ticket: number;
   phase: AzureWorkspacePhase;
   sessionId: string | null;
+  /**
+   * The rung the session is running on, written only once a fallback descent moves it off the
+   * run's own primary; absent means the primary rung (mirrors GitHubDeliveryCheckpoint, issue #238).
+   */
+  model?: string | null;
+  variant?: string | null;
   integrationBranch: string;
   ticketBranch: string;
   parentDirectory: string;
@@ -43,6 +55,12 @@ export interface AzureWorkspaceCheckpoint {
   units: AzureWorkspaceCheckpointUnit[];
   receipts: Record<string, { verifiedAt: string }>;
   intent: { effect: string; target: string } | null;
+}
+
+/** The model or variant a descent recorded: absent, or a single-line non-empty name. */
+function isRung(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null
+    || (typeof value === "string" && value.length > 0 && !/[\r\n]/.test(value));
 }
 
 function validUnit(value: unknown): value is AzureWorkspaceCheckpointUnit {
@@ -66,11 +84,14 @@ export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorksp
   const units = checkpoint.units;
   return checkpoint.schemaVersion === 2
     && isAgentCli(checkpoint.cli)
+    && (checkpoint.handoffFrom === undefined || isAgentCli(checkpoint.handoffFrom))
     && checkpoint.workflow === "azure-workspace-code"
     && Number.isInteger(checkpoint.hu) && (checkpoint.hu ?? 0) > 0
     && Number.isInteger(checkpoint.ticket) && (checkpoint.ticket ?? 0) > 0
     && AZURE_WORKSPACE_PHASES.includes(checkpoint.phase as AzureWorkspacePhase)
     && (checkpoint.sessionId === null || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0))
+    && isRung(checkpoint.model)
+    && isRung(checkpoint.variant)
     && isBranchRef(checkpoint.integrationBranch)
     && isBranchRef(checkpoint.ticketBranch)
     && typeof checkpoint.parentDirectory === "string" && checkpoint.parentDirectory.length > 0

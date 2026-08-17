@@ -143,6 +143,7 @@ export interface AutocodeAzureService {
   getTicket(ticket: number): Promise<DeliveryTicket>;
   getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
   getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
+  getHuState(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }>;
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
@@ -396,6 +397,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }> {
     return this.ticketInfoService.getState(ticket);
+  }
+
+  getHuState(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }> {
+    return this.ticketInfoService.getHuState(hu);
   }
 
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }> {

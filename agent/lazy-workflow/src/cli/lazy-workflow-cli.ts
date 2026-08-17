@@ -141,6 +141,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
   getState?(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
+  getHuState?(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }>;
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
   getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
@@ -1249,6 +1250,7 @@ export class LazyWorkflowCli {
       || !this.huInfoService.setEvidence || !this.huInfoService.getState
       || !this.huInfoService.getEffort || !this.huInfoService.validateEvidence
       || !this.huInfoService.setHuState || !this.huInfoService.hasOpenDeliveryChildren
+      || !this.huInfoService.getHuState
       || !this.huInfoService.getAutocodeContextForTicket || !this.huInfoService.getTicket
       || !this.huInfoService.getDescription || !this.huInfoService.getAttachments
       || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext
@@ -1269,7 +1271,7 @@ export class LazyWorkflowCli {
       return 1;
     }
     if (checkpoint) {
-      const adopted = this.adoptCheckpointCli(checkpoint.cli, options);
+      const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom);
       if (!adopted) return 1;
       options = adopted;
     }
@@ -1336,20 +1338,73 @@ export class LazyWorkflowCli {
           return 1;
         }
         const resuming = checkpoint.sessionId;
-        const session = resuming
-          ? { ...await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
-          : await this.runAzureWorkspaceSession(options, scope, topology, ticketTopology);
-        const terminal = !session.failed && containsMarker(session.text, IMPLEMENTATION_READY_MARKER);
+        let activeCli = checkpoint.cli;
+        let execution: AgentExecution;
+        if (resuming) {
+          // Resuming an existing session never descends the fallback chain, exactly like the
+          // GitHub delivery path: the chain only applies to the first, fresh session of a unit.
+          execution = {
+            result: await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)),
+            azureLoginRequired: false,
+            failed: false,
+          };
+        } else {
+          const run = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
+          execution = await this.codingAgent.run({
+            ...options,
+            workingDirectory: scope.parentDirectory,
+            ...run,
+            session: null,
+            terminalMarker: IMPLEMENTATION_READY_MARKER,
+          }, true);
+          execution = await this.descendFallbackChain(
+            options,
+            execution,
+            (sessionId, overrides) => this.codingAgent.resume(sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, overrides),
+            async (rung, sessionId) => {
+              activeCli = rung.cli;
+              checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
+              await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+            },
+            async (rung) => {
+              const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
+              const handoffRun = await this.azureWorkspacePrompt(handoffOptions, scope, topology, ticketTopology);
+              this.resolveAgent(rung.cli);
+              const handedOff = await this.codingAgent.run({
+                ...handoffOptions,
+                ...handoffRun,
+                session: null,
+                terminalMarker: IMPLEMENTATION_READY_MARKER,
+              }, false);
+              activeCli = rung.cli;
+              checkpoint = {
+                ...checkpoint!,
+                cli: rung.cli,
+                handoffFrom: checkpoint!.handoffFrom ?? options.cli,
+                model: rung.model,
+                variant: rung.variant,
+                sessionId: handedOff.result.sessionId,
+              };
+              await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+              return handedOff;
+            },
+          );
+        }
+        const terminal = !execution.failed && containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
           ...checkpoint,
+          cli: activeCli,
           phase: terminal ? "implementation-ready" : "implementing",
-          sessionId: terminal ? null : (session.sessionId ?? resuming),
+          sessionId: terminal ? null : execution.result.sessionId,
           activeDurationMs: checkpoint.activeDurationMs + accrue(),
         };
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
-        if (session.failed) return 1;
+        if (execution.failed) {
+          reportOperator(`lazy-workflow: ${activeCli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+          return 1;
+        }
         if (!terminal) {
-          reportOperator(`lazy-workflow: la sesión ${options.cli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          reportOperator(`lazy-workflow: la sesión ${activeCli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
           return 1;
         }
       }
@@ -1402,26 +1457,6 @@ export class LazyWorkflowCli {
       return { exit: 0 };
     }
     return { ticket: state.context.ticket.id };
-  }
-
-  private async runAzureWorkspaceSession(
-    options: CliOptions,
-    scope: WorkspaceScope,
-    topology: AzureWorkspaceBranchTopology,
-    ticketTopology: AzureWorkspaceBranchTopology,
-  ): Promise<{ text: string; sessionId: string | null; failed: boolean }> {
-    const run = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
-    const execution = await this.codingAgent.run({
-      ...options,
-      workingDirectory: scope.parentDirectory,
-      ...run,
-      session: null,
-      terminalMarker: IMPLEMENTATION_READY_MARKER,
-    }, true);
-    if (execution.failed) {
-      reportOperator(`lazy-workflow: ${options.cli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
-    }
-    return { text: execution.result.text, sessionId: execution.result.sessionId ?? null, failed: !!execution.failed };
   }
 
   private azureWorkspaceScopeMismatch(
@@ -1739,7 +1774,7 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    const huState = await boundary.getState!(hu);
+    const huState = await boundary.getHuState!(hu);
     let huTransitionApplied = false;
     if (huState.state === "Desarrollo Terminado") {
       huTransitionApplied = true;
@@ -1748,7 +1783,7 @@ export class LazyWorkflowCli {
     } else {
       try {
         await boundary.setHuState!(hu, "Desarrollo Terminado", huState.state ?? "En Desarrollo", huState.revision ?? 0);
-        const verified = await boundary.getState!(hu);
+        const verified = await boundary.getHuState!(hu);
         if (verified.state !== "Desarrollo Terminado") {
           reportOperator(`lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`);
         } else {
@@ -3616,7 +3651,7 @@ export class LazyWorkflowCli {
     const now = (): number => this.clock.now();
     const migrated = initialCheckpoint ? migrateAutocodeCheckpoint(initialCheckpoint, now()) : null;
     if (migrated) {
-      const adopted = this.adoptCheckpointCli(migrated.cli, options);
+      const adopted = this.adoptCheckpointCli(migrated.cli, options, migrated.handoffFrom);
       if (!adopted) return 1;
       options = adopted;
     }
@@ -3939,6 +3974,7 @@ export class LazyWorkflowCli {
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
     let sessionId = options.session ?? checkpoint.sessionId;
+    let activeCli = checkpoint.cli;
     let resumePrompt = options.prompt;
     while (true) {
       try {
@@ -3952,15 +3988,65 @@ export class LazyWorkflowCli {
           workflowPhase: checkpoint.phase,
           completionGates: Object.values(COMPLETION_GATE),
         }, options, norms);
-        const execution = await track(null, async () => sessionId
-          ? { result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }), azureLoginRequired: false, failed: false }
-          : this.codingAgent.run({
+        const execution = await track(null, async () => {
+          if (sessionId) {
+            // Resuming an existing session never descends the fallback chain, exactly like the
+            // GitHub delivery path: the chain only applies to the first, fresh session of a unit.
+            return {
+              result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
+              azureLoginRequired: false,
+              failed: false,
+            };
+          }
+          let fresh = await this.codingAgent.run({
             ...options,
             ...run,
             session: null,
             terminalMarker: IMPLEMENTATION_READY_MARKER,
-          }, true));
+          }, true);
+          return await this.descendFallbackChain(
+            options,
+            fresh,
+            (descentSessionId, overrides) => this.codingAgent.resume(descentSessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides),
+            async (rung, descentSessionId) => {
+              activeCli = rung.cli;
+              checkpoint = { ...checkpoint, model: rung.model, variant: rung.variant, sessionId: descentSessionId };
+              await save();
+            },
+            async (rung) => {
+              const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
+              const handoffRun = await this.prompt({
+                kind: "azure-delivery",
+                context,
+                ticketBranch,
+                evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
+                manifestPath,
+                workflowPhase: checkpoint.phase,
+                completionGates: Object.values(COMPLETION_GATE),
+              }, handoffOptions, norms);
+              this.resolveAgent(rung.cli);
+              const handedOff = await this.codingAgent.run({
+                ...handoffOptions,
+                ...handoffRun,
+                session: null,
+                terminalMarker: IMPLEMENTATION_READY_MARKER,
+              }, false);
+              activeCli = rung.cli;
+              checkpoint = {
+                ...checkpoint,
+                cli: rung.cli,
+                handoffFrom: checkpoint.handoffFrom ?? options.cli,
+                model: rung.model,
+                variant: rung.variant,
+                sessionId: handedOff.result.sessionId,
+              };
+              await save();
+              return handedOff;
+            },
+          );
+        });
         sessionId = execution.result.sessionId;
+        checkpoint = { ...checkpoint, cli: activeCli };
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
         await save();
