@@ -296,6 +296,30 @@ test("checkout de la rama del ticket acepta un commit local que todavía no se h
   expect(commands).toContainEqual(["switch", "ticket/23574"]);
 });
 
+test("checkout de la rama del ticket alcanza al remoto que el merge dejó adelante", async () => {
+  // Completado el PR, la rama del ticket remota avanza hasta el merge y el
+  // commit local queda contenido ahí: alcanzarla es un avance rápido, no un
+  // conflicto que deba detener la entrega.
+  const local = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const remote = "1faa46968a4fd05d63979fdf84f6327a8bf17ac8";
+  const { commands, git } = checkoutFixture(local, remote, local);
+
+  await checkoutGitBranch(git, "refs/heads/ticket/23574", "/repo");
+
+  expect(commands).toContainEqual(["switch", "ticket/23574"]);
+  expect(commands).toContainEqual(["merge", "--ff-only", "refs/remotes/origin/ticket/23574"]);
+});
+
+test("checkout de la rama del ticket no fusiona cuando el local ya va adelante", async () => {
+  const local = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const remote = "66661e7f75793c95b17b209750013ea52c6cf66d";
+  const { commands, git } = checkoutFixture(local, remote, remote);
+
+  await checkoutGitBranch(git, "refs/heads/ticket/23574", "/repo");
+
+  expect(commands.some(([command]) => command === "merge")).toBeFalse();
+});
+
 test("checkout de la rama del ticket rechaza una rama local divergente", async () => {
   const local = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
   const remote = "66661e7f75793c95b17b209750013ea52c6cf66d";
