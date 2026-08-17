@@ -57,7 +57,7 @@ export async function checkoutGitBranch(
   workingDirectory: string,
 ): Promise<void> {
   const branch = branchName(branchRef);
-  const status = await git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+  const status = await git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
   if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se cambiará a la rama del ticket");
   const current = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
   await git(["fetch", "origin", `+${branchRef}:refs/remotes/origin/${branch}`], workingDirectory);
@@ -90,7 +90,7 @@ export class GitTicketBranchCleaner {
       throw new Error("La rama del ticket no puede ser la rama de integración");
     }
 
-    const status = await this.git(["status", "--porcelain"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) {
       throw new Error("El repositorio tiene cambios sin guardar; no se eliminará la rama del ticket");
     }

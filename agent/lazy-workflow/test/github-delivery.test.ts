@@ -56,7 +56,7 @@ test("checkout de recuperación guarda en stash un worktree sucio en vez de rech
       commands.push(command);
       if (command[0] === "rev-parse") return "";
       if (command[0] === "symbolic-ref") return "issue/198\n";
-      if (command[0] === "status") return "?? local.txt\n";
+      if (command[0] === "status") return " M src/app.ts\n";
       if (command[0] === "stash") return "";
       throw new Error(`unexpected git command: ${command.join(" ")}`);
     },
@@ -66,7 +66,10 @@ test("checkout de recuperación guarda en stash un worktree sucio en vez de rech
 
   const stashCommand = commands.find(([command]) => command === "stash");
   expect(stashCommand).toBeDefined();
-  expect(stashCommand).toEqual(expect.arrayContaining(["stash", "push", "--include-untracked"]));
+  expect(stashCommand).toEqual(expect.arrayContaining(["stash", "push"]));
+  // Los archivos sin trackear son el andamiaje del agente (un .env.test para
+  // correr la suite): guardarlos en el stash se los quita al siguiente intento.
+  expect(stashCommand).not.toContain("--include-untracked");
   // Never a commit: a stash never lands on any branch's history, so it can't
   // mix unrelated work into whatever the recovery flow commits next.
   expect(commands.some(([command]) => command === "commit")).toBeFalse();

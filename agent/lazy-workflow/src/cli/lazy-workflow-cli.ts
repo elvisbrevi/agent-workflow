@@ -1575,7 +1575,7 @@ export class LazyWorkflowCli {
       const manifestPath = await boundary.getCompletionManifestPath!(repository.path);
       const exists = await Bun.file(manifestPath).exists();
       if (!exists) {
-        const status = await this.git(["status", "--porcelain", "--untracked-files=all"], repository.path);
+        const status = await this.git(["status", "--porcelain", "--untracked-files=no"], repository.path);
         if (status.trim()) {
           reportOperator(`lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`);
           return 1;
@@ -2112,7 +2112,7 @@ export class LazyWorkflowCli {
         if (!manifest.evidence?.length) throw new Error(`el manifest de ${unit.path} no contiene evidencia verificable`);
         changed.push({ ...unit, changed: true, commit: manifest.commit, evidence: manifest.evidence, phase: "implementation-ready", receipts: { ...unit.receipts, manifest: { verifiedAt: new Date().toISOString() } } });
       } else {
-        const status = await this.git(["status", "--porcelain", "--untracked-files=all"], unit.path);
+        const status = await this.git(["status", "--porcelain", "--untracked-files=no"], unit.path);
         if (status.trim()) throw new Error(`OpenCode dejó cambios sin commitear en ${unit.path}`);
         const head = (await this.git(["rev-parse", "HEAD^{commit}"], unit.path)).trim();
         if (head !== unit.startingCommit) throw new Error(`el repositorio ${unit.path} cambió sin manifest verificable`);
@@ -2632,7 +2632,7 @@ export class LazyWorkflowCli {
       // range — or a branch with no commits yet, which makes `log` fail — is the
       // absence the section states.
       commit: await readGit(["log", "-1", "--format=%H %s", `${base}..${branch}`]),
-      uncommitted: await readGit(["status", "--porcelain", "--untracked-files=all"]) ?? "",
+      uncommitted: await readGit(["status", "--porcelain", "--untracked-files=no"]) ?? "",
       // The manifest path is fixed per repository, so one left by an earlier
       // delivery is only this unit's progress when it names this issue and branch.
       manifest: await manifestBelongsToDelivery(manifestPath, issue, branch)
@@ -3452,7 +3452,7 @@ export class LazyWorkflowCli {
       return 1;
     }
     try {
-      const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=no"], options.workingDirectory);
       if (initialStatus.trim()) throw new Error("el repositorio tiene cambios sin guardar; la revision no mutara un arbol sucio");
       const issueScope = options.issue !== null
         ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
@@ -3469,7 +3469,7 @@ export class LazyWorkflowCli {
         await this.huInfoService.waitForAccess(options.hu);
         result = await this.codingAgent.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
       }
-      const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=all"], options.workingDirectory);
+      const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=no"], options.workingDirectory);
       if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
       if (execution.failed) return 1;
       const review = parseArchitectureReviewResult(result.text);

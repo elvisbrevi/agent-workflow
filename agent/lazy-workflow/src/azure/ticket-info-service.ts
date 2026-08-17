@@ -1062,7 +1062,13 @@ export class AzureTicketInfoService {
     if (info.branch !== manifest.ticketBranch) throw new Error("La rama del manifest no coincide con la rama del ticket");
     const head = (await this.git(["rev-parse", "HEAD"], workingDirectory)).trim();
     if (head !== manifest.commit) throw new Error("El commit del manifest no coincide con HEAD");
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    // Tracked changes only. A coding agent routinely leaves untracked scratch
+    // behind to reach its own validation — a .env.test to run the suite, a
+    // coverage directory, a throwaway script — and none of it is unsaved work:
+    // it never enters a commit and survives every branch move this flow makes.
+    // Counting it as a dirty tree rejected manifests whose commit was already
+    // in place, so the gate watches what the commit could have lost instead.
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se aplicará el completion manifest");
     const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
     const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);

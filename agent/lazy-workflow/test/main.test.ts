@@ -258,7 +258,7 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
   );
 
   expect(commands).toEqual([
-    ["status", "--porcelain"],
+    ["status", "--porcelain", "--untracked-files=no"],
     ["fetch", "origin", "+refs/heads/hu/23438:refs/remotes/origin/hu/23438"],
     ["branch", "--list", "hu/23438"],
     ["switch", "--create", "hu/23438", "--track", "refs/remotes/origin/hu/23438"],
@@ -274,7 +274,7 @@ test("Git no elimina ramas cuando el repositorio tiene cambios locales", async (
   const commands: string[][] = [];
   const cleaner = new GitTicketBranchCleaner(async (args) => {
     commands.push(args);
-    return "?? evidencia-local.png\n";
+    return " M app/services/programas.ts\n";
   });
 
   await expect(cleaner.deleteTicketBranch(
@@ -282,7 +282,24 @@ test("Git no elimina ramas cuando el repositorio tiene cambios locales", async (
     "refs/heads/hu/23438",
     "/repo",
   )).rejects.toThrow("cambios sin guardar");
-  expect(commands).toEqual([["status", "--porcelain"]]);
+  expect(commands).toEqual([["status", "--porcelain", "--untracked-files=no"]]);
+});
+
+test("Git elimina ramas pese a los archivos sin trackear que el agente dejó atrás", async () => {
+  // .env.test, coverage/ o un script de un solo uso no entran en ningún commit
+  // y sobreviven al cambio de rama: no son trabajo que borrar la rama pueda perder.
+  const commands: string[][] = [];
+  const cleaner = new GitTicketBranchCleaner(async (args) => {
+    commands.push(args);
+    if (args[0] === "status") return args.includes("--untracked-files=no") ? "" : "?? .env.test\n";
+    if (args[0] === "branch" && args[1] === "--list" && args[2] === "ticket/51-programas") return "  ticket/51-programas\n";
+    if (args[0] === "ls-remote") return "abc123\trefs/heads/ticket/51-programas\n";
+    return "";
+  });
+
+  await cleaner.deleteTicketBranch("refs/heads/ticket/51-programas", "refs/heads/hu/23438", "/repo");
+
+  expect(commands).toContainEqual(["branch", "-D", "ticket/51-programas"]);
 });
 
 test("HuInfo expone sus campos", () => {
