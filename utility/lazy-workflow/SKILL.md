@@ -109,7 +109,10 @@ answers that: a `"branch": null` means the flag is required.
 
 `--prompt` enters the session as the *operator request*, and the workflow prompt,
 the coordinator-fixed identities (issue, HU, ticket, branch, manifest path) and
-the SAG context all outrank it. Two consequences change what you can promise:
+the SAG context all outrank it. The manifest at that path is written by
+`ticket-manifest-set` / `github-manifest-set` (see `TOOLS.md`) and never by hand,
+so `--prompt` has nothing useful to say about its shape. Two further consequences
+change what you can promise:
 
 - Norms load with `--normas-sag`, never from prose. Asking for "the SAG norms"
   inside `--prompt` loads nothing at all.

@@ -5,6 +5,7 @@ import {
   AzureTicketInfoService,
   runAzureCommand,
   type CompletionManifest,
+  type CompletionManifestInput,
   type EvidenceKind,
   type TicketInfo,
   type TicketAttachment,
@@ -136,6 +137,7 @@ export interface AutocodeAzureService {
   validateDirectTicketContext(hu: number, ticket: number): Promise<void>;
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest>;
+  writeCompletionManifest(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void>;
   validateEvidence(ticket: number, filePath: string): Promise<void>;
@@ -369,6 +371,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   readCompletionManifest(path: string, workingDirectory: string) {
     return this.ticketInfoService.readCompletionManifest(path, workingDirectory);
+  }
+
+  writeCompletionManifest(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest> {
+    return this.ticketInfoService.writeCompletionManifest(path, input, workingDirectory);
   }
 
   validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void> {

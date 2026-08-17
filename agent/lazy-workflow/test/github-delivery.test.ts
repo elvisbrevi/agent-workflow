@@ -154,7 +154,7 @@ test("merge propaga fallos de gh pr checks que no sean 'no checks reported'", as
     .rejects.toThrow("API rate limit exceeded");
 });
 
-test("el prompt de entrega GitHub especifica la forma {command, result} del manifest", async () => {
+test("el prompt de entrega GitHub manda crear el manifest con la herramienta, no describirlo", async () => {
   let prompt = "";
   let current: GitHubDeliveryCheckpoint | null = null;
   const store: GitHubCheckpointStore = {
@@ -192,10 +192,14 @@ test("el prompt de entrega GitHub especifica la forma {command, result} del mani
     delivery,
   ).run(["code", "--working-directory", "/repo"]);
 
-  expect(prompt).toContain('{"command"');
-  expect(prompt).toContain('"result"');
-  expect(prompt).toContain("non-empty JSON array of objects");
-  expect(prompt).toContain("never plain strings");
+  // La sesión recibe el comando exacto con las identidades ya puestas, y la
+  // prohibición de escribir el archivo: describir la forma del JSON es lo que
+  // hacía que la sesión la reprodujera mal y la entrega se detuviera al final.
+  expect(prompt).toContain(
+    "lazy-workflow github-manifest-set --issue 179 --branch refs/heads/issue/179 --manifest /manifest.json --working-directory /repo",
+  );
+  expect(prompt).toContain("never write, edit, or repair that JSON file yourself");
+  expect(prompt).not.toContain("non-empty JSON array of objects");
 });
 
 test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {

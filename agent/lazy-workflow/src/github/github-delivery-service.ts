@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { writeVerifiedManifest } from "../manifest/verified-write.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 
@@ -13,6 +14,20 @@ export interface GitHubReadyManifest {
   clean: boolean;
   summary: string;
   evidence?: Array<{ path: string; sha256: string }>;
+}
+
+/**
+ * What a session declares for its manifest, and only that: what it alone knows.
+ * The commit, the clean flag and every digest are read from the repository by
+ * `writeManifest`, so they cannot be misdeclared.
+ */
+export interface GitHubManifestInput {
+  issue: number;
+  branch: string;
+  commit?: string;
+  validation: Array<{ command: string; result: string }>;
+  summary: string;
+  evidence: string[];
 }
 
 export interface GitHubBranchPreparation {
@@ -39,6 +54,7 @@ export interface GitHubDeliveryAdapter {
   verifyBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
+  writeManifest?(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
   createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string): Promise<GitHubPullRequest>;
   preparePullRequestReconciliation?(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<{ baseCommit: string }>;
@@ -246,6 +262,56 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       if (digest.toLowerCase() !== evidence.sha256.toLowerCase()) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
     }
     return { ...manifest, branch, commit };
+  }
+
+  /**
+   * Writes the `IMPLEMENTATION_READY` manifest, already valid.
+   *
+   * The session declares only what it alone knows — the issue, the branch, what
+   * it ran and what came out, and the summary. Everything a session used to get
+   * wrong is taken from the repository instead: the commit is HEAD, `clean` is
+   * the worktree's real state rather than a claim, and every evidence digest is
+   * read off the file. The result goes back through `readManifest`, the same gate
+   * the coordinator applies, so the file on disk is one the delivery accepts or
+   * there is no file at all.
+   */
+  async writeManifest(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest> {
+    if (!Number.isInteger(input.issue) || input.issue <= 0) throw new Error("El issue del manifest no es válido");
+    const branch = requireBranch(input.branch, "La rama");
+    const summary = input.summary.trim();
+    if (!summary) throw new Error("El manifest requiere un resumen");
+    const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+    const commit = input.commit ? requireCommit(input.commit) : requireCommit(head);
+    if (commit !== head) throw new Error("El commit del manifest no coincide con HEAD");
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
+    if (status.trim()) throw new Error("El worktree no está limpio para publicar el manifest");
+    const root = resolve(workingDirectory);
+    const evidence: Array<{ path: string; sha256: string }> = [];
+    for (const declared of input.evidence) {
+      const evidencePath = resolve(root, declared);
+      const relativePath = relative(root, evidencePath);
+      const outsideRepository = !relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`);
+      if (outsideRepository || !await Bun.file(evidencePath).exists()) {
+        throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${declared}`);
+      }
+      evidence.push({
+        path: relativePath,
+        sha256: createHash("sha256").update(new Uint8Array(await Bun.file(evidencePath).arrayBuffer())).digest("hex"),
+      });
+    }
+    const manifest: GitHubReadyManifest = {
+      issue: input.issue,
+      branch,
+      commit,
+      validation: input.validation,
+      clean: true,
+      summary,
+      // The key itself is optional, and an empty array is invalid, so an evidence-less
+      // delivery must not carry it at all (`manifestIsValid`).
+      ...(evidence.length > 0 ? { evidence } : {}),
+    };
+    if (!manifestIsValid(manifest)) throw new Error("El manifest IMPLEMENTATION_READY es inválido");
+    return writeVerifiedManifest(resolve(path), manifest, (manifestPath) => this.readManifest(manifestPath, workingDirectory));
   }
 
   async pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void> {

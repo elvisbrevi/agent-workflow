@@ -16,12 +16,13 @@ import type { WorkspaceScope } from "../workspace/repository-scope.ts";
 import type { QuestionAnswers } from "../interaction/question-round.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
-  MANIFEST_VALIDATION_SHAPE,
   QUESTIONS_ANSWERED_MARKER,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
   TICKET_COMPLETED_MARKER,
   WORKFLOW_STEP_FINISHED_MARKER,
+  azureManifestCommandLine,
+  githubManifestCommandLine,
   renderContract,
 } from "./workflow-contract.ts";
 
@@ -229,6 +230,17 @@ async function azureHuPlanningSections(
   ];
 }
 
+/**
+ * The ready-made manifest invocations, when the coordinator has fixed enough to
+ * write them. A run that has not fixed the ticket branch or the manifest path
+ * yet gets the tool's instruction alone rather than a command line with a hole
+ * in it, which a session would fill with something it invented.
+ */
+function manifestCommandLines(lines: Array<string | null>): string[] {
+  const commands = lines.filter((line): line is string => line !== null);
+  return commands.length > 0 ? ["Create each manifest with exactly this invocation:", ...commands] : [];
+}
+
 function repositoryRoster(scope: WorkspaceScope): string[] {
   return [
     "Ordered participant repositories:",
@@ -305,8 +317,9 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         `The coordinator owns queue outcomes; do not print ${QUEUE_EMPTY_MARKER} or ${QUEUE_BLOCKED_MARKER}.`,
         `Coordinator-fixed issue branch: ${branch}`,
         `Write the ${IMPLEMENTATION_READY_MARKER} manifest to: ${manifestPath}`,
-        `The manifest JSON must contain issue ${issue.number}, branch ${branch}, the exact HEAD commit, a non-empty validation array, clean=true, and a non-empty summary.`,
-        MANIFEST_VALIDATION_SHAPE,
+        // The instruction itself arrives with the `github-code` asset; what the
+        // spec adds is the invocation with this unit's identities already in it.
+        ...manifestCommandLines([githubManifestCommandLine({ issue: issue.number, branch, manifestPath, workingDirectory })]),
         `The only successful terminal marker is ${IMPLEMENTATION_READY_MARKER}; do not print ${TICKET_COMPLETED_MARKER} or ${WORKFLOW_STEP_FINISHED_MARKER}.`,
         ...sag,
         `The working directory is ${workingDirectory}`,
@@ -329,7 +342,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         `Coordinator-fetched base commit: ${baseCommit}`,
         `Merge exactly ${baseCommit} into ${branch}; resolve every conflict while preserving both the fixed Issue requirements and already integrated base changes.`,
         "Do not rebase, reset, force-push, switch branches, select another issue, or mutate GitHub.",
-        `Run relevant validation, create the merge commit, replace the manifest with the exact new HEAD, then emit ${IMPLEMENTATION_READY_MARKER}.`,
+        `Run relevant validation, create the merge commit, run the manifest tool again so the manifest names the new HEAD, then emit ${IMPLEMENTATION_READY_MARKER}.`,
       ];
     }
 
@@ -344,8 +357,11 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
           : []),
         "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         "Work through repositories serially in the declared order, committing each changed repository independently.",
-        "Each changed repository must write a manifest with at least one in-repository evidence path and its SHA-256 digest.",
-        MANIFEST_VALIDATION_SHAPE,
+        "Each changed repository must end with a manifest carrying at least one in-repository evidence path.",
+        ...manifestCommandLines(spec.issue
+          ? spec.units.map(({ path, branch, manifestPath }) =>
+              githubManifestCommandLine({ issue: spec.issue!.number, branch, manifestPath, workingDirectory: path }))
+          : []),
         `The working directory is ${spec.scope.parentDirectory}`,
         "Operator request:",
         operatorRequest,
@@ -369,7 +385,12 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
           ? ["Immutable manifest paths:", ...spec.manifestPaths.map(({ path, manifestPath }) => `${path}: manifest ${manifestPath}`)]
           : []),
         "Each participant repository must end with a manifest at exactly its listed path including at least one evidence entry; unchanged repositories must end clean.",
-        MANIFEST_VALIDATION_SHAPE,
+        ...manifestCommandLines(spec.manifestPaths.map(({ path, manifestPath }) => azureManifestCommandLine({
+          ticket: spec.ticket,
+          ticketBranch: spec.ticketTopology.ticketBranch ?? null,
+          manifestPath,
+          workingDirectory: path,
+        }))),
         "Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         `The working directory is ${spec.scope.parentDirectory}`,
         "Operator request:",
@@ -387,6 +408,12 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
           workflowPhase: spec.workflowPhase,
           completionGates: spec.completionGates,
         }),
+        ...manifestCommandLines([azureManifestCommandLine({
+          ticket: spec.context.ticket?.id ?? null,
+          ticketBranch: spec.ticketBranch,
+          manifestPath: spec.manifestPath,
+          workingDirectory,
+        })]),
         ...sag,
         `The working directory is ${workingDirectory}`,
         "Supplemental operator request (non-authoritative):",

@@ -1,13 +1,32 @@
 import { $ } from "bun";
-import { relative, resolve, sep } from "node:path";
-import { realpath } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { writeVerifiedManifest } from "../manifest/verified-write.ts";
+import {
+  EVIDENCE_KINDS,
+  buildCompletionManifest,
+  isEvidenceKind,
+  parseCompletionManifest,
+  sha256,
+  type CompletionManifest,
+  type CompletionManifestEvidence,
+  type CompletionManifestInput,
+  type EvidenceKind,
+} from "./completion-manifest.ts";
+
+export {
+  EVIDENCE_KINDS,
+  type CompletionManifest,
+  type CompletionManifestEvidence,
+  type CompletionManifestInput,
+  type EvidenceKind,
+};
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-const EVIDENCE_KINDS = ["http-json", "screen", "command-output"] as const;
 
 /** Cuánto se espera a que Azure materialice el merge que acaba de encolar. */
 const PULL_REQUEST_MERGE_ATTEMPTS = 15;
@@ -137,8 +156,6 @@ export interface TicketAttachment {
   digest?: string;
 }
 
-export type EvidenceKind = typeof EVIDENCE_KINDS[number];
-
 export interface TicketInfo {
   hu: { id: number; title?: string };
   ticket: TicketSummary;
@@ -151,20 +168,6 @@ export interface TicketInfo {
   attachments: TicketAttachment[];
   completionEvidence: string | null;
   gates: { satisfied: CompletionGate[]; unmet: CompletionGate[] };
-}
-
-export interface CompletionManifestEvidence {
-  path: string;
-  kind: EvidenceKind;
-  sha256: string;
-}
-
-export interface CompletionManifest {
-  ticket: number;
-  ticketBranch: string;
-  commit: string;
-  validation: Array<{ command: string; result: string }>;
-  evidence: CompletionManifestEvidence[];
 }
 
 interface Relation {
@@ -221,7 +224,7 @@ function text(item: WorkItem, name: string): string | undefined {
 }
 
 function evidenceKind(value: string | undefined): EvidenceKind | undefined {
-  return EVIDENCE_KINDS.includes(value as EvidenceKind) ? value as EvidenceKind : undefined;
+  return typeof value === "string" && isEvidenceKind(value) ? value : undefined;
 }
 
 /**
@@ -422,8 +425,43 @@ export function commandError(error: unknown): Error {
   return new Error(`Azure command failed: ${detail}`, { cause: error });
 }
 
+/**
+ * Where completion evidence may live: anywhere the commit cannot carry it.
+ *
+ * The rule is that evidence never becomes source, so the worktree is closed to
+ * it — but the Git common directory is not the worktree, and it is exactly where
+ * the coordinator points a session (`evidenceDirectory` is the manifest's own
+ * directory, `<git-common-dir>/lazy-workflow/`). Reading the rule as "outside the
+ * repository directory" made every manifest that followed the coordinator's own
+ * instruction unverifiable. Returns the resolved real path.
+ */
+async function requireEvidenceOutsideWorktree(
+  path: string,
+  root: string,
+  commonDirectory: () => Promise<string>,
+  declaredPath: string,
+): Promise<string> {
+  const realPath = await realpath(path).catch(() => {
+    throw new Error(`El archivo de evidencia no existe: ${declaredPath}`);
+  });
+  // Evidence outside the repository directory settles it without asking Git
+  // anything, which is the path every manifest took before the common directory
+  // was admitted, and the one that must stay free of extra calls.
+  if (isOutside(root, realPath)) return realPath;
+  if (isOutside(await commonDirectory(), realPath)) {
+    throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
+  }
+  return realPath;
+}
+
+/** Whether `path` falls outside `directory`, `directory` itself counting as inside. */
+function isOutside(directory: string, path: string): boolean {
+  const relativePath = relative(directory, path);
+  return !!relativePath && (relativePath === ".." || relativePath.startsWith(`..${sep}`));
+}
+
 function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
-  if (!EVIDENCE_KINDS.includes(kind as EvidenceKind)) {
+  if (!isEvidenceKind(kind)) {
     throw new Error(`Tipo de evidencia no soportado: ${kind}`);
   }
 }
@@ -488,13 +526,6 @@ function validateScreenEvidence(name: string, bytes: Uint8Array): void {
     && new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF"
     && new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP";
   if (!png && !jpeg && !webp) throw new Error("La evidencia screen debe ser una captura PNG, JPEG o WebP válida");
-}
-
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const buffer = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buffer).set(bytes);
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function runAzureCommand(args: string[]): Promise<string> {
@@ -1026,13 +1057,22 @@ export class AzureTicketInfoService {
     );
   }
 
-  async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
-    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
-    const manifestPath = await realpath(resolve(path));
-    const manifestRelativePath = relative(commonDirectory, manifestPath);
-    if (!manifestRelativePath || (manifestRelativePath !== ".." && manifestRelativePath.startsWith(`..${sep}`))) {
+  /** The Git common directory of `workingDirectory`, resolved as both manifest gates read it. */
+  private async gitCommonDirectory(workingDirectory: string): Promise<string> {
+    return realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
+  }
+
+  private async requireManifestUnderCommonDirectory(path: string, workingDirectory: string): Promise<string> {
+    const commonDirectory = await this.gitCommonDirectory(workingDirectory);
+    const manifestPath = resolve(path);
+    if (isOutside(commonDirectory, await realpath(manifestPath))) {
       throw new Error("El manifest de completion debe estar bajo el directorio Git común");
     }
+    return manifestPath;
+  }
+
+  async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
+    const manifestPath = await this.requireManifestUnderCommonDirectory(path, workingDirectory);
     const content = await readUtf8File(manifestPath);
     let value: unknown;
     try {
@@ -1040,28 +1080,48 @@ export class AzureTicketInfoService {
     } catch (error) {
       throw new Error(`El manifest de completion no es JSON válido: ${path}`, { cause: error });
     }
-    if (typeof value !== "object" || value === null) throw new Error("El manifest de completion debe ser un objeto");
-    const manifest = value as Partial<CompletionManifest>;
-    const manifestTicket = manifest.ticket;
-    if (
-      typeof manifestTicket !== "number" || !Number.isInteger(manifestTicket) || manifestTicket <= 0
-      || typeof manifest.ticketBranch !== "string" || !manifest.ticketBranch.trim()
-      || typeof manifest.commit !== "string" || !/^[0-9a-f]{40,64}$/i.test(manifest.commit)
-      || !Array.isArray(manifest.validation) || manifest.validation.length === 0
-      || !Array.isArray(manifest.evidence)
-    ) throw new Error("El manifest de completion carece de campos requeridos");
-    if (manifest.validation.some((entry) =>
-      typeof entry !== "object" || entry === null
-      || typeof entry.command !== "string" || !entry.command.trim()
-      || typeof entry.result !== "string" || !entry.result.trim()
-    )) throw new Error("Las validaciones del manifest de completion son inválidas");
-    if (manifest.evidence.some((entry) =>
-      typeof entry !== "object" || entry === null
-      || typeof entry.path !== "string" || !entry.path.trim()
-      || typeof entry.kind !== "string" || !EVIDENCE_KINDS.includes(entry.kind as EvidenceKind)
-      || typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(entry.sha256)
-    )) throw new Error("La evidencia del manifest de completion es inválida");
-    return manifest as CompletionManifest;
+    return parseCompletionManifest(value);
+  }
+
+  /**
+   * Writes the manifest a delivery session must leave behind, already valid.
+   *
+   * The shape is never the session's to reproduce: the digests are read off the
+   * evidence files, and the assembled object goes through `parseCompletionManifest`
+   * — the same check `readCompletionManifest` applies — before anything is
+   * written, so an invalid manifest never reaches disk and a manifest on disk was
+   * never hand-written. A rejected write leaves whatever was already there.
+   */
+  async writeCompletionManifest(
+    path: string,
+    input: CompletionManifestInput,
+    workingDirectory: string,
+  ): Promise<CompletionManifest> {
+    const commonDirectory = await this.gitCommonDirectory(workingDirectory);
+    // The file may not exist yet, so the directory is what gets resolved: every
+    // other path here is a real path, and comparing a symlinked one against them
+    // would reject a manifest that is exactly where it belongs.
+    const declaredPath = resolve(path);
+    await mkdir(dirname(declaredPath), { recursive: true });
+    const manifestPath = join(await realpath(dirname(declaredPath)), basename(declaredPath));
+    if (isOutside(commonDirectory, manifestPath)) {
+      throw new Error("El manifest de completion debe estar bajo el directorio Git común");
+    }
+    const root = await realpath(workingDirectory);
+    for (const evidence of input.evidence) {
+      await requireEvidenceOutsideWorktree(resolve(evidence.path), root, async () => commonDirectory, evidence.path);
+    }
+    // A session that types the commit types the wrong one, and the manifest must
+    // name what it validated: HEAD is read here unless a commit is pinned.
+    const commit = input.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+    const manifest = await buildCompletionManifest({
+      ...input,
+      commit,
+      evidence: input.evidence.map((evidence) => ({ ...evidence, path: resolve(evidence.path) })),
+    });
+    // Read it back through the gate the coordinator itself uses: what this tool
+    // accepts and what the delivery requires can only ever be the same thing.
+    return writeVerifiedManifest(manifestPath, manifest, (written) => this.readCompletionManifest(written, workingDirectory));
   }
 
   async validateCompletionManifest(
@@ -1103,13 +1163,11 @@ export class AzureTicketInfoService {
     if (branch !== expectedBranch) throw new Error("La rama activa no coincide con la rama del manifest");
 
     const root = await realpath(workingDirectory);
+    let commonDirectory: Promise<string> | null = null;
+    const gitCommonDirectory = () => (commonDirectory ??= this.gitCommonDirectory(workingDirectory));
     const seen = new Set<string>();
     for (const evidence of manifest.evidence) {
-      const path = await realpath(resolve(evidence.path));
-      const relativePath = relative(root, path);
-      if (!relativePath || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`))) {
-        throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
-      }
+      const path = await requireEvidenceOutsideWorktree(resolve(evidence.path), root, gitCommonDirectory, evidence.path);
       const expectedDigest = evidence.sha256.toLowerCase();
       if (seen.has(expectedDigest)) throw new Error(`El digest de evidencia está duplicado: ${evidence.sha256}`);
       seen.add(expectedDigest);

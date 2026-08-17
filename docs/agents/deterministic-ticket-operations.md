@@ -5,7 +5,10 @@
 Mechanical Azure DevOps and Git effects are kept out of the OpenCode prompt and
 owned by typed, idempotent `lazy-workflow` commands. OpenCode remains responsible
 for implementation, review, commits, and producing behavior-appropriate
-evidence files. The coordinator owns ticket selection, branches, Azure fields,
+evidence files — but not for the JSON that declares them: the completion
+manifest is written by `ticket-manifest-set`, because a shape a session
+reproduces from a description is a shape a session eventually gets wrong.
+The coordinator owns ticket selection, branches, Azure fields,
 attachments, PR integration, completion verification, cleanup, and recovery.
 
 Use `ticket` rather than `task` in command names because delivery children may
@@ -30,6 +33,7 @@ Conflicting existing data fails closed.
 | Attachments | `ticket-attachment-info --ticket <id>` | `ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>` | local file and evidence kind |
 | Completion evidence | `ticket-evidence-info --ticket <id>` | `ticket-evidence-set --ticket <id> --evidence-file <path>` | sanitized UTF-8 HTML or Markdown source |
 | Completion gates | `ticket-completion-info --hu <id> --ticket <id>` | `ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>` | explicit PR and completion manifest |
+| Completion manifest | read back by `ticket-completion-apply` | `ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] --validation <command> --validation-result <outcome> --evidence <http-json\|screen\|command-output>:<path> --working-directory <path>` | identities, the validations run and the evidence files; the commit defaults to HEAD and every SHA-256 digest is read from the file |
 | Ticket creation | included in `ticket-info` | `ticket-create --hu <id> --type <Task\|Bug> --title <title> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<value>]` | delivery type and exact title; idempotent by (HU, type, title) |
 | Hierarchy | included in `ticket-info` | `ticket-link-parent --parent <id> --child <id>` | exact ids; a different existing parent is a conflict |
 | Blocking | included in `ticket-info` | `ticket-link-predecessor --blocker <id> --blocked <id>` | exact ids; recorded as the native Successor relation |

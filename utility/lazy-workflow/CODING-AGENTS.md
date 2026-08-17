@@ -50,7 +50,10 @@ compound commands are matched per sub-command, so `cd x && git push` is denied t
 | `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh` and `az` command |
 
 Committing stays allowed in the delivery profiles, because the completion
-manifest names a commit the session must produce.
+manifest names a commit the session must produce. So does running
+`lazy-workflow` itself: the manifest tools are ordinary commands under the bash
+permission every profile already grants, and they reach neither `az` nor `gh`,
+so no deny rule has to move to let a session write its manifest.
 
 **This is the constraint that shapes prompts.** A session cannot read the tracker,
 push, open a PR or move a work item, whatever `--prompt` asks of it. So anything
@@ -72,6 +75,16 @@ evidence, verifies every gate, cleans branches and selects the next unit of work
 That boundary explains most surprising behaviour: a session that "finished" but
 left nothing merged has done its whole job, and the rest is a coordinator phase to
 resume by rerunning the same command.
+
+The manifest is the one artefact that crosses the boundary, and it is written by
+a tool, never by the session's editor: `lazy-workflow ticket-manifest-set` for an
+Azure ticket, `lazy-workflow github-manifest-set` for a GitHub issue (see
+`TOOLS.md`). Each takes the identities, the validations it ran and the evidence
+files, then resolves the commit, computes the digests and validates the result
+with the coordinator's own code before writing. A session that types that JSON
+instead is how a delivery stops on "El manifest de completion carece de campos
+requeridos" with everything else already done — so the delivery prompts name the
+command and never describe the shape.
 
 ## Sessions and checkpoints
 
@@ -145,7 +158,7 @@ A run ends on a marker, and which one it is says who must act next.
 |---|---|
 | `PLAN_READY` | The planning session returned a plan; the coordinator validates and publishes it |
 | `QUESTIONS_PENDING` / `QUESTIONS_ANSWERED` | An interview round is waiting for the operator, or has been answered |
-| `IMPLEMENTATION_READY` | The session finished implementing and wrote its manifest; everything after belongs to the coordinator |
+| `IMPLEMENTATION_READY` | The session finished implementing and produced its manifest with the manifest tool; everything after belongs to the coordinator |
 | `TICKET_COMPLETED`, `WORKFLOW_STEP_FINISHED` | Coordinator-only, emitted after every gate passed |
 | `QUEUE_EMPTY`, `QUEUE_BLOCKED` | Coordinator-owned queue outcomes; a session may not print them |
 | `RECONCILIATION_REQUIRED` | A checkpoint survives and must be reconciled before new work is selected |

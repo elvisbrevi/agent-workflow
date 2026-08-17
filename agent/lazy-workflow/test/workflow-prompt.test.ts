@@ -1,9 +1,12 @@
 import { test, expect } from "bun:test";
 import { readdir } from "node:fs/promises";
 import {
+  AZURE_MANIFEST_COMMAND,
+  AZURE_MANIFEST_TOOL_INSTRUCTION,
   CONTRACT_LITERALS,
+  GITHUB_MANIFEST_COMMAND,
+  GITHUB_MANIFEST_TOOL_INSTRUCTION,
   IMPLEMENTATION_READY_MARKER,
-  MANIFEST_VALIDATION_SHAPE,
   QUESTIONS_ANSWERED_MARKER,
   QUESTIONS_PENDING_MARKER,
   QUEUE_BLOCKED_MARKER,
@@ -53,7 +56,19 @@ const topology = { integrationBranch: "refs/heads/hu/23438", ticketBranch: "refs
 
 test("renderContract resuelve los placeholders del contrato", () => {
   expect(renderContract("marca {{IMPLEMENTATION_READY}}")).toBe(`marca ${IMPLEMENTATION_READY_MARKER}`);
-  expect(renderContract("{{MANIFEST_VALIDATION_SHAPE}}")).toBe(MANIFEST_VALIDATION_SHAPE);
+  expect(renderContract("{{AZURE_MANIFEST_TOOL}}")).toBe(AZURE_MANIFEST_TOOL_INSTRUCTION);
+  expect(renderContract("{{GITHUB_MANIFEST_TOOL}}")).toBe(GITHUB_MANIFEST_TOOL_INSTRUCTION);
+});
+
+test("el contrato del manifest nombra la herramienta y prohíbe escribir el archivo", () => {
+  // El manifest dejó de ser una forma que la sesión reproduce: es un comando que
+  // ejecuta. Si el prompt vuelve a describir el JSON, vuelve a inventarlo.
+  for (const instruction of [AZURE_MANIFEST_TOOL_INSTRUCTION, GITHUB_MANIFEST_TOOL_INSTRUCTION]) {
+    expect(instruction).toContain("never write, edit, or repair that JSON file yourself");
+  }
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND}`);
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain("http-json, screen, or command-output");
+  expect(GITHUB_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${GITHUB_MANIFEST_COMMAND}`);
 });
 
 test("renderContract falla cerrado ante un placeholder desconocido", () => {
@@ -145,7 +160,12 @@ test("la entrega GitHub fija issue, rama, manifest y markers", async () => {
   expect(prompt).toContain('"body of #201"');
   expect(prompt).toContain("Coordinator-fixed issue branch: issue/201");
   expect(prompt).toContain(`Write the ${IMPLEMENTATION_READY_MARKER} manifest to: /repo/.git/manifest.json`);
-  expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
+  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
+  // La invocación llega armada con las identidades que el coordinador ya fijó:
+  // lo único que la sesión completa es lo que solo ella sabe.
+  expect(prompt).toContain(
+    `lazy-workflow ${GITHUB_MANIFEST_COMMAND} --issue 201 --branch issue/201 --manifest /repo/.git/manifest.json --working-directory /repo`,
+  );
   expect(prompt).toContain(`do not print ${QUEUE_EMPTY_MARKER} or ${QUEUE_BLOCKED_MARKER}`);
 });
 
@@ -164,7 +184,9 @@ test("la reconciliacion GitHub conserva el contrato de entrega y fija los commit
   expect(prompt).toContain("Original implementation commit: aaaa111");
   expect(prompt).toContain("Coordinator-fetched base commit: bbbb222");
   expect(prompt).toContain("Merge exactly bbbb222 into issue/201");
-  expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
+  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
+  // Reconciliar no reescribe el manifest a mano: vuelve a correr la herramienta.
+  expect(prompt).toContain("run the manifest tool again so the manifest names the new HEAD");
 });
 
 test("la entrega workspace GitHub declara el orden y un manifest por repositorio", async () => {
@@ -172,13 +194,20 @@ test("la entrega workspace GitHub declara el orden y un manifest por repositorio
     kind: "github-workspace-delivery",
     scope,
     issue,
-    units: [],
+    units: [
+      { path: "/ws/api", branch: "issue/201", manifestPath: "/ws/api/.git/manifest.json" } as never,
+      { path: "/ws/web", branch: "issue/201", manifestPath: "/ws/web/.git/manifest.json" } as never,
+    ],
   }, context);
   expect(prompt).toContain("Workspace parent directory: /ws");
   expect(prompt).toContain("1. /ws/api (https://github.com/o/api.git)");
   expect(prompt).toContain("2. /ws/web (https://github.com/o/web.git)");
   expect(prompt).toContain("Work through repositories serially in the declared order");
-  expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
+  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
+  // Cada repositorio recibe su propia invocación: una sola, compartida, escribiría
+  // el manifest de un repositorio con el directorio de otro.
+  expect(prompt).toContain(`--manifest /ws/api/.git/manifest.json --working-directory /ws/api`);
+  expect(prompt).toContain(`--manifest /ws/web/.git/manifest.json --working-directory /ws/web`);
   expect(prompt).toContain("The working directory is /ws");
 });
 
@@ -227,7 +256,11 @@ test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
   // The session must never have to infer where its manifest goes: the integration phase only reads
   // the coordinator's own path, so an inferred one delivers nothing.
   expect(prompt).toContain("/repo/a: manifest /repo/a/.git/lazy-workflow/completion-manifest.json");
-  expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
+  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
+  expect(prompt).toContain(
+    `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket 51 --branch refs/heads/ticket/51`
+    + " --manifest /repo/a/.git/lazy-workflow/completion-manifest.json --working-directory /repo/a",
+  );
 });
 
 test("la entrega Azure adjunta el contexto inmutable y el request como suplementario", async () => {
@@ -243,8 +276,29 @@ test("la entrega Azure adjunta el contexto inmutable y el request como suplement
   expect(prompt).toContain("You are implementing exactly one Azure delivery ticket");
   expect(prompt).toContain('"ticketBranch":"refs/heads/ticket/51"');
   expect(prompt).toContain('"workflowPhase":"implementing"');
-  expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
+  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
+  expect(prompt).toContain(
+    `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket 51 --branch refs/heads/ticket/51`
+    + " --manifest /repo/.git/evidence/manifest.json --working-directory /repo",
+  );
   expect(prompt).toContain("Supplemental operator request (non-authoritative):");
+});
+
+test("una entrega Azure sin rama ni manifest fijados no recibe una invocación incompleta", async () => {
+  // Media invocación es peor que ninguna: la sesión completaría el hueco con algo
+  // inventado, que es exactamente lo que la herramienta existe para impedir.
+  const prompt = await buildWorkflowPrompt({
+    kind: "azure-delivery",
+    context: { hu: { id: 23438 }, ticket: { id: 51 }, integrationBranch: "refs/heads/hu/23438" } as never,
+    ticketBranch: null,
+    evidenceDirectory: null,
+    manifestPath: null,
+    workflowPhase: "implementing",
+    completionGates: [],
+  }, context);
+
+  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
+  expect(prompt).not.toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket`);
 });
 
 test("la revision de arquitectura SAG no muta y declara su marker", async () => {

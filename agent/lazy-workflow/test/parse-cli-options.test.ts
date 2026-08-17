@@ -66,6 +66,33 @@ describe("buildCli parser", () => {
       expect(result.options.expectedRevision).toBe(3);
     });
 
+    test("--validation y --validation-result conservan el orden de declaracion", () => {
+      // El emparejamiento es por posicion, asi que el orden es el contrato: si el
+      // parser lo reordenara, cada validacion quedaria con el resultado de otra.
+      const result = parse([
+        "ticket-manifest-set",
+        "--validation", "bun test", "--validation-result", "198 pass",
+        "--validation", "dotnet test --filter A::B /p:X=Y", "--validation-result", "Passed!",
+      ]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.validationCommands).toEqual(["bun test", "dotnet test --filter A::B /p:X=Y"]);
+      expect(result.options.validationResults).toEqual(["198 pass", "Passed!"]);
+    });
+
+    test("--evidence es repetible y llega verbatim para que cada familia lo interprete", () => {
+      const result = parse([
+        "ticket-manifest-set",
+        "--evidence", "http-json:/tmp/ev/api.json",
+        "--evidence", "screen:/tmp/ev/pantalla.png",
+      ]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.evidence).toEqual(["http-json:/tmp/ev/api.json", "screen:/tmp/ev/pantalla.png"]);
+      // El `--kind` escalar de ticket-attachment-add sigue siendo escalar.
+      expect(result.options.evidenceKind).toBeNull();
+    });
+
     test("--number-of-questions acepta enteros", () => {
       const result = parse(["plan", "--number-of-questions", "3"]);
       expect(result.kind).toBe("options");
