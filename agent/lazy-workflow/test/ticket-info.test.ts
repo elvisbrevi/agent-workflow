@@ -1395,3 +1395,61 @@ test("un PR sin commit fuente de merge no se completa a ciegas", async () => {
     target: "refs/heads/hu/23438",
   })).rejects.toThrow("no expone el commit fuente del merge");
 });
+
+test("un PR completado sin nada que mergear entrega el commit fuente como commit del ticket", async () => {
+  // A participant repository this ticket did not change ends with source and target on the same
+  // commit, so Azure completes and closes the PR without creating a merge commit. The delivered
+  // commit is the source commit, and the ticket has to be linked to something.
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+      pullRequestId: 88,
+      status: "active",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeSourceCommit: { commitId: "c".repeat(40) },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    if (args[0] === "rest" && args.includes("patch")) return "{}";
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 88,
+      status: "completed",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      // Azure reports no lastMergeCommit: there was nothing to merge.
+      lastMergeSourceCommit: { commitId: "c".repeat(40) },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.createOrReusePullRequest(23438, 51, {
+    project: "project-id",
+    repository: "repository-id",
+    source: "refs/heads/ticket/51",
+    target: "refs/heads/hu/23438",
+  })).resolves.toEqual({ pullRequest: 88, mergeCommit: "c".repeat(40) });
+});
+
+test("un PR activo no reporta el commit fuente como si hubiera entregado algo", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
+      pullRequestId: 89,
+      status: "active",
+      mergeStatus: "succeeded",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      lastMergeSourceCommit: { commitId: "d".repeat(40) },
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    }]);
+    if (args[0] === "repos" && args[2] === "work-item") return JSON.stringify([]);
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  const [pullRequest] = await service.readPullRequests(51, "project-id", "refs/heads/hu/23438");
+  expect(pullRequest!.status).toBe("active");
+  expect(pullRequest!.mergeCommit).toBeUndefined();
+  expect(pullRequest!.lastMergeSourceCommit).toBe("d".repeat(40));
+});

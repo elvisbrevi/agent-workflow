@@ -1639,14 +1639,22 @@ export class AzureTicketInfoService {
       || typeof repositoryId !== "string"
       || typeof projectId !== "string"
     ) throw new Error("Respuesta de pull request malformada: faltan campos de identidad");
+    const lastMergeSourceCommit = payload.lastMergeSourceCommit?.commitId;
+    // Azure creates no merge commit when the source is already contained in the target: the pull
+    // request completes and closes with nothing to merge, which is the ordinary shape of a
+    // participant repository that this ticket did not need to change. The commit that delivered the
+    // work is then the source commit itself, and that is what the ticket must be linked to. Only a
+    // completed and merged pull request earns the fallback: an active one has delivered nothing.
+    const merged = payload.status === "completed" && payload.mergeStatus === "succeeded";
     return {
       id,
       status: payload.status,
       mergeStatus: payload.mergeStatus,
       source,
       target,
-      mergeCommit: payload.lastMergeCommit?.commitId ?? payload.mergeCommit,
-      lastMergeSourceCommit: payload.lastMergeSourceCommit?.commitId,
+      mergeCommit: payload.lastMergeCommit?.commitId ?? payload.mergeCommit
+        ?? (merged ? lastMergeSourceCommit : undefined),
+      lastMergeSourceCommit,
       repositoryId,
       projectId,
       associated: false,
