@@ -21,6 +21,21 @@ export const QUESTIONS_PENDING_MARKER = "QUESTIONS_PENDING";
 /** The coordinator hands the operator's answers back when it resumes that session. */
 export const QUESTIONS_ANSWERED_MARKER = "QUESTIONS_ANSWERED";
 
+/**
+ * What the coordinator says when it resumes a session it still expects a terminal marker from.
+ *
+ * A bare "continue" invites a resumed session that already finished its work to answer
+ * conversationally — asking the coordinator what else it should do — and a conversational answer
+ * carries no marker, so the run fails and the next attempt resumes into the same dead end. The
+ * marker is only recognised alone on its own line (`containsMarker`), so the instruction has to say
+ * exactly that.
+ */
+export const markerResumePrompt = (marker: string): string => [
+  "Continúa donde quedaste.",
+  `Si el trabajo ya está completo, no preguntes nada y no repitas el trabajo: vuelve a emitir ${marker} como única línea de tu respuesta final.`,
+  `Si queda trabajo por hacer, termínalo y cierra con ${marker} en su propia línea.`,
+].join(" ");
+
 // Coordinator/manifest contract: validators require `validation` to be an array of
 // {command, result} objects (github-delivery-service.ts, ticket-info-service.ts).
 export const MANIFEST_VALIDATION_SHAPE =

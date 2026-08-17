@@ -70,6 +70,7 @@ import {
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
+  markerResumePrompt,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
   RECONCILIATION_REQUIRED_MARKER,
@@ -1328,7 +1329,7 @@ export class LazyWorkflowCli {
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
         const resuming = checkpoint.sessionId;
         const session = resuming
-          ? { ...await this.codingAgent.resume(resuming, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
+          ? { ...await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
           : await this.runAzureWorkspaceSession(options, scope, topology, ticketTopology);
         const terminal = !session.failed && containsMarker(session.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
@@ -1947,7 +1948,7 @@ export class LazyWorkflowCli {
     }
     if (checkpoint.sessionId) {
       try {
-        const result = await this.codingAgent.resume(checkpoint.sessionId, "continue", scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options));
+        const result = await this.codingAgent.resume(checkpoint.sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options));
         reportOperator(JSON.stringify(result, null, 2));
         if (!containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) return 1;
         checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
@@ -2383,7 +2384,7 @@ export class LazyWorkflowCli {
           execution,
           (sessionId, overrides) => this.codingAgent.resume(
             sessionId,
-            "continue",
+            markerResumePrompt(IMPLEMENTATION_READY_MARKER),
             options.workingDirectory,
             IMPLEMENTATION_READY_MARKER,
             { ...overrides, agent: activeAuthority },

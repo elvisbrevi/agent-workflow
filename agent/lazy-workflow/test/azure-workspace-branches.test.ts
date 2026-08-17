@@ -35,6 +35,8 @@ interface RepositoryFixture {
   remoteUrl: string;
   remoteBranches?: Record<string, string>;
   dirty?: string;
+  /** The ticket branch carries commits of its own, so `merge-base --is-ancestor` fails. */
+  divergedTicketBranch?: boolean;
 }
 
 interface WorkspaceFixtureOptions {
@@ -50,6 +52,7 @@ interface WorkspaceFixture {
   patchCommands: Array<{ repository: string; args: string[] }>;
   pushCommands: Array<{ repository: string; args: string[] }>;
   fetchCommands: Array<{ repository: string; args: string[] }>;
+  mergeBaseCommands: Array<{ repository: string; args: string[] }>;
   dirty: (remote: string, status: string) => void;
   branchShas: Map<string, string>;
 }
@@ -71,8 +74,10 @@ function workspaceFixture(options: WorkspaceFixtureOptions = {}): WorkspaceFixtu
   const patchCommands: Array<{ repository: string; args: string[] }> = [];
   const pushCommands: Array<{ repository: string; args: string[] }> = [];
   const fetchCommands: Array<{ repository: string; args: string[] }> = [];
+  const mergeBaseCommands: Array<{ repository: string; args: string[] }> = [];
   const statuses: Map<string, string> = new Map();
   const branchShas: Map<string, string> = new Map();
+  const temporaryRefSources: Map<string, string> = new Map();
   for (const repository of repositories) {
     for (const [ref, sha] of Object.entries(repository.remoteBranches ?? {})) {
       branchShas.set(`${repository.remoteUrl}:${ref}`, sha);
@@ -166,12 +171,22 @@ function workspaceFixture(options: WorkspaceFixtureOptions = {}): WorkspaceFixtu
     if (args[0] === "for-each-ref") return "";
     if (args[0] === "fetch") {
       fetchCommands.push({ repository: repository.remoteUrl, args });
+      // Remember which remote branch each temporary ref was fetched from, so rev-parse and
+      // merge-base can answer for it the way real Git would.
+      const [source, target] = args.at(-1)!.replace(/^\+/, "").split(":");
+      if (source && target) temporaryRefSources.set(`${repository.remoteUrl}:${target}`, source);
+      return "";
+    }
+    if (args[0] === "merge-base") {
+      mergeBaseCommands.push({ repository: repository.remoteUrl, args });
+      if (repository.divergedTicketBranch) throw new Error("git merge-base --is-ancestor falló: exit 1");
       return "";
     }
     if (args[0] === "rev-parse") {
-      const ref = args[1]!;
-      if (ref.startsWith("refs/lazy-workflow/")) return `${baseSha}\n`;
-      return `${baseSha}\n`;
+      const ref = args[1]!.replace(/\^\{commit\}$/, "");
+      const source = temporaryRefSources.get(`${repository.remoteUrl}:${ref}`);
+      const sha = source ? branchShas.get(`${repository.remoteUrl}:${source}`) : undefined;
+      return `${sha ?? baseSha}\n`;
     }
     if (args[0] === "push") {
       const source = args[2]!.split(":")[0];
@@ -191,6 +206,7 @@ function workspaceFixture(options: WorkspaceFixtureOptions = {}): WorkspaceFixtu
     patchCommands,
     pushCommands,
     fetchCommands,
+    mergeBaseCommands,
     dirty: (remote: string, status: string) => statuses.set(remote, status),
     branchShas,
   };
@@ -443,6 +459,82 @@ test("prepareWorkspaceTicketBranches crea la rama del ticket en cada participant
   expect(topology.units.map(({ ticketBranch: branch }) => branch)).toEqual([ticketBranch, ticketBranch]);
   expect(topology.units.every(({ ticketBranchCreated }) => ticketBranchCreated)).toBe(true);
   expect(topology.units.every(({ ticketBranchAnchor }) => ticketBranchAnchor === "/repo/a")).toBe(true);
+});
+
+test("prepareWorkspaceTicketBranches adelanta la rama del ticket que quedó atrás en vez de abortar", async () => {
+  const behindSha = "2".repeat(40);
+  const fixture = workspaceFixture({
+    repositories: [
+      // repo-a moved on without its ticket branch; repo-b is already in sync.
+      { remoteUrl: remoteUrlA, remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: behindSha } },
+      { remoteUrl: remoteUrlB, remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: baseSha } },
+    ],
+  });
+
+  const topology = await fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  });
+
+  expect(fixture.mergeBaseCommands.map(({ repository }) => repository)).toEqual([remoteUrlA]);
+  expect(fixture.mergeBaseCommands[0]!.args[1]).toBe("--is-ancestor");
+  expect(fixture.pushCommands).toHaveLength(1);
+  expect(fixture.pushCommands[0]!.repository).toBe(remoteUrlA);
+  expect(fixture.pushCommands[0]!.args.at(-1)!.split(":")[1]).toBe(ticketBranch);
+  // A fast-forward never needs to be forced; forcing it would be able to discard commits.
+  expect(fixture.pushCommands[0]!.args.some((arg) => arg === "--force" || arg === "-f")).toBe(false);
+  expect(fixture.branchShas.get(`${remoteUrlA}:${ticketBranch}`)).toBe(baseSha);
+  expect(topology.units.map(({ ticketBranchCreated }) => ticketBranchCreated)).toEqual([true, false]);
+});
+
+test("prepareWorkspaceTicketBranches aborta sin tocar ninguna rama si la del ticket divergió", async () => {
+  const divergedSha = "3".repeat(40);
+  const fixture = workspaceFixture({
+    repositories: [
+      { remoteUrl: remoteUrlA, remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: baseSha } },
+      {
+        remoteUrl: remoteUrlB,
+        remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: divergedSha },
+        divergedTicketBranch: true,
+      },
+    ],
+  });
+
+  await expect(fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  })).rejects.toThrow("divergió");
+  expect(fixture.pushCommands).toHaveLength(0);
+  expect(fixture.branchShas.get(`${remoteUrlB}:${ticketBranch}`)).toBe(divergedSha);
+});
+
+test("prepareWorkspaceTicketBranches exige un worktree limpio para adelantar la rama del ticket", async () => {
+  const behindSha = "2".repeat(40);
+  const fixture = workspaceFixture({
+    repositories: [
+      {
+        remoteUrl: remoteUrlA,
+        remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: behindSha },
+        dirty: " M trabajo.ts\n",
+      },
+      { remoteUrl: remoteUrlB, remoteBranches: { [baseBranch]: baseSha, [integrationBranch]: baseSha, [ticketBranch]: baseSha } },
+    ],
+  });
+
+  await expect(fixture.service.prepareWorkspaceTicketBranches({
+    hu,
+    ticket,
+    integrationBranch,
+    repositories: fixture.repositories,
+    ticketBranch,
+  })).rejects.toThrow("cambios sin guardar");
+  expect(fixture.pushCommands).toHaveLength(0);
 });
 
 test("linkTicketBranch fija el Branch ArtifactLink primario en el repositorio indicado", async () => {

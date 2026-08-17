@@ -407,12 +407,15 @@ function ticketBranchFixture(options: {
   ticketBranchSha?: string;
   directChild?: boolean;
   revision?: number | null;
+  /** The ticket branch carries commits of its own, so `merge-base --is-ancestor` fails. */
+  divergedTicketBranch?: boolean;
 } = {}) {
   const events: string[] = [];
   const baseSha = "a".repeat(40);
   let published = false;
   let patched = false;
   let fetchedSha = "";
+  const temporaryRefSources = new Map<string, string>();
   const ticketRelations = [
     { rel: "System.LinkTypes.Hierarchy-Reverse", url: `https://example.test/_apis/wit/workItems/${hu}` },
     ...(options.ticketRelations ?? []),
@@ -457,24 +460,38 @@ function ticketBranchFixture(options: {
     }
     throw new Error(`Unexpected Azure command: ${args.join(" ")}`);
   };
+  const shaOf = (ref: string): string => {
+    if (ref === "refs/heads/hu/125") return baseSha;
+    if (ref === "refs/heads/feature/ticket-126" && (published || options.ticketBranchSha)) {
+      return published ? baseSha : options.ticketBranchSha!;
+    }
+    return "";
+  };
   const git = async (args: string[]): Promise<string> => {
     events.push(`git:${args[0]}`);
     if (args[0] === "remote") return "https://dev.azure.com/org/Team/_git/repo\n";
     if (args[0] === "status") return options.dirty ?? "";
     if (args[0] === "ls-remote") {
       const ref = args.at(-1)!;
-      if (ref === "refs/heads/hu/125") return `${baseSha}\t${ref}\n`;
-      if (ref === "refs/heads/feature/ticket-126" && (published || options.ticketBranchSha)) {
-        return `${published ? baseSha : options.ticketBranchSha}\t${ref}\n`;
-      }
-      return "";
+      const sha = shaOf(ref);
+      return sha ? `${sha}\t${ref}\n` : "";
     }
     if (args[0] === "for-each-ref") return "";
     if (args[0] === "fetch") {
+      // Resolve each temporary ref to the branch it was fetched from, the way real Git does.
+      const [source, target] = args.at(-1)!.replace(/^\+/, "").split(":");
+      if (source && target) temporaryRefSources.set(target, source);
       fetchedSha = baseSha;
       return "";
     }
-    if (args[0] === "rev-parse") return `${fetchedSha}\n`;
+    if (args[0] === "merge-base") {
+      if (options.divergedTicketBranch) throw new Error("git merge-base --is-ancestor falló: exit 1");
+      return "";
+    }
+    if (args[0] === "rev-parse") {
+      const source = temporaryRefSources.get(args[1]!.replace(/\^\{commit\}$/, ""));
+      return `${source ? shaOf(source) : fetchedSha}\n`;
+    }
     if (args[0] === "push") {
       published = true;
       return "";
@@ -541,6 +558,25 @@ test("ticket-branch-set rechaza conflicto, worktree sucio y ticket no hijo antes
   const dirty = ticketBranchFixture({ dirty: "!! .env.local\n" });
   await expect(dirty.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo")).rejects.toThrow("cambios");
   expect(dirty.events).not.toContain("azure-patch");
+});
+
+test("ticket-branch-set adelanta la rama del ticket que quedó atrás de la HU", async () => {
+  const fixture = ticketBranchFixture({ ticketBranchSha: "b".repeat(40) });
+
+  await expect(fixture.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo"))
+    .resolves.toEqual({ hu, ticket: 126, branch: "refs/heads/feature/ticket-126" });
+  expect(fixture.events).toContain("git:merge-base");
+  expect(fixture.events).toContain("git:push");
+  expect(fixture.events.indexOf("git:merge-base")).toBeLessThan(fixture.events.indexOf("git:push"));
+});
+
+test("ticket-branch-set no publica ni vincula si la rama del ticket divergió de la HU", async () => {
+  const fixture = ticketBranchFixture({ ticketBranchSha: "b".repeat(40), divergedTicketBranch: true });
+
+  await expect(fixture.service.setTicketBranch(hu, 126, "feature/ticket-126", "/repo"))
+    .rejects.toThrow("divergió");
+  expect(fixture.events).not.toContain("git:push");
+  expect(fixture.events).not.toContain("azure-patch");
 });
 
 test("ticket-branch-set rechaza respuestas Azure de otro work item", async () => {
