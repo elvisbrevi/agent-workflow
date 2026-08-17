@@ -121,10 +121,13 @@ _Avoid_: GitHub repository run
 The single module that composes what OpenCode is told for one run, keyed by the
 class of run and the facts the coordinator has already fixed. It owns fragment
 order, the completion-manifest contract, and the terminal protocol marker
-vocabulary, so a contract change reaches every run at once. Each run receives
-only its own workflow's instructions and only its own provider's scope.
+vocabulary, so a contract change reaches every run at once. The manifest contract
+is a command name, not a shape: the prompts tell a session which tool writes the
+manifest and hand it the invocation with the fixed identities already in place.
+Each run receives only its own workflow's instructions and only its own
+provider's scope.
 _Avoid_: prompt text assembled at the call site, contract text restated in a
-prompt asset
+prompt asset, the manifest's JSON shape described to a session
 
 **Agent authority profile**:
 The definition whose permission deny rules bound what one run may execute,
@@ -274,7 +277,9 @@ starting OpenCode. The operator prompt is not a branch-management interface.
   direct Task or Bug per fresh OpenCode session. The coordinator owns ticket
   selection, branches, pull requests, Azure fields, evidence, effort, completion
   gates, recovery, and cleanup; OpenCode owns only scoped implementation,
-  validation, review, commit, and completion-manifest generation. OpenCode emits
+  validation, review, commit, and completion-manifest generation — which it
+  performs by running `ticket-manifest-set`, never by writing that JSON itself.
+  OpenCode emits
   `IMPLEMENTATION_READY`, after which the coordinator verifies completion, removes
   the completed ticket branch, and refreshes Azure before selecting the next ticket.
 

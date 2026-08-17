@@ -38,6 +38,12 @@ export interface CliOptions {
   /** The commit a deterministic tool is pinned to; always a full object name. */
   commit: string | null;
   manifest: string | null;
+  /** `--validation` and `--validation-result`, paired by position by the tool that reads them. */
+  validationCommands: string[];
+  validationResults: string[];
+  /** `--evidence`, verbatim; each family parses its own form (`<kind>:<path>` for Azure). */
+  evidence: string[];
+  summary: string | null;
   file: string | null;
   descriptionFile: string | null;
   state: string | null;
@@ -293,6 +299,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .group(["hu", "issue", "environment"], "Alcance:")
     .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "commit", "manifest"], "Tickets Azure:")
+    .group(["validation", "validation-result", "evidence", "summary"], "Manifest de entrega:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
     .group(
@@ -327,6 +334,22 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("pr", positiveIntegerOption("pr", "--pr", "Identificador del pull request."))
     .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
     .option("manifest", stringOption("manifest", "--manifest", "Ruta al manifest de completion."))
+    .option("validation", {
+      type: "array",
+      requiresArg: true,
+      describe: "Comando de validacion ejecutado; repetible y emparejado por posicion con --validation-result.",
+    })
+    .option("validation-result", {
+      type: "array",
+      requiresArg: true,
+      describe: "Resultado del comando de validacion en la misma posicion de --validation; repetible.",
+    })
+    .option("evidence", {
+      type: "array",
+      requiresArg: true,
+      describe: "Evidencia del manifest; repetible. Azure: <kind>:<ruta>. GitHub: ruta dentro del repositorio.",
+    })
+    .option("summary", stringOption("summary", "--summary", "Resumen de la entrega para el manifest GitHub."))
     .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
     .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
     .option("description-file", stringOption("description-file", "--description-file", "Archivo con la descripcion del ticket."))
@@ -460,6 +483,20 @@ function parseFallbackChain(value: unknown, primary: FallbackRung, binaryPresent
   return chain;
 }
 
+/**
+ * A repeatable text flag, in declaration order. Order is the contract for
+ * `--validation` and `--validation-result`, which pair by position, so an entry
+ * that is not text at all is an argument error rather than a silent gap that
+ * would shift every pair after it.
+ */
+function parseTextList(value: unknown, flag: string): string[] {
+  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return entries.map((entry) => {
+    if (typeof entry !== "string" || !entry.trim()) throw new Error(`${flag} requiere un valor`);
+    return entry;
+  });
+}
+
 /** `--field <referenceName>=<value>`; the value may contain `=`. */
 function parseFields(value: unknown): Array<{ referenceName: string; value: string }> {
   const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
@@ -514,6 +551,10 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     pullRequest: asNumber("pr"),
     commit: asString("commit"),
     manifest: asString("manifest"),
+    validationCommands: parseTextList(parsed["validation"], "--validation"),
+    validationResults: parseTextList(parsed["validation-result"], "--validation-result"),
+    evidence: parseTextList(parsed["evidence"], "--evidence"),
+    summary: asString("summary"),
     file: asString("file") ?? asString("evidence-file"),
     descriptionFile: asString("description-file"),
     state: asString("state"),

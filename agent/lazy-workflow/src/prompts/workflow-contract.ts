@@ -8,6 +8,8 @@
  * fails if a prompt asset hardcodes one of these literals.
  */
 
+import { AZURE_TOOL_COMMANDS, GITHUB_TOOL_COMMANDS } from "../cli/tool-commands.ts";
+
 export const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 export const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
 export const QUEUE_EMPTY_MARKER = "QUEUE_EMPTY";
@@ -36,10 +38,60 @@ export const markerResumePrompt = (marker: string): string => [
   `Si queda trabajo por hacer, termínalo y cierra con ${marker} en su propia línea.`,
 ].join(" ");
 
-// Coordinator/manifest contract: validators require `validation` to be an array of
-// {command, result} objects (github-delivery-service.ts, ticket-info-service.ts).
-export const MANIFEST_VALIDATION_SHAPE =
-  'The manifest "validation" field must be a non-empty JSON array of objects, each exactly {"command": "<command you ran>", "result": "<its successful outcome>"} — never plain strings.';
+/**
+ * The manifest is written by a tool, never by the session.
+ *
+ * A prompt that described the JSON shape is what produced manifests with the
+ * ticket as a string, `currentCommit` instead of `commit`, and evidence kinds
+ * that were never in the enum: a description invites reproduction, and a
+ * reproduction drifts. So the prompts name the command instead of the shape, and
+ * the command names come from `tool-commands.ts` — the annotations below fail to
+ * compile if either tool is renamed, and `CONTRACT_LITERALS` makes a prompt asset
+ * that spells one out by hand fail its test.
+ */
+export const AZURE_MANIFEST_COMMAND: typeof AZURE_TOOL_COMMANDS[number] = "ticket-manifest-set";
+export const GITHUB_MANIFEST_COMMAND: typeof GITHUB_TOOL_COMMANDS[number] = "github-manifest-set";
+
+const VALIDATION_FLAGS =
+  'one --validation "<command you ran>" with its --validation-result "<the outcome>" per validation, paired in the order you pass them';
+
+export const AZURE_MANIFEST_TOOL_INSTRUCTION = [
+  `Create the completion manifest only by running \`lazy-workflow ${AZURE_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
+  `It takes --ticket, --branch, --manifest, ${VALIDATION_FLAGS}, and one --evidence <kind>:<path> per evidence file, where <kind> is exactly http-json, screen, or command-output.`,
+  "It resolves the commit from HEAD and computes every SHA-256 digest itself, and it refuses to write a manifest the coordinator would reject.",
+  "If it fails, fix exactly what its message names and run it again.",
+].join(" ");
+
+export const GITHUB_MANIFEST_TOOL_INSTRUCTION = [
+  `Create the manifest only by running \`lazy-workflow ${GITHUB_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
+  `It takes --issue, --branch, --manifest, --summary, ${VALIDATION_FLAGS}, and one --evidence <path> per in-repository evidence file.`,
+  "It resolves the commit from HEAD, verifies the worktree is clean, and computes every SHA-256 digest itself.",
+  "If it fails, fix exactly what its message names and run it again.",
+].join(" ");
+
+/** The exact invocation for one coordinator-fixed unit, with its identities already filled in. */
+export function azureManifestCommandLine(fixed: {
+  ticket: number | null;
+  ticketBranch: string | null;
+  manifestPath: string | null;
+  workingDirectory: string;
+}): string | null {
+  if (fixed.ticket === null || !fixed.ticketBranch || !fixed.manifestPath) return null;
+  return `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket ${fixed.ticket} --branch ${fixed.ticketBranch}`
+    + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
+    + ` --validation "<command>" --validation-result "<outcome>" --evidence <kind>:<path>`;
+}
+
+export function githubManifestCommandLine(fixed: {
+  issue: number;
+  branch: string;
+  manifestPath: string;
+  workingDirectory: string;
+}): string {
+  return `lazy-workflow ${GITHUB_MANIFEST_COMMAND} --issue ${fixed.issue} --branch ${fixed.branch}`
+    + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
+    + ` --summary "<what changed>" --validation "<command>" --validation-result "<outcome>"`;
+}
 
 /** Every placeholder a prompt asset may use, and the text it resolves to. */
 const CONTRACT_VALUES: Record<string, string> = {
@@ -53,7 +105,10 @@ const CONTRACT_VALUES: Record<string, string> = {
   PLAN_READY: PLAN_READY_MARKER,
   QUESTIONS_PENDING: QUESTIONS_PENDING_MARKER,
   QUESTIONS_ANSWERED: QUESTIONS_ANSWERED_MARKER,
-  MANIFEST_VALIDATION_SHAPE,
+  AZURE_MANIFEST_COMMAND,
+  GITHUB_MANIFEST_COMMAND,
+  AZURE_MANIFEST_TOOL: AZURE_MANIFEST_TOOL_INSTRUCTION,
+  GITHUB_MANIFEST_TOOL: GITHUB_MANIFEST_TOOL_INSTRUCTION,
 };
 
 /** Marker literals that must never appear hardcoded in a prompt asset. */

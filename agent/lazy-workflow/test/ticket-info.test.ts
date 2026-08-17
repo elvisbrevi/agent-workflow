@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
@@ -1448,6 +1451,47 @@ test("un archivo sin trackear que el agente dejó para validar no invalida el co
     process.cwd(),
   )).resolves.toBeUndefined();
   expect(statuses).not.toBeEmpty();
+});
+
+test("la evidencia del directorio que indica el coordinador es verificable; la del árbol de trabajo no", async () => {
+  // El coordinador manda la evidencia a `<git-common-dir>/lazy-workflow/`, que es
+  // parte del repositorio en ruta pero no del árbol que un commit puede llevarse.
+  // Leer la regla como "fuera del directorio del repositorio" volvía inverificable
+  // todo manifest que siguiera la instrucción del propio coordinador.
+  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-"));
+  const service = new AzureTicketInfoService(async () => "", async (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return ".git\n";
+    if (args[0] === "rev-parse") return `${commit}\n`;
+    if (args[0] === "symbolic-ref") return "ticket/23574\n";
+    return "";
+  });
+  const digestOf = async (path: string): Promise<string> =>
+    [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const manifestWith = async (path: string) => ({
+    ticket: 23574,
+    ticketBranch: "refs/heads/ticket/23574",
+    commit,
+    validation: [{ command: "bun test", result: "59 passed" }],
+    evidence: [{ path, kind: "http-json", sha256: await digestOf(path) }],
+  } as any);
+
+  try {
+    const insideGitDirectory = join(root, ".git/lazy-workflow/pago.json");
+    const insideWorktree = join(root, "docs/pago.json");
+    await Bun.write(insideGitDirectory, '{ "ok": true }');
+    await Bun.write(insideWorktree, '{ "ok": true }');
+
+    await expect(service.validateCompletionManifest(
+      await manifestWith(insideGitDirectory), { branch: "refs/heads/ticket/23574" } as any, 23574, root,
+    )).resolves.toBeUndefined();
+    await expect(service.validateCompletionManifest(
+      await manifestWith(insideWorktree), { branch: "refs/heads/ticket/23574" } as any, 23574, root,
+    )).rejects.toThrow("La evidencia del manifest debe estar fuera del repositorio fuente");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function manifestVerificationService(head: string, remoteTip: string | null, contains: boolean) {

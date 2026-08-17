@@ -20,6 +20,7 @@ export const AZURE_TOOL_COMMANDS = [
   "ticket-pr-create",
   "ticket-branch-push",
   "ticket-branch-checkout",
+  "ticket-manifest-set",
 ] as const;
 
 /** GitHub operations the workflow performs through `gh`. */
@@ -37,6 +38,7 @@ export const GITHUB_TOOL_COMMANDS = [
   "github-branch-verify",
   "github-branch-cleanup",
   "github-manifest-info",
+  "github-manifest-set",
   "github-commit-push",
   "github-pr-create",
   "github-pr-merge",
@@ -68,6 +70,7 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lazy-workflow ticket-pr-create --hu <id> --ticket <id>",
   "  lazy-workflow ticket-branch-push --branch <name> --working-directory <path>",
   "  lazy-workflow ticket-branch-checkout --branch <name> --working-directory <path>",
+  "  lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] --validation <command> --validation-result <text> --evidence <kind>:<path> --working-directory <path>",
   "  lazy-workflow github-auth-info --working-directory <path>",
   "  lazy-workflow github-repo-info --working-directory <path>",
   "  lazy-workflow github-issue-list --working-directory <path>",
@@ -81,6 +84,7 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lazy-workflow github-branch-verify --branch <name> --base-branch <name> --working-directory <path>",
   "  lazy-workflow github-branch-cleanup --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lazy-workflow github-manifest-info --manifest <path> --working-directory <path>",
+  "  lazy-workflow github-manifest-set --issue <id> --branch <name> --manifest <path> [--commit <sha>] --summary <text> --validation <command> --validation-result <text> [--evidence <path>] --working-directory <path>",
   "  lazy-workflow github-commit-push --branch <name> --commit <sha> --working-directory <path>",
   "  lazy-workflow github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lazy-workflow github-pr-merge --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",

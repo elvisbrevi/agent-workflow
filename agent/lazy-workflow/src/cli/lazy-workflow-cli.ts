@@ -13,7 +13,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { CompletionManifest, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
+import type { CompletionManifest, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
@@ -131,6 +131,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   validateDirectTicketContext?(hu: number, ticket: number): Promise<void>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
+  writeCompletionManifest?(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   validateEvidenceFile?(filePath: string, kind: EvidenceKind): Promise<void>;
   validateEvidence?(ticket: number, filePath: string): Promise<void>;

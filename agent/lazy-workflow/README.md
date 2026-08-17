@@ -254,6 +254,10 @@ lazy-workflow github-branch-verify --branch issue/201 --base-branch main \
   --working-directory /path/to/repository
 lazy-workflow github-manifest-info --manifest /path/to/github-completion-manifest.json \
   --working-directory /path/to/repository
+lazy-workflow github-manifest-set --issue 201 --branch issue/201 \
+  --manifest /path/to/github-completion-manifest.json --summary "Adds the thing" \
+  --validation "bun test" --validation-result "198 pass" \
+  --evidence docs/evidence/run.json --working-directory /path/to/repository
 lazy-workflow github-commit-push --branch issue/201 --commit <sha> \
   --working-directory /path/to/repository
 lazy-workflow github-pr-create --issue 201 --branch issue/201 --base-branch main \
@@ -273,6 +277,11 @@ lazy-workflow ticket-type-info --ticket 23459
 lazy-workflow ticket-pr-create --hu 23438 --ticket 23459
 lazy-workflow ticket-branch-checkout --branch ticket/23459 --working-directory /path/to/repository
 lazy-workflow ticket-branch-push --branch ticket/23459 --working-directory /path/to/repository
+lazy-workflow ticket-manifest-set --ticket 23459 --branch ticket/23459 \
+  --manifest /path/to/repository/.git/lazy-workflow/completion-manifest.json \
+  --validation "bun test" --validation-result "198 pass" \
+  --evidence http-json:/path/to/repository/.git/lazy-workflow/api.json \
+  --working-directory /path/to/repository
 
 # git
 lazy-workflow git-branch-delete --branch ticket/23459 --base-branch hu/23438 \
@@ -619,6 +628,11 @@ bun run main.ts code --hu 23438 --base-branch main \
 Omit `--base-branch` when the HU is already linked or the expected remote
 `hu/23438` branch already exists. A branch preflight failure stops once,
 without selecting a ticket, writing a checkpoint, or starting OpenCode.
+
+The session produces that manifest with `ticket-manifest-set`, never by writing
+the JSON itself: the tool resolves the commit, computes every evidence digest and
+validates the result with the coordinator's own code, so the shape is not
+something a session has to reproduce from a description.
 
 After `IMPLEMENTATION_READY`, the coordinator closes OpenCode, validates the
 manifest from Git common metadata, creates or reuses exactly one HU-targeted

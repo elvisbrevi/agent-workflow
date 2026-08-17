@@ -25,6 +25,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | Everything about one issue, with its eligibility reasons | `github-issue-info --issue` |
 | Free an issue an interrupted run still holds | `github-issue-release --issue` |
 | Repair a half-finished delivery step | `github-branch-prepare`, `github-commit-push`, `github-pr-create`, `github-pr-merge`, `github-issue-close`, `github-branch-cleanup` |
+| Write the completion manifest a delivery session must leave behind | `ticket-manifest-set` (Azure), `github-manifest-set` (GitHub) — never by hand |
 | Publish tracker work without planning it | `ticket-create`, `ticket-link-parent`, `ticket-link-predecessor` |
 | Attach the completion evidence a gate is waiting for | `ticket-pr-link`, `ticket-commit-link`, `ticket-attachment-add`, `ticket-evidence-set`, `ticket-completion-apply` |
 
@@ -98,9 +99,12 @@ lazy-workflow ticket-commit-link --ticket <id> --pr <id>
 lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
 lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>
 lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>
+lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] \
+  --validation <command> --validation-result <outcome> \
+  --evidence <http-json|screen|command-output>:<path> --working-directory <path>
 ```
 
-Three rules govern these:
+Four rules govern these:
 
 - **Optimistic writes.** `ticket-state-set` requires the `--expected-state` it
   will find, and `ticket-effort-set` the `--expected-rev` the ticket was read at,
@@ -112,6 +116,13 @@ Three rules govern these:
 - **Reference names, never labels.** `--field <referenceName>=<value>` is
   repeatable and takes Azure reference names; display labels are never inferred
   (ADR-0006).
+- **The manifest is never hand-written.** `ticket-manifest-set` is the only way a
+  completion manifest is created: it takes the identities and what you ran, then
+  resolves the commit from HEAD, computes every SHA-256 digest from the evidence
+  files, and validates the result with the same code the coordinator's delivery
+  gate runs — so a manifest either lands verifiable or does not land at all. A
+  manifest typed by hand is how a delivery ends with `"ticket": "23575"`, a
+  `currentCommit` key, or an evidence kind that was never in the enum.
 
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It
@@ -142,6 +153,9 @@ lazy-workflow github-branch-checkout --branch <name> --base-branch <name> --work
 lazy-workflow github-branch-verify   --branch <name> --base-branch <name> --working-directory <path>
 lazy-workflow github-branch-cleanup  --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
 lazy-workflow github-manifest-info --manifest <path> --working-directory <path>
+lazy-workflow github-manifest-set  --issue <id> --branch <name> --manifest <path> [--commit <sha>] \
+  --summary <text> --validation <command> --validation-result <outcome> \
+  [--evidence <path-in-repository>] --working-directory <path>
 lazy-workflow github-commit-push   --branch <name> --commit <sha> --working-directory <path>
 lazy-workflow github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
 lazy-workflow github-pr-merge  --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
@@ -152,6 +166,13 @@ These are the coordinator's own delivery steps, in the order it performs them.
 Running them by hand is for repairing a delivery that stopped midway; the
 ordinary path is to rerun the `code` command, which resumes the same phase from
 its checkpoint.
+
+`github-manifest-set` is the exception: it is not a repair, it is how a delivery
+session produces its manifest in the first place. It fills in what it can verify —
+the commit from HEAD, `clean` from the real worktree state, every digest from the
+file — so the only things declared are the ones only the session knows. Its
+`--evidence` paths live **inside** the repository, unlike the Azure manifest's,
+whose evidence must stay out of the worktree.
 
 ## git
 
@@ -168,6 +189,12 @@ lazy-workflow git-branch-delete --branch <name> --base-branch <name> [--commit <
   ref (`refs/heads/issue/201`).
 - `--commit` requires the full object name, because every tool that takes one
   compares it against a ref — an abbreviation fails that comparison as if the
-  branch had moved.
+  branch had moved. The manifest tools resolve it from HEAD when it is omitted,
+  which is what a delivery session should let them do.
+- `--validation` and `--validation-result` are repeatable and pair **by
+  position**: the first result belongs to the first command. They are two flags
+  rather than one because a real validation command carries whatever separator a
+  single flag would need (`dotnet test --filter A::B /p:X=Y`). A count mismatch
+  fails naming both flags.
 - Tools open no session, so `--cli`, `--model`, `--variant` and `--fallback` do
   not apply. The reporter flags (`--verbose`, `--quiet`, `--no-color`) do.

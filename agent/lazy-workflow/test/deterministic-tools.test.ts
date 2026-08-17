@@ -35,6 +35,13 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       createOrReusePullRequest: record("createOrReusePullRequest", { pullRequest: 7, mergeCommit: COMMIT }),
       pushTicketBranch: record("pushTicketBranch", undefined),
       checkoutTicketBranch: record("checkoutTicketBranch", undefined),
+      writeCompletionManifest: record("writeCompletionManifest", {
+        ticket: 51,
+        ticketBranch: "refs/heads/ticket/51",
+        commit: COMMIT,
+        validation: [{ command: "bun test", result: "18 passed" }],
+        evidence: [],
+      }),
     },
     queue: {
       verifyAuthentication: record("verifyAuthentication", { login: "elvis" }),
@@ -51,6 +58,7 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       verifyBranch: record("verifyBranch", undefined),
       cleanupBranch: record("cleanupBranch", undefined),
       readManifest: record("readManifest", { issue: 201, branch: "refs/heads/issue/201", commit: COMMIT, validation: [], clean: true, summary: "ok" }),
+      writeManifest: record("writeManifest", { issue: 201, branch: "refs/heads/issue/201", commit: COMMIT, validation: [], clean: true, summary: "ok" }),
       pushCommit: record("pushCommit", undefined),
       createOrReusePullRequest: record("createOrReusePullRequest", { number: 9 }),
       mergePullRequest: record("mergePullRequest", { number: 9, mergeCommit: OTHER_COMMIT }),
@@ -100,6 +108,15 @@ class StatefulAzureBoundary implements AzureToolBoundary {
   checkoutTicketBranch(): Promise<void> {
     return this.record("checkoutTicketBranch", undefined);
   }
+  writeCompletionManifest(): Promise<any> {
+    return this.record("writeCompletionManifest", {
+      ticket: this.delegate.ticket,
+      ticketBranch: `refs/heads/ticket/${this.delegate.ticket}`,
+      commit: this.delegate.commit,
+      validation: [{ command: "bun test", result: "18 passed" }],
+      evidence: [],
+    });
+  }
 }
 
 /** Every Azure tool command, with the boundary operation it must reach. */
@@ -114,6 +131,14 @@ const AZURE_TOOL_INVOCATIONS: Array<{ args: string[]; operation: string }> = [
   { args: ["ticket-pr-create", "--hu", "23438", "--ticket", "51"], operation: "createOrReusePullRequest" },
   { args: ["ticket-branch-push", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "pushTicketBranch" },
   { args: ["ticket-branch-checkout", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "checkoutTicketBranch" },
+  {
+    args: [
+      "ticket-manifest-set", "--ticket", "51", "--branch", "ticket/51", "--manifest", "/repo/.git/m.json",
+      "--validation", "bun test", "--validation-result", "18 passed",
+      "--evidence", "http-json:/repo/.git/lazy-workflow/api.json", "--working-directory", "/repo",
+    ],
+    operation: "writeCompletionManifest",
+  },
 ];
 
 /** The options a real invocation would produce, so the tools read what the parser writes. */
@@ -274,6 +299,34 @@ describe("herramientas deterministas como comandos", () => {
       expect(parsed(printed)).toEqual({ number: 9, mergeCommit: OTHER_COMMIT });
     });
 
+    test("github-manifest-set arma la declaración del manifest desde los flags", async () => {
+      const { code, calls } = await runTool([
+        "github-manifest-set", "--issue", "201", "--branch", "issue/201",
+        "--manifest", "/repo/.git/manifest.json", "--summary", "Agrega X",
+        "--validation", "bun test", "--validation-result", "198 pass",
+        "--validation", "bun run build", "--validation-result", "ok",
+        "--evidence", "docs/run.json", "--working-directory", "/repo",
+      ]);
+
+      expect(code).toBe(0);
+      expect(calls[0]?.operation).toBe("writeManifest");
+      // Los pares llegan emparejados por posición y la rama completada a su ref.
+      expect(calls[0]?.args).toEqual([
+        "/repo/.git/manifest.json",
+        {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          summary: "Agrega X",
+          validation: [
+            { command: "bun test", result: "198 pass" },
+            { command: "bun run build", result: "ok" },
+          ],
+          evidence: ["docs/run.json"],
+        },
+        "/repo",
+      ]);
+    });
+
     test("github-issue-close pasa el commit de merge fijado", async () => {
       const { code, calls } = await runTool([
         "github-issue-close", "--issue", "201", "--pr", "9", "--commit", COMMIT, "--working-directory", "/repo",
@@ -327,6 +380,31 @@ describe("herramientas deterministas como comandos", () => {
 
       expect(code).toBe(0);
       expect(parsed(printed)).toEqual({ hu: 23438, ticket: 51, pullRequest: 7, mergeCommit: COMMIT });
+    });
+
+    test("ticket-manifest-set entrega la declaración estructurada, con el commit sin fijar", async () => {
+      const { code, calls } = await runTool([
+        "ticket-manifest-set", "--ticket", "23575", "--branch", "ticket/23575",
+        "--manifest", "/repo/.git/lazy-workflow/completion-manifest.json",
+        "--validation", "bun test", "--validation-result", "198 pass",
+        "--evidence", "screen:/repo/.git/lazy-workflow/pago.png", "--working-directory", "/repo",
+      ]);
+
+      expect(code).toBe(0);
+      // Sin `--commit` la declaración no lo lleva: lo resuelve el escritor desde HEAD.
+      expect(calls).toEqual([{
+        operation: "writeCompletionManifest",
+        args: [
+          "/repo/.git/lazy-workflow/completion-manifest.json",
+          {
+            ticket: 23575,
+            ticketBranch: "refs/heads/ticket/23575",
+            validation: [{ command: "bun test", result: "198 pass" }],
+            evidence: [{ path: "/repo/.git/lazy-workflow/pago.png", kind: "screen" }],
+          },
+          "/repo",
+        ],
+      }]);
     });
 
     test("ticket-branch-checkout y ticket-branch-push operan sobre la rama declarada", async () => {

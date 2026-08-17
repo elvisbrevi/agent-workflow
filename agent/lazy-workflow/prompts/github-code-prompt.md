@@ -8,6 +8,8 @@ Do not select, refresh, or replace the fixed issue, and do not close or
 reconcile parent or epic issues. The coordinator, not this session, decides what
 work follows and will start a fresh session for the next eligible issue.
 
+{{GITHUB_MANIFEST_TOOL}}
+
 When the local implementation, validation, review, commit, and manifest are
 complete, print the exact marker `{{IMPLEMENTATION_READY}}` and stop. Do not
 declare remote delivery complete, and never print the coordinator's own
