@@ -303,7 +303,7 @@ test("hu-branch-set no mira los archivos ignorados y publica pese a artefactos d
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
+  expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=no"]);
   expect(fixture.gitCommands.some((args) => args[0] === "status" && args.includes("--ignored"))).toBe(false);
   expect(fixture.patchBodies).toHaveLength(1);
 });

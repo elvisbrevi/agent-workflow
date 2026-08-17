@@ -528,7 +528,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       if (base.ref === normalized.ref) throw new Error("La base remota no puede ser la rama HU");
       const baseSha = await remoteBranchSha(this.git, base.ref, workingDirectory);
       if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama HU");
       const localBaseRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
       try {
@@ -652,7 +652,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
         existing: !!ticketSha,
       });
     } else {
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se vinculará la rama del ticket");
     }
 
@@ -756,7 +756,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       const baseSha = requiresBase
         ? await remoteBranchSha(this.git, normalizeBranch(effectiveBase!).ref, identity.workingDirectory)
         : null;
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], identity.workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], identity.workingDirectory);
       return { identity, isAnchor, effectiveBase, existed, baseSha, status };
     }));
 
@@ -906,7 +906,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const plan = await Promise.all(identities.map(async (identity) => {
       const integrationBranchSha = await remoteBranchSha(this.git, integrationBranch, identity.workingDirectory);
       const ticketBranchSha = await remoteBranchSha(this.git, ticketBranch, identity.workingDirectory);
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], identity.workingDirectory);
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], identity.workingDirectory);
       return { identity, integrationBranchSha, ticketBranchSha, status };
     }));
 
@@ -1016,7 +1016,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (base.ref === options.integrationBranch) throw new Error("La base remota no puede ser la rama HU");
     const baseSha = await remoteBranchSha(this.git, base.ref, options.identity.workingDirectory);
     if (!baseSha) throw new Error(`La rama base ${base.ref} no existe remotamente`);
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], options.identity.workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], options.identity.workingDirectory);
     if (status.trim()) throw new Error(`El repositorio ${options.identity.workingDirectory} tiene cambios sin guardar; no se creará la rama HU`);
     const localBaseRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
     try {
@@ -1053,7 +1053,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const { workingDirectory, integrationBranch, ticketBranch } = options;
     const integrationSha = await remoteBranchSha(this.git, integrationBranch, workingDirectory);
     if (!integrationSha) throw new Error(`La rama de integración ${integrationBranch} no existe remotamente en ${workingDirectory}`);
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) {
       throw new Error(`El repositorio ${workingDirectory} tiene cambios sin guardar; no se ${options.existing ? "adelantará" : "creará"} la rama del ticket`);
     }

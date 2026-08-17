@@ -1420,6 +1420,59 @@ test("completion apply reconciles missing effects before moving the ticket to Do
   }
 });
 
+test("un archivo sin trackear que el agente dejó para validar no invalida el completion manifest", async () => {
+  // El agente escribe .env.test para poder correr la suite; eso no es trabajo sin
+  // guardar y no puede rechazar un manifest cuyo commit ya está en la rama.
+  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const statuses: string[][] = [];
+  const service = new AzureTicketInfoService(async () => "", async (args) => {
+    if (args[0] === "rev-parse") return `${commit}\n`;
+    if (args[0] === "symbolic-ref") return "ticket/23574\n";
+    if (args[0] === "status") {
+      statuses.push(args);
+      return args.includes("--untracked-files=no") ? "" : "?? .env.test\n";
+    }
+    return "";
+  });
+
+  await expect(service.validateCompletionManifest(
+    {
+      ticket: 23574,
+      ticketBranch: "refs/heads/ticket/23574",
+      commit,
+      validation: [{ command: "bun test", result: "59 passed" }],
+      evidence: [],
+    } as any,
+    { branch: "refs/heads/ticket/23574" } as any,
+    23574,
+    process.cwd(),
+  )).resolves.toBeUndefined();
+  expect(statuses).not.toBeEmpty();
+});
+
+test("un cambio sin commitear en un archivo trackeado sí invalida el completion manifest", async () => {
+  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const service = new AzureTicketInfoService(async () => "", async (args) => {
+    if (args[0] === "rev-parse") return `${commit}\n`;
+    if (args[0] === "symbolic-ref") return "ticket/23574\n";
+    if (args[0] === "status") return " M app/models/payment_attempt.ts\n";
+    return "";
+  });
+
+  await expect(service.validateCompletionManifest(
+    {
+      ticket: 23574,
+      ticketBranch: "refs/heads/ticket/23574",
+      commit,
+      validation: [{ command: "bun test", result: "59 passed" }],
+      evidence: [],
+    } as any,
+    { branch: "refs/heads/ticket/23574" } as any,
+    23574,
+    process.cwd(),
+  )).rejects.toThrow("cambios sin guardar");
+});
+
 test("un fallo de az explica la razón que Azure dio en stderr, no solo el exit code", () => {
   // Bun shell leaves the thrown message as a bare exit code, so an unread stderr is the difference
   // between "refresh your multi-factor authentication" and an operator with nothing to act on.

@@ -166,12 +166,15 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (operationPaths.some((path) => existsSync(resolve(workingDirectory, path)))) {
       throw new Error("El repositorio tiene una operación Git en curso");
     }
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) {
       // Never auto-pop: a stash never lands on any branch's history, so it
       // cannot mix unrelated work into whatever the recovery flow commits next.
       // The operator must retrieve it deliberately once reconciliation is done.
-      await this.git(["stash", "push", "--include-untracked", "-m", `lazy-workflow: auto-stash antes de reconciliar ${verifiedBranch}`], workingDirectory);
+      // Tracked changes only, matching the status above: the untracked files an
+      // agent leaves behind are its own scratch, and stashing them would break
+      // the next run that expects them in place.
+      await this.git(["stash", "push", "-m", `lazy-workflow: auto-stash antes de reconciliar ${verifiedBranch}`], workingDirectory);
       reportOperator(`lazy-workflow: se detectaron cambios sin guardar; se guardaron con "git stash" antes de reconciliar la rama ${verifiedBranch} (recuperalos con "git stash list" / "git stash pop").`);
     }
     const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
@@ -201,7 +204,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (!Number.isInteger(issue) || issue <= 0) throw new Error("El issue no es válido");
     const { baseBranch } = await this.repository(workingDirectory);
     const branch = `refs/heads/issue/${issue}`;
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar");
     const baseName = branchName(baseBranch);
     await this.git(["fetch", "origin", `+${baseBranch}:refs/remotes/origin/${baseName}`], workingDirectory);
@@ -232,7 +235,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const commit = requireCommit(manifest.commit);
     const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
     if (head !== commit) throw new Error("El commit del manifest no coincide con HEAD");
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (status.trim()) throw new Error("El worktree no está limpio para publicar el manifest");
     for (const evidence of manifest.evidence ?? []) {
       const evidencePath = resolve(workingDirectory, evidence.path);
@@ -301,7 +304,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const fixedCommit = requireCommit(commit);
     const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
     const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (active !== branchName(fixedBranch) || head !== fixedCommit || status.trim()) {
       throw new Error("La rama del PR cambió antes de reconciliar conflictos");
     }
@@ -318,7 +321,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const reconciled = requireCommit(reconciledCommit);
     const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
     const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
     if (active !== branchName(fixedBranch) || head !== reconciled || status.trim()) {
       throw new Error("La reconciliación no dejó la rama fijada limpia en el commit declarado");
     }
@@ -343,7 +346,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       if (mergeHead !== base) throw new Error("MERGE_HEAD no coincide con la base fijada");
       return;
     }
-    if ((await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory)).trim()) {
+    if ((await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory)).trim()) {
       throw new Error("El worktree cambió fuera de la reconciliación fijada");
     }
   }
