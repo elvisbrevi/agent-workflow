@@ -1486,3 +1486,107 @@ test("la compuerta de evidencia lee el digest del comment, no de un atributo que
   expect(dropped.evidenceKind).toBe("command-output");
   expect(dropped.digest).toBeUndefined();
 });
+
+function completionEvidenceService(options: {
+  definedFields: string[];
+  existing?: string;
+  onPatch?: (body: unknown[]) => void;
+}) {
+  const stored: Record<string, string> = options.existing
+    ? { [options.definedFields[0] ?? "Custom.CompletionEvidence"]: options.existing }
+    : {};
+  return new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", ...stored },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    if (args[0] === "rest" && args.includes("get")) {
+      // The project defines only some of the candidate reference names; Azure answers TF51535 for
+      // the rest, exactly as it does for a field that was never created here.
+      const uri = args[args.indexOf("--uri") + 1]!;
+      const field = options.definedFields.find((name) => uri.includes(encodeURIComponent(name)) || uri.includes(name));
+      if (!field) throw new Error("ERROR: Not Found(TF51535: Cannot find field)");
+      return JSON.stringify({ referenceName: field, type: "html" });
+    }
+    if (args[0] === "rest" && args.includes("patch")) {
+      const body = JSON.parse(args[args.indexOf("--body") + 1]!) as Array<{ op: string; path: string; value?: unknown }>;
+      options.onPatch?.(body);
+      // Azure applies the write, so a later read has to see it.
+      for (const operation of body) {
+        if (operation.op !== "add" || !operation.path.startsWith("/fields/")) continue;
+        stored[operation.path.slice("/fields/".length)] = String(operation.value);
+      }
+      return "{}";
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+}
+
+test("completion-evidence se escribe en el campo que el proyecto define, no en el primero de la lista", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test, npm run build.\n");
+  const guid = "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71";
+  const patches: unknown[][] = [];
+  try {
+    const service = completionEvidenceService({ definedFields: [guid], onPatch: (body) => patches.push(body) });
+
+    // The read-back reports the field the project defines, so the write has to have landed there.
+    await expect(service.setEvidence(51, path)).resolves.toMatchObject({ ticket: 51 });
+    const operations = patches[0] as Array<{ op: string; path: string }>;
+    expect(operations.some(({ op, path: target }) => op === "add" && target === `/fields/${guid}`)).toBeTrue();
+    expect(operations.some(({ path: target }) => target === "/fields/Custom.CompletionEvidence")).toBeFalse();
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("completion-evidence falla claro si el proyecto no define ningún campo candidato", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
+  try {
+    const service = completionEvidenceService({ definedFields: [] });
+    await expect(service.setEvidence(51, path)).rejects.toThrow("no define ningún campo de completion-evidence");
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("completion-evidence ya escrita en un campo html no se lee como conflicto", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test & npm run build.\n");
+  const patches: unknown[][] = [];
+  try {
+    // What Azure hands back after storing that text in an html field: same text, markup added.
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: "<div>Validaciones ejecutadas: npm test &amp; npm run build.</div>",
+      onPatch: (body) => patches.push(body),
+    });
+
+    await expect(service.setEvidence(51, path)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(0);
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("completion-evidence distinta sigue siendo un conflicto", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
+  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: "<div>Otra evidencia completamente distinta.</div>",
+    });
+    await expect(service.setEvidence(51, path)).rejects.toThrow("conflicto");
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
