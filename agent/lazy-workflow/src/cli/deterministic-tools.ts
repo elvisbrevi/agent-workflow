@@ -128,9 +128,17 @@ function requireBranchRef(value: string | null, flag: string, command: string): 
   return toBranchRef(requireText(value, flag, command));
 }
 
-function requireOperation<T>(operation: T | undefined, command: string): NonNullable<T> {
-  if (!operation) throw new MissingArgument(`El servicio no soporta ${command}`);
-  return operation as NonNullable<T>;
+/**
+ * The boundary operation `command` needs, bound to the boundary that owns it.
+ * Taking the owner and the key rather than the function keeps the receiver
+ * attached: in production the boundary is a class whose methods delegate through
+ * `this`, so a detached method reads `this` as undefined and fails where an
+ * injected object of arrow functions never could.
+ */
+function requireOperation<T extends object, K extends keyof T>(owner: T, key: K, command: string): NonNullable<T[K]> {
+  const operation = owner[key];
+  if (typeof operation !== "function") throw new MissingArgument(`El servicio no soporta ${command}`);
+  return operation.bind(owner) as NonNullable<T[K]>;
 }
 
 /**
@@ -160,7 +168,7 @@ async function runAzureTool(
 ): Promise<unknown> {
   if (command === "hu-children-info") {
     const hu = requirePositive(options.hu, "--hu <id>", command);
-    const children = await requireOperation(azure.getHuChildren, command)(hu);
+    const children = await requireOperation(azure, "getHuChildren", command)(hu);
     return { hu, children };
   }
   if (command === "hu-state-set") {
@@ -168,11 +176,11 @@ async function runAzureTool(
     const state = requireText(options.state, "--state <state>", command);
     const expectedState = requireText(options.expectedState, "--expected-state <state>", command);
     if (!options.hasExpectedRevision) throw new MissingArgument(`${command} requiere --expected-rev <rev>`);
-    return requireOperation(azure.setHuState, command)(hu, state, expectedState, options.expectedRevision);
+    return requireOperation(azure, "setHuState", command)(hu, state, expectedState, options.expectedRevision);
   }
   if (command === "hu-branch-ensure") {
     const hu = requirePositive(options.hu, "--hu <id>", command);
-    const branch = await requireOperation(azure.ensureIntegrationBranch, command)(
+    const branch = await requireOperation(azure, "ensureIntegrationBranch", command)(
       hu,
       options.workingDirectory,
       options.baseBranch,
@@ -181,22 +189,22 @@ async function runAzureTool(
   }
   if (command === "ticket-type-info") {
     const ticket = requirePositive(options.ticket, "--ticket <id>", command);
-    return requireOperation(azure.getTicket, command)(ticket);
+    return requireOperation(azure, "getTicket", command)(ticket);
   }
   if (command === "ticket-pr-create") {
     const hu = requirePositive(options.hu, "--hu <id>", command);
     const ticket = requirePositive(options.ticket, "--ticket <id>", command);
-    const pullRequest = await requireOperation(azure.createOrReusePullRequest, command)(hu, ticket);
+    const pullRequest = await requireOperation(azure, "createOrReusePullRequest", command)(hu, ticket);
     return { hu, ticket, ...pullRequest };
   }
   if (command === "ticket-branch-push") {
     const branch = requireText(options.branch, "--branch <name>", command);
-    await requireOperation(azure.pushTicketBranch, command)(branch, options.workingDirectory);
+    await requireOperation(azure, "pushTicketBranch", command)(branch, options.workingDirectory);
     return { branch, pushed: true };
   }
   // ticket-branch-checkout
   const branch = requireText(options.branch, "--branch <name>", command);
-  await requireOperation(azure.checkoutTicketBranch, command)(branch, options.workingDirectory);
+  await requireOperation(azure, "checkoutTicketBranch", command)(branch, options.workingDirectory);
   return { branch, checkedOut: true };
 }
 
