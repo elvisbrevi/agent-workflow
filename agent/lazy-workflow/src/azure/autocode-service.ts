@@ -725,7 +725,11 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const existingLinks = uniqueBranchLinks(parent);
     const projectName = field(parent, "System.TeamProject");
     if (!projectName) throw new Error("La HU no tiene proyecto Azure");
-    const integrationBranch = normalizeBranch(options.integrationBranch ?? `refs/heads/hu/${options.hu}`).ref;
+    // Una HU ya vinculada manda su propia rama de integración, igual que en el
+    // camino single-repo: el anchor se da por preparado sobre esa rama, no sobre hu/<HU>.
+    const integrationBranch = normalizeBranch(
+      options.integrationBranch ?? existingLinks[0]?.ref ?? `refs/heads/hu/${options.hu}`,
+    ).ref;
 
     const matchedAnchor = existingLinks.length === 1
       ? identities.find((identity) => identity.repositoryId === existingLinks[0]!.repository && identity.projectId === existingLinks[0]!.project)
