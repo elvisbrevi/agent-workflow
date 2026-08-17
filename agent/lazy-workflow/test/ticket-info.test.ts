@@ -897,6 +897,35 @@ test("ticket mutations reject a non-HU or ambiguous direct parent", async () => 
   await expect(nonHu.setState(51, "En progreso", "Active")).rejects.toThrow("no es una HU");
 });
 
+test("getHuChildren accepts a Product Backlog Item parent, not only User Story", async () => {
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "Product Backlog Item" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    return JSON.stringify({
+      id: 51,
+      fields: { "System.WorkItemType": "Task", "System.State": "En espera", "System.Title": "Child" },
+      relations: [],
+    });
+  });
+
+  await expect(service.getHuChildren(23438)).resolves.toEqual([
+    { id: 51, type: "Task", state: "En espera", title: "Child" },
+  ]);
+});
+
+test("getHuChildren still rejects a parent that is neither User Story nor Product Backlog Item", async () => {
+  const service = new AzureTicketInfoService(async () => JSON.stringify({
+    id: 23438,
+    fields: { "System.WorkItemType": "Epic" },
+    relations: [],
+  }));
+
+  await expect(service.getHuChildren(23438)).rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
 test("ticket field mutation commands validate their explicit contracts", async () => {
   const calls: unknown[][] = [];
   const service = {

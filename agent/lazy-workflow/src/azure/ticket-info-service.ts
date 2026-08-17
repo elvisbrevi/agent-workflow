@@ -14,6 +14,7 @@ const TICKET_FIELDS = {
   realEffort: "Custom.EsfuerzoReal",
   realEffortHours: "Custom.EsfuerzoRealHH",
 } as const;
+const HU_WORK_ITEM_TYPES = new Set(["User Story", "Product Backlog Item"]);
 const SUPPORTED_STATES = new Set([
   "New",
   "Active",
@@ -517,7 +518,7 @@ export class AzureTicketInfoService {
     positiveId(hu, "La HU");
     positiveId(ticket, "El ticket");
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
-    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(text(parent, "System.WorkItemType") ?? "")) throw new Error(`La HU ${hu} no es una User Story ni un Product Backlog Item`);
     this.toSummary(item);
     const forward = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
@@ -535,7 +536,7 @@ export class AzureTicketInfoService {
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
     const parentType = text(parent, "System.WorkItemType");
-    if (parentType !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(parentType ?? "")) throw new Error(`La HU ${hu} no es una User Story ni un Product Backlog Item`);
     const child = (parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     );
@@ -752,8 +753,8 @@ export class AzureTicketInfoService {
     validateState(desiredState, "El estado deseado");
     validateState(expectedState, "El estado esperado");
     const item = await this.readWorkItem(hu);
-    if (text(item, "System.WorkItemType") !== "User Story") {
-      throw new Error(`El work item ${hu} no es una User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(text(item, "System.WorkItemType") ?? "")) {
+      throw new Error(`El work item ${hu} no es una User Story ni un Product Backlog Item`);
     }
     const currentState = text(item, TICKET_FIELDS.state);
     if (currentState !== expectedState) {
@@ -780,8 +781,8 @@ export class AzureTicketInfoService {
   async getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>> {
     positiveId(hu, "La HU");
     const parent = await this.readWorkItem(hu);
-    if (text(parent, "System.WorkItemType") !== "User Story") {
-      throw new Error(`El work item ${hu} no es una User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(text(parent, "System.WorkItemType") ?? "")) {
+      throw new Error(`El work item ${hu} no es una User Story ni un Product Backlog Item`);
     }
     const childIds = (parent.relations ?? [])
       .filter(({ rel, url }) => rel === "System.LinkTypes.Hierarchy-Forward" && typeof url === "string")
@@ -1043,7 +1044,7 @@ export class AzureTicketInfoService {
 
     const [parent, item] = await Promise.all([this.readWorkItem(hu), this.readWorkItem(ticket)]);
     const summary = this.toSummary(item);
-    if (text(parent, "System.WorkItemType") !== "User Story") throw new Error(`La HU ${hu} no es una User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(text(parent, "System.WorkItemType") ?? "")) throw new Error(`La HU ${hu} no es una User Story ni un Product Backlog Item`);
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
@@ -1278,8 +1279,8 @@ export class AzureTicketInfoService {
     const parentId = uniqueParentIds[0];
     if (!parentId) throw new Error(`El ticket ${ticket} no tiene una HU padre directa`);
     const parent = await this.readWorkItem(parentId);
-    if (text(parent, "System.WorkItemType") !== "User Story") {
-      throw new Error(`El padre directo del ticket ${ticket} no es una HU User Story`);
+    if (!HU_WORK_ITEM_TYPES.has(text(parent, "System.WorkItemType") ?? "")) {
+      throw new Error(`El padre directo del ticket ${ticket} no es una HU User Story ni un Product Backlog Item`);
     }
     if (!(parent.relations ?? []).some(({ rel, url }) =>
       rel === "System.LinkTypes.Hierarchy-Forward" && relationId(url) === ticket
