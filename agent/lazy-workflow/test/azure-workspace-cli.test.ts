@@ -351,6 +351,175 @@ test("un agotamiento con respaldo de otro CLI continúa el workspace en una sesi
   }
 });
 
+/**
+ * Same shape as `setupWorkspaceFallbackFixture`, generalized over the ticket number so a single
+ * fixture can deliver two tickets in the same drain and expose `getAutocodeState` to select the
+ * second one once the first is clean.
+ */
+async function setupWorkspaceDrainFixture() {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-drain-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const realpathA = await realpath(pathA);
+  const realpathB = await realpath(pathB);
+  let currentTicket = 51;
+  let currentTicketBranch = `refs/heads/ticket/51`;
+  let currentTicketState = "En progreso";
+  let autocodeCalls = 0;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getAutocodeState" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+    getHuInfo: async () => ({ id: hu }),
+    waitForAccess: async () => undefined,
+    prepareWorkspaceBranches: async (options) => ({
+      hu: options.hu,
+      ticket: null,
+      integrationBranch,
+      anchor: { workingDirectory: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, projectId, repositoryId: repoAId },
+      ticketBranchAnchor: null,
+      units: [
+        { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+        { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch: null, integrationBranchCreated: true, ticketBranchCreated: false, ticketBranchAnchor: null },
+      ],
+    }),
+    prepareWorkspaceTicketBranches: async ({ ticket: requestedTicket }) => {
+      currentTicket = requestedTicket!;
+      currentTicketBranch = `refs/heads/ticket/${currentTicket}`;
+      currentTicketState = "En progreso";
+      return {
+        hu,
+        ticket: currentTicket,
+        integrationBranch,
+        ticketBranch: currentTicketBranch,
+        anchor: { workingDirectory: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, projectId, repositoryId: repoAId },
+        ticketBranchAnchor: realpathA,
+        units: [
+          { path: realpathA, remote: remoteUrlA, repository: repoA, project: teamProject, repositoryId: repoAId, projectId, integrationBranch, ticketBranch: currentTicketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+          { path: realpathB, remote: remoteUrlB, repository: repoB, project: teamProject, repositoryId: repoBId, projectId, integrationBranch, ticketBranch: currentTicketBranch, integrationBranchCreated: true, ticketBranchCreated: true, ticketBranchAnchor: realpathA },
+        ],
+      };
+    },
+    createOrReusePullRequest: async () => ({ pullRequest: 1, mergeCommit: "merge-1" }),
+    checkoutTicketBranch: async () => undefined,
+    pushTicketBranch: async () => undefined,
+    linkPullRequest: async () => ({ hu, ticket: currentTicket, pullRequest: 1, mergeCommit: "merge-1" }),
+    linkCommit: async () => ({ ticket: currentTicket, pullRequest: 1, mergeCommit: "merge-1", artifactLink: "vstfs:///Git/Commit/x" }),
+    getTicketInfo: async () => ({
+      hu: { id: hu, title: "HU" },
+      ticket: { id: currentTicket, type: "Task" as const, title: "Ticket", state: currentTicketState, revision: 4 },
+      branch: currentTicketBranch,
+      integrationBranch,
+      effort: { estimated: 1, real: 1, realHours: 1 },
+      pullRequests: [],
+      canonicalPullRequest: null,
+      mergeCommit: null,
+      attachments: [],
+      completionEvidence: null,
+      gates: { satisfied: [], unmet: [] },
+    }),
+    setEffort: async () => undefined,
+    setState: async (id: number, desiredState: string) => {
+      if (id === currentTicket) currentTicketState = desiredState;
+      return { ticket: id, state: desiredState, revision: 5 };
+    },
+    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
+    readCompletionManifest: async () => ({
+      ticket: currentTicket,
+      ticketBranch: currentTicketBranch,
+      commit: "a".repeat(40),
+      validation: [{ command: "bun test", result: "passed" }],
+      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
+    }),
+    validateCompletionManifest: async () => undefined,
+    getBranch: async () => ({ hu, ticket: currentTicket, branch: currentTicketBranch, integrationBranch }),
+    validateEvidenceFile: async () => undefined,
+    addAttachment: async () => ({ ticket: currentTicket, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
+    setEvidence: async () => undefined,
+    getState: async (id: number) => ({ ticket: id, state: currentTicketState, revision: 4 }),
+    getHuState: async (id: number) => ({ hu: id, state: "En Desarrollo", revision: 7 }),
+    getEffort: async () => ({ ticket: currentTicket, effort: { estimated: 1, real: 1, realHours: 1 } }),
+    validateEvidence: async () => undefined,
+    setHuState: async (id: number, desiredState: string) => ({ hu: id, state: desiredState, revision: 8 }),
+    // Kept open throughout: this fixture is about which CLI the *next* ticket starts on, not
+    // about the HU's own closing transition.
+    hasOpenDeliveryChildren: async () => true,
+    getAutocodeContextForTicket: async () => null,
+    getAutocodeState: async () => {
+      autocodeCalls += 1;
+      if (autocodeCalls === 1) return { context: { hu: { id: hu }, ticket: { id: 51, type: "Task" as const, state: "Active" }, integrationBranch }, pending: true };
+      if (autocodeCalls === 2) return { context: { hu: { id: hu }, ticket: { id: 52, type: "Task" as const, state: "Active" }, integrationBranch }, pending: true };
+      return { context: null, pending: false };
+    },
+    getTicket: async () => ({ id: currentTicket, type: "Task" as const }),
+    getDescription: async () => ({ ticket: currentTicket, description: null }),
+    getAttachments: async () => ({ ticket: currentTicket, attachments: [] }),
+    getEvidence: async () => ({ ticket: currentTicket, completionEvidence: null }),
+    validateDirectTicketContext: async () => undefined,
+    linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return directory;
+    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return `${directory}/.git`;
+    if (args[0] === "rev-parse" && args[1] === "HEAD") return "a".repeat(40);
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const writeManifests = () => Promise.all([
+    Bun.write(join(realpathA, "lazy-workflow/completion-manifest.json"), "{}"),
+    Bun.write(join(realpathB, "lazy-workflow/completion-manifest.json"), "{}"),
+  ]);
+  return { root, pathA, pathB, azureBoundary, git, writeManifests };
+}
+
+test("un agotamiento a mitad del drenaje no contamina el CLI del siguiente ticket de la HU", async () => {
+  // Reproduce el incidente real: el primer ticket agota el CLI declarado y desciende al
+  // respaldo; sin la restauración, el segundo ticket arrancaba heredando ese CLI adoptado
+  // (y el modelo declarado para el otro CLI), una combinación invalida que el proveedor
+  // rechaza de inmediato.
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceDrainFixture();
+  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, model: options.model, variant: options.variant, session: options.session });
+      if (cli === "claudecode" && started.filter((entry) => entry.cli === "claudecode").length === 1) {
+        return {
+          result: { text: "agotado", sessionId: "ses_exhausted", failed: true } as never,
+          azureLoginRequired: false,
+          failed: true,
+          exhaustion: { cli: "Claude Code", model: options.model ?? "x", cause: "rate_limit" },
+        };
+      }
+      await writeManifests();
+      return { result: { text: "IMPLEMENTATION_READY", sessionId: `ses_${cli}_${started.length}`, failed: false } as never, azureLoginRequired: false, failed: false };
+    },
+    resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true),
+  );
+
+  try {
+    const exit = await cli.run([
+      "code", "--hu", `${hu}`, "--base-branch", "main",
+      "--cli", "claudecode", "--model", "claude-sonnet-5", "--variant", "high",
+      "--fallback", "opencode:github-copilot/gpt-5.5:high",
+      "--working-directory", `${pathA}, ${pathB}`,
+    ]);
+    expect(exit).toBe(0);
+    // Ticket 51: claudecode exhausts, opencode delivers. Ticket 52 must start fresh on the
+    // operator's own declared rung (claudecode/claude-sonnet-5/high), not on opencode.
+    expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["claudecode", "opencode", "claudecode"]);
+    expect(started[2]?.model).toBe("claude-sonnet-5");
+    expect(started[2]?.variant).toBe("high");
+    expect(started[2]?.session).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("un agotamiento con respaldo del mismo CLI reanuda la sesión con el modelo del escalón nuevo", async () => {
   const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
   const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
