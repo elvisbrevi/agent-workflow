@@ -64,6 +64,7 @@ function fixture() {
         sourceRefName: "refs/heads/ticket/51-read",
         targetRefName: "refs/heads/hu/23438",
         lastMergeCommit: { commitId: "merge-commit" },
+        lastMergeSourceCommit: { commitId: "source-merge-commit" },
         repository: { id: "repository-id", project: { id: "project-id" } },
       }]);
     }
@@ -125,6 +126,7 @@ test("ticket-info resolves the delivery repository from the ticket branch, not t
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "primary-repo-id", project: { id: "project-id" } },
     }]);
     throw new Error(`unexpected command: ${args.join(" ")}`);
@@ -196,6 +198,7 @@ test("ticket-info does not infer a canonical PR without native association", asy
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     }]);
     throw new Error(`unexpected command: ${args.join(" ")}`);
@@ -238,6 +241,7 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
+    if (args[0] === "rest" && args.includes("patch")) return "{}";
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
       pullRequestId: 99,
       status: "completed",
@@ -245,6 +249,7 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
     throw new Error(`unexpected command: ${args.join(" ")}`);
@@ -255,7 +260,13 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
     mergeCommit: "merge-commit",
   });
   expect(commands.some((args) => args[2] === "create")).toBeTrue();
-  expect(commands.some((args) => args[2] === "update" && args.includes("completed"))).toBeTrue();
+  // Azure rejects a completion that does not echo the source commit its merge was computed from.
+  const complete = commands.find((args) => args[0] === "rest" && args.includes("patch"));
+  expect(complete).toBeDefined();
+  expect(JSON.parse(complete![complete!.indexOf("--body") + 1]!)).toEqual({
+    status: "completed",
+    lastMergeSourceCommit: { commitId: "source-merge-commit" },
+  });
 });
 
 test("coordinator creates the pull request in the participant repository, not the ticket's linked one", async () => {
@@ -279,6 +290,7 @@ test("coordinator creates the pull request in the participant repository, not th
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "participant-merge" },
+      lastMergeSourceCommit: { commitId: "source-participant-merge" },
       repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
     });
     throw new Error(`unexpected command: ${args.join(" ")}`);
@@ -324,6 +336,7 @@ test("ticket-info falls back for PR listing and native association without cross
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     }] });
     if (args[0] === "rest") return JSON.stringify({ value: [{ id: 51 }] });
@@ -364,6 +377,7 @@ test("PR linking validates the exact ticket branch and verifies native associati
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
@@ -373,6 +387,7 @@ test("PR linking validates the exact ticket branch and verifies native associati
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     }]);
     if (args[0] === "repos" && args[2] === "work-item" && args[3] === "add") {
@@ -424,6 +439,7 @@ test("commit linking is idempotent and rejects a conflicting native commit", asy
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
@@ -433,6 +449,7 @@ test("commit linking is idempotent and rejects a conflicting native commit", asy
       sourceRefName: "refs/heads/ticket/51-read",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "merge-commit" },
+      lastMergeSourceCommit: { commitId: "source-merge-commit" },
       repository: { id: "repository-id", project: { id: "project-id" } },
     }]);
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([51]);
@@ -481,6 +498,7 @@ test("linking a participant merge commit is idempotent and keeps the primary Fix
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "participant-merge" },
+      lastMergeSourceCommit: { commitId: "source-participant-merge" },
       repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
@@ -490,6 +508,7 @@ test("linking a participant merge commit is idempotent and keeps the primary Fix
       sourceRefName: "refs/heads/ticket/51",
       targetRefName: "refs/heads/hu/23438",
       lastMergeCommit: { commitId: "participant-merge" },
+      lastMergeSourceCommit: { commitId: "source-participant-merge" },
       repository: { id: "participant-repository-id", name: "participant-repository", project: { id: "participant-project-id", name: "participant-project" } },
     }]);
     if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([51]);
@@ -1026,6 +1045,7 @@ test("linkPullRequest accepts a Product Backlog Item HU and still rejects other 
         sourceRefName: "refs/heads/ticket/51-read",
         targetRefName: "refs/heads/hu/23438",
         lastMergeCommit: { commitId: "merge-commit" },
+        lastMergeSourceCommit: { commitId: "source-merge-commit" },
         repository: { id: "repository-id", project: { id: "project-id" } },
       };
       if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify(pullRequest);
@@ -1342,4 +1362,36 @@ test("un fallo de az no filtra credenciales del stderr", () => {
 
 test("un fallo de az sin stderr conserva el mensaje original", () => {
   expect(commandError(new Error("boom")).message).toBe("Azure command failed: boom");
+});
+
+test("un PR sin commit fuente de merge no se completa a ciegas", async () => {
+  // Azure has not finished computing the merge yet, so there is nothing to guard the completion
+  // against; completing anyway would merge a state nobody evaluated.
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+      pullRequestId: 77,
+      status: "active",
+      mergeStatus: "queued",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
+      pullRequestId: 77,
+      status: "active",
+      mergeStatus: "queued",
+      sourceRefName: "refs/heads/ticket/51",
+      targetRefName: "refs/heads/hu/23438",
+      repository: { id: "repository-id", project: { id: "project-id" } },
+    });
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.createOrReusePullRequest(23438, 51, {
+    project: "project-id",
+    repository: "repository-id",
+    source: "refs/heads/ticket/51",
+    target: "refs/heads/hu/23438",
+  })).rejects.toThrow("no expone el commit fuente del merge");
 });
