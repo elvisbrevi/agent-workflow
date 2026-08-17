@@ -205,13 +205,35 @@ function evidenceKind(value: string | undefined): EvidenceKind | undefined {
   return EVIDENCE_KINDS.includes(value as EvidenceKind) ? value as EvidenceKind : undefined;
 }
 
+/**
+ * Azure persists only its own relation attributes and silently drops unknown ones, so a `digest`
+ * attribute never survives the round trip: evidence written that way reads back undigested, which
+ * left the attachment unverifiable and the evidence gate unsatisfiable. The digest travels inside
+ * `comment`, which Azure does keep, alongside the evidence kind it already carried.
+ */
+const ATTACHMENT_DIGEST_PREFIX = "sha256:";
+
+function attachmentComment(kind: EvidenceKind, digest: string): string {
+  return `${kind} ${ATTACHMENT_DIGEST_PREFIX}${digest.toLowerCase()}`;
+}
+
+function attachmentKind(comment: string | undefined): EvidenceKind | undefined {
+  return evidenceKind(comment?.trim().split(/\s+/)[0]);
+}
+
+function attachmentDigest(comment: string | undefined): string | undefined {
+  const token = comment?.trim().split(/\s+/).find((part) => part.startsWith(ATTACHMENT_DIGEST_PREFIX));
+  const digest = token?.slice(ATTACHMENT_DIGEST_PREFIX.length).toLowerCase();
+  return digest && /^[0-9a-f]{64}$/.test(digest) ? digest : undefined;
+}
+
 function hasEvidenceCapture(item: WorkItem): boolean {
   return (item.relations ?? []).some(({ rel, url, attributes }) =>
     rel === "AttachedFile"
       && typeof url === "string"
       && url.trim().length > 0
-      && evidenceKind(attributes?.comment) !== undefined
-      && /^[0-9a-f]{64}$/i.test(attributes?.digest ?? "")
+      && attachmentKind(attributes?.comment) !== undefined
+      && attachmentDigest(attributes?.comment) !== undefined
   );
 }
 
@@ -629,8 +651,8 @@ export class AzureTicketInfoService {
           kind: "AttachedFile" as const,
           name: attributes?.name,
           url,
-          evidenceKind: evidenceKind(attributes?.comment),
-          digest: attributes?.digest,
+          evidenceKind: attachmentKind(attributes?.comment),
+          digest: attachmentDigest(attributes?.comment),
         })),
       completionEvidence,
       gates: {
@@ -704,8 +726,8 @@ export class AzureTicketInfoService {
           kind: "AttachedFile" as const,
           name: attributes?.name,
           url,
-          evidenceKind: evidenceKind(attributes?.comment),
-          digest: attributes?.digest,
+          evidenceKind: attachmentKind(attributes?.comment),
+          digest: attachmentDigest(attributes?.comment),
         })),
     };
   }
@@ -1198,9 +1220,10 @@ export class AzureTicketInfoService {
     const { name, digest } = await this.readEvidenceFile(filePath, kind);
     const existing = (item.relations ?? [])
       .filter(({ rel }) => rel === "AttachedFile")
-      .find(({ attributes }) => attributes?.digest === digest);
+      .find(({ attributes }) => attachmentDigest(attributes?.comment) === digest);
     if (existing?.url) {
-      if (existing.attributes?.comment && existing.attributes.comment !== kind) {
+      const existingKind = attachmentKind(existing.attributes?.comment);
+      if (existingKind && existingKind !== kind) {
         throw new Error(`El digest ${digest} ya está asociado a otra clase de evidencia`);
       }
       return { ticket, name: existing.attributes?.name ?? name, kind, digest, url: existing.url };
@@ -1217,19 +1240,19 @@ export class AzureTicketInfoService {
         value: {
           rel: "AttachedFile",
           url: upload,
-          attributes: { name, comment: kind, digest },
+          attributes: { name, comment: attachmentComment(kind, digest) },
         },
       }]);
     } catch (error) {
       const recovered = await this.readWorkItem(ticket).catch(() => null);
       const relation = recovered?.relations?.find(({ rel, attributes }) =>
-        rel === "AttachedFile" && attributes?.digest === digest
+        rel === "AttachedFile" && attachmentDigest(attributes?.comment) === digest
       );
       if (!relation?.url) throw error;
       return { ticket, name: relation.attributes?.name ?? name, kind, digest, url: relation.url };
     }
     const verified = (await this.readWorkItem(ticket)).relations?.find(({ rel, attributes }) =>
-      rel === "AttachedFile" && attributes?.digest === digest
+      rel === "AttachedFile" && attachmentDigest(attributes?.comment) === digest
     );
     if (!verified?.url) throw new Error(`No se pudo verificar el adjunto ${name}`);
     return { ticket, name, kind, digest, url: verified.url };

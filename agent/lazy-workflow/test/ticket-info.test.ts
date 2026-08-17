@@ -540,7 +540,9 @@ test("attachment validation records a digest and retries by digest", async () =>
   await Bun.write(path, '{\n  "status": "ok"\n}\n');
   let attached = false;
   let uploads = 0;
-  let digest = "";
+  // Azure keeps only its own relation attributes, so the fake persists name and comment and drops
+  // everything else — a digest written anywhere but the comment must not survive here either.
+  let comment = "";
   let patchFailures = 1;
   try {
     const service = new AzureTicketInfoService(async (args) => {
@@ -558,7 +560,7 @@ test("attachment validation records a digest and retries by digest", async () =>
           ...(attached ? [{
           rel: "AttachedFile",
           url: "https://example.test/evidence.json",
-          attributes: { name: "evidence.json", comment: "http-json", digest },
+          attributes: { name: "evidence.json", comment },
           }] : []),
         ],
       });
@@ -569,7 +571,7 @@ test("attachment validation records a digest and retries by digest", async () =>
       if (args[0] === "rest" && args.includes("patch")) {
         attached = true;
         const patch = JSON.parse(args[args.indexOf("--body") + 1]!);
-        digest = patch[1].value.attributes.digest;
+        comment = patch[1].value.attributes.comment;
         if (patchFailures-- > 0) throw new Error("response lost after Azure applied relation");
         return "{}";
       }
@@ -580,6 +582,8 @@ test("attachment validation records a digest and retries by digest", async () =>
     const second = await service.addAttachment(51, path, "http-json");
     expect(first.url).toBe(second.url);
     expect(uploads).toBe(1);
+    expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(comment).toBe(`http-json sha256:${first.digest}`);
   } finally {
     await unlink(path);
   }
@@ -1452,4 +1456,33 @@ test("un PR activo no reporta el commit fuente como si hubiera entregado algo", 
   expect(pullRequest!.status).toBe("active");
   expect(pullRequest!.mergeCommit).toBeUndefined();
   expect(pullRequest!.lastMergeSourceCommit).toBe("d".repeat(40));
+});
+
+test("la compuerta de evidencia lee el digest del comment, no de un atributo que Azure descarta", async () => {
+  const attachment = (attributes: Record<string, string>) => ({
+    id: 51,
+    rev: 4,
+    fields: { "System.WorkItemType": "Task", "System.State": "En progreso" },
+    relations: [
+      { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+      { rel: "AttachedFile", url: "https://example.test/evidence.md", attributes },
+    ],
+  });
+  const digest = "a".repeat(64);
+  const read = async (attributes: Record<string, string>) => {
+    const service = new AzureTicketInfoService(async (args) => {
+      if (args[0] === "boards") return JSON.stringify(attachment(attributes));
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    });
+    return (await service.getAttachments(51)).attachments[0]!;
+  };
+
+  const carried = await read({ name: "evidence.md", comment: `command-output sha256:${digest}` });
+  expect(carried.evidenceKind).toBe("command-output");
+  expect(carried.digest).toBe(digest);
+
+  // The shape Azure actually stores when the digest was written as its own attribute: gone.
+  const dropped = await read({ name: "evidence.md", comment: "command-output" });
+  expect(dropped.evidenceKind).toBe("command-output");
+  expect(dropped.digest).toBeUndefined();
 });
