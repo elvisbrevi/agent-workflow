@@ -926,6 +926,165 @@ test("getHuChildren still rejects a parent that is neither User Story nor Produc
   await expect(service.getHuChildren(23438)).rejects.toThrow("no es una User Story ni un Product Backlog Item");
 });
 
+test("validateDirectTicketContext accepts a Product Backlog Item HU and still rejects other types", async () => {
+  const az = (huType: string) => async (args: string[]) => {
+    if (args[0] === "boards" && args.includes("23438")) {
+      return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": huType },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+      });
+    }
+    return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+  };
+
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).validateDirectTicketContext(23438, 51))
+    .resolves.toBeUndefined();
+  await expect(new AzureTicketInfoService(az("Epic")).validateDirectTicketContext(23438, 51))
+    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
+test("getTicketInfo accepts a Product Backlog Item HU and still rejects other types", async () => {
+  const az = (huType: string) => async (args: string[]) => {
+    if (args[0] === "boards" && args.includes("23438")) {
+      return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": huType, "System.Title": "HU", "System.TeamProject": "Team" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+          { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+        ],
+      });
+    }
+    if (args[0] === "boards") {
+      return JSON.stringify({
+        id: 51,
+        rev: 4,
+        fields: { "System.WorkItemType": "Task", "System.Title": "Read ticket", "System.State": "Active" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+          { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+        ],
+      });
+    }
+    if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify([51]);
+    if (args[0] === "repos") return JSON.stringify([]);
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  };
+
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).getTicketInfo(23438, 51))
+    .resolves.toMatchObject({ hu: { id: 23438, title: "HU" }, branch: "refs/heads/ticket/51-read" });
+  await expect(new AzureTicketInfoService(az("Epic")).getTicketInfo(23438, 51))
+    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
+test("setHuState accepts a Product Backlog Item HU and still rejects other types", async () => {
+  const az = (huType: string) => async () => JSON.stringify({
+    id: 23438,
+    rev: 7,
+    fields: { "System.WorkItemType": huType, "System.State": "Active" },
+    relations: [],
+  });
+
+  // A no-op transition exercises the work item type gate without patching the HU.
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).setHuState(23438, "Active", "Active", 7))
+    .resolves.toEqual({ hu: 23438, state: "Active", revision: 7 });
+  await expect(new AzureTicketInfoService(az("Epic")).setHuState(23438, "Active", "Active", 7))
+    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
+test("linkPullRequest accepts a Product Backlog Item HU and still rejects other types", async () => {
+  const az = (huType: string) => {
+    let associated = false;
+    return async (args: string[]) => {
+      if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": huType, "System.TeamProject": "Team" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+          { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+        ],
+      });
+      if (args[0] === "boards") return JSON.stringify({
+        id: 51,
+        rev: 4,
+        fields: { "System.WorkItemType": "Task" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+          { rel: "ArtifactLink", url: "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBticket%2F51-read", attributes: { name: "Branch" } },
+        ],
+      });
+      const pullRequest = {
+        pullRequestId: 99,
+        status: "completed",
+        mergeStatus: "succeeded",
+        sourceRefName: "refs/heads/ticket/51-read",
+        targetRefName: "refs/heads/hu/23438",
+        lastMergeCommit: { commitId: "merge-commit" },
+        repository: { id: "repository-id", project: { id: "project-id" } },
+      };
+      if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify(pullRequest);
+      if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([pullRequest]);
+      if (args[0] === "repos" && args[2] === "work-item" && args[3] === "add") {
+        associated = true;
+        return "{}";
+      }
+      if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify(associated ? [51] : []);
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    };
+  };
+
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).linkPullRequest(23438, 51, 99)).resolves.toEqual({
+    hu: 23438,
+    ticket: 51,
+    pullRequest: 99,
+    mergeCommit: "merge-commit",
+  });
+  await expect(new AzureTicketInfoService(az("Epic")).linkPullRequest(23438, 51, 99))
+    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+});
+
+test("the direct parent gate accepts a Product Backlog Item parent and still rejects other types", async () => {
+  const az = (parentType: string) => {
+    let state = "Active";
+    let revision = 4;
+    return async (args: string[]) => {
+      if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+        id: 51,
+        rev: revision,
+        fields: { "System.WorkItemType": "Task", "System.State": state },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+      });
+      if (args[0] === "boards") return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": parentType },
+        relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+      });
+      if (args[0] === "rest" && args.includes("patch")) {
+        state = "En progreso";
+        revision = 5;
+        return JSON.stringify({
+          id: 51,
+          rev: revision,
+          fields: { "System.WorkItemType": "Task", "System.State": state },
+          relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+        });
+      }
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    };
+  };
+
+  await expect(new AzureTicketInfoService(az("Product Backlog Item")).setState(51, "En progreso", "Active"))
+    .resolves.toEqual({ ticket: 51, state: "En progreso", revision: 5 });
+  await expect(new AzureTicketInfoService(az("Epic")).setState(51, "En progreso", "Active"))
+    .rejects.toThrow("no es una HU User Story ni un Product Backlog Item");
+});
+
 test("ticket field mutation commands validate their explicit contracts", async () => {
   const calls: unknown[][] = [];
   const service = {
