@@ -421,6 +421,46 @@ test("plan multi-repositorio nombra el tracker, no el workspace, cuando falla la
   }
 });
 
+test("plan multi-repositorio acepta un remote Azure DevOps con usuario embebido", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-scope-userinfo-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  let huRead = false;
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess"> = {
+    getHuInfo: async (id: number) => { huRead = true; return { id }; },
+    waitForAccess: async () => undefined,
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      // Azure DevOps clones over HTTPS carry the organization as userinfo.
+      return `https://org@dev.azure.com/org/${teamProject}/_git/${directory.includes(repoA) ? repoA : repoB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const { reporterFn, messages } = captureReporter();
+  const cli = new LazyWorkflowCli(
+    azureBoundary,
+    {
+      run: async () => { throw new Error("plan must not start an OpenCode session in this test"); },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    undefined, undefined, undefined, undefined, undefined,
+    git,
+    undefined, undefined, undefined, undefined,
+    reporterFn,
+  );
+
+  try {
+    await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(messages.some((message) => message.includes("no tiene un remote Azure DevOps"))).toBeFalse();
+    expect(huRead).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("plan multi-repositorio conserva el mensaje de alcance cuando un repositorio no tiene remote Azure DevOps", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-scope-failure-"));
   const pathA = await seedRepo(root, repoA);
