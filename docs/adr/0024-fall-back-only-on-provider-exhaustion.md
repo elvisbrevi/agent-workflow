@@ -31,6 +31,13 @@ the primary rung. Usage limits lapse on their own, so a chain that never climbed
 back would strand a run on its reserve for hours after the primary recovered;
 the accepted cost is one exhausted attempt per unit while the limit persists.
 
+The descent applies to every attempt against the active rung, not only the unit's
+first, fresh session: a resume that crosses an invocation — recovering a GitHub
+issue with `--session`, or continuing an Azure ticket or workspace ticket the
+checkpoint already has a live session for — is the same rung hitting the same
+class of failure, and gets the same descent. Nothing about which invocation
+opened the session changes what exhaustion is.
+
 When every rung is exhausted for the unit in progress, the run waits and retries
 the primary at a fixed interval up to a bounded total, then fails closed with
 the checkpoint preserved. The retry starts over at the head of the chain rather
