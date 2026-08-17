@@ -1355,8 +1355,12 @@ export class LazyWorkflowCli {
           const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
           const handoffRun = await this.azureWorkspacePrompt(handoffOptions, scope, topology, ticketTopology);
           this.resolveAgent(rung.cli);
+          // A workspace's `--working-directory` is the comma-separated repository list, not a
+          // real path: the handed-off session has to spawn in the common parent exactly like the
+          // primary run does below, or the child process fails to spawn at all.
           const handedOff = await this.codingAgent.run({
             ...handoffOptions,
+            workingDirectory: scope.parentDirectory,
             ...handoffRun,
             session: null,
             terminalMarker: IMPLEMENTATION_READY_MARKER,
