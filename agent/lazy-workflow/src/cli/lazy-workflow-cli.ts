@@ -518,9 +518,15 @@ export class LazyWorkflowCli {
    * handoff is scoped to that unit, exactly as a descent is: the next one starts
    * on the rung the operator declared. Without an explicit `--cli` there is
    * nothing declared to go back to, so the adopted CLI stays the run's own.
+   *
+   * Re-resolves unconditionally once there is something declared to restore, even when
+   * `declared.cli` already equals `adopted.cli`: a fallback descent that happens mid-unit,
+   * inside this same invocation, moves `this.activeAgent` to the handed-off CLI without ever
+   * touching `options.cli` (only a checkpoint adopted from an *earlier* invocation does that),
+   * so comparing the two options objects alone cannot detect that drift.
    */
   private restoreDeclaredCli(declared: CliOptions, adopted: CliOptions): CliOptions {
-    if (!declared.hasCli || declared.cli === adopted.cli) return adopted;
+    if (!declared.hasCli) return adopted;
     this.resolveAgent(declared.cli);
     return declared;
   }
@@ -1261,6 +1267,10 @@ export class LazyWorkflowCli {
     const hu = options.hu;
     const boundary = this.huInfoService;
     const startedAt = this.clock.now();
+    // Captured before any checkpoint adoption below can overwrite `options.cli`: a fallback
+    // handoff scopes its adopted CLI to the checkpointed ticket only (`restoreDeclaredCli`), and
+    // the drain below has to hand the next ticket this pristine value, never the adopted one.
+    const declaredOptions = options;
     let scope: WorkspaceScope;
     let checkpoint: AzureWorkspaceCheckpoint | null;
     try {
@@ -1417,7 +1427,7 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      return await this.integrateAzureWorkspaceCode(options, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
+      return await this.integrateAzureWorkspaceCode(options, declaredOptions, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
     } catch (error) {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
@@ -1558,6 +1568,7 @@ export class LazyWorkflowCli {
 
   private async integrateAzureWorkspaceCode(
     options: CliOptions,
+    declaredOptions: CliOptions,
     hu: number,
     ticket: number,
     scope: WorkspaceScope,
@@ -1882,7 +1893,12 @@ export class LazyWorkflowCli {
       // Without a fixed --ticket the run is a drain: select the next eligible child of the HU, as
       // single-repository `code --hu` does. Only a clean delivery continues; an unclean one stops
       // with its checkpoint intact so the operator reconciles before more work is claimed.
-      if (options.ticket === null) return this.runAzureWorkspaceCode({ ...options, session: null });
+      // The next unit starts on the CLI the operator declared, not on whatever this unit adopted
+      // from its own checkpoint or fallback handoff (issue: a mid-drain descent otherwise poisoned
+      // every ticket after it with a CLI/model pairing nobody asked for).
+      if (options.ticket === null) {
+        return this.runAzureWorkspaceCode({ ...this.restoreDeclaredCli(declaredOptions, options), session: null });
+      }
     }
     return 0;
   }
