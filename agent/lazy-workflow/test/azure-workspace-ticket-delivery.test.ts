@@ -247,3 +247,81 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
   }
   expect(workspacePrepareCalled.value).toBe(false);
 });
+test("code --hu without --ticket drains the HU's eligible children across the workspace", async () => {
+  const harness = createHarness();
+  let selections = 0;
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async () => {
+        selections += 1;
+        // The delivered ticket lands in a completed state, so the drain finds an empty queue next.
+        return selections === 1
+          ? {
+            context: {
+              hu: { id: hu },
+              ticket: { id: ticket, type: "Task" as const, state: "Active" },
+              integrationBranch,
+            },
+            pending: true,
+          }
+          : { context: null, pending: false };
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  // Selected once for the delivered unit, once more to discover the queue is empty.
+  expect(selections).toBe(2);
+  expect(harness.events.filter((event) => event === "opencode:run")).toHaveLength(1);
+  expect(harness.ticketStateCalls.map((entry) => entry.desiredState)).toContain("Done");
+  expect(await harness.readCheckpoint()).toBeNull();
+});
+
+test("code --hu without --ticket reports an empty queue without delivering anything", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async () => ({ context: null, pending: false }),
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.events.filter((event) => event === "opencode:run")).toHaveLength(0);
+});
+
+test("code --hu without --ticket fails closed when work is pending but nothing is eligible", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async () => ({ context: null, pending: true }),
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  // A blocked queue is a dependency wait the operator resolves, not a finished HU.
+  expect(exit).toBe(1);
+  expect(harness.events.filter((event) => event === "opencode:run")).toHaveLength(0);
+});
+
+test("code --hu --ticket delivers exactly that unit without selecting", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async () => { throw new Error("must not select"); },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.events.filter((event) => event === "opencode:run")).toHaveLength(1);
+});

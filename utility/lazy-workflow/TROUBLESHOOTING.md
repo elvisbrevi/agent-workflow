@@ -34,7 +34,9 @@ re-implements work that is already committed.
 | `--fallback-wait-max N no puede ser menor que --fallback-wait M` | The bound must cover at least one interval |
 | `deploy-sag solo permite DEV, TEST o QA` | PROD and its aliases fail closed by design |
 | `--working-directory CSV solo se permite con plan o code` | Workspace runs are planning and delivery only |
-| `runAzureWorkspaceCode requiere --ticket <id>` | An Azure workspace delivery needs `--hu` and `--ticket` |
+| `runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo` | `--ticket` is optional, but a supplied one must be a positive integer |
+| `el checkpoint workspace Azure pertenece al ticket N` | A `--ticket` contradicting the delivery in flight; drop it or pass that one |
+| `no hay un ticket elegible todavía para la HU N` | The queue is blocked: a predecessor has not landed. `hu-children-info --hu <id>` shows the graph |
 | `--commit requiere el nombre de objeto completo` | Full 40+ hex object name, never abbreviated |
 
 ## The delivery stopped with unmet completion gates

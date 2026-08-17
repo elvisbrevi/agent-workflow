@@ -293,3 +293,49 @@ test("azure workspace delivery cleans the ticket branch of repositories without 
   expect(harness.deletedTicketBranches).toEqual([`${repoB}:${ticketBranch}`]);
   expect(cleared).toBeNull();
 });
+
+test("azure workspace recovery pins the checkpointed ticket when no --ticket is given", async () => {
+  const harness = createAzureWorkspaceHarness();
+  let exit = -1;
+  let selected = 0;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async () => { selected += 1; return { context: null, pending: false }; },
+    });
+    // The interrupted run already produced both manifests before it stopped.
+    for (const path of [pathA, pathB]) await Bun.write(join(path, "lazy-workflow/completion-manifest.json"), "{}");
+    await harness.writeCheckpoint(checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""), {
+      phase: "implementation-ready",
+      units: [unit(pathA, repoA), unit(pathB, repoB)],
+    }));
+    exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  // The delivery in flight owns the run: recovery finishes the checkpointed unit rather than
+  // opening a session or selecting a new one. The single selection is the drain continuing
+  // afterwards, which then finds the queue empty.
+  expect(exit).toBe(0);
+  expect(harness.events).not.toContain("opencode:run");
+  expect(harness.ticketStateCalls.map((entry) => entry.desiredState)).toEqual(["Done"]);
+  expect(selected).toBe(1);
+});
+
+test("azure workspace recovery stops when --ticket contradicts the checkpointed unit", async () => {
+  const harness = createAzureWorkspaceHarness();
+  let exit = -1;
+  let preserved: AzureWorkspaceCheckpoint | null = null;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    const checkpoint = checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""));
+    await harness.writeCheckpoint(checkpoint);
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket + 1}`, "--working-directory", `${pathA}, ${pathB}`]);
+    preserved = await harness.readCheckpoint();
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(harness.prCreateCalls).toHaveLength(0);
+  expect(harness.events).not.toContain("opencode:run");
+  expect(preserved?.ticket).toBe(ticket);
+});

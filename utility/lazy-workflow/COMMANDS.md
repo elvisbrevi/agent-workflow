@@ -40,7 +40,7 @@ Authorization header, never persisted and never sent to the agent.
 |---|---|---|
 | `--hu <id>` | `plan`, `code`, SAG | Azure HU scope; without it the run is GitHub-only |
 | `--issue <id>` | SAG only | The explicit tracker item under review, verification or deployment |
-| `--ticket <id>` | Azure workspace `code`, `ticket-*` tools | The delivery work item |
+| `--ticket <id>` | Azure workspace `code`, `ticket-*` tools | The delivery work item; optional for `code`, where omitting it drains the HU |
 | `--branch <name>` | Azure flows | Rejected in GitHub scope |
 | `--base-branch <name>` | Azure flows | Required only when creating `hu/<HU>` for the first time |
 | `--normas-sag` | `plan`, `code` | Loads the SAG norms of the phase |
@@ -94,14 +94,22 @@ mutually exclusive; `--verbose-output` implies `--verbose`.
 ```bash
 lazy-workflow plan --working-directory /repo-a,/repo-b
 lazy-workflow code --working-directory /repo-a,/repo-b
-lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b
+lazy-workflow code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
+lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
 ```
 
 Each entry must be a Git repository root with an `origin` remote and a clean
 worktree; entries are canonicalised, duplicates rejected, and the declared order
 is the delivery order. All repositories must belong to the same provider —
-GitHub in the default scope, Azure DevOps with `--hu`, where `code` also requires
-`--ticket`. A single path keeps single-repository behaviour unchanged.
+GitHub in the default scope, Azure DevOps with `--hu`. A single path keeps
+single-repository behaviour unchanged.
+
+Azure workspace `code` drains the HU's eligible `Task` and `Bug` children the way
+the single-repository run does, one unit per fresh session, in the same
+predecessor-aware order; `--ticket` narrows the run to that unit and stops after
+it (ADR-0028). The drain continues only after a clean delivery — an unclean one
+stops with its checkpoint intact — and a queue with pending but ineligible work
+stops rather than reporting an empty one.
 
 One session works across the whole workspace. After `IMPLEMENTATION_READY` the
 coordinator verifies every per-repository manifest and then delivers the changed
