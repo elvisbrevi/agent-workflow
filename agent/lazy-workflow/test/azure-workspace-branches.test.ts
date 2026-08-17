@@ -249,6 +249,27 @@ test("prepareWorkspaceBranches respeta un Branch ArtifactLink existente como anc
   expect(new Set(fixture.pushCommands.map(({ repository }) => repository))).toEqual(new Set([remoteUrlA]));
 });
 
+test("prepareWorkspaceBranches adopta la rama vinculada aunque no se llame hu/<HU>", async () => {
+  const linkedBranch = "refs/heads/feature/sdui";
+  const fixture = workspaceFixture({
+    huRelations: [{
+      rel: "ArtifactLink",
+      url: `vstfs:///Git/Ref/${projectId}%2F${repositoryId(repoA)}%2FGBfeature%2Fsdui`,
+      attributes: { name: "Branch" },
+    }],
+    repositories: [
+      { remoteUrl: remoteUrlA, remoteBranches: { [baseBranch]: baseSha, [linkedBranch]: baseSha } },
+      { remoteUrl: remoteUrlB, remoteBranches: { [baseBranch]: baseSha, [linkedBranch]: baseSha } },
+    ],
+  });
+
+  const topology = await fixture.service.prepareWorkspaceBranches({ hu, repositories: fixture.repositories });
+
+  expect(topology.integrationBranch).toBe(linkedBranch);
+  expect(topology.anchor.workingDirectory).toBe("/repo/a");
+  expect(topology.units.every(({ integrationBranchCreated }) => integrationBranchCreated)).toBe(false);
+});
+
 test("prepareWorkspaceBranches falla cerrado ante múltiples Branch ArtifactLink existentes", async () => {
   const fixture = workspaceFixture({
     huRelations: [
