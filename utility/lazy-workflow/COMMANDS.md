@@ -1,175 +1,129 @@
-# Command catalog
+# Workflow commands and flags
 
-Every command, its required arguments, and what it costs. Inside
-`agent/lazy-workflow/` the globally installed `lazy-workflow <command>` and
-`bun run main.ts <command>` are interchangeable.
+The commands that open a session or drive an adapter-backed workflow, and every
+flag they accept. The deterministic tools have their own file
+([TOOLS.md](TOOLS.md)), and what the agent flags actually change is in
+[CODING-AGENTS.md](CODING-AGENTS.md).
 
 `lazy-workflow` with no subcommand — or with an unsupported one — prints the
-complete help, which is the authority when this file and the binary disagree.
+complete help, which is the authority whenever this file and the binary disagree.
 
-## Session commands
+## The commands
 
-These open one coding-agent session and accept the agent flags (`--cli`,
-`--model`, `--variant`, `--fallback`, `--fallback-wait`, `--fallback-wait-max`,
-`--prompt`, `--session`) and the reporter flags.
+| Command | Required | Opens a session | Notes |
+|---|---|---|---|
+| `plan` | — | yes | GitHub scope: maps the requested work, mutates nothing |
+| `plan --hu <id>` | `--hu` | yes | Slices the HU; the coordinator publishes the work items in dependency order |
+| `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
+| `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
+| `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |
+| `architecture-review-sag` | exactly one of `--hu` / `--issue` | yes | Reviews without modifying the tree; publishes findings as corrective work |
+| `infra-sag` | exactly one of `--hu` / `--issue` | no | Read-only prerequisite verification through its adapter |
+| `deploy-sag` | exactly one of `--hu` / `--issue` | no | Deploys through its adapter; PROD fails closed |
 
-| Command | Required | Optional highlights |
-|---|---|---|
-| `plan` | — (GitHub scope) | `--prompt`, `--number-of-questions`, `--interview*`, `--normas-sag`, `--working-directory` |
-| `plan --hu <id>` | `--hu` | same as above; publishes the plan's work items in dependency order |
-| `code` | — (GitHub scope) | `--normas-sag`, `--working-directory`, `--session` |
-| `code --hu <id>` | `--hu` | `--base-branch` (first delivery only), `--ticket` (workspace runs), `--normas-sag` |
-| `code --session <id> --prompt continue` | `--session` | `--model`, `--variant` to continue on another rung |
-| `architecture-review-sag` | exactly one of `--hu` / `--issue` | `--cli`; runs under `lazy-review`, cannot modify the reviewed tree |
+The three SAG commands always load SAG norms and require `.sag/config.json` with
+an explicit `tipo` of `api`, `bff` or `nextjs`; the component is never inferred
+from source layout. They reject `--session`, `--branch` and `--base-branch`, and
+`infra-sag` rejects every flag outside its own set.
 
-`infra-sag` and `deploy-sag` are listed with the session commands in the help but
-verify and deploy through their own adapters without opening a session:
+`plan` and `code` accept `--normas-sag` to load phase-appropriate norms opt-in,
+per run: `plan --normas-sag` does not imply `code --normas-sag`. Plain `plan` and
+`code` never read SAG sources at all. Norm loading resolves a commit, stable rule
+ids, source URLs and selection reasons; an unavailable source or an invalid
+configuration stops the run before a session opens. If the canonical source needs
+authentication, provide `AZURE_DEVOPS_EXT_PAT` — it is used only in the request
+Authorization header, never persisted and never sent to the agent.
 
-| Command | Required | Notes |
-|---|---|---|
-| `infra-sag` | exactly one of `--hu` / `--issue` | read-only; rejects any flag outside its own set |
-| `deploy-sag` | exactly one of `--hu` / `--issue` | `--environment dev\|test\|qa` (default `dev`); PROD fails closed |
-
-All three SAG workflows always load SAG norms and require `.sag/config.json`
-with an explicit `tipo` of `api`, `bff`, or `nextjs`. They reject `--session`,
-`--branch` and `--base-branch`.
-
-## Scope and context flags
+## Scope and context
 
 | Flag | Applies to | Meaning |
 |---|---|---|
 | `--hu <id>` | `plan`, `code`, SAG | Azure HU scope; without it the run is GitHub-only |
-| `--issue <id>` | SAG only | The explicit tracker item under review/verification/deployment |
-| `--ticket <id>` | Azure `code` (workspace), `ticket-*` | The delivery work item |
-| `--branch`, `--base-branch` | Azure flows only | Rejected in GitHub scope |
-| `--normas-sag` | `plan`, `code` | Loads phase-appropriate norms from the canonical SAG `master` |
+| `--issue <id>` | SAG only | The explicit tracker item under review, verification or deployment |
+| `--ticket <id>` | Azure workspace `code`, `ticket-*` tools | The delivery work item |
+| `--branch <name>` | Azure flows | Rejected in GitHub scope |
+| `--base-branch <name>` | Azure flows | Required only when creating `hu/<HU>` for the first time |
+| `--normas-sag` | `plan`, `code` | Loads the SAG norms of the phase |
+| `--environment <dev\|test\|qa>` | `deploy-sag` | Default `dev`; PROD and aliases fail closed |
 | `--working-directory <path[,path...]>` | all | Defaults to cwd; a CSV makes it a workspace run (`plan`/`code` only) |
-| `--environment <dev\|test\|qa>` | `deploy-sag` | Default `dev` |
 
 ## Agent flags
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--cli <opencode\|claudecode>` | `opencode` | Binary verified while parsing when supplied |
-| `--model <id>` | `opencode-go/deepseek-v4-pro` | Written exactly as the selected CLI exposes it |
-| `--variant <effort>` | `high` | Claude Code accepts `low\|medium\|high\|xhigh\|max` |
-| `--fallback <cli>:<model>:<variant>` | — | Repeatable; declaration order is descent order |
-| `--fallback-wait <s>` | `300` | Interval between retries once the chain is exhausted |
-| `--fallback-wait-max <s>` | `3600` | Wall-clock bound of the wait-and-retry cycle |
-| `--prompt <text>` | a fixed default | Supplemental operator request, never authoritative |
-| `--session <id>` | — | Resume the preserved session recorded in the checkpoint |
+`--cli`, `--model`, `--variant`, `--fallback`, `--fallback-wait`,
+`--fallback-wait-max`, `--prompt`, `--session`. Defaults, valid values and the
+behaviour behind each: [CODING-AGENTS.md](CODING-AGENTS.md).
 
-The chain descends only on provider exhaustion — usage or rate limit, quota,
-billing, authentication (ADR-0024). A session that fails its task never descends.
-A backup on the same CLI resumes the session; a backup on another CLI hands the
-same fixed unit of work to a fresh session with the progress verified on disk
-(ADR-0025). The descent is sticky for the unit in progress only.
-
-## Planning interview flags (`plan` only)
+## Planning interview (`plan` only)
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--interview <off\|http\|terminal\|file>` | `off` | Who answers the clarifying questions |
-| `--interview-timeout <s>` | `900` | Per round; once spent the session's recommendations are taken |
-| `--interview-rounds <n>` | `8` | Bound on round trips |
-| `--interview-host <host>` | `127.0.0.1` | `http` only |
-| `--interview-port <n>` | `0` (ephemeral) | `http` only |
+| `--interview-timeout <s>` | `900` | Per round; once spent, the session's own recommendations are taken and the run continues |
+| `--interview-rounds <n>` | `8` | Bound on round trips; the last round is told to deliver the plan |
+| `--interview-host <host>` | `127.0.0.1` | `http` only; outside loopback the URL and its token are the only credential |
+| `--interview-port <n>` | `0` (ephemeral) | `http` only, so two runs never collide |
 | `--interview-dir <path>` | — | `file` only, and required for it |
 
-`--number-of-questions` (default `5`) is the budget for the whole interview.
-Rejected together with `--quiet`.
+A planning run answers its own questions by default — it takes the recommendation
+it would have offered and continues, which is what an unattended run needs.
+`--interview` makes those decisions the operator's instead (ADR-0027):
 
-## Reporter flags
+- **`http`** serves a page on loopback and prints its URL, with every
+  recommendation prefilled, so submitting it unchanged equals not answering.
+  Answerable from a browser or with `curl` against `<url>/round` and `<url>/answers`.
+- **`terminal`** asks in the launching terminal, reading `/dev/tty`, so it still
+  works when the JSON result is piped. An empty line accepts the recommendation.
+- **`file`** writes `ronda-<n>.preguntas.json` and waits for
+  `ronda-<n>.respuestas.json` in `--interview-dir` — the channel for any other UI,
+  bot or agent, and the files remain as the record of what was decided.
 
-`--verbose` (adds reasoning and tool calls), `--verbose-output` (adds every tool
-input/output and the raw event; implies `--verbose`), `--quiet` (errors only),
-`--no-color`. `--verbose` and `--quiet` are mutually exclusive.
+`--number-of-questions <n>` (default `5`) is the budget for the whole interview,
+spent across as many rounds as the session needs. An unusable channel — a taken
+port, no terminal, a directory owned by another interview — stops the run before
+a session opens. If a round expires or the channel disappears mid-interview, the
+run reports it and continues with the recommendations rather than failing.
 
-## Azure reads (no session)
+## Reporter
 
-```bash
-lazy-workflow hu-info --hu <id>
-lazy-workflow hu-children-info --hu <id>
-lazy-workflow hu-branch-info --hu <id>
-lazy-workflow ticket-info --hu <id> --ticket <id>
-lazy-workflow ticket-type-info --ticket <id>
-lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>
-lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>
-```
+`--verbose`, `--verbose-output`, `--quiet`, `--no-color` — see
+[Watching a run](CODING-AGENTS.md#watching-a-run). `--verbose` and `--quiet` are
+mutually exclusive; `--verbose-output` implies `--verbose`.
 
-## Azure writes (no session)
-
-```bash
-lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>
-lazy-workflow hu-branch-ensure --hu <id> [--base-branch <name>] --working-directory <path>
-lazy-workflow hu-state-set --hu <id> --state <state> --expected-state <state> --expected-rev <rev>
-lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <t> --description-file <path> \
-  [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<value>]
-lazy-workflow ticket-link-parent --parent <id> --child <id>
-lazy-workflow ticket-link-predecessor --blocker <id> --blocked <id>
-lazy-workflow ticket-description-set --ticket <id> --description-file <path>
-lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>
-lazy-workflow ticket-effort-set --ticket <id> --real-effort <h> --real-effort-hh <h> --expected-rev <rev>
-lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>
-lazy-workflow ticket-branch-checkout --branch <name> --working-directory <path>
-lazy-workflow ticket-branch-push --branch <name> --working-directory <path>
-lazy-workflow ticket-pr-create --hu <id> --ticket <id>
-lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>
-lazy-workflow ticket-commit-link --ticket <id> --pr <id>
-lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
-lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>
-lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>
-```
-
-`--field` is repeatable and takes Azure **reference names**, never display
-labels (ADR-0006). `--file`/`--kind` accept `--evidence-file`/`--evidence-kind`
-as aliases. `ticket-state-set` and `ticket-effort-set` are optimistic writes:
-supply the `--expected-state` / `--expected-rev` you just read, so a ticket that
-moved underneath you fails instead of being overwritten. `Done` is not reachable
-from `ticket-state-set`.
-
-## GitHub tools (no session)
+## Multi-repository workspaces
 
 ```bash
-lazy-workflow github-auth-info    --working-directory <path>
-lazy-workflow github-repo-info    --working-directory <path>
-lazy-workflow github-issue-list   --working-directory <path>
-lazy-workflow github-issue-select --working-directory <path>
-lazy-workflow github-issue-info    --issue <id> --working-directory <path>
-lazy-workflow github-issue-claim   --issue <id> --working-directory <path>
-lazy-workflow github-issue-release --issue <id> --working-directory <path>
-lazy-workflow github-issue-close   --issue <id> --pr <id> --commit <sha> --working-directory <path>
-lazy-workflow github-branch-prepare  --issue <id> --working-directory <path>
-lazy-workflow github-branch-checkout --branch <name> --base-branch <name> --working-directory <path>
-lazy-workflow github-branch-verify   --branch <name> --base-branch <name> --working-directory <path>
-lazy-workflow github-branch-cleanup  --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-manifest-info --manifest <path> --working-directory <path>
-lazy-workflow github-commit-push   --branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-pr-merge  --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
+lazy-workflow plan --working-directory /repo-a,/repo-b
+lazy-workflow code --working-directory /repo-a,/repo-b
+lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b
 ```
 
-## git tools (no session)
+Each entry must be a Git repository root with an `origin` remote and a clean
+worktree; entries are canonicalised, duplicates rejected, and the declared order
+is the delivery order. All repositories must belong to the same provider —
+GitHub in the default scope, Azure DevOps with `--hu`, where `code` also requires
+`--ticket`. A single path keeps single-repository behaviour unchanged.
 
-```bash
-lazy-workflow git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>
-```
+One session works across the whole workspace. After `IMPLEMENTATION_READY` the
+coordinator verifies every per-repository manifest and then delivers the changed
+repositories one at a time in the declared order; repositories without changes
+must end clean. The issue is closed — or the Azure ticket completed and the HU
+moved on — only after every required unit and every tracker gate is verified.
+Recovery requires the exact same normalized list, in the same order, with the
+same remote identities; an added, removed, reordered or remote-changed repository
+stops the run before any external effect.
 
-`--branch` and `--base-branch` accept the short name (`issue/201`) or the full
-ref (`refs/heads/issue/201`). `--commit` requires the full object name, because
-every tool that takes one compares it against a ref. Tool commands open no
-session, so `--cli`, `--model`, `--variant` and `--fallback` do not apply.
+## What `code` does after the session
 
-## Authority per run
+Both scopes follow the same shape: the session implements and emits
+`IMPLEMENTATION_READY`, then the coordinator validates the manifest against Git
+metadata, creates or reuses exactly one pull request, associates it, merges it,
+closes the issue or publishes effort and evidence and verifies every completion
+gate before moving the ticket to `Done`, cleans the delivery branch, and only
+then selects the next unit of work.
 
-| Profile | Used by | Denies |
-|---|---|---|
-| `lazy-github-plan` | `plan` without `--hu` | pushes, branch/remote mutation, `gh pr`/`gh repo`/`gh api`, all `az` |
-| `lazy-github-code` | `code` without `--hu` | the above plus every `gh issue` mutation |
-| `lazy-azure-plan` | `plan --hu` | pushes, branch/remote mutation, all `az` and all `gh` |
-| `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |
-| `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh` and `az` command |
-
-A denied command fails as a permission error, and compound commands are matched
-per sub-command. This is why a `--prompt` may not ask the session to read the
-tracker itself — materialize what it needs with a tool command first.
+Two consequences worth stating when answering: a delivery that stopped after
+`IMPLEMENTATION_READY` is resumed by rerunning the **original** command, not by
+starting a new one; and a GitHub pull request that conflicts with its base is
+reconciled by a conflict-only session for the same issue, branch and PR, accepted
+only when the new manifest commit contains both the original implementation and
+the fixed base.

@@ -4,20 +4,18 @@ The operator output is Spanish; the messages below are what the terminal shows.
 Read the message first, then run the tool command that produces the evidence,
 then rerun the same workflow command. Nothing here needs a new session.
 
-## Markers a run ends on
+`scripts/preflight.sh` gathers most of that evidence in one pass, and the failing
+probe usually names the cause directly. Remember where to look: the JSON result
+is on stdout, and every explanation is on stderr.
 
-| Marker | Meaning |
-|---|---|
-| `PLAN_READY` | The planning session returned a plan; the coordinator publishes it |
-| `IMPLEMENTATION_READY` | The session finished implementing; the coordinator owns everything after it |
-| `TICKET_COMPLETED`, `WORKFLOW_STEP_FINISHED` | Emitted by the coordinator only, after every gate passed |
-| `QUEUE_EMPTY`, `QUEUE_BLOCKED` | Coordinator-owned queue outcomes; a session may not print them |
-| `RECONCILIATION_REQUIRED` | A checkpoint survives and must be reconciled before new work is selected |
-| `ARCHITECTURE_REVIEW_RESULT` | The review's findings, published as corrective tracker work |
+## Start from the marker it ended on
 
-A run that ends on `IMPLEMENTATION_READY` without `TICKET_COMPLETED` did not
-fail at implementation — it stopped in the coordinator phase. Rerun the original
-command to resume that phase; do not start a new delivery.
+The marker says who must act next — the full table is in
+[Markers](CODING-AGENTS.md#markers). The one that is read wrong most often:
+a run ending on `IMPLEMENTATION_READY` without `TICKET_COMPLETED` did **not**
+fail at implementation. It stopped in the coordinator phase, and rerunning the
+original command resumes exactly there. Starting a new delivery instead
+re-implements work that is already committed.
 
 ## Argument errors
 
@@ -76,11 +74,12 @@ A `code --hu` run queries the HU's native Branch link before selecting anything.
 ## The GitHub queue took nothing
 
 ```bash
-lazy-workflow github-auth-info    --working-directory /repo   # authentication
-lazy-workflow github-repo-info    --working-directory /repo   # repository identity
-lazy-workflow github-issue-list   --working-directory /repo   # every candidate and why it is skipped
-lazy-workflow github-issue-select --working-directory /repo   # what a run would take right now
+scripts/preflight.sh --working-directory /repo   # authentication, repository, candidates, selection
 ```
+
+`github-issue-list` is the probe that matters here: it classifies every candidate
+with the reason it is or is not eligible, which is the actual answer to "the
+queue was empty".
 
 An issue claimed by an interrupted run is released with
 `github-issue-release --issue <id> --working-directory <path>`.

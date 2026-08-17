@@ -9,21 +9,19 @@ The whole shape of the request in the order it executes.
 
 ```bash
 # 1. Read the HU before planning it — no session, no cost
-lazy-workflow hu-info --hu 23438
-lazy-workflow hu-children-info --hu 23438
+scripts/preflight.sh --hu 23438 --working-directory /repo
+#   (equivalently: hu-info, hu-children-info and hu-branch-info one by one)
 
 # 2. Plan: the session slices the HU, the coordinator publishes the work items
 lazy-workflow plan --hu 23438 --normas-sag \
   --prompt "Prioritize the read paths before the write paths; keep ticket titles in Spanish." \
   --working-directory /repo
 
-# 3. Confirm what was published before spending a delivery run
-lazy-workflow hu-children-info --hu 23438
+# 3. Confirm what was published, and whether the HU has an integration branch:
+#    a "branch": null in the preflight means step 4 needs --base-branch
+scripts/preflight.sh --hu 23438 --working-directory /repo
 
-# 4. Is there an HU branch? A null link means step 5 needs --base-branch
-lazy-workflow hu-branch-info --hu 23438
-
-# 5. Deliver the published Task and Bug tickets, one fresh session each
+# 4. Deliver the published Task and Bug tickets, one fresh session each
 lazy-workflow code --hu 23438 --normas-sag --base-branch main \
   --prompt "Cover every acceptance criterion with a test before closing the ticket." \
   --working-directory /repo
@@ -64,9 +62,8 @@ lazy-workflow plan --interview file --interview-dir /tmp/entrevista --working-di
 ## "Drain the GitHub backlog of this repository"
 
 ```bash
-lazy-workflow github-auth-info  --working-directory /repo   # can it reach GitHub at all
-lazy-workflow github-issue-list --working-directory /repo   # what is eligible, and why the rest is skipped
-lazy-workflow code --working-directory /repo                # deliver them, one fresh session each
+scripts/preflight.sh --working-directory /repo   # auth, repository, queue and the next selection
+lazy-workflow code --working-directory /repo     # deliver them, one fresh session each
 ```
 
 `code` re-selects the next eligible issue after every verified delivery until the
