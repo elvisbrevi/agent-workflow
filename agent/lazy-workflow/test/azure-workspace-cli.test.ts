@@ -311,10 +311,10 @@ async function setupWorkspaceFallbackFixture() {
 
 test("un agotamiento con respaldo de otro CLI continúa el workspace en una sesión fresca del CLI nuevo", async () => {
   const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
-  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null }> = [];
+  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null; workingDirectory?: string }> = [];
   const agentSource = (cli: AgentCli): CodingAgent => ({
     run: async (options) => {
-      started.push({ cli, model: options.model, variant: options.variant, session: options.session });
+      started.push({ cli, model: options.model, variant: options.variant, session: options.session, workingDirectory: options.workingDirectory });
       if (cli === "opencode") {
         return {
           result: { text: "agotado", sessionId: "ses_exhausted", failed: true } as never,
@@ -340,6 +340,12 @@ test("un agotamiento con respaldo de otro CLI continúa el workspace en una sesi
     expect(started[1]?.model).toBe("claude-opus-5");
     expect(started[1]?.variant).toBe("high");
     expect(started[1]?.session).toBeNull();
+    // The handed-off session has to spawn in the workspace's common parent, not the raw
+    // `--working-directory` value (a comma-separated repository list, not a real path):
+    // spawning a CLI there fails outright before it can even open a session.
+    const expectedParent = await realpath(root);
+    expect(started[0]?.workingDirectory).toBe(expectedParent);
+    expect(started[1]?.workingDirectory).toBe(expectedParent);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
