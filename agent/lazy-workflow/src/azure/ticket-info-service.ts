@@ -322,15 +322,39 @@ function participantBranch(
   return { ref: participant[side], project: participant.project, repository: participant.repository };
 }
 
-function sanitizeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+function sanitizeText(message: string): string {
   return message
     .replace(/("?(?:accessToken|authorization|token|password|cookie)"?\s*[:=]\s*"?)[^",\s}]+/gi, "$1[REDACTED]")
     .replace(/(Bearer\s+)[^\s]+/gi, "$1[REDACTED]");
 }
 
-function commandError(error: unknown): Error {
-  return new Error(`Azure command failed: ${sanitizeError(error)}`, { cause: error });
+function sanitizeError(error: unknown): string {
+  return sanitizeText(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * Bun's shell puts the reason a command failed in `stderr` and leaves the thrown message as a bare
+ * exit code. For `az` the reason is the whole value of the error — an expired MFA token naming the
+ * tenant to re-authenticate against, a rejected patch, a missing permission — so it is read here and
+ * carried into the message the operator sees. It is sanitized like any other Azure output.
+ */
+const STDERR_LIMIT = 2000;
+
+function commandStderr(error: unknown): string {
+  const stderr = (error as { stderr?: unknown } | null)?.stderr;
+  if (stderr === undefined || stderr === null) return "";
+  const text = typeof stderr === "string"
+    ? stderr
+    : stderr instanceof Uint8Array
+      ? new TextDecoder().decode(stderr)
+      : String(stderr);
+  return text.trim().slice(0, STDERR_LIMIT);
+}
+
+export function commandError(error: unknown): Error {
+  const stderr = commandStderr(error);
+  const detail = stderr ? `${sanitizeError(error)}: ${sanitizeText(stderr)}` : sanitizeError(error);
+  return new Error(`Azure command failed: ${detail}`, { cause: error });
 }
 
 function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {

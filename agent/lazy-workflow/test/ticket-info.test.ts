@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
-import { AzureTicketInfoService } from "../src/azure/ticket-info-service.ts";
+import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 
@@ -1312,4 +1312,34 @@ test("completion apply reconciles missing effects before moving the ticket to Do
     await unlink(evidencePath);
     await unlink(manifestPath);
   }
+});
+
+test("un fallo de az explica la razón que Azure dio en stderr, no solo el exit code", () => {
+  // Bun shell leaves the thrown message as a bare exit code, so an unread stderr is the difference
+  // between "refresh your multi-factor authentication" and an operator with nothing to act on.
+  const shellFailure = Object.assign(new Error("Failed with exit code 1"), {
+    stderr: new TextEncoder().encode("ERROR: AADSTS50078: Presented multi-factor authentication has expired\n"),
+  });
+
+  const reported = commandError(shellFailure).message;
+
+  expect(reported).toContain("Failed with exit code 1");
+  expect(reported).toContain("AADSTS50078");
+  expect(reported).toContain("multi-factor authentication has expired");
+});
+
+test("un fallo de az no filtra credenciales del stderr", () => {
+  const shellFailure = Object.assign(new Error("Failed with exit code 1"), {
+    stderr: "ERROR: rejected request with Bearer eyJ0eXAiOiJKV1Qi and accessToken=super-secreto\n",
+  });
+
+  const reported = commandError(shellFailure).message;
+
+  expect(reported).toContain("[REDACTED]");
+  expect(reported).not.toContain("eyJ0eXAiOiJKV1Qi");
+  expect(reported).not.toContain("super-secreto");
+});
+
+test("un fallo de az sin stderr conserva el mensaje original", () => {
+  expect(commandError(new Error("boom")).message).toBe("Azure command failed: boom");
 });
