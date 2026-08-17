@@ -17,7 +17,7 @@ import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
 import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.ts";
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
-import { GitTicketBranchCleaner } from "../src/git/git-ticket-branch-cleaner.ts";
+import { GitTicketBranchCleaner, checkoutGitBranch } from "../src/git/git-ticket-branch-cleaner.ts";
 import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
@@ -268,6 +268,42 @@ test("Git cambia a la rama HU actualizada y elimina la rama del ticket local y r
     ["ls-remote", "--heads", "origin", "refs/heads/ticket/51-programas"],
     ["push", "origin", "--delete", "ticket/51-programas"],
   ]);
+});
+
+function checkoutFixture(localSha: string, remoteSha: string, mergeBase: string) {
+  const commands: string[][] = [];
+  const git = async (args: string[]): Promise<string> => {
+    commands.push(args);
+    if (args[0] === "status") return "";
+    if (args[0] === "symbolic-ref") return "ticket/23574\n";
+    if (args[0] === "branch" && args[1] === "--list") return "  ticket/23574\n";
+    if (args[0] === "rev-parse") return `${args[1]!.startsWith("refs/remotes/") ? remoteSha : localSha}\n`;
+    if (args[0] === "merge-base") return `${mergeBase}\n`;
+    return "";
+  };
+  return { commands, git };
+}
+
+test("checkout de la rama del ticket acepta un commit local que todavía no se ha pusheado", async () => {
+  // La entrega commitea y recién después pushea: exigir que el local ya coincida
+  // con el remoto rechazaba justo el trabajo que el push siguiente iba a subir.
+  const local = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const remote = "66661e7f75793c95b17b209750013ea52c6cf66d";
+  const { commands, git } = checkoutFixture(local, remote, remote);
+
+  await checkoutGitBranch(git, "refs/heads/ticket/23574", "/repo");
+
+  expect(commands).toContainEqual(["switch", "ticket/23574"]);
+});
+
+test("checkout de la rama del ticket rechaza una rama local divergente", async () => {
+  const local = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
+  const remote = "66661e7f75793c95b17b209750013ea52c6cf66d";
+  const { commands, git } = checkoutFixture(local, remote, "0".repeat(40));
+
+  await expect(checkoutGitBranch(git, "refs/heads/ticket/23574", "/repo"))
+    .rejects.toThrow("no coincide con su rama remota");
+  expect(commands.some(([command]) => command === "switch")).toBeFalse();
 });
 
 test("Git no elimina ramas cuando el repositorio tiene cambios locales", async () => {
