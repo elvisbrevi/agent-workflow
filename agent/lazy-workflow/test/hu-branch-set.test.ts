@@ -268,7 +268,7 @@ test("hu-branch-set reutiliza la rama existente sin aplicar base ni tocar el wor
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "other-base"))
     .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
   expect(fixture.gitCommands.some((args) => args[0] === "push")).toBe(false);
   expect(fixture.patchBodies).toHaveLength(1);
 });
@@ -298,13 +298,14 @@ test("hu-branch-set falla cerrado ante cambios no rastreados", async () => {
   expect(fixture.patchBodies).toHaveLength(0);
 });
 
-test("hu-branch-set falla cerrado ante archivos no rastreados ignorados", async () => {
-  const fixture = provisioningFixture({ dirty: "!! .env.local\n" });
+test("hu-branch-set no mira los archivos ignorados y publica pese a artefactos de build", async () => {
+  const fixture = provisioningFixture({ verificationSha: "1".repeat(40) });
 
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
-    .rejects.toThrow("cambios");
-  expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
+    .resolves.toEqual({ hu, branch: "refs/heads/feature/hu-126" });
+  expect(fixture.gitCommands).toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
+  expect(fixture.gitCommands.some((args) => args[0] === "status" && args.includes("--ignored"))).toBe(false);
+  expect(fixture.patchBodies).toHaveLength(1);
 });
 
 test("hu-branch-set falla si el ref temporal local ya existe", async () => {
@@ -330,7 +331,7 @@ test("hu-branch-set falla si la base remota explícita no existe", async () => {
   await expect(fixture.service.setIntegrationBranch(hu, "feature/hu-126", "/repo", "main"))
     .rejects.toThrow("base refs/heads/main");
   expect(fixture.patchBodies).toHaveLength(0);
-  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all", "--ignored"]);
+  expect(fixture.gitCommands).not.toContainEqual(["status", "--porcelain", "--untracked-files=all"]);
 });
 
 test("hu-branch-set no escribe Azure si la verificación remota no coincide con la base", async () => {
