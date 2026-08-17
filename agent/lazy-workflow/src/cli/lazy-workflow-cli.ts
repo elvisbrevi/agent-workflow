@@ -389,7 +389,7 @@ function isValidHu(hu: number | null): hu is number {
 
 function isAzureRemote(origin: string): boolean {
   const trimmed = origin.trim();
-  return /^https:\/\/dev\.azure\.com\/|^git@ssh\.dev\.azure\.com:|^https?:\/\/[^\/]*\.visualstudio\.com\//.test(trimmed);
+  return /^https:\/\/(?:[^@\/]+@)?dev\.azure\.com\/|^git@ssh\.dev\.azure\.com:|^https?:\/\/[^\/]*\.visualstudio\.com\//.test(trimmed);
 }
 
 function parseCli(args: string[], parser: CliParser): CliParseResult {
