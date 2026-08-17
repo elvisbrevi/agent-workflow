@@ -2,7 +2,7 @@
 
 # agent-workflow
 
-Reusable AI-agent workflows for software engineering: **19 prompt-driven
+Reusable AI-agent workflows for software engineering: **20 prompt-driven
 skills** and one executable agent,
 [`lazy-workflow`](agent/lazy-workflow/README.md).
 
@@ -67,7 +67,7 @@ client syntax or let the client select them when their trigger matches.
 | Implementation | `implement`, `tdd` | A ticket or specification is ready to build |
 | Diagnosis | `diagnose` | A defect needs reproduction and a regression test |
 | Review | `code-review`, `handoff` | Changes need review or session transfer |
-| Utility | `caveman`, `grilling`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, setup, or skill authoring |
+| Utility | `caveman`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, running the agent, setup, or skill authoring |
 
 Skills with `disable-model-invocation: true` are explicit-only. See each
 `SKILL.md` for its trigger and output contract.
@@ -77,6 +77,10 @@ Skills with `disable-model-invocation: true` are explicit-only. See each
 | Agent | Purpose | Source |
 |---|---|---|
 | `lazy-workflow` | Runs GitHub workflows by default and explicit Azure HU workflows | [`agent/lazy-workflow/`](agent/lazy-workflow/) |
+
+The `lazy-workflow` skill turns an intent — "plan and then code this HU with the
+SAG norms and my own prompt", "why did the queue stop" — into the exact command
+line, and knows when a deterministic tool answers it without opening a session.
 
 Install dependencies and run it from its directory:
 

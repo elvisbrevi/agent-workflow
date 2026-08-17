@@ -1,0 +1,3 @@
+interface:
+  display_name: "Lazy Workflow"
+  short_description: "Compose the right lazy-workflow command"
