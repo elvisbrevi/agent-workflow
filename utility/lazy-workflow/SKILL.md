@@ -144,7 +144,8 @@ because they cost nothing to avoid and a full error message to discover.
 - Every `--fallback <cli>:<model>:<variant>` rung has its binary verified while
   parsing; a repeated rung is an error, and `--fallback-wait-max` may not be
   smaller than `--fallback-wait`.
-- Azure multi-repository `code` requires `--hu` **and** `--ticket`.
+- Azure multi-repository `code` requires `--hu`; `--ticket` is optional and
+  narrows the run to that single unit instead of draining the HU.
 - `--commit` always takes the full object name.
 
 ## How to answer

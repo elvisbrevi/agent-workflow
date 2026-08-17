@@ -1239,8 +1239,8 @@ export class LazyWorkflowCli {
       reportOperator("runAzureWorkspaceCode requiere --hu");
       return 1;
     }
-    if (!options.ticket || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-      reportOperator("runAzureWorkspaceCode requiere --ticket <id> con un entero positivo");
+    if (options.ticket !== null && (!Number.isInteger(options.ticket) || options.ticket <= 0)) {
+      reportOperator("runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo");
       return 1;
     }
     if (!this.huInfoService.createOrReusePullRequest || !this.huInfoService.checkoutTicketBranch
@@ -1260,7 +1260,6 @@ export class LazyWorkflowCli {
       reportOperator("El servicio Azure no expone todas las primitivas de entrega workspace");
       return 1;
     }
-    const ticket = options.ticket;
     const hu = options.hu;
     const boundary = this.huInfoService;
     const startedAt = this.clock.now();
@@ -1282,6 +1281,9 @@ export class LazyWorkflowCli {
       reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
       return 1;
     }
+    const resolved = await this.resolveAzureWorkspaceTicket(hu, options, checkpoint);
+    if ("exit" in resolved) return resolved.exit;
+    const ticket = resolved.ticket;
     // Fail closed before any external effect: the recovered scope must be the same repositories,
     // in the same order, with the same remotes, for the same HU and ticket.
     if (checkpoint) {
@@ -1347,6 +1349,50 @@ export class LazyWorkflowCli {
       reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+  }
+
+  /**
+   * The delivery unit of an Azure workspace run. A surviving checkpoint pins it, an explicit
+   * `--ticket` fixes it, and otherwise the run drains the HU's eligible children with the same
+   * selection single-repository `code --hu` applies (ADR-0028).
+   */
+  private async resolveAzureWorkspaceTicket(
+    hu: number,
+    options: CliOptions,
+    checkpoint: AzureWorkspaceCheckpoint | null,
+  ): Promise<{ ticket: number } | { exit: number }> {
+    if (checkpoint) {
+      // The checkpointed unit is immutable: a contradicting --ticket is an operator error, not a
+      // reason to abandon the delivery already in flight.
+      if (options.ticket !== null && options.ticket !== checkpoint.ticket) {
+        reportOperator(`lazy-workflow: el checkpoint workspace Azure pertenece al ticket ${checkpoint.ticket}, no al ticket ${options.ticket}; ejecución detenida.`);
+        return { exit: 1 };
+      }
+      return { ticket: checkpoint.ticket };
+    }
+    if (options.ticket !== null) return { ticket: options.ticket };
+    if (!this.huInfoService.getAutocodeState) {
+      reportOperator("El servicio Azure no expone la selección de tickets pendientes de la HU");
+      return { exit: 1 };
+    }
+    let state: AutocodeState;
+    try {
+      state = await this.huInfoService.getAutocodeState(hu);
+    } catch (error) {
+      reportOperator(`lazy-workflow: no se pudo seleccionar el siguiente ticket de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+      return { exit: 1 };
+    }
+    if (!state.context) {
+      // Blocked and empty are different outcomes: pending work with no eligible unit is a
+      // dependency wait the operator must resolve, an empty queue is a finished HU.
+      if (state.pending) {
+        reportOperator(`lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
+        return { exit: 1 };
+      }
+      reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
+      return { exit: 0 };
+    }
+    return { ticket: state.context.ticket.id };
   }
 
   private async runAzureWorkspaceSession(
@@ -1748,6 +1794,10 @@ export class LazyWorkflowCli {
         return 1;
       }
       await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
+      // Without a fixed --ticket the run is a drain: select the next eligible child of the HU, as
+      // single-repository `code --hu` does. Only a clean delivery continues; an unclean one stops
+      // with its checkpoint intact so the operator reconciles before more work is claimed.
+      if (options.ticket === null) return this.runAzureWorkspaceCode({ ...options, session: null });
     }
     return 0;
   }

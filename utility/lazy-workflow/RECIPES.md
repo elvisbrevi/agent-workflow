@@ -126,13 +126,14 @@ tracker work.
 ```bash
 lazy-workflow plan --working-directory /repo-a,/repo-b
 lazy-workflow code --working-directory /repo-a,/repo-b
-lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b
+lazy-workflow code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
+lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
 ```
 
 Every entry must be a Git repository root with an `origin` remote and a clean
 worktree, all on the same provider, and the declared order is the delivery
-order. Azure workspace `code` requires `--ticket` as well as `--hu`. Recovery
-needs the exact same list, in the same order.
+order. Azure workspace `code` drains the HU's eligible children unless `--ticket`
+narrows it to one; recovery needs the exact same list, in the same order.
 
 ## "Publish tickets by hand, without planning"
 
