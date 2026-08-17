@@ -8,6 +8,12 @@ const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EVIDENCE_KINDS = ["http-json", "screen", "command-output"] as const;
+
+/** Cuánto se espera a que Azure materialice el merge que acaba de encolar. */
+const PULL_REQUEST_MERGE_ATTEMPTS = 15;
+const PULL_REQUEST_MERGE_INTERVAL_MS = 2_000;
+/** Estados de merge que Azure ya no va a mover por su cuenta. */
+const PULL_REQUEST_MERGE_FAILURES = ["conflicts", "failure", "rejectedByPolicy"];
 const TICKET_FIELDS = {
   description: "System.Description",
   state: "System.State",
@@ -499,10 +505,17 @@ export async function runAzureCommand(args: string[]): Promise<string> {
   }
 }
 
+function settledPullRequest(pullRequest: TicketPullRequest): boolean {
+  return (pullRequest.status === "completed" && pullRequest.mergeStatus === "succeeded" && !!pullRequest.mergeCommit)
+    || pullRequest.status === "abandoned"
+    || PULL_REQUEST_MERGE_FAILURES.includes(pullRequest.mergeStatus ?? "");
+}
+
 export class AzureTicketInfoService {
   constructor(
     private readonly az: AzRunner = runAzureCommand,
     private readonly git: GitRunner = runGit,
+    private readonly sleep: (milliseconds: number) => Promise<unknown> = Bun.sleep,
   ) {}
 
   async getTicket(ticket: number): Promise<TicketSummary> {
@@ -558,7 +571,7 @@ export class AzureTicketInfoService {
     if (exactActive.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
     if (exactActive.length === 1) {
       await this.completePullRequest(exactActive[0]!.id, integration.project, integration.repository);
-      const verified = await this.readPullRequest(exactActive[0]!.id, integration.project, integration.repository);
+      const verified = await this.readSettledPullRequest(exactActive[0]!.id, integration.project, integration.repository);
       this.validatePullRequest(verified, ticket, integration, ticketBranch);
       return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
     }
@@ -571,7 +584,7 @@ export class AzureTicketInfoService {
       hu,
     );
     await this.completePullRequest(created.id, integration.project, integration.repository);
-    const verified = await this.readPullRequest(created.id, integration.project, integration.repository);
+    const verified = await this.readSettledPullRequest(created.id, integration.project, integration.repository);
     this.validatePullRequest(verified, ticket, integration, ticketBranch);
     return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
   }
@@ -592,7 +605,7 @@ export class AzureTicketInfoService {
     if (active.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos en ${repository}`);
     const pullRequest = active[0] ?? await this.createPullRequest(project, repository, source, target, ticket, hu);
     await this.completePullRequest(pullRequest.id, project, repository);
-    const verified = await this.readPullRequest(pullRequest.id, project, repository);
+    const verified = await this.readSettledPullRequest(pullRequest.id, project, repository);
     this.validatePullRequest(verified, ticket, { ref: target, project, repository }, { ref: source, project, repository });
     return { pullRequest: verified.id, mergeCommit: verified.mergeCommit! };
   }
@@ -1516,6 +1529,25 @@ export class AzureTicketInfoService {
         throw new Error(`No se pudo completar el PR ${id}: ${sanitizeError(fallbackError)}`, { cause: error });
       }
     }
+  }
+
+  /**
+   * Azure encola la completación en vez de resolverla dentro del PATCH: la
+   * llamada vuelve con el PR todavía sin merge, y releerlo en ese instante
+   * devuelve un `mergeStatus` que aún no llegó a `succeeded` ni tiene commit de
+   * merge. Juzgar esa lectura rechazaba un merge que aterrizaba un segundo
+   * después y detenía la entrega con el trabajo ya integrado, así que la
+   * lectura espera a que el PR quede en un estado que Azure ya no va a mover.
+   * El veredicto no cambia: quien decide sigue siendo validatePullRequest, y un
+   * PR que no se asiente dentro de la ventana llega ahí igual y falla cerrado.
+   */
+  private async readSettledPullRequest(id: number, project?: string, repository?: string): Promise<TicketPullRequest> {
+    let pullRequest = await this.readPullRequest(id, project, repository);
+    for (let attempt = 0; attempt < PULL_REQUEST_MERGE_ATTEMPTS && !settledPullRequest(pullRequest); attempt += 1) {
+      await this.sleep(PULL_REQUEST_MERGE_INTERVAL_MS);
+      pullRequest = await this.readPullRequest(id, project, repository);
+    }
+    return pullRequest;
   }
 
   private validatePullRequest(
