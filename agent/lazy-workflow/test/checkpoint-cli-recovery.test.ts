@@ -203,6 +203,63 @@ test("un --variant explícito sin --model le gana a la variante del escalón, qu
   expect(agents.overrides).toEqual([{ model: "claude-sonnet-5", variant: "xhigh" }]);
 });
 
+test("un --model declarado junto a un --cli no viaja al CLI que el traspaso adoptó", async () => {
+  // La invocación declaró claudecode y su modelo; el traspaso movió la sesión a
+  // opencode. Ese `--model` está escrito en el vocabulario del CLI que ya no
+  // tiene el trabajo: aplicarlo reanudaba opencode con `claude-sonnet-5`.
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    {
+      ...githubDeliveryCheckpoint("opencode"),
+      handoffFrom: "claudecode",
+      model: "github-copilot/gpt-5.5",
+      variant: "high",
+    },
+    agents,
+  );
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run([
+      "code", "--cli", "claudecode", "--model", "claude-sonnet-5", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.resumed).toEqual(["opencode"]);
+  expect(agents.overrides).toEqual([{ model: "github-copilot/gpt-5.5", variant: "high" }]);
+  expect(state.reported.some((message) => message.includes("--model claude-sonnet-5 quedó declarado para claudecode"))).toBeTrue();
+});
+
+test("un --model declarado junto al --cli que sí tiene el trabajo le sigue ganando al escalón", async () => {
+  // El operador nombra explícitamente el CLI adoptado: ahí el modelo y el CLI
+  // vuelven a ser un par, y el par manda.
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    {
+      ...githubDeliveryCheckpoint("opencode"),
+      handoffFrom: "claudecode",
+      model: "github-copilot/gpt-5.5",
+      variant: "high",
+    },
+    agents,
+  );
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run([
+      "code", "--cli", "opencode", "--model", "github-copilot/gpt-5.6", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(agents.overrides).toEqual([{ model: "github-copilot/gpt-5.6" }]);
+});
+
 test("sin overrides explícitos la recuperación reanuda con el escalón que el checkpoint conserva", async () => {
   const agents = spyingAgents();
   const state = githubDeliveryCli(

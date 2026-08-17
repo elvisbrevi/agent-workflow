@@ -230,6 +230,11 @@ function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
  * wins, and otherwise the rung the checkpoint recorded when a fallback descent
  * moved the run off its primary one, so recovery resumes on the rung that was
  * actually running rather than the one already exhausted (issue #238).
+ *
+ * "Explicit" is decided at adoption, not here: a `--model` declared beside a
+ * `--cli` the run's own handoff moved off is no longer explicit about the CLI
+ * that will run, and `adoptCheckpointCli` clears it before these options ever
+ * reach this function.
  */
 function getRecoveryOverrides(options: CliOptions, checkpoint: Pick<GitHubDeliveryCheckpoint, "model" | "variant">): AgentResumeOverrides {
   const overrides = getResumeOverrides(options);
@@ -511,7 +516,25 @@ export class LazyWorkflowCli {
       return null;
     }
     this.resolveAgent(cli);
-    return options.cli === cli ? options : { ...options, cli };
+    if (options.cli === cli) return options;
+    // The declared `--cli` and `--model` are one pairing: the model is written in
+    // the vocabulary of the CLI beside it. Reaching here with an explicit `--cli`
+    // means the guard above let it through as `handoffFrom` — the run's own
+    // handoff moved the session to another CLI — so that model names the CLI that
+    // no longer holds the work, and applying it would resume OpenCode with
+    // `claude-sonnet-5`. The checkpoint's own rung stands instead.
+    //
+    // Without an explicit `--cli` nothing was paired: `--model` has always named
+    // whatever CLI holds the work, and it keeps doing so. The variant survives
+    // either way, because the check above just validated it against this CLI.
+    if (options.hasCli && options.hasModel) {
+      reportOperator(
+        `lazy-workflow: --model ${options.model} quedó declarado para ${options.cli} y el trabajo vive en ${cli}; `
+        + "se reanuda con el escalón que el checkpoint conserva.",
+      );
+      return { ...options, cli, hasModel: false };
+    }
+    return { ...options, cli };
   }
 
   /**
