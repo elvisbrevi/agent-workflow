@@ -39,6 +39,25 @@ test("deliverAzureWorkspaceTicket associates every changed-repository PR and mer
   expect(harness.huStateCalls[0]).toEqual({ desiredState: "Desarrollo Terminado", expectedState: "En Desarrollo" });
 });
 
+test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket antes de la sesión", async () => {
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  // Manifest validation requires each repository to sit on the ticket branch, and the session is not
+  // allowed to switch branches itself, so the checkout has to happen before the session starts.
+  const firstRun = harness.events.indexOf("opencode:run");
+  const checkouts = harness.events.filter((event) => event.startsWith("checkout:"));
+  expect(checkouts.slice(0, 2)).toEqual([`checkout:${repoA}`, `checkout:${repoB}`]);
+  expect(harness.events.indexOf(`checkout:${repoA}`)).toBeLessThan(firstRun);
+  expect(harness.events.indexOf(`checkout:${repoB}`)).toBeLessThan(firstRun);
+});
+
 test("deliverAzureWorkspaceTicket creates each PR against its own Azure repository in declared order", async () => {
   const harness = createHarness();
   let exit = -1;

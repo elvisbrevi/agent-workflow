@@ -197,6 +197,7 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
     ticket: 51,
     topology: topology as never,
     ticketTopology: topology as never,
+    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
   }, context);
   expect(workspaceDelivery).toContain("You are implementing exactly one Azure delivery ticket");
   expect(workspaceDelivery).not.toContain("Use GitHub and `gh` for");
@@ -217,11 +218,15 @@ test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
     ticket: 51,
     topology: topology as never,
     ticketTopology: topology as never,
+    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
   }, context);
   expect(prompt).toContain("Coordinator-fixed HU: 23438");
   expect(prompt).toContain("Coordinator-fixed ticket: 51");
   expect(prompt).toContain("Coordinator-fixed integration branch: refs/heads/hu/23438");
   expect(prompt).toContain("Coordinator-fixed ticket branch: refs/heads/ticket/51");
+  // The session must never have to infer where its manifest goes: the integration phase only reads
+  // the coordinator's own path, so an inferred one delivers nothing.
+  expect(prompt).toContain("/repo/a: manifest /repo/a/.git/lazy-workflow/completion-manifest.json");
   expect(prompt).toContain(MANIFEST_VALIDATION_SHAPE);
 });
 

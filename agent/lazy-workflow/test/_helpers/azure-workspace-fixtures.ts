@@ -140,7 +140,10 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
         ensureIntegrationBranch: async () => integrationBranch,
         setTicketBranch: async () => ({ hu, ticket, branch: ticketBranch }),
         pushTicketBranch: async () => undefined,
-        checkoutTicketBranch: async () => undefined,
+        checkoutTicketBranch: async (_branch: string, workingDirectory: string) => {
+          events.push(`checkout:${basename(workingDirectory)}`);
+          return undefined;
+        },
         getAutocodeState: async () => ({ context: null, pending: false }),
         getAutocodeContext: async () => null,
         getAutocodeContextForTicket: async () => null,
