@@ -1572,6 +1572,104 @@ test("un PR completado sin nada que mergear entrega el commit fuente como commit
   })).resolves.toEqual({ pullRequest: 88, mergeCommit: "c".repeat(40) });
 });
 
+function queuedMergeService(shows: string[], sleeps: number[]) {
+  let show = 0;
+  return new AzureTicketInfoService(
+    async (args) => {
+      if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([]);
+      if (args[0] === "repos" && args[1] === "pr" && args[2] === "create") return JSON.stringify({
+        pullRequestId: 4604,
+        status: "active",
+        mergeStatus: "succeeded",
+        sourceRefName: "refs/heads/ticket/23574",
+        targetRefName: "refs/heads/feature/sdui-payment-actions-plan",
+        lastMergeSourceCommit: { commitId: "6".repeat(40) },
+        repository: { id: "repository-id", project: { id: "project-id" } },
+      });
+      if (args[0] === "rest" && args.includes("patch")) return "{}";
+      if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") {
+        return shows[Math.min(show++, shows.length - 1)]!;
+      }
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    },
+    undefined,
+    async (milliseconds) => { sleeps.push(milliseconds); },
+  );
+}
+
+const queuedShow = JSON.stringify({
+  pullRequestId: 4604,
+  status: "active",
+  mergeStatus: "queued",
+  sourceRefName: "refs/heads/ticket/23574",
+  targetRefName: "refs/heads/feature/sdui-payment-actions-plan",
+  lastMergeSourceCommit: { commitId: "6".repeat(40) },
+  repository: { id: "repository-id", project: { id: "project-id" } },
+});
+
+const mergedShow = JSON.stringify({
+  pullRequestId: 4604,
+  status: "completed",
+  mergeStatus: "succeeded",
+  sourceRefName: "refs/heads/ticket/23574",
+  targetRefName: "refs/heads/feature/sdui-payment-actions-plan",
+  lastMergeCommit: { commitId: "1".repeat(40) },
+  lastMergeSourceCommit: { commitId: "6".repeat(40) },
+  repository: { id: "repository-id", project: { id: "project-id" } },
+});
+
+test("el merge que Azure encoló se espera en vez de juzgarse a medio completar", async () => {
+  // Azure devuelve el PATCH antes de materializar el merge: releer en ese
+  // instante mostraba el PR todavía en cola y detenía la entrega con el trabajo
+  // ya integrado un segundo después.
+  const sleeps: number[] = [];
+  const service = queuedMergeService([queuedShow, queuedShow, queuedShow, mergedShow], sleeps);
+
+  await expect(service.createOrReusePullRequest(23553, 23574, {
+    project: "project-id",
+    repository: "repository-id",
+    source: "refs/heads/ticket/23574",
+    target: "refs/heads/feature/sdui-payment-actions-plan",
+  })).resolves.toEqual({ pullRequest: 4604, mergeCommit: "1".repeat(40) });
+  expect(sleeps).not.toBeEmpty();
+});
+
+test("un PR que nunca se asienta sigue fallando cerrado en vez de esperar para siempre", async () => {
+  const sleeps: number[] = [];
+  const service = queuedMergeService([queuedShow], sleeps);
+
+  await expect(service.createOrReusePullRequest(23553, 23574, {
+    project: "project-id",
+    repository: "repository-id",
+    source: "refs/heads/ticket/23574",
+    target: "refs/heads/feature/sdui-payment-actions-plan",
+  })).rejects.toThrow("no cumple el target o estado de merge requerido");
+  expect(sleeps).toHaveLength(15);
+});
+
+test("un merge que Azure rechaza por conflictos no espera la ventana completa", async () => {
+  const sleeps: number[] = [];
+  // La primera lectura la consume completePullRequest; la segunda es la que la
+  // espera juzga, y un conflicto ya es definitivo: no hay nada que aguardar.
+  const service = queuedMergeService([queuedShow, JSON.stringify({
+    pullRequestId: 4604,
+    status: "active",
+    mergeStatus: "conflicts",
+    sourceRefName: "refs/heads/ticket/23574",
+    targetRefName: "refs/heads/feature/sdui-payment-actions-plan",
+    lastMergeSourceCommit: { commitId: "6".repeat(40) },
+    repository: { id: "repository-id", project: { id: "project-id" } },
+  })], sleeps);
+
+  await expect(service.createOrReusePullRequest(23553, 23574, {
+    project: "project-id",
+    repository: "repository-id",
+    source: "refs/heads/ticket/23574",
+    target: "refs/heads/feature/sdui-payment-actions-plan",
+  })).rejects.toThrow("no cumple el target o estado de merge requerido");
+  expect(sleeps).toBeEmpty();
+});
+
 test("un PR activo no reporta el commit fuente como si hubiera entregado algo", async () => {
   const service = new AzureTicketInfoService(async (args) => {
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([{
