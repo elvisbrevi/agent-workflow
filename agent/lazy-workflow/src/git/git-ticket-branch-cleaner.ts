@@ -66,15 +66,25 @@ export async function checkoutGitBranch(
   if (local.trim()) {
     const localSha = (await git(["rev-parse", `refs/heads/${branch}^{commit}`], workingDirectory)).trim();
     const remoteSha = (await git(["rev-parse", `refs/remotes/origin/${branch}^{commit}`], workingDirectory)).trim();
-    // Adelantada respecto del remoto es la forma que deja una corrida reanudada:
-    // el agente commiteó y el push todavía no ocurrió — exactamente lo que el
-    // paso siguiente va a subir. Solo la divergencia (el remoto con commits que
-    // el local no tiene) puede perder trabajo al cambiar de rama, y esa sigue
-    // siendo un rechazo: el merge-base solo coincide con el remoto si el remoto
-    // es ancestro del local.
-    const mergeBase = (await git(["merge-base", localSha, remoteSha], workingDirectory)).trim();
-    if (mergeBase !== remoteSha) throw new Error(`La rama local ${branchRef} no coincide con su rama remota`);
+    // Las dos ramas quedan desalineadas por razones opuestas y ninguna pierde
+    // trabajo. Adelantada: el agente commiteó y el push todavía no ocurrió, que
+    // es justo lo que el paso siguiente va a subir. Atrasada: el merge aterrizó
+    // y el remoto de la rama del ticket avanzó más allá del commit local, que
+    // ya está contenido ahí. Solo la divergencia real -- cada lado con commits
+    // que el otro no tiene, y por eso el merge-base no coincide con ninguno --
+    // puede perder algo al cambiar de rama, y esa se sigue rechazando.
+    const mergeBase = localSha === remoteSha
+      ? localSha
+      : (await git(["merge-base", localSha, remoteSha], workingDirectory)).trim();
+    if (mergeBase !== remoteSha && mergeBase !== localSha) {
+      throw new Error(`La rama local ${branchRef} no coincide con su rama remota`);
+    }
     await git(["switch", branch], workingDirectory);
+    // Atrasada: alcanzar al remoto es un avance rápido, nunca un merge que
+    // fabrique historia que nadie revisó.
+    if (mergeBase === localSha && localSha !== remoteSha) {
+      await git(["merge", "--ff-only", `refs/remotes/origin/${branch}`], workingDirectory);
+    }
   } else {
     await git(["switch", "--create", branch, "--track", `refs/remotes/origin/${branch}`], workingDirectory);
   }
