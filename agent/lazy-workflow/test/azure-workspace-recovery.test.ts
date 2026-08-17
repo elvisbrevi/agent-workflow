@@ -294,6 +294,22 @@ test("azure workspace delivery cleans the ticket branch of repositories without 
   expect(cleared).toBeNull();
 });
 
+test("un repositorio con commits sin manifest detiene la entrega en vez de que la limpieza le borre la rama", async () => {
+  // Sin manifest el repositorio se entregaría como "sin cambios" y la limpieza le
+  // borra la rama del ticket: un commit que solo vive ahí se iría con ella.
+  const harness = createAzureWorkspaceHarness({ changedRepositories: [repoA], unpublishedIn: [repoB] });
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(harness.deletedTicketBranches).toBeEmpty();
+  expect(harness.prCreateCalls).toBeEmpty();
+});
+
 test("azure workspace recovery pins the checkpointed ticket when no --ticket is given", async () => {
   const harness = createAzureWorkspaceHarness();
   let exit = -1;

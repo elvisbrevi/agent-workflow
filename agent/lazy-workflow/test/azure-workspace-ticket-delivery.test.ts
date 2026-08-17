@@ -39,6 +39,26 @@ test("deliverAzureWorkspaceTicket associates every changed-repository PR and mer
   expect(harness.huStateCalls[0]).toEqual({ desiredState: "Desarrollo Terminado", expectedState: "En Desarrollo" });
 });
 
+test("una entrega limpia retira los manifests que ya cumplieron su función", async () => {
+  // El manifest por repositorio es la señal de "hay algo que entregar". Sobrevivir
+  // a su propia entrega hacía que la fase siguiente leyera como pendiente un
+  // commit ya mergeado, sobre una rama de ticket que ya cerró.
+  const harness = createHarness();
+  let exit = -1;
+  let manifests: boolean[] = [];
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+    manifests = await Promise.all([pathA, pathB].map((path) =>
+      Bun.file(join(path, "lazy-workflow/completion-manifest.json")).exists()
+    ));
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(manifests).toEqual([false, false]);
+});
+
 test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket antes de la sesión", async () => {
   const harness = createHarness();
   let exit = -1;

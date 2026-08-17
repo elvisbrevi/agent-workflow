@@ -1580,6 +1580,21 @@ export class LazyWorkflowCli {
           reportOperator(`lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`);
           return 1;
         }
+        // Sin manifest el repositorio se entrega como "sin cambios", y la limpieza
+        // le borra la rama del ticket local y remota. Un commit que solo existe
+        // aquí desaparecería con ella sin que nadie lo hubiera declarado, así que
+        // un HEAD que el remoto no contiene detiene la corrida -- la misma postura
+        // que la ruta GitHub toma con su startingCommit. Un ref remoto ausente no
+        // acusa nada: es la rama ya retirada por una entrega anterior.
+        const ticketBranchName = ticketBranch.replace(/^refs\/heads\//, "");
+        const unpublished = await this.git(
+          ["rev-list", "--count", `refs/remotes/origin/${ticketBranchName}..HEAD`],
+          repository.path,
+        ).catch(() => "0");
+        if (unpublished.trim() !== "0") {
+          reportOperator(`lazy-workflow: el repositorio ${repository.path} tiene commits sin manifest verificable; ejecución detenida.`);
+          return 1;
+        }
         units.push({ path: repository.path, manifestPath, changed: false });
         continue;
       }
@@ -1854,6 +1869,11 @@ export class LazyWorkflowCli {
         reportOperator(`lazy-workflow: no se pudo escribir el manifest agregado del workspace (${errorMessage(error)}); el checkpoint se conservó.`);
         return 1;
       }
+      // El manifest por repositorio es la señal de "hay algo que entregar", y
+      // sobrevivirlo a su propia entrega hacía que la fase siguiente leyera como
+      // pendiente un commit ya mergeado, sobre una rama de ticket que ya cerró.
+      // Se retira junto con el checkpoint, como hace la ruta GitHub.
+      for (const unit of units) await unlink(unit.manifestPath).catch(() => undefined);
       await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
       // Without a fixed --ticket the run is a drain: select the next eligible child of the HU, as
       // single-repository `code --hu` does. Only a clean delivery continues; an unclean one stops
