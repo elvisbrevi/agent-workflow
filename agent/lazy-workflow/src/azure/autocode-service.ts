@@ -630,25 +630,22 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const integrationSha = await remoteBranchSha(this.git, integration.ref, workingDirectory);
     if (!integrationSha) throw new Error(`La rama de integración ${integration.ref} no existe remotamente`);
     const ticketSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
-    if (ticketSha && ticketSha !== integrationSha) {
-      throw new Error(`La rama del ticket ${normalized.ref} no coincide con la rama de integración de la HU`);
-    }
-    if (!ticketSha) {
-      const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
-      if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se creará la rama del ticket");
-      const temporaryRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
-      try {
-        const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", temporaryRef], workingDirectory)).trim();
-        if (existingRef) throw new Error(`El ref temporal local ${temporaryRef} ya existe`);
-        await this.git(["fetch", "--no-tags", "origin", `+${integration.ref}:${temporaryRef}`], workingDirectory);
-        const fetchedSha = (await this.git(["rev-parse", `${temporaryRef}^{commit}`], workingDirectory)).trim();
-        if (fetchedSha !== integrationSha) throw new Error(`La rama de integración ${integration.ref} cambió durante la preparación`);
-        await this.git(["push", "origin", `${temporaryRef}:${normalized.ref}`], workingDirectory);
-        const publishedSha = await remoteBranchSha(this.git, normalized.ref, workingDirectory);
-        if (publishedSha !== integrationSha) throw new Error(`No se pudo verificar remotamente la rama ${normalized.ref}`);
-      } finally {
-        await this.git(["update-ref", "-d", temporaryRef], workingDirectory);
+    if (ticketSha !== integrationSha) {
+      if (ticketSha) {
+        await this.assertTicketBranchFastForwardable({
+          workingDirectory,
+          integrationBranch: integration.ref,
+          integrationSha,
+          ticketBranch: normalized.ref,
+          ticketSha,
+        });
       }
+      await this.publishTicketBranch({
+        workingDirectory,
+        integrationBranch: integration.ref,
+        ticketBranch: normalized.ref,
+        existing: !!ticketSha,
+      });
     } else {
       const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
       if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se vinculará la rama del ticket");
@@ -908,13 +905,21 @@ export class AzureAutocodeService implements AutocodeAzureService {
       return { identity, integrationBranchSha, ticketBranchSha, status };
     }));
 
+    // The whole plan is validated before any repository is touched: a workspace that would only
+    // partly reach the ticket branch must fail before the first push, not halfway through.
     for (const { identity, integrationBranchSha, ticketBranchSha, status } of plan) {
       if (!integrationBranchSha) throw new Error(`La rama de integración ${integrationBranch} no existe remotamente en ${identity.workingDirectory}`);
       if (ticketBranchSha && ticketBranchSha !== integrationBranchSha) {
-        throw new Error(`La rama del ticket ${ticketBranch} no coincide con la rama de integración de la HU`);
+        await this.assertTicketBranchFastForwardable({
+          workingDirectory: identity.workingDirectory,
+          integrationBranch,
+          integrationSha: integrationBranchSha,
+          ticketBranch,
+          ticketSha: ticketBranchSha,
+        });
       }
-      if (!ticketBranchSha && status.trim()) {
-        throw new Error(`El repositorio ${identity.workingDirectory} tiene cambios sin guardar; no se creará la rama del ticket`);
+      if (ticketBranchSha !== integrationBranchSha && status.trim()) {
+        throw new Error(`El repositorio ${identity.workingDirectory} tiene cambios sin guardar; no se ${ticketBranchSha ? "adelantará" : "creará"} la rama del ticket`);
       }
     }
 
@@ -922,12 +927,11 @@ export class AzureAutocodeService implements AutocodeAzureService {
     for (const { identity, ticketBranchSha, integrationBranchSha } of plan) {
       const created = ticketBranchSha === integrationBranchSha
         ? false
-        : await this.createTicketBranchInRepository({
-            hu: options.hu,
-            ticket: options.ticket,
-            identity,
+        : await this.publishTicketBranch({
+            workingDirectory: identity.workingDirectory,
             integrationBranch,
             ticketBranch,
+            existing: !!ticketBranchSha,
           });
       units.push({
         path: identity.workingDirectory,
@@ -1027,31 +1031,89 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return true;
   }
 
-  private async createTicketBranchInRepository(options: {
-    hu: number;
-    ticket: number;
-    identity: AzureWorkspaceRepositoryIdentity;
+  /**
+   * Publishes the HU's integration branch onto the ticket branch. Creating the branch and catching
+   * up one that fell behind are the same push: the ticket branch is a pointer at the HU head, never
+   * a place where work diverges. When the branch already exists the caller has proven the move is a
+   * fast-forward with `assertTicketBranchFastForwardable`, and the push stays non-forced so the
+   * remote itself gets the last word on that.
+   */
+  private async publishTicketBranch(options: {
+    workingDirectory: string;
     integrationBranch: string;
     ticketBranch: string;
+    /** The ticket branch already exists remotely, so this push advances it instead of creating it. */
+    existing: boolean;
   }): Promise<boolean> {
-    const integrationSha = await remoteBranchSha(this.git, options.integrationBranch, options.identity.workingDirectory);
-    if (!integrationSha) throw new Error(`La rama de integración ${options.integrationBranch} no existe remotamente en ${options.identity.workingDirectory}`);
-    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], options.identity.workingDirectory);
-    if (status.trim()) throw new Error(`El repositorio ${options.identity.workingDirectory} tiene cambios sin guardar; no se creará la rama del ticket`);
+    const { workingDirectory, integrationBranch, ticketBranch } = options;
+    const integrationSha = await remoteBranchSha(this.git, integrationBranch, workingDirectory);
+    if (!integrationSha) throw new Error(`La rama de integración ${integrationBranch} no existe remotamente en ${workingDirectory}`);
+    const status = await this.git(["status", "--porcelain", "--untracked-files=all"], workingDirectory);
+    if (status.trim()) {
+      throw new Error(`El repositorio ${workingDirectory} tiene cambios sin guardar; no se ${options.existing ? "adelantará" : "creará"} la rama del ticket`);
+    }
     const temporaryRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
     try {
-      const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", temporaryRef], options.identity.workingDirectory)).trim();
+      const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", temporaryRef], workingDirectory)).trim();
       if (existingRef) throw new Error(`El ref temporal local ${temporaryRef} ya existe`);
-      await this.git(["fetch", "--no-tags", "origin", `+${options.integrationBranch}:${temporaryRef}`], options.identity.workingDirectory);
-      const fetchedSha = (await this.git(["rev-parse", `${temporaryRef}^{commit}`], options.identity.workingDirectory)).trim();
-      if (fetchedSha !== integrationSha) throw new Error(`La rama de integración ${options.integrationBranch} cambió durante la preparación`);
-      await this.git(["push", "origin", `${temporaryRef}:${options.ticketBranch}`], options.identity.workingDirectory);
-      const publishedSha = await remoteBranchSha(this.git, options.ticketBranch, options.identity.workingDirectory);
-      if (publishedSha !== integrationSha) throw new Error(`No se pudo verificar remotamente la rama ${options.ticketBranch}`);
+      await this.git(["fetch", "--no-tags", "origin", `+${integrationBranch}:${temporaryRef}`], workingDirectory);
+      const fetchedSha = (await this.git(["rev-parse", `${temporaryRef}^{commit}`], workingDirectory)).trim();
+      if (fetchedSha !== integrationSha) throw new Error(`La rama de integración ${integrationBranch} cambió durante la preparación`);
+      await this.git(["push", "origin", `${temporaryRef}:${ticketBranch}`], workingDirectory);
+      const publishedSha = await remoteBranchSha(this.git, ticketBranch, workingDirectory);
+      if (publishedSha !== integrationSha) throw new Error(`No se pudo verificar remotamente la rama ${ticketBranch}`);
     } finally {
-      await this.git(["update-ref", "-d", temporaryRef], options.identity.workingDirectory);
+      await this.git(["update-ref", "-d", temporaryRef], workingDirectory);
     }
     return true;
+  }
+
+  /**
+   * A ticket branch that sits behind the integration branch is the ordinary shape of a HU whose
+   * integration branch moved on without it, and catching it up loses nothing. A ticket branch
+   * carrying commits of its own is a different animal: overwriting it would discard work, so only
+   * strict ancestry earns the fast-forward. Ancestry is proven on fetched objects because the SHAs
+   * come from `ls-remote` and are not guaranteed to exist in the local store.
+   */
+  private async assertTicketBranchFastForwardable(options: {
+    workingDirectory: string;
+    integrationBranch: string;
+    integrationSha: string;
+    ticketBranch: string;
+    ticketSha: string;
+  }): Promise<void> {
+    const { workingDirectory, integrationBranch, integrationSha, ticketBranch, ticketSha } = options;
+    const integrationRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+    const ticketRef = `refs/lazy-workflow/${crypto.randomUUID()}`;
+    try {
+      for (const ref of [integrationRef, ticketRef]) {
+        const existingRef = (await this.git(["for-each-ref", "--format=%(refname)", ref], workingDirectory)).trim();
+        if (existingRef) throw new Error(`El ref temporal local ${ref} ya existe`);
+      }
+      await this.git(["fetch", "--no-tags", "origin", `+${integrationBranch}:${integrationRef}`], workingDirectory);
+      await this.git(["fetch", "--no-tags", "origin", `+${ticketBranch}:${ticketRef}`], workingDirectory);
+      const fetchedIntegrationSha = (await this.git(["rev-parse", `${integrationRef}^{commit}`], workingDirectory)).trim();
+      if (fetchedIntegrationSha !== integrationSha) throw new Error(`La rama de integración ${integrationBranch} cambió durante la preparación`);
+      const fetchedTicketSha = (await this.git(["rev-parse", `${ticketRef}^{commit}`], workingDirectory)).trim();
+      if (fetchedTicketSha !== ticketSha) throw new Error(`La rama del ticket ${ticketBranch} cambió durante la preparación`);
+      if (!await this.isAncestor(ticketRef, integrationRef, workingDirectory)) {
+        throw new Error(`La rama del ticket ${ticketBranch} no coincide con la rama de integración de la HU y divergió de ella en ${workingDirectory}; resuélvela manualmente`);
+      }
+    } finally {
+      for (const ref of [integrationRef, ticketRef]) {
+        await this.git(["update-ref", "-d", ref], workingDirectory);
+      }
+    }
+  }
+
+  /** `merge-base --is-ancestor` reports through its exit code, which `GitRunner` turns into a throw. */
+  private async isAncestor(candidate: string, descendant: string, workingDirectory: string): Promise<boolean> {
+    try {
+      await this.git(["merge-base", "--is-ancestor", candidate, descendant], workingDirectory);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async linkIntegrationBranchArtifact(options: {
