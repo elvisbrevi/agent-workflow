@@ -87,6 +87,8 @@ export interface TicketPullRequest {
   source?: string;
   target?: string;
   mergeCommit?: string;
+  /** The source commit Azure computed the merge from; completing a PR must echo it back. */
+  lastMergeSourceCommit?: string;
   repositoryId?: string;
   projectId?: string;
   associated: boolean;
@@ -169,6 +171,7 @@ interface PullRequestPayload {
   targetRefName?: string;
   target?: string;
   lastMergeCommit?: { commitId?: string };
+  lastMergeSourceCommit?: { commitId?: string };
   mergeCommit?: string;
   repository?: { id?: string; project?: { id?: string } };
   repositoryId?: string;
@@ -1371,18 +1374,31 @@ export class AzureTicketInfoService {
     }
   }
 
+  /**
+   * Azure guards completion with the source commit the merge was computed from and rejects a bare
+   * `{"status":"completed"}` with "You must specify a valid LastMergeSourceCommit". Reading it back
+   * is not just ceremony: it makes a source branch that moved since the merge was computed fail
+   * closed instead of completing a merge nobody evaluated.
+   */
   private async completePullRequest(id: number, project: string, repository: string): Promise<void> {
+    const pullRequest = await this.readPullRequest(id, project, repository);
+    const lastMergeSourceCommit = pullRequest.lastMergeSourceCommit;
+    if (!lastMergeSourceCommit) {
+      throw new Error(`El PR ${id} no expone el commit fuente del merge; Azure no puede completarlo todavía`);
+    }
     try {
       await this.az([
-        "repos", "pr", "update", "--id", `${id}`, "--organization", ORGANIZATION,
-        "--project", project, "--repository", repository, "--status", "completed", "--output", "json",
+        "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
+        "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
+        "--headers", "Content-Type=application/json",
+        "--body", JSON.stringify({ status: "completed", lastMergeSourceCommit: { commitId: lastMergeSourceCommit } }),
+        "--output", "json",
       ]);
     } catch (error) {
       try {
         await this.az([
-          "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
-          "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
-          "--headers", "Content-Type=application/json", "--body", JSON.stringify({ status: "completed" }), "--output", "json",
+          "repos", "pr", "update", "--id", `${id}`, "--organization", ORGANIZATION,
+          "--project", project, "--repository", repository, "--status", "completed", "--output", "json",
         ]);
       } catch (fallbackError) {
         throw new Error(`No se pudo completar el PR ${id}: ${sanitizeError(fallbackError)}`, { cause: error });
@@ -1630,6 +1646,7 @@ export class AzureTicketInfoService {
       source,
       target,
       mergeCommit: payload.lastMergeCommit?.commitId ?? payload.mergeCommit,
+      lastMergeSourceCommit: payload.lastMergeSourceCommit?.commitId,
       repositoryId,
       projectId,
       associated: false,
