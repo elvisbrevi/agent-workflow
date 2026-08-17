@@ -6,8 +6,9 @@ import { realpath } from "node:fs/promises";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
-import type { CodingAgent } from "../src/coding-agent/coding-agent.ts";
+import { AgentExhaustionError, type CodingAgent } from "../src/coding-agent/coding-agent.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
+import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint } from "../src/azure/azure-workspace-checkpoint.ts";
 import { captureReporter } from "./_helpers/reporter-capture.ts";
 
 const hu = 192;
@@ -398,6 +399,157 @@ test("un agotamiento sin --fallback declarado sigue fallando cerrado, igual que 
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--working-directory", `${pathA}, ${pathB}`]);
     expect(exit).toBe(1);
     expect(messages.some((line) => line.includes("falló durante la entrega workspace Azure"))).toBeTrue();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function checkpointForResume(
+  pathA: string,
+  pathB: string,
+  root: string,
+  overrides: Partial<AzureWorkspaceCheckpoint> = {},
+): Promise<AzureWorkspaceCheckpoint> {
+  const realpathA = await realpath(pathA);
+  const realpathB = await realpath(pathB);
+  return {
+    schemaVersion: 2,
+    cli: "opencode",
+    workflow: "azure-workspace-code",
+    hu,
+    ticket: 51,
+    phase: "implementing",
+    sessionId: "ses_exhausted",
+    integrationBranch,
+    ticketBranch: "refs/heads/ticket/51",
+    parentDirectory: await realpath(root),
+    activeDurationMs: 0,
+    repositories: [{ path: realpathA, remote: remoteUrlA }, { path: realpathB, remote: remoteUrlB }],
+    units: [],
+    receipts: {},
+    intent: null,
+    ...overrides,
+  };
+}
+
+test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende a otro CLI, no falla con el mensaje de topología", async () => {
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
+  const checkpointStore = new AzureWorkspaceCheckpointStore();
+  await checkpointStore.write(await checkpointForResume(pathA, pathB, root, { cli: "claudecode" }), join(root, ".lazy-workflow"));
+  const resumed: string[] = [];
+  const started: Array<{ cli: AgentCli; model?: string; variant?: string; session: string | null }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, model: options.model, variant: options.variant, session: options.session });
+      await writeManifests();
+      return { result: { text: "IMPLEMENTATION_READY", sessionId: "ses_new", failed: false } as never, azureLoginRequired: false, failed: false };
+    },
+    resume: async (sessionId) => {
+      resumed.push(sessionId);
+      throw new AgentExhaustionError({ cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" }, { text: "You've hit your session limit", sessionId, failed: true } as never);
+    },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "claudecode", "--model", "claude-sonnet-5", "--fallback", "opencode:github-copilot/gpt-5.5:high", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(resumed).toEqual(["ses_exhausted"]);
+    expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["opencode"]);
+    expect(started[0]?.model).toBe("github-copilot/gpt-5.5");
+    expect(started[0]?.session).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende al mismo CLI con el modelo del escalón nuevo", async () => {
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
+  const checkpointStore = new AzureWorkspaceCheckpointStore();
+  await checkpointStore.write(await checkpointForResume(pathA, pathB, root), join(root, ".lazy-workflow"));
+  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
+  const agentSource = (): CodingAgent => ({
+    run: async () => { throw new Error("must not start a fresh session: a checkpointed one exists"); },
+    resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
+      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
+      if (resumed.length === 1) {
+        throw new AgentExhaustionError({ cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" }, { text: "agotado", sessionId, failed: true } as never);
+      }
+      await writeManifests();
+      return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
+    },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--model", "opencode-go/deepseek-v4-pro", "--fallback", "opencode:opencode-go/deepseek-v4-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(resumed).toHaveLength(2);
+    expect(resumed[0]?.sessionId).toBe("ses_exhausted");
+    expect(resumed[1]?.sessionId).toBe("ses_exhausted");
+    expect(resumed[1]?.model).toBe("opencode-go/deepseek-v4-cheap");
+    expect(resumed[1]?.variant).toBe("high");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un agotamiento al reanudar sin --fallback declarado falla cerrado con un mensaje preciso, no con el de topología", async () => {
+  const { root, pathA, pathB, azureBoundary, git } = await setupWorkspaceFallbackFixture();
+  const checkpointStore = new AzureWorkspaceCheckpointStore();
+  await checkpointStore.write(await checkpointForResume(pathA, pathB, root, { cli: "claudecode" }), join(root, ".lazy-workflow"));
+  const { reporterFn, messages } = captureReporter();
+  const agentSource = (): CodingAgent => ({
+    run: async () => { throw new Error("must not start a fresh session: a checkpointed one exists"); },
+    resume: async (sessionId) => {
+      throw new AgentExhaustionError({ cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" }, { text: "You've hit your session limit", sessionId, failed: true } as never);
+    },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true), reporterFn, undefined, undefined, undefined, undefined, undefined, checkpointStore,
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "claudecode", "--model", "claude-sonnet-5", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(1);
+    expect(messages.some((line) => line.includes("falló durante la entrega workspace Azure"))).toBeTrue();
+    expect(messages.some((line) => line.includes("topología multi-repositorio Azure"))).toBeFalse();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un ticket ya descendido a otro modelo reanuda con el modelo del checkpoint, no con el primario exhausto", async () => {
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
+  const checkpointStore = new AzureWorkspaceCheckpointStore();
+  await checkpointStore.write(await checkpointForResume(pathA, pathB, root, { model: "opencode-go/deepseek-v4-cheap", variant: "high" }), join(root, ".lazy-workflow"));
+  const resumed: Array<{ model?: string; variant?: string }> = [];
+  const agentSource = (): CodingAgent => ({
+    run: async () => { throw new Error("must not start a fresh session: a checkpointed one exists"); },
+    resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
+      resumed.push({ model: overrides.model, variant: overrides.variant });
+      await writeManifests();
+      return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
+    },
+  });
+  const cli = new LazyWorkflowCli(
+    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
+  );
+
+  try {
+    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]?.model).toBe("opencode-go/deepseek-v4-cheap");
+    expect(resumed[0]?.variant).toBe("high");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

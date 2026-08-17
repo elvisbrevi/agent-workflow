@@ -1340,14 +1340,50 @@ export class LazyWorkflowCli {
         const resuming = checkpoint.sessionId;
         let activeCli = checkpoint.cli;
         let execution: AgentExecution;
-        if (resuming) {
-          // Resuming an existing session never descends the fallback chain, exactly like the
-          // GitHub delivery path: the chain only applies to the first, fresh session of a unit.
-          execution = {
-            result: await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)),
-            azureLoginRequired: false,
-            failed: false,
+        // Both branches descend the same declared chain on provider exhaustion (ADR-0024):
+        // a resume of a checkpointed session is not exempt just because it crosses an
+        // invocation, so the callbacks are shared and every attempt is routed through the
+        // same descent.
+        const resumeFn = (sessionId: string, overrides: AgentResumeOverrides) =>
+          this.codingAgent.resume(sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+        const onDescent = async (rung: FallbackRung, sessionId: string) => {
+          activeCli = rung.cli;
+          checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
+          await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        };
+        const handOff = async (rung: FallbackRung) => {
+          const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
+          const handoffRun = await this.azureWorkspacePrompt(handoffOptions, scope, topology, ticketTopology);
+          this.resolveAgent(rung.cli);
+          const handedOff = await this.codingAgent.run({
+            ...handoffOptions,
+            ...handoffRun,
+            session: null,
+            terminalMarker: IMPLEMENTATION_READY_MARKER,
+          }, false);
+          activeCli = rung.cli;
+          checkpoint = {
+            ...checkpoint!,
+            cli: rung.cli,
+            handoffFrom: checkpoint!.handoffFrom ?? options.cli,
+            model: rung.model,
+            variant: rung.variant,
+            sessionId: handedOff.result.sessionId,
           };
+          await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+          return handedOff;
+        };
+        if (resuming) {
+          try {
+            execution = {
+              result: await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getRecoveryOverrides(options, checkpoint)),
+              azureLoginRequired: false,
+              failed: false,
+            };
+          } catch (error) {
+            if (!(error instanceof AgentExhaustionError)) throw error;
+            execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
+          }
         } else {
           const run = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
           execution = await this.codingAgent.run({
@@ -1357,39 +1393,8 @@ export class LazyWorkflowCli {
             session: null,
             terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, true);
-          execution = await this.descendFallbackChain(
-            options,
-            execution,
-            (sessionId, overrides) => this.codingAgent.resume(sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, overrides),
-            async (rung, sessionId) => {
-              activeCli = rung.cli;
-              checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
-              await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
-            },
-            async (rung) => {
-              const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-              const handoffRun = await this.azureWorkspacePrompt(handoffOptions, scope, topology, ticketTopology);
-              this.resolveAgent(rung.cli);
-              const handedOff = await this.codingAgent.run({
-                ...handoffOptions,
-                ...handoffRun,
-                session: null,
-                terminalMarker: IMPLEMENTATION_READY_MARKER,
-              }, false);
-              activeCli = rung.cli;
-              checkpoint = {
-                ...checkpoint!,
-                cli: rung.cli,
-                handoffFrom: checkpoint!.handoffFrom ?? options.cli,
-                model: rung.model,
-                variant: rung.variant,
-                sessionId: handedOff.result.sessionId,
-              };
-              await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
-              return handedOff;
-            },
-          );
         }
+        execution = await this.descendFallbackChain(options, execution, resumeFn, onDescent, handOff);
         const terminal = !execution.failed && containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
           ...checkpoint,
@@ -3062,31 +3067,85 @@ export class LazyWorkflowCli {
       }
       const issue = await reconcileClaimedIssue(liveCheckpoint.issue, options.workingDirectory);
       if (issue.number !== liveCheckpoint.issue) throw new Error("el checkpoint GitHub no coincide con el issue recuperado");
-      const result = await this.codingAgent.resume(
-        liveCheckpoint.sessionId,
-        "continue",
-        options.workingDirectory,
-        IMPLEMENTATION_READY_MARKER,
-        getRecoveryOverrides(options, liveCheckpoint),
+      const norms = await this.loadSagNorms(options, "coding");
+      if (options.normasSag && norms === null) return 1;
+      const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
+      let activeCli = liveCheckpoint.cli;
+      let execution: AgentExecution;
+      try {
+        execution = {
+          result: await this.codingAgent.resume(
+            liveCheckpoint.sessionId,
+            "continue",
+            options.workingDirectory,
+            IMPLEMENTATION_READY_MARKER,
+            getRecoveryOverrides(options, liveCheckpoint),
+          ),
+          azureLoginRequired: false,
+          failed: false,
+        };
+      } catch (error) {
+        if (!(error instanceof AgentExhaustionError)) throw error;
+        execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
+      }
+      // Provider exhaustion descends the declared chain here too (ADR-0024): a resume across
+      // invocations is not exempt from the descent a fresh session gets.
+      execution = await this.descendFallbackChain(
+        options,
+        execution,
+        (descentSessionId, overrides) => this.codingAgent.resume(descentSessionId, "continue", options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides),
+        async (rung, descentSessionId) => {
+          activeCli = rung.cli;
+          await store.write({ ...liveCheckpoint, cli: rung.cli, model: rung.model, variant: rung.variant, sessionId: descentSessionId }, options.workingDirectory);
+        },
+        async (rung) => {
+          if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch || !liveCheckpoint.manifestPath) {
+            throw new Error("el checkpoint GitHub no contiene la rama y el manifest fijados");
+          }
+          const handedOff = await this.handOffGitHubDelivery(options, rung, {
+            issue,
+            repository,
+            branch: liveCheckpoint.branch,
+            baseBranch: liveCheckpoint.baseBranch,
+            manifestPath: liveCheckpoint.manifestPath,
+            norms,
+          });
+          activeCli = rung.cli;
+          await store.write({
+            ...liveCheckpoint,
+            cli: rung.cli,
+            handoffFrom: liveCheckpoint.handoffFrom ?? options.cli,
+            model: rung.model,
+            variant: rung.variant,
+            sessionId: handedOff.execution.result.sessionId,
+          }, options.workingDirectory);
+          return handedOff.execution;
+        },
       );
+      const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
-      const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
-      await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+      const terminal = !execution.failed && containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
+      await store.write({ ...liveCheckpoint, cli: activeCli, phase: execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+      if (execution.failed) {
+        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "reconciling", sessionId: result.sessionId });
+        reportOperator(`lazy-workflow: no se pudo reanudar el Issue #${liveCheckpoint.issue} (${errorMessage(result.text)}); checkpoint conservado.`);
+        return 1;
+      }
       if (this.githubDelivery) {
         if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch) throw new Error("el checkpoint GitHub no contiene la rama fijada");
         await this.githubDelivery.verifyBranch?.(liveCheckpoint.branch, liveCheckpoint.baseBranch, options.workingDirectory);
         if (!terminal) {
-          this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: result.sessionId });
+          this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: result.sessionId });
           return 1;
         }
-        await this.completeGitHubDelivery(options, { ...liveCheckpoint, phase: "implementation-ready", sessionId: null });
+        await this.completeGitHubDelivery(options, { ...liveCheckpoint, cli: activeCli, phase: "implementation-ready", sessionId: null });
         console.log(TICKET_COMPLETED_MARKER);
         console.log(WORKFLOW_STEP_FINISHED_MARKER);
         return 0;
       }
       if (!terminal) {
         reportOperator(`lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
-        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: terminal ? null : result.sessionId });
+        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: terminal ? null : result.sessionId });
         return 1;
       }
       await store.clear(options.workingDirectory);
@@ -3989,61 +4048,67 @@ export class LazyWorkflowCli {
           completionGates: Object.values(COMPLETION_GATE),
         }, options, norms);
         const execution = await track(null, async () => {
-          if (sessionId) {
-            // Resuming an existing session never descends the fallback chain, exactly like the
-            // GitHub delivery path: the chain only applies to the first, fresh session of a unit.
-            return {
-              result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
-              azureLoginRequired: false,
-              failed: false,
+          // Both a fresh session and a resume of a checkpointed one descend the same declared
+          // chain on provider exhaustion (ADR-0024): crossing an invocation or a turn is not an
+          // exemption, so the callbacks are shared and every attempt routes through one descent.
+          const resumeFn = (descentSessionId: string, overrides: AgentResumeOverrides) =>
+            this.codingAgent.resume(descentSessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+          const onDescent = async (rung: FallbackRung, descentSessionId: string) => {
+            activeCli = rung.cli;
+            checkpoint = { ...checkpoint, model: rung.model, variant: rung.variant, sessionId: descentSessionId };
+            await save();
+          };
+          const handOff = async (rung: FallbackRung) => {
+            const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
+            const handoffRun = await this.prompt({
+              kind: "azure-delivery",
+              context,
+              ticketBranch,
+              evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
+              manifestPath,
+              workflowPhase: checkpoint.phase,
+              completionGates: Object.values(COMPLETION_GATE),
+            }, handoffOptions, norms);
+            this.resolveAgent(rung.cli);
+            const handedOff = await this.codingAgent.run({
+              ...handoffOptions,
+              ...handoffRun,
+              session: null,
+              terminalMarker: IMPLEMENTATION_READY_MARKER,
+            }, false);
+            activeCli = rung.cli;
+            checkpoint = {
+              ...checkpoint,
+              cli: rung.cli,
+              handoffFrom: checkpoint.handoffFrom ?? options.cli,
+              model: rung.model,
+              variant: rung.variant,
+              sessionId: handedOff.result.sessionId,
             };
-          }
-          let fresh = await this.codingAgent.run({
-            ...options,
-            ...run,
-            session: null,
-            terminalMarker: IMPLEMENTATION_READY_MARKER,
-          }, true);
-          return await this.descendFallbackChain(
-            options,
-            fresh,
-            (descentSessionId, overrides) => this.codingAgent.resume(descentSessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides),
-            async (rung, descentSessionId) => {
-              activeCli = rung.cli;
-              checkpoint = { ...checkpoint, model: rung.model, variant: rung.variant, sessionId: descentSessionId };
-              await save();
-            },
-            async (rung) => {
-              const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-              const handoffRun = await this.prompt({
-                kind: "azure-delivery",
-                context,
-                ticketBranch,
-                evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
-                manifestPath,
-                workflowPhase: checkpoint.phase,
-                completionGates: Object.values(COMPLETION_GATE),
-              }, handoffOptions, norms);
-              this.resolveAgent(rung.cli);
-              const handedOff = await this.codingAgent.run({
-                ...handoffOptions,
-                ...handoffRun,
-                session: null,
-                terminalMarker: IMPLEMENTATION_READY_MARKER,
-              }, false);
-              activeCli = rung.cli;
-              checkpoint = {
-                ...checkpoint,
-                cli: rung.cli,
-                handoffFrom: checkpoint.handoffFrom ?? options.cli,
-                model: rung.model,
-                variant: rung.variant,
-                sessionId: handedOff.result.sessionId,
+            await save();
+            return handedOff;
+          };
+          let started: AgentExecution;
+          if (sessionId) {
+            try {
+              started = {
+                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getRecoveryOverrides(options, checkpoint), agent: run.agent }),
+                azureLoginRequired: false,
+                failed: false,
               };
-              await save();
-              return handedOff;
-            },
-          );
+            } catch (error) {
+              if (!(error instanceof AgentExhaustionError)) throw error;
+              started = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
+            }
+          } else {
+            started = await this.codingAgent.run({
+              ...options,
+              ...run,
+              session: null,
+              terminalMarker: IMPLEMENTATION_READY_MARKER,
+            }, true);
+          }
+          return await this.descendFallbackChain(options, started, resumeFn, onDescent, handOff);
         });
         sessionId = execution.result.sessionId;
         checkpoint = { ...checkpoint, cli: activeCli };

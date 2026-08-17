@@ -6,6 +6,7 @@ import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
 import type { AgentResumeOverrides, CodingAgent } from "../src/coding-agent/coding-agent.ts";
+import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AutocodeCheckpointStore, VersionedAutocodeCheckpoint } from "../src/azure/autocode-checkpoint.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
@@ -264,6 +265,87 @@ test("la unidad siguiente a una recuperación fija el CLI que realmente la ejecu
   expect(written).not.toContain("opencode");
 });
 
+test("un agotamiento al reanudar el Issue GitHub con --session desciende al mismo CLI con el modelo del escalón nuevo", async () => {
+  const resumed: Array<{ model?: string; variant?: string }> = [];
+  const agentSource = (): CodingAgent => ({
+    run: async () => { throw new Error("must not start a fresh session: --session recovery must resume"); },
+    resume: async (sessionId, _prompt, _directory, _marker, overrides = {}) => {
+      resumed.push({ model: overrides.model, variant: overrides.variant });
+      if (resumed.length === 1) {
+        throw new AgentExhaustionError(
+          { cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" },
+          AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "agotado" } })),
+        );
+      }
+      return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
+    },
+  });
+  const state = githubDeliveryCli(githubDeliveryCheckpoint("opencode"), { requested: [], resumed: [], overrides: [], source: agentSource });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let exit = -1;
+  try {
+    exit = await state.cli.run([
+      "code", "--session", "ses_recovered", "--cli", "opencode", "--model", "opencode-go/deepseek-v4-pro",
+      "--fallback", "opencode:opencode-go/deepseek-v4-cheap:high", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(resumed).toHaveLength(2);
+  expect(resumed[1]?.model).toBe("opencode-go/deepseek-v4-cheap");
+  expect(resumed[1]?.variant).toBe("high");
+  expect(exit).toBe(0);
+});
+
+test("un agotamiento al reanudar el Issue GitHub con --session desciende a otro CLI mediante traspaso", async () => {
+  const resumed: string[] = [];
+  const started: Array<{ cli: AgentCli; session: string | null }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, session: options.session });
+      return {
+        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_new", part: { type: "text", text: "IMPLEMENTATION_READY" } })),
+        azureLoginRequired: false,
+        failed: false,
+      };
+    },
+    resume: async (sessionId) => {
+      resumed.push(sessionId);
+      throw new AgentExhaustionError(
+        { cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" },
+        AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "You've hit your session limit" } })),
+      );
+    },
+  });
+  const checkpoint: GitHubDeliveryCheckpoint = {
+    ...githubDeliveryCheckpoint("claudecode"),
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/repo/lazy-workflow/completion-manifest.json",
+  };
+  const state = githubDeliveryCli(checkpoint, { requested: [], resumed: [], overrides: [], source: agentSource });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let exit = -1;
+  try {
+    exit = await state.cli.run([
+      "code", "--session", "ses_recovered", "--cli", "claudecode", "--model", "claude-sonnet-5",
+      "--fallback", "opencode:github-copilot/gpt-5.5:high", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(resumed).toEqual(["ses_recovered"]);
+  expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["opencode"]);
+  expect(started[0]?.session).toBeNull();
+  expect(exit).toBe(0);
+});
+
 function autocodeCheckpoint(cli: AgentCli): VersionedAutocodeCheckpoint {
   return {
     schemaVersion: 3,
@@ -341,6 +423,87 @@ test("un --cli que contradice el checkpoint Azure falla cerrado y lo conserva", 
   ])).toBe(1);
   expect(agents.resumed).toEqual([]);
   expect(state.writes).toEqual([]);
+});
+
+test("un agotamiento al reanudar el ticket Azure single-repo desciende a otro CLI", async () => {
+  const resumed: AgentCli[] = [];
+  const started: Array<{ cli: AgentCli; session: string | null }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, session: options.session });
+      return {
+        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_new", part: { type: "text", text: "IMPLEMENTATION_READY" } })),
+        azureLoginRequired: false,
+        failed: false,
+      };
+    },
+    resume: async (sessionId) => {
+      resumed.push(cli);
+      throw new AgentExhaustionError(
+        { cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" },
+        AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "You've hit your session limit" } })),
+      );
+    },
+  });
+  const { cli } = autocodeCli(autocodeCheckpoint("claudecode"), { requested: [], resumed: [], overrides: [], source: agentSource });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let exit = -1;
+  try {
+    exit = await cli.run([
+      "code", "--hu", "23438", "--session", "ses_recovered", "--cli", "claudecode", "--model", "claude-sonnet-5",
+      "--fallback", "opencode:github-copilot/gpt-5.5:high", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(resumed).toEqual(["claudecode"]);
+  expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["opencode"]);
+  expect(started[0]?.session).toBeNull();
+  // The minimal boundary here exposes no completion primitives, so a terminal turn
+  // stops with that dedicated message rather than looping — the exhaustion descent
+  // itself is what these assertions cover.
+  expect(exit).toBe(1);
+});
+
+test("un agotamiento al reanudar el ticket Azure single-repo desciende al mismo CLI con el modelo del escalón nuevo", async () => {
+  const resumed: Array<{ cli: AgentCli; model?: string; variant?: string }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async () => { throw new Error("must not start a fresh session: a checkpointed one exists"); },
+    resume: async (sessionId, _prompt, _directory, _marker, overrides = {}) => {
+      resumed.push({ cli, model: overrides.model, variant: overrides.variant });
+      if (resumed.length === 1) {
+        throw new AgentExhaustionError(
+          { cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" },
+          AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "agotado" } })),
+        );
+      }
+      return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
+    },
+  });
+  const { cli } = autocodeCli(autocodeCheckpoint("opencode"), { requested: [], resumed: [], overrides: [], source: agentSource });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let exit = -1;
+  try {
+    exit = await cli.run([
+      "code", "--hu", "23438", "--session", "ses_recovered", "--cli", "opencode", "--model", "opencode-go/deepseek-v4-pro",
+      "--fallback", "opencode:opencode-go/deepseek-v4-cheap:high", "--working-directory", "/repo",
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(resumed).toHaveLength(2);
+  expect(resumed[1]?.model).toBe("opencode-go/deepseek-v4-cheap");
+  expect(resumed[1]?.variant).toBe("high");
+  // The minimal boundary here exposes no completion primitives, so a terminal turn
+  // stops with that dedicated message rather than looping — the exhaustion descent
+  // itself is what these assertions cover.
+  expect(exit).toBe(1);
 });
 
 async function githubWorkspace(cli: AgentCli, agents: ReturnType<typeof spyingAgents>) {
