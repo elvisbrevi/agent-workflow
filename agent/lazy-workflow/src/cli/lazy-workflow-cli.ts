@@ -1327,6 +1327,19 @@ export class LazyWorkflowCli {
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
+        // Branch effects belong to the coordinator, so the session has to find every participant
+        // already sitting on the ticket branch: manifest validation requires it and the session is
+        // not allowed to switch branches itself. The single-repository path does this at the same
+        // point in its own run.
+        const sessionTicketBranch = ticketTopology.ticketBranch ?? `refs/heads/ticket/${ticket}`;
+        try {
+          for (const repository of scope.repositories) {
+            await this.huInfoService.checkoutTicketBranch!(sessionTicketBranch, repository.path);
+          }
+        } catch (error) {
+          reportOperator(`lazy-workflow: no se pudo situar el workspace en la rama del ticket (${errorMessage(error)}); ejecución detenida.`);
+          return 1;
+        }
         const resuming = checkpoint.sessionId;
         const session = resuming
           ? { ...await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options)), failed: false }
@@ -1492,8 +1505,14 @@ export class LazyWorkflowCli {
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
+    // The session is told where every manifest goes instead of inferring it: the integration phase
+    // only ever looks at these paths, so a guessed location reads as a repository with no changes.
+    const manifestPaths = await Promise.all(scope.repositories.map(async ({ path }) => ({
+      path,
+      manifestPath: await this.huInfoService.getCompletionManifestPath!(path),
+    })));
     return this.prompt(
-      { kind: "azure-workspace-delivery", scope, hu: options.hu, ticket: options.ticket, topology, ticketTopology },
+      { kind: "azure-workspace-delivery", scope, hu: options.hu, ticket: options.ticket, topology, ticketTopology, manifestPaths },
       options,
     );
   }

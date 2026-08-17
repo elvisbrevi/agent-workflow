@@ -81,6 +81,8 @@ export type WorkflowPromptSpec =
       ticket: number | null;
       topology: AzureWorkspaceBranchTopology;
       ticketTopology: AzureWorkspaceBranchTopology;
+      /** Where each participant must write its manifest. The coordinator resolves these, never the session. */
+      manifestPaths: Array<{ path: string; manifestPath: string }>;
     }
   | {
       kind: "azure-delivery";
@@ -361,7 +363,12 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         `Coordinator-fixed ticket branch: ${spec.ticketTopology.ticketBranch ?? null}`,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
-        "Each participant repository must end with a manifest at the per-repo completion-manifest path including at least one evidence entry; unchanged repositories must end clean.",
+        // The contract promises the coordinator supplies the manifest path, so it has to name it:
+        // a session left to infer one writes a manifest the integration phase never finds.
+        ...(spec.manifestPaths.length > 0
+          ? ["Immutable manifest paths:", ...spec.manifestPaths.map(({ path, manifestPath }) => `${path}: manifest ${manifestPath}`)]
+          : []),
+        "Each participant repository must end with a manifest at exactly its listed path including at least one evidence entry; unchanged repositories must end clean.",
         MANIFEST_VALIDATION_SHAPE,
         "Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
         `The working directory is ${spec.scope.parentDirectory}`,
