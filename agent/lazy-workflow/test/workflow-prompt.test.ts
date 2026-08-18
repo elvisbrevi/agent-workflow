@@ -54,6 +54,14 @@ const scope: WorkspaceScope = {
 
 const topology = { integrationBranch: "refs/heads/hu/23438", ticketBranch: "refs/heads/ticket/51" };
 
+/** What the coordinator reads off the ticket before it opens the session. */
+const deliveryContext = {
+  hu: { id: 23438, title: "HU transversal de pagos" },
+  ticket: { id: 51, title: "Conciliar el intento de pago", type: "Task" as const, state: "Active" },
+  integrationBranch: "refs/heads/hu/23438",
+  project: "Procesos Digitales",
+};
+
 test("renderContract resuelve los placeholders del contrato", () => {
   expect(renderContract("marca {{IMPLEMENTATION_READY}}")).toBe(`marca ${IMPLEMENTATION_READY_MARKER}`);
   expect(renderContract("{{AZURE_MANIFEST_TOOL}}")).toBe(AZURE_MANIFEST_TOOL_INSTRUCTION);
@@ -224,6 +232,8 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
     scope,
     hu: 23438,
     ticket: 51,
+    context: deliveryContext,
+    description: null,
     topology: topology as never,
     ticketTopology: topology as never,
     manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
@@ -245,6 +255,8 @@ test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
     scope,
     hu: 23438,
     ticket: 51,
+    context: deliveryContext,
+    description: null,
     topology: topology as never,
     ticketTopology: topology as never,
     manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
@@ -381,4 +393,46 @@ test("el prompt de respuestas lleva el marcador, el payload y cuántas rondas qu
   expect(remaining).toContain(JSON.stringify(answers));
   expect(remaining).toContain("Quedan 3 ronda(s)");
   expect(last).toContain("No quedan rondas de preguntas");
+});
+
+test("la entrega workspace Azure lleva el contenido del ticket, no solo su identidad", async () => {
+  // El asset `autocode` termina en `HU and ticket context:` y ese hueco lo rellena el
+  // coordinador. Rellenarlo solo con las líneas `Coordinator-fixed` le decía a la sesión en qué
+  // ticket estaba y nada de lo que el ticket pedía; una sesión que tiene prohibido elegir su
+  // propio trabajo solo puede negarse.
+  const prompt = await buildWorkflowPrompt({
+    kind: "azure-workspace-delivery",
+    scope,
+    hu: 23438,
+    ticket: 51,
+    context: deliveryContext,
+    description: "Criterio de aceptación: el intento de pago se concilia contra el proveedor.",
+    topology: topology as never,
+    ticketTopology: topology as never,
+    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
+  }, context);
+
+  expect(prompt).toContain("Conciliar el intento de pago");
+  expect(prompt).toContain("HU transversal de pagos");
+  expect(prompt).toContain("Ticket description:");
+  expect(prompt).toContain("el intento de pago se concilia contra el proveedor");
+  // El contenido rellena el hueco del asset, antes de las líneas de identidad.
+  expect(prompt.indexOf("Conciliar el intento de pago")).toBeLessThan(prompt.indexOf("Coordinator-fixed HU"));
+});
+
+test("un ticket sin descripción no deja el encabezado colgando", async () => {
+  const prompt = await buildWorkflowPrompt({
+    kind: "azure-workspace-delivery",
+    scope,
+    hu: 23438,
+    ticket: 51,
+    context: deliveryContext,
+    description: null,
+    topology: topology as never,
+    ticketTopology: topology as never,
+    manifestPaths: [],
+  }, context);
+
+  expect(prompt).toContain("Conciliar el intento de pago");
+  expect(prompt).not.toContain("Ticket description:");
 });

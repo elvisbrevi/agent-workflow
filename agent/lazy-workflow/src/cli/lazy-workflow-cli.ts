@@ -1397,7 +1397,10 @@ export class LazyWorkflowCli {
         };
         const handOff = async (rung: FallbackRung) => {
           const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-          const handoffRun = await this.azureWorkspacePrompt(handoffOptions, scope, topology, ticketTopology);
+          const handoffRun = await this.azureWorkspacePrompt(handoffOptions, hu, ticket, scope, topology, ticketTopology);
+          // The descent has no exit code of its own; an unbuildable prompt is a hard stop for the
+          // whole delivery, so it travels as an error rather than as a session spawned blind.
+          if (!handoffRun) throw new Error(`El ticket ${ticket} no tiene contexto de entrega verificable`);
           this.resolveAgent(rung.cli);
           // A workspace's `--working-directory` is the comma-separated repository list, not a
           // real path: the handed-off session has to spawn in the common parent exactly like the
@@ -1433,7 +1436,8 @@ export class LazyWorkflowCli {
             execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
           }
         } else {
-          const run = await this.azureWorkspacePrompt(options, scope, topology, ticketTopology);
+          const run = await this.azureWorkspacePrompt(options, hu, ticket, scope, topology, ticketTopology);
+          if (!run) return 1;
           execution = await this.codingAgent.run({
             ...options,
             workingDirectory: scope.parentDirectory,
@@ -1582,20 +1586,49 @@ export class LazyWorkflowCli {
     };
   }
 
+  /**
+   * The ticket is the drain's, not the operator's: `options.ticket` is null on every `--hu` run
+   * that lets the coordinator pick, so reading it here handed the session `Coordinator-fixed
+   * ticket: null`. It takes the resolved ticket, and reads what that ticket asks for before the
+   * session opens -- the session is told never to infer or select its own work, so a prompt
+   * without the ticket's content leaves it nothing it is allowed to do.
+   */
   private async azureWorkspacePrompt(
     options: CliOptions,
+    hu: number,
+    ticket: number,
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
-  ): Promise<{ prompt: string; agent: AgentAuthority }> {
+  ): Promise<{ prompt: string; agent: AgentAuthority } | null> {
     // The session is told where every manifest goes instead of inferring it: the integration phase
     // only ever looks at these paths, so a guessed location reads as a repository with no changes.
-    const manifestPaths = await Promise.all(scope.repositories.map(async ({ path }) => ({
-      path,
-      manifestPath: await this.huInfoService.getCompletionManifestPath!(path),
-    })));
+    const [manifestPaths, context, description] = await Promise.all([
+      Promise.all(scope.repositories.map(async ({ path }) => ({
+        path,
+        manifestPath: await this.huInfoService.getCompletionManifestPath!(path),
+      }))),
+      this.huInfoService.getAutocodeContextForTicket!(hu, ticket, topology.integrationBranch),
+      this.huInfoService.getDescription!(ticket),
+    ]);
+    // Fail closed rather than open a session with an empty context: an unimplementable prompt is
+    // exactly what stalled this run before, and it costs a whole session to find out.
+    if (!context) {
+      reportOperator(`lazy-workflow: el ticket ${ticket} no tiene contexto de entrega verificable; ejecución detenida.`);
+      return null;
+    }
     return this.prompt(
-      { kind: "azure-workspace-delivery", scope, hu: options.hu, ticket: options.ticket, topology, ticketTopology, manifestPaths },
+      {
+        kind: "azure-workspace-delivery",
+        scope,
+        hu,
+        ticket,
+        context,
+        description: description.description,
+        topology,
+        ticketTopology,
+        manifestPaths,
+      },
       options,
     );
   }

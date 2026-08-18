@@ -80,6 +80,10 @@ export type WorkflowPromptSpec =
       scope: WorkspaceScope;
       hu: number | null;
       ticket: number | null;
+      /** What the ticket asks for. The coordinator reads it before opening the session, because the
+       * session is forbidden from selecting or inferring its own work. */
+      context: AutocodeContext;
+      description: string | null;
       topology: AzureWorkspaceBranchTopology;
       ticketTopology: AzureWorkspaceBranchTopology;
       /** Where each participant must write its manifest. The coordinator resolves these, never the session. */
@@ -372,6 +376,12 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // boundary as the single-repository run, widened to a repository roster.
       return [
         await readPromptAsset("autocode"),
+        // The asset's last line opens with `HU and ticket context:`, and this is the fragment that
+        // fills it -- the same slot `azure-delivery` fills below. Leaving it to the identity lines
+        // told the session which ticket it was on and nothing about what the ticket asked for, and
+        // a session forbidden from selecting its own work can only refuse.
+        JSON.stringify(spec.context),
+        ...(spec.description ? ["Ticket description:", spec.description] : []),
         "Selected workflow: code",
         `Coordinator-fixed HU: ${spec.hu}`,
         `Coordinator-fixed ticket: ${spec.ticket}`,

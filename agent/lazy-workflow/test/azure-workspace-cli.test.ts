@@ -139,7 +139,12 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       return { hu: id, state: desiredState, revision: 8 };
     },
     hasOpenDeliveryChildren: async () => false,
-    getAutocodeContextForTicket: async () => null,
+    getAutocodeContextForTicket: async (huId: number, ticketId: number, branch?: string) => ({
+      hu: { id: huId, title: "HU" },
+      ticket: { id: ticketId, title: `Ticket ${ticketId}`, type: "Task" as const, state: "Active" },
+      integrationBranch: branch ?? "refs/heads/hu/unknown",
+      project: "Team",
+    }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
     getDescription: async () => ({ ticket: 51, description: null }),
     getAttachments: async () => ({ ticket: 51, attachments: [] }),
@@ -283,7 +288,12 @@ async function setupWorkspaceFallbackFixture() {
       return { hu: id, state: desiredState, revision: 8 };
     },
     hasOpenDeliveryChildren: async () => false,
-    getAutocodeContextForTicket: async () => null,
+    getAutocodeContextForTicket: async (huId: number, ticketId: number, branch?: string) => ({
+      hu: { id: huId, title: "HU" },
+      ticket: { id: ticketId, title: `Ticket ${ticketId}`, type: "Task" as const, state: "Active" },
+      integrationBranch: branch ?? "refs/heads/hu/unknown",
+      project: "Team",
+    }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
     getDescription: async () => ({ ticket: 51, description: null }),
     getAttachments: async () => ({ ticket: 51, attachments: [] }),
@@ -441,7 +451,12 @@ async function setupWorkspaceDrainFixture() {
     // Kept open throughout: this fixture is about which CLI the *next* ticket starts on, not
     // about the HU's own closing transition.
     hasOpenDeliveryChildren: async () => true,
-    getAutocodeContextForTicket: async () => null,
+    getAutocodeContextForTicket: async (huId: number, ticketId: number, branch?: string) => ({
+      hu: { id: huId, title: "HU" },
+      ticket: { id: ticketId, title: `Ticket ${ticketId}`, type: "Task" as const, state: "Active" },
+      integrationBranch: branch ?? "refs/heads/hu/unknown",
+      project: "Team",
+    }),
     getAutocodeState: async () => {
       autocodeCalls += 1;
       if (autocodeCalls === 1) return { context: { hu: { id: hu }, ticket: { id: 51, type: "Task" as const, state: "Active" }, integrationBranch }, pending: true };
@@ -1046,6 +1061,74 @@ test("plan multi-repositorio conserva el mensaje de alcance cuando un repositori
     expect(messages.some((message) => message.includes("no se pudo preparar el workspace"))).toBeTrue();
     expect(messages.some((message) => message.includes("no tiene un remote Azure DevOps"))).toBeTrue();
     expect(messages.some((message) => message.includes("no se pudo leer la HU en Azure DevOps"))).toBeFalse();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("el segundo ticket del drenaje recibe su propia identidad y contenido, no null", async () => {
+  // El drain resuelve el ticket en una variable local; el prompt lo leía de `options.ticket`, que
+  // es null en toda corrida `--hu` sin `--ticket`. Los tickets anteriores lo tapaban porque venían
+  // de sesiones reanudadas, que no reconstruyen el prompt: solo el primer prompt fresco lo expone.
+  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceDrainFixture();
+  const prompts: string[] = [];
+  const agent: CodingAgent = {
+    run: async (options) => {
+      prompts.push(options.prompt);
+      await writeManifests();
+      return { result: { text: "IMPLEMENTATION_READY", sessionId: `ses_${prompts.length}`, failed: false } as never, azureLoginRequired: false, failed: false };
+    },
+    resume: async () => { throw new Error("must not resume: every drain ticket opens a fresh session"); },
+  };
+  const cli = new LazyWorkflowCli(
+    azureBoundary, () => agent, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true),
+  );
+
+  try {
+    const exit = await cli.run([
+      "code", "--hu", `${hu}`, "--base-branch", "main",
+      "--cli", "claudecode", "--working-directory", `${pathA}, ${pathB}`,
+    ]);
+
+    expect(exit).toBe(0);
+    expect(prompts.length).toBe(2);
+    expect(prompts[0]).toContain("Coordinator-fixed ticket: 51");
+    expect(prompts[1]).toContain("Coordinator-fixed ticket: 52");
+    // La identidad sola no alcanza: la sesión tiene prohibido elegir trabajo, así que el prompt
+    // debe traer lo que el ticket pide.
+    expect(prompts[1]).toContain("Ticket 52");
+    for (const prompt of prompts) expect(prompt).not.toContain("Coordinator-fixed ticket: null");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("un ticket sin contexto de entrega detiene la corrida en vez de abrir una sesión a ciegas", async () => {
+  // Un prompt sin contenido cuesta una sesión entera para descubrir que era inimplementable.
+  const { root, pathA, pathB, azureBoundary, git } = await setupWorkspaceFallbackFixture();
+  const started: string[] = [];
+  const agent: CodingAgent = {
+    run: async (options) => {
+      started.push(options.prompt);
+      return { result: { text: "IMPLEMENTATION_READY", sessionId: "ses_1", failed: false } as never, azureLoginRequired: false, failed: false };
+    },
+    resume: async () => { throw new Error("must not resume"); },
+  };
+  const cli = new LazyWorkflowCli(
+    { ...azureBoundary, getAutocodeContextForTicket: async () => null }, () => agent,
+    undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
+    buildCli(() => true),
+  );
+
+  try {
+    const exit = await cli.run([
+      "code", "--hu", `${hu}`, "--base-branch", "main",
+      "--cli", "claudecode", "--working-directory", `${pathA}, ${pathB}`,
+    ]);
+
+    expect(exit).toBe(1);
+    expect(started).toEqual([]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

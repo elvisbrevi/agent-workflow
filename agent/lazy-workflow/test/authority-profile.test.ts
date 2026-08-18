@@ -35,8 +35,11 @@ const specs: Array<[WorkflowPromptSpec, string]> = [
     scope: scope as never,
     hu: 1,
     ticket: 2,
+    context: {} as never,
+    description: null,
     topology: topology as never,
     ticketTopology: topology as never,
+    manifestPaths: [],
   }, "lazy-azure-code"],
   [{
     kind: "azure-delivery",
