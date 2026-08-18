@@ -245,7 +245,12 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
     checkoutTicketBranch: async () => undefined,
     getAutocodeState: async () => ({ context: null, pending: false }),
     getAutocodeContext: async () => null,
-    getAutocodeContextForTicket: async () => null,
+    getAutocodeContextForTicket: async (huId: number, ticketId: number, branch?: string) => ({
+      hu: { id: huId, title: "HU" },
+      ticket: { id: ticketId, title: `Ticket ${ticketId}`, type: "Task" as const, state: "Active" },
+      integrationBranch: branch ?? "refs/heads/hu/unknown",
+      project: "Team",
+    }),
     verifyTicketCompletion: async () => ({ ticketBranch }),
     getCompletedTicketBranch: async () => ticketBranch,
     getTicketInfo: async () => ({
