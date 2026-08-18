@@ -22,6 +22,7 @@ export {
   type CompletionManifestInput,
   type EvidenceKind,
 };
+export { TEXT_EVIDENCE_KINDS, findTextEvidence } from "./completion-manifest.ts";
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";

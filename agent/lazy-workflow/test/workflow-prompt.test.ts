@@ -21,6 +21,7 @@ import {
   resolveWorkflowRun,
   type WorkflowPromptContext,
 } from "../src/prompts/workflow-prompt.ts";
+import { EVIDENCE_KINDS, TEXT_EVIDENCE_KINDS } from "../src/azure/completion-manifest.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import type { SelectedManagedIssue } from "../src/github/managed-queue-service.ts";
 import type { WorkspaceScope } from "../src/workspace/repository-scope.ts";
@@ -75,7 +76,10 @@ test("el contrato del manifest nombra la herramienta y prohíbe escribir el arch
     expect(instruction).toContain("never write, edit, or repair that JSON file yourself");
   }
   expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND}`);
-  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain("http-json, screen, or command-output");
+  // Los kinds salen del enum, no de un literal: si alguien agrega uno, el contrato lo nombra solo.
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(EVIDENCE_KINDS.join(", "));
+  // Y la regla que la sesión solo descubría en la última compuerta, con los PR ya mergeados.
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}`);
   expect(GITHUB_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${GITHUB_MANIFEST_COMMAND}`);
 });
 

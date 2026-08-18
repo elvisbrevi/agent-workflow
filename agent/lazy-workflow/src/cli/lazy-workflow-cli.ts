@@ -13,7 +13,8 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { CompletionManifest, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
+import { findTextEvidence } from "../azure/ticket-info-service.ts";
+import type { CompletionManifest, CompletionManifestEvidence, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
@@ -1652,7 +1653,7 @@ export class LazyWorkflowCli {
     const boundary = this.huInfoService;
 
     const azureIdentity = new Map(ticketTopology.units.map((unit) => [unit.path, unit]));
-    const units: Array<{ path: string; manifestPath: string; manifest?: unknown; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
+    const units: Array<{ path: string; manifestPath: string; manifest?: CompletionManifest; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
     for (const repository of scope.repositories) {
       const manifestPath = await boundary.getCompletionManifestPath!(repository.path);
       const exists = await Bun.file(manifestPath).exists();
@@ -1795,16 +1796,29 @@ export class LazyWorkflowCli {
       }
     }
 
-    const completionManifest = await boundary.readCompletionManifest!(changedUnits[0]!.manifestPath, changedUnits[0]!.path);
+    // La evidencia que cierra el ticket es la del workspace entero, no la del primer repositorio.
+    // Mirar solo `changedUnits[0]` dejaba sin adjuntar todo lo que los demás repositorios habían
+    // declarado, y detenía la entrega como si no existiera una evidencia textual que viviera en el
+    // segundo. Los manifests ya vienen leídos y verificados del bucle de arriba; aquí se revalidan
+    // contra el ticket ya entregado, porque los merges adelantaron la rama.
     const completionInfo = await boundary.getTicketInfo!(hu, ticket);
-    await boundary.validateCompletionManifest!(completionManifest, completionInfo, ticket, changedUnits[0]!.path);
+    const workspaceEvidence: CompletionManifestEvidence[] = [];
+    for (const unit of changedUnits) {
+      await boundary.validateCompletionManifest!(unit.manifest!, completionInfo, ticket, unit.path);
+      for (const evidence of unit.manifest!.evidence) {
+        // Dos repositorios pueden declarar el mismo archivo; el ticket lo adjunta una sola vez.
+        if (!workspaceEvidence.some(({ sha256 }) => sha256.toLowerCase() === evidence.sha256.toLowerCase())) {
+          workspaceEvidence.push(evidence);
+        }
+      }
+    }
 
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
     const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
     const ticketStateBefore = await boundary.getState!(ticket);
 
-    for (const evidence of completionManifest.evidence) {
+    for (const evidence of workspaceEvidence) {
       try {
         await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
       } catch (error) {
@@ -1813,19 +1827,24 @@ export class LazyWorkflowCli {
       }
     }
 
-    const textEvidence = completionManifest.evidence.find(({ kind }) => kind !== "screen");
-    if (!textEvidence) {
+    // Un manifest sin evidencia textual ya no pasa `parseCompletionManifest`, así que esto solo
+    // alcanza a manifests escritos antes de esa regla. Un ticket que ya carga completion-evidence no
+    // necesita otra, que es lo que `applyTicketCompletion` sostiene para la ruta de repo único.
+    const textEvidence = findTextEvidence(workspaceEvidence);
+    if (!textEvidence && !completionInfo.completionEvidence) {
       reportOperator("lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.");
       return 1;
     }
-    try {
-      await boundary.validateEvidence!(ticket, textEvidence.path);
-    } catch (error) {
-      reportOperator(`lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
-      return 1;
+    if (textEvidence) {
+      try {
+        await boundary.validateEvidence!(ticket, textEvidence.path);
+      } catch (error) {
+        reportOperator(`lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
     }
 
-    for (const evidence of completionManifest.evidence) {
+    for (const evidence of workspaceEvidence) {
       const existingAttachment = completionInfo.attachments.find((attachment) =>
         typeof attachment.url === "string"
         && attachment.url.trim().length > 0
@@ -1838,7 +1857,7 @@ export class LazyWorkflowCli {
     }
 
     const refreshedInfo = await boundary.getTicketInfo!(hu, ticket);
-    if (!refreshedInfo.completionEvidence) {
+    if (textEvidence && !refreshedInfo.completionEvidence) {
       await boundary.setEvidence!(ticket, textEvidence.path);
     }
 

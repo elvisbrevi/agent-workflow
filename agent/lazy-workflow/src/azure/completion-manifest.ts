@@ -53,6 +53,17 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
 export const isEvidenceKind = (value: string): value is EvidenceKind =>
   EVIDENCE_KINDS.includes(value as EvidenceKind);
 
+/** Los kinds que pueden poblar completion-evidence: todo lo que no es una captura. */
+export const TEXT_EVIDENCE_KINDS = EVIDENCE_KINDS.filter((kind) => kind !== "screen");
+
+export const TEXT_EVIDENCE_REQUIRED =
+  `El manifest de completion requiere al menos una evidencia textual (${TEXT_EVIDENCE_KINDS.join(" o ")}):`
+  + " las capturas no pueden satisfacer completion-evidence";
+
+/** La primera evidencia que puede poblar completion-evidence, en el orden declarado. */
+export const findTextEvidence = <T extends { kind: EvidenceKind }>(evidence: readonly T[]): T | undefined =>
+  evidence.find(({ kind }) => kind !== "screen");
+
 /**
  * The manifest shape, checked once. Both the file the coordinator reads and the
  * object the writing tool assembles pass through here, so "what the tool
@@ -80,6 +91,11 @@ export function parseCompletionManifest(value: unknown): CompletionManifest {
     || typeof entry.kind !== "string" || !isEvidenceKind(entry.kind)
     || typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(entry.sha256)
   )) throw new Error("La evidencia del manifest de completion es inválida");
+  // Solo el campo completion-evidence del ticket cierra la entrega, y ese campo es texto: una
+  // captura no puede poblarlo. Exigirlo aquí -- la puerta común de la herramienta que escribe y del
+  // validador que lee -- hace que un manifest solo de capturas muera al escribirse, con la sesión
+  // todavía viva, en vez de en la última compuerta con los pull requests ya mergeados.
+  if (!findTextEvidence(manifest.evidence)) throw new Error(TEXT_EVIDENCE_REQUIRED);
   return manifest as CompletionManifest;
 }
 

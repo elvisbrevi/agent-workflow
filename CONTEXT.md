@@ -306,6 +306,15 @@ the only authority on which repositories were already delivered, so recovery
 resumes the same run instead of restarting or reselecting work.
 _Avoid_: per-repository Azure checkpoints, restarting a partial delivery
 
+**Textual completion evidence**:
+The manifest evidence entry whose kind is not `screen` — `command-output` or
+`http-json`. Only a textual file can populate the ticket's completion-evidence
+field, so every completion manifest must carry at least one, and the shape check
+the writing tool and the coordinator share refuses a manifest without one. A
+delivery reads the evidence of every changed repository as one set, so the
+textual entry may live in any of them.
+_Avoid_: a manifest of screenshots alone, evidence read from one repository only
+
 **Aggregate workspace manifest**:
 The validated proof, written to the workspace state directory once every changed
 repository carries a delivery receipt and every tracker gate passes, that a whole
