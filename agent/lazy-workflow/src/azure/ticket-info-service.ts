@@ -466,8 +466,48 @@ function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
   }
 }
 
+/**
+ * Evidence for an authenticated endpoint has to name the header it sent, and naming a header is
+ * not leaking it. Judging the key alone rejected every value a careful session could write --
+ * `"authorization": "[REDACTED - Bearer ADMIN_API_TOKEN]"` included -- which left authenticated
+ * HTTP evidence impossible to pass at all, stranding a delivery whose pull request had already
+ * merged at its last gate. So the value decides, and placeholders are neutralized before anything
+ * is read: whatever a session wrapped in brackets it withheld on purpose, and the scheme arm must
+ * not mistake the withheld name for the secret itself.
+ */
+const PLACEHOLDER = /\[[^\]\n]*\]|<[^>\n]*>/g;
+const SECRET_ASSIGNMENT = /["']?(?:authorization|access[_-]?token|token|api[_-]?key|apikey|secret|password|passwd|cookie|set-cookie|pat|AZURE_DEVOPS_EXT_PAT)["']?\s*[:=]\s*("(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\s,;}\]]+)/gi;
+const SECRET_FLAG = /--(?:token|api-key|password)[\s=]+(\S+)/gi;
+const SECRET_SCHEME = /\b(?:bearer|basic)\s+(\S+)/gi;
+
+const MASKED = /^(?:\[[^\]]*\]|<[^>]*>|[*x•]{3,}|redacted|omitted|none|null|undefined|true|false|\d+)$/i;
+/** `ADMIN_API_TOKEN` names the variable that holds the secret; it is not the secret. */
+const ENVIRONMENT_REFERENCE = /^[A-Z][A-Z0-9_]*$/;
+const MIN_CREDENTIAL_LENGTH = 8;
+
+/** Whether `value`, read off the right of a secret-shaped key, is a live credential. */
+function looksLikeCredential(value: string): boolean {
+  let candidate = value.trim().replace(/^["']|["']$/g, "").trim();
+  // `Bearer <token>` carries a space the prose test below would forgive, so the scheme is peeled
+  // off and the token behind it judged on its own.
+  const scheme = /^(?:bearer|basic)\s+/i.exec(candidate);
+  if (scheme) candidate = candidate.slice(scheme[0].length).trim();
+  if (!candidate || MASKED.test(candidate)) return false;
+  // Whitespace means the session described the field instead of quoting its value.
+  if (/\s/.test(candidate)) return false;
+  if (ENVIRONMENT_REFERENCE.test(candidate)) return false;
+  return candidate.length >= MIN_CREDENTIAL_LENGTH;
+}
+
+function containsCredential(content: string): boolean {
+  const probe = content.replace(PLACEHOLDER, "[REDACTED]");
+  return [SECRET_ASSIGNMENT, SECRET_FLAG, SECRET_SCHEME].some((pattern) =>
+    [...probe.matchAll(pattern)].some((match) => looksLikeCredential(match[1] ?? ""))
+  );
+}
+
 function validateEvidenceContent(content: string, kind: EvidenceKind): void {
-  if (/(?:["']?(?:authorization|access[_-]?token|token|api[_-]?key|secret|password|cookie|set-cookie)["']?\s*[:=]|--(?:token|api-key|password)\s+\S+|(?:AZURE_DEVOPS_EXT_PAT|(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD))\s*=|bearer\s+[a-z0-9._~-]+)/i.test(content)) {
+  if (containsCredential(content)) {
     throw new Error("La evidencia contiene credenciales o secretos");
   }
   if (/<script\b|javascript\s*:|\bon[a-z]+\s*=/i.test(content)) {
@@ -1110,6 +1150,11 @@ export class AzureTicketInfoService {
     const root = await realpath(workingDirectory);
     for (const evidence of input.evidence) {
       await requireEvidenceOutsideWorktree(resolve(evidence.path), root, async () => commonDirectory, evidence.path);
+      // Judge the file's content here, where the session can still fix it. Only the digest and the
+      // path were checked before, so evidence the delivery would refuse -- a secret, a JSON that is
+      // not in canonical form -- was accepted into the manifest and only rejected at the last gate,
+      // by which point the pull requests had already merged and there was nothing cheap left to do.
+      await this.validateEvidenceFile(resolve(evidence.path), evidence.kind);
     }
     // A session that types the commit types the wrong one, and the manifest must
     // name what it validated: HEAD is read here unless a commit is pinned.

@@ -74,6 +74,13 @@ async function evidenceFile(name: string, content = EVIDENCE_BODY): Promise<stri
   return path;
 }
 
+/** A real PNG signature: `screen` evidence is judged by its magic bytes, not by its extension. */
+async function screenFile(name: string): Promise<string> {
+  const path = join(root, ".git/lazy-workflow", name);
+  await Bun.write(path, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
+  return path;
+}
+
 const azureArgs = (extra: string[]): string[] => [
   "ticket-manifest-set",
   "--ticket", "23575",
@@ -155,11 +162,25 @@ describe("ticket-manifest-set", () => {
     // `evidenceDirectory` es el directorio del manifest, dentro del directorio
     // Git común: exigir que la evidencia estuviera fuera del repositorio volvía
     // inverificable todo manifest que siguiera la instrucción del coordinador.
-    const evidence = await evidenceFile("pantalla.json");
+    const evidence = await screenFile("pantalla.png");
 
     const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `screen:${evidence}`]));
 
     expect(code).toBe(0);
+  });
+
+  test("no escribe un manifest que nombre evidencia que la entrega va a rechazar", async () => {
+    // El manifest solo comprobaba ruta y digest, así que una evidencia inválida entraba y recién
+    // se rechazaba en la última compuerta, con los PR ya mergeados y nada barato por hacer.
+    const evidence = await evidenceFile("pago-endpoint.json", '{ "headers": { "authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def" } }');
+
+    const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+
+    expect(code).toBe(1);
+    expect(messages).toEqual([
+      "lazy-workflow: no se pudo ejecutar ticket-manifest-set (La evidencia contiene credenciales o secretos)",
+    ]);
+    expect(await Bun.file(manifestPath()).exists()).toBeFalse();
   });
 
   test("rechaza evidencia dentro del árbol de trabajo, que un commit sí podría llevarse", async () => {
