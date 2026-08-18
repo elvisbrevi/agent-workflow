@@ -1327,17 +1327,27 @@ export class LazyWorkflowCli {
     }
     try {
       await boundary.validateDirectTicketContext!(hu, ticket);
-      const topology = await this.huInfoService.prepareWorkspaceBranches({
-        hu,
-        repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
-        baseBranch: options.baseBranch,
-      });
-      const ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
-        hu,
-        ticket,
-        integrationBranch: topology.integrationBranch,
-        repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
-      });
+      // Only the branch preparation below is a topology failure. The outer catch used to claim
+      // every later failure was one too, which sent the operator looking at branches when what
+      // had actually stopped the run was an evidence file at the far end of the delivery.
+      let topology: AzureWorkspaceBranchTopology;
+      let ticketTopology: AzureWorkspaceBranchTopology;
+      try {
+        topology = await this.huInfoService.prepareWorkspaceBranches({
+          hu,
+          repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+          baseBranch: options.baseBranch,
+        });
+        ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
+          hu,
+          ticket,
+          integrationBranch: topology.integrationBranch,
+          repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
+        });
+      } catch (error) {
+        reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
       if (checkpoint) {
         const drift = this.azureWorkspaceTopologyMismatch(checkpoint, topology, ticketTopology);
         if (drift) {
@@ -1453,7 +1463,7 @@ export class LazyWorkflowCli {
       }
       return await this.integrateAzureWorkspaceCode(options, declaredOptions, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
+      reportOperator(`lazy-workflow: falló la entrega workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
   }
@@ -1762,7 +1772,12 @@ export class LazyWorkflowCli {
     const ticketStateBefore = await boundary.getState!(ticket);
 
     for (const evidence of completionManifest.evidence) {
-      await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
+      try {
+        await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
+      } catch (error) {
+        reportOperator(`lazy-workflow: la evidencia ${evidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        return 1;
+      }
     }
 
     const textEvidence = completionManifest.evidence.find(({ kind }) => kind !== "screen");
@@ -1770,7 +1785,12 @@ export class LazyWorkflowCli {
       reportOperator("lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.");
       return 1;
     }
-    await boundary.validateEvidence!(ticket, textEvidence.path);
+    try {
+      await boundary.validateEvidence!(ticket, textEvidence.path);
+    } catch (error) {
+      reportOperator(`lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
 
     for (const evidence of completionManifest.evidence) {
       const existingAttachment = completionInfo.attachments.find((attachment) =>

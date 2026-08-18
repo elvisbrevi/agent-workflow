@@ -1958,3 +1958,60 @@ test("validateEvidence sigue rechazando una completion-evidence realmente distin
     await unlink(path).catch(() => undefined);
   }
 });
+
+test("la evidencia que redacta un secreto pasa; la que lo publica no", async () => {
+  // Juzgar la clave y no el valor rechazaba `"authorization": "[REDACTED - Bearer ...]"`, con lo
+  // que ninguna evidencia HTTP de un endpoint autenticado podía aprobarse por prolija que fuera
+  // su redacción: la entrega quedaba trabada en su última compuerta con el PR ya mergeado.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-secret-"));
+  const service = new AzureTicketInfoService(async () => "", async () => "");
+  const accepts = async (content: string): Promise<void> => {
+    const path = join(root, `ok-${Bun.hash(content).toString(16)}.txt`);
+    await Bun.write(path, content);
+    await expect(service.validateEvidenceFile(path, "command-output")).resolves.toBeUndefined();
+  };
+  const rejects = async (content: string): Promise<void> => {
+    const path = join(root, `leak-${Bun.hash(content).toString(16)}.txt`);
+    await Bun.write(path, content);
+    await expect(service.validateEvidenceFile(path, "command-output"))
+      .rejects.toThrow("La evidencia contiene credenciales o secretos");
+  };
+
+  try {
+    await accepts('"authorization": "[REDACTED - Bearer ADMIN_API_TOKEN]"');
+    await accepts('"headers": { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" }');
+    await accepts('"providerToken": "nunca expuesto por este endpoint (ver sanitize)"');
+    await accepts('"token": "<TOKEN>"');
+    await accepts('"password": "***"');
+    await accepts('"cookie": "[REDACTED]"');
+
+    await rejects('"authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"');
+    await rejects("Authorization: Basic dXNlcjpwYXNzd29yZA==");
+    await rejects("AZURE_DEVOPS_EXT_PAT=abcd1234efgh5678");
+    await rejects("az repos pr list --token ghp_realtokenvalue123");
+    await rejects('"password": "hunter2correcthorse"');
+    await rejects('"accessToken": "s3cr3t-de-verdad-largo"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("la evidencia HTTP del ticket 23579 vuelve a ser verificable", async () => {
+  // Regresión del bloqueo real: cada línea de abajo hacía saltar al detector anterior.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-23579-"));
+  const service = new AzureTicketInfoService(async () => "", async () => "");
+  const evidence = {
+    endpoint: "POST /payment-attempts/:id/reconcile",
+    providerToken: "nunca expuesto por este endpoint (ver `PaymentAttemptsController.sanitize`)",
+    request: { headers: { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" } },
+    response: { headers: { authorization: "[REDACTED - Bearer ADMIN_API_TOKEN]" } },
+  };
+
+  try {
+    const path = join(root, "ticket-23579-payment-reconciliation-http.json");
+    await Bun.write(path, JSON.stringify(evidence, null, 2));
+    await expect(service.validateEvidenceFile(path, "http-json")).resolves.toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
