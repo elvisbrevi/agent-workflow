@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TEXT_EVIDENCE_REQUIRED } from "../src/azure/completion-manifest.ts";
 import { AzureTicketInfoService } from "../src/azure/ticket-info-service.ts";
 import { GitHubDeliveryService } from "../src/github/github-delivery-service.ts";
 import { runDeterministicTool, type DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
@@ -162,11 +163,29 @@ describe("ticket-manifest-set", () => {
     // `evidenceDirectory` es el directorio del manifest, dentro del directorio
     // Git común: exigir que la evidencia estuviera fuera del repositorio volvía
     // inverificable todo manifest que siguiera la instrucción del coordinador.
-    const evidence = await screenFile("pantalla.png");
+    const captura = await screenFile("pantalla.png");
+    const salida = await evidenceFile("pago-endpoint.json");
 
-    const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `screen:${evidence}`]));
+    const { code } = await runTool(azureArgs([
+      ...VALIDATION,
+      "--evidence", `screen:${captura}`,
+      "--evidence", `http-json:${salida}`,
+    ]));
 
     expect(code).toBe(0);
+  });
+
+  test("no escribe un manifest que solo trae capturas", async () => {
+    // Solo un archivo de texto puede poblar completion-evidence, así que un manifest de puras
+    // capturas nunca cierra la entrega. Antes eso se descubría en la última compuerta, con los PR
+    // ya mergeados y la sesión cerrada: la corrida quedaba trabada sin nadie que pudiera arreglarla.
+    const captura = await screenFile("pantalla.png");
+
+    const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `screen:${captura}`]));
+
+    expect(code).toBe(1);
+    expect(messages).toEqual([`lazy-workflow: no se pudo ejecutar ticket-manifest-set (${TEXT_EVIDENCE_REQUIRED})`]);
+    expect(await Bun.file(manifestPath()).exists()).toBeFalse();
   });
 
   test("no escribe un manifest que nombre evidencia que la entrega va a rechazar", async () => {

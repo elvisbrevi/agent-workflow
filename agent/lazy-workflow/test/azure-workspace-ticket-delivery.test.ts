@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { basename } from "node:path";
+import { parseCompletionManifest, type EvidenceKind } from "../src/azure/completion-manifest.ts";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import {
   createAzureWorkspaceHarness as createHarness,
@@ -57,6 +59,70 @@ test("una entrega limpia retira los manifests que ya cumplieron su función", as
   }
   expect(exit).toBe(0);
   expect(manifests).toEqual([false, false]);
+});
+
+/** Un manifest válido con la evidencia que se le declare, en el orden en que se le declare. */
+const manifestWith = (evidence: Array<{ path: string; kind: EvidenceKind; sha256: string }>) =>
+  parseCompletionManifest({
+    ticket,
+    ticketBranch,
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "passed" }],
+    evidence,
+  });
+
+test("la evidencia que llega al ticket es la de todos los repositorios cambiados, no la del primero", async () => {
+  // Mirar solo el primer manifest dejaba fuera del ticket toda la evidencia que los demás
+  // repositorios habían declarado, y una evidencia textual que viviera en el segundo detenía la
+  // entrega como si no existiera.
+  const compartida = { path: "/tmp/pantalla-comun.png", kind: "screen" as const, sha256: "c".repeat(64) };
+  const harness = createHarness();
+  const attached: string[] = [];
+  const evidenceSet: string[] = [];
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      readCompletionManifest: async (_path: string, workingDirectory: string) => manifestWith(
+        basename(workingDirectory) === repoA
+          ? [{ path: "/tmp/a-tests.txt", kind: "command-output", sha256: "a".repeat(64) }, compartida]
+          : [{ path: "/tmp/b-pago.json", kind: "http-json", sha256: "b".repeat(64) }, compartida],
+      ),
+      addAttachment: async (id: number, path: string, kind) => {
+        attached.push(path);
+        return { ticket: id, name: basename(path), kind, digest: "a".repeat(64), url: "https://example.test/e" };
+      },
+      setEvidence: async (_id: number, path: string) => { evidenceSet.push(path); return undefined; },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  // La compartida se adjunta una sola vez: dos repositorios pueden nombrar el mismo archivo.
+  expect(attached).toEqual(["/tmp/a-tests.txt", "/tmp/pantalla-comun.png", "/tmp/b-pago.json"]);
+  // completion-evidence toma la primera textual en el orden declarado de repositorios.
+  expect(evidenceSet).toEqual(["/tmp/a-tests.txt"]);
+});
+
+test("un manifest de puras capturas detiene el workspace antes de crear ningún PR", async () => {
+  // La compuerta de evidencia textual vivía después del merge: la corrida quedaba trabada con los
+  // PR ya integrados y sin sesión que pudiera rehacer el manifest. Ahora el manifest ni siquiera
+  // se lee, porque `parseCompletionManifest` -- la misma puerta que usa la herramienta que escribe
+  // -- lo rechaza, y eso ocurre antes del primer efecto externo.
+  const harness = createHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      readCompletionManifest: async () => manifestWith([{ path: "/tmp/pantalla.png", kind: "screen", sha256: "c".repeat(64) }]),
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(harness.events.filter((event) => event.startsWith("pr:"))).toEqual([]);
+  expect(harness.ticketBranchLinks).toEqual([]);
+  expect(harness.ticketStateCalls).toEqual([]);
 });
 
 test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket antes de la sesión", async () => {

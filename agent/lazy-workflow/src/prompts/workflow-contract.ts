@@ -8,6 +8,7 @@
  * fails if a prompt asset hardcodes one of these literals.
  */
 
+import { EVIDENCE_KINDS, TEXT_EVIDENCE_KINDS } from "../azure/completion-manifest.ts";
 import { AZURE_TOOL_COMMANDS, GITHUB_TOOL_COMMANDS } from "../cli/tool-commands.ts";
 
 export const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
@@ -57,7 +58,11 @@ const VALIDATION_FLAGS =
 
 export const AZURE_MANIFEST_TOOL_INSTRUCTION = [
   `Create the completion manifest only by running \`lazy-workflow ${AZURE_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
-  `It takes --ticket, --branch, --manifest, ${VALIDATION_FLAGS}, and one --evidence <kind>:<path> per evidence file, where <kind> is exactly http-json, screen, or command-output.`,
+  `It takes --ticket, --branch, --manifest, ${VALIDATION_FLAGS}, and one --evidence <kind>:<path> per evidence file, where <kind> is exactly ${EVIDENCE_KINDS.join(", ")}.`,
+  // Only a text field can carry the ticket's completion-evidence, so a manifest of screenshots
+  // alone can never close the delivery. Saying it here is what stops a session from finding out at
+  // the last gate, once its pull requests have already merged.
+  `At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}: screenshots alone cannot satisfy the ticket's completion-evidence field.`,
   "It resolves the commit from HEAD and computes every SHA-256 digest itself, and it refuses to write a manifest the coordinator would reject.",
   "If it fails, fix exactly what its message names and run it again.",
 ].join(" ");
@@ -79,7 +84,7 @@ export function azureManifestCommandLine(fixed: {
   if (fixed.ticket === null || !fixed.ticketBranch || !fixed.manifestPath) return null;
   return `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket ${fixed.ticket} --branch ${fixed.ticketBranch}`
     + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
-    + ` --validation "<command>" --validation-result "<outcome>" --evidence <kind>:<path>`;
+    + ` --validation "<command>" --validation-result "<outcome>" --evidence command-output:<path>`;
 }
 
 export function githubManifestCommandLine(fixed: {

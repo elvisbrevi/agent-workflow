@@ -394,7 +394,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         ...(spec.manifestPaths.length > 0
           ? ["Immutable manifest paths:", ...spec.manifestPaths.map(({ path, manifestPath }) => `${path}: manifest ${manifestPath}`)]
           : []),
-        "Each participant repository must end with a manifest at exactly its listed path including at least one evidence entry; unchanged repositories must end clean.",
+        "Each participant repository must end with a manifest at exactly its listed path including at least one evidence entry, and at least one of the workspace's evidence entries must be http-json or command-output; unchanged repositories must end clean.",
         ...manifestCommandLines(spec.manifestPaths.map(({ path, manifestPath }) => azureManifestCommandLine({
           ticket: spec.ticket,
           ticketBranch: spec.ticketTopology.ticketBranch ?? null,
