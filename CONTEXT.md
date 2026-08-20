@@ -34,6 +34,38 @@ output the tool returned, and the raw event the agent CLI emitted. It is what
 answers which file a session is editing while it edits it.
 _Avoid_: a third mode narrower than `--verbose`, raw dumps in the parsed stream
 
+**Run log**:
+The machine-readable reading of a run: one JSON Lines file, appended to as the
+run proceeds, whose records a metrics or monitoring service consumes without
+parsing operator prose. It is a second surface beside the parsed output, never a
+replacement for it, and a run never fails because its run log could not be
+written (ADR-0029).
+_Avoid_: a transcript of the agent stream, a parallel console logger
+
+**Run record**:
+One line of the run log. It carries a fixed low-cardinality label set — the
+run's identity, command, workflow, provider, CLI, model, severity, event, and
+where applicable its failure kind, phase and outcome — while every
+high-cardinality identifier such as an Issue, ticket, HU, repository or session
+stays in its nested context. The labels are what a dashboard groups by; the
+context is what an operator reads once the group is found.
+_Avoid_: free-form fields promoted to labels, secrets or prompt text in a record
+
+**Failure kind**:
+The closed vocabulary that classifies why a run failed or was cut short, named
+once so the same failure is always the same value. It is what turns a run's
+failures into a counter a monitoring service can chart and alert on; the prose
+describing the failure travels beside it, never instead of it.
+_Avoid_: an open string, a classification derived from a message
+
+**Run interruption**:
+A run that ended without reaching its own conclusion: an operator signal, an
+unhandled failure above every catch, a session that failed or ended without its
+terminal marker, or an exhausted fallback chain. Every interruption leaves a run
+record, so the durable state a run left behind — a preserved checkpoint above
+all — is never the only evidence that it stopped.
+_Avoid_: a silent exit, treating a preserved checkpoint as the record
+
 **Deterministic tool**:
 An operation a workflow performs against Azure Boards, GitHub or git without
 opening a session. Every one of them is reachable as its own command, shares the
