@@ -43,6 +43,7 @@ import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, ty
 import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 import {
   GitHubManagedQueueService,
+  assigneeLogins,
   type GitHubManagedQueueAdapter,
   type GitHubRepositoryContext,
   type SelectedManagedIssue,
@@ -191,6 +192,15 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function oldestReceiptTimestamp(receipts: GitHubDeliveryCheckpoint["receipts"]): string | null {
+  const timestamps = Object.values(receipts)
+    .filter((receipt): receipt is NonNullable<typeof receipt> => receipt !== undefined)
+    .map((receipt) => receipt.verifiedAt);
+  return timestamps.length === 0
+    ? null
+    : timestamps.reduce((oldest, current) => (Date.parse(current) < Date.parse(oldest) ? current : oldest));
 }
 
 function reportAzureFailure(
@@ -601,15 +611,43 @@ export class LazyWorkflowCli {
   private async githubCheckpointResolvedExternally(
     checkpoint: GitHubDeliveryCheckpoint,
     workingDirectory: string,
-  ): Promise<boolean> {
-    if (checkpoint.sessionId !== null || checkpoint.pullRequest) return false;
+  ): Promise<SelectedManagedIssue | null> {
+    if (checkpoint.sessionId !== null || checkpoint.pullRequest) return null;
     const readIssue = this.githubManagedQueue.readIssueDetail?.bind(this.githubManagedQueue);
-    if (!readIssue) return false;
+    if (!readIssue) return null;
+    let issue: SelectedManagedIssue;
     try {
-      const issue = await readIssue(checkpoint.issue, workingDirectory);
-      return issue.state !== "OPEN";
-    } catch {
-      return false;
+      issue = await readIssue(checkpoint.issue, workingDirectory);
+    } catch (error) {
+      throw new GitHubCoordinatedFailureError("claim-verification-failure", errorMessage(error), { cause: error });
+    }
+    if (issue.state === "OPEN") return null;
+    if (issue.state === "CLOSED") return issue;
+    throw new GitHubCoordinatedFailureError(
+      "claim-verification-failure",
+      `el Issue #${checkpoint.issue} devolvio un estado no verificable (${issue.state || "vacio"})`,
+    );
+  }
+
+  /**
+   * The claim on an orphaned checkpoint's issue is released the same way
+   * `github-issue-release` does (ADR-0026: tools and workflows share one
+   * path), and only when it still names the authenticated identity — an
+   * assignment left by another identity (a different run, a human) is never
+   * touched (issue #269).
+   */
+  private async releaseOrphanedCheckpointClaim(issue: SelectedManagedIssue, workingDirectory: string): Promise<void> {
+    const verifyAuthentication = this.githubManagedQueue.verifyAuthentication?.bind(this.githubManagedQueue);
+    const releaseOwnClaim = this.githubManagedQueue.releaseOwnClaim?.bind(this.githubManagedQueue);
+    if (!verifyAuthentication || !releaseOwnClaim) {
+      throw new GitHubCoordinatedFailureError("claim-verification-failure", "el adaptador GitHub no puede liberar el claim propio");
+    }
+    try {
+      const identity = await verifyAuthentication(workingDirectory);
+      if (!assigneeLogins(issue).includes(identity.login)) return;
+      await releaseOwnClaim(issue.number, identity.login, workingDirectory);
+    } catch (error) {
+      throw new GitHubCoordinatedFailureError("claim-verification-failure", errorMessage(error), { cause: error });
     }
   }
 
@@ -2730,9 +2768,13 @@ export class LazyWorkflowCli {
       } catch (error) {
         throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
       }
-      if (checkpoint && await this.githubCheckpointResolvedExternally(checkpoint, options.workingDirectory)) {
+      const resolvedIssue = checkpoint ? await this.githubCheckpointResolvedExternally(checkpoint, options.workingDirectory) : null;
+      if (checkpoint && resolvedIssue) {
+        await this.releaseOrphanedCheckpointClaim(resolvedIssue, options.workingDirectory);
+        const since = oldestReceiptTimestamp(checkpoint.receipts) ?? "fecha desconocida";
         reportOperator(
-          `lazy-workflow: el Issue #${checkpoint.issue} del checkpoint ya está cerrado sin PR asociado; `
+          `lazy-workflow: el Issue #${checkpoint.issue} del checkpoint ya está cerrado sin PR asociado `
+          + `(fase "${checkpoint.phase}", reclamado desde ${since}); `
           + "checkpoint descartado, continuando con la cola.",
         );
         await store.clear(options.workingDirectory);

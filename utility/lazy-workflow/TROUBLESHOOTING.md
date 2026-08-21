@@ -19,6 +19,14 @@ re-implements work that is already committed.
 
 ## Argument errors
 
+A checkpoint that claims an already-`CLOSED` issue is detected automatically:
+`code` releases the claim (only if it still names the authenticated identity),
+clears the checkpoint, reports the issue, its phase and how long it had been
+claimed, and keeps draining the queue with the `--cli`/`--model`/`--variant`
+declared on this invocation. `el checkpoint pertenece al CLI X, no a Y` only
+fires now when the checkpoint's issue is genuinely still open — no manual
+`github-issue-release` is needed for the closed-issue case.
+
 | Message | Fix |
 |---|---|
 | `--branch y --base-branch solo se permiten en flujos Azure` | Drop them, or add `--hu <id>` if this was meant to be an Azure run |
