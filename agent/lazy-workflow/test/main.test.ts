@@ -860,7 +860,7 @@ test("code sin HU ignora los marcadores de entrega heredados", async () => {
 
 test("code sin HU falla cerrado cuando falta el adaptador de entrega coordinada", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
-  const { reporter, info } = captureReporter();
+  const { reporter, error } = captureReporter();
   let openCodeCalls = 0;
 
   try {
@@ -892,7 +892,9 @@ test("code sin HU falla cerrado cuando falta el adaptador de entrega coordinada"
   }
 
   expect(openCodeCalls).toBe(0);
-  expect(info.some((message) => message.includes("adaptador de entrega"))).toBeTrue();
+  // ADR-0029: a delivery-stopping failure like this one routes through the
+  // typed emitter to Reporter.error, not .info, so --quiet runs survive it.
+  expect(error.some((message) => message.includes("adaptador de entrega"))).toBeTrue();
 });
 
 test.each([

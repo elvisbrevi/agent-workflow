@@ -16,6 +16,7 @@
 import * as nodeFs from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import type { FailureKind } from "./failure-kind.ts";
 
 export const RUN_LOG_SCHEMA_VERSION = 1;
 export const RUN_LOG_FILENAME = "runs.jsonl";
@@ -46,7 +47,7 @@ export interface RunLogRecordInput {
   cli: string;
   model: string;
   variant: string;
-  failureKind?: string | null;
+  failureKind?: FailureKind | null;
   phase?: string | null;
   outcome?: RunLogOutcome | null;
   exitCode?: number | null;

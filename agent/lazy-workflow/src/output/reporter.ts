@@ -13,15 +13,29 @@
 import ora, { type Ora } from "ora";
 import chalk from "chalk";
 import { OPERATOR_TIMESTAMP_WIDTH, formatOperatorTimestamp } from "./timestamp.ts";
+import type { FailureKind } from "./failure-kind.ts";
+import type { RunLogContext } from "./run-log.ts";
 
 export type ReporterStream = { write(chunk: string): void };
 
 export type ReporterLevel = "info" | "warn" | "error" | "debug" | "trace";
 
+/**
+ * What a typed failure emission (ADR-0029) adds to a plain `warn`/`error` line:
+ * the failure's classification, the phase it happened in, and the run's own
+ * high-cardinality identifiers. Optional because most `warn`/`error` callers
+ * still just report prose with nothing to classify.
+ */
+export interface ReporterFailureDetail {
+  failureKind?: FailureKind | null;
+  phase?: string | null;
+  context?: RunLogContext;
+}
+
 export interface Reporter {
   info(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
+  warn(message: string, detail?: ReporterFailureDetail): void;
+  error(message: string, detail?: ReporterFailureDetail): void;
   /** Visible with `--verbose`: what the agent reasoned and which tools it ran. */
   debug(message: string): void;
   /** Visible only with `--verbose-output`: the agent stream as it arrived. */
@@ -39,7 +53,7 @@ export interface Reporter {
 
 /** Forwards every `warn`/`error` the Reporter emits as a run-log `event` record (ADR-0029). Additive: it never gates what reaches the terminal. */
 export interface ReporterRunLogSink {
-  event(severity: "warn" | "error", message: string): void;
+  event(severity: "warn" | "error", message: string, detail?: ReporterFailureDetail): void;
 }
 
 export interface ReporterOptions {
@@ -157,15 +171,15 @@ export function createReporter(arg: boolean | ReporterOptions): Reporter {
       if (quiet) return;
       write("info", message);
     },
-    warn(message) {
+    warn(message, detail) {
       // Reported to the run log regardless of `--quiet`: a dashboard needs the
       // record even on a run whose terminal is silenced.
-      runLog?.event("warn", message);
+      runLog?.event("warn", message, detail);
       if (quiet) return;
       write("warn", message);
     },
-    error(message) {
-      runLog?.event("error", message);
+    error(message, detail) {
+      runLog?.event("error", message, detail);
       write("error", message);
     },
     debug(message) {
