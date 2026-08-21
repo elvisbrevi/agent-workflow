@@ -387,6 +387,61 @@ run is silent unless something fails:
 `--no-color` can be stacked on top of any of the modes above and strips ANSI
 from every line, leaving the stamp, the gutter, the glyph and the message.
 
+## Run log
+
+Every command also appends to a run log: one JSON Lines file, so a metrics or
+monitoring service can tail a run's start, its end, and every `warn`/`error`
+between them without parsing operator prose (ADR-0029). It is a description of
+a run, never a copy of it — a record carries no credential, no prompt text and
+no diff content.
+
+```bash
+lazy-workflow code --working-directory /path/to/repository                        # writes to the default path
+lazy-workflow code --log-file /path/to/runs.jsonl --working-directory /repo       # writes there instead
+lazy-workflow code --no-log-file --working-directory /repo                        # disables the run log for this run
+LAZY_WORKFLOW_LOG_FILE=/path/to/runs.jsonl lazy-workflow code --working-directory /repo
+```
+
+Where it writes resolves in this order: `--log-file <path>`, then
+`LAZY_WORKFLOW_LOG_FILE`, then the default
+`~/.local/state/lazy-workflow/runs.jsonl` — consistent with the
+`~/.cache/agent-workflow` and `~/.local/bin` paths the installer already uses.
+`--no-log-file` disables it outright and is rejected together with
+`--log-file`. The file is capped at a fixed size and keeps exactly one previous
+generation (`runs.jsonl.1`); reaching the cap renames the current file to
+`.1`, replacing whichever generation was there, and starts a fresh one.
+
+Every record is one JSON object per line:
+
+```json
+{"schema_version":1,"run_id":"…","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code iniciado"}
+{"schema_version":1,"run_id":"…","ts":"2026-08-20T23:12:41.000Z","severity":"info","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"success","exit_code":0,"duration_ms":37210,"context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code finalizado (success)"}
+```
+
+The first line of a run is always a `run.started` record and the last is
+always a `run.finished` one, carrying `outcome`, `exit_code` and `duration_ms`
+— including when the run ends on a failure path that returns a non-zero code.
+Every `warn` and `error` the Reporter emits in between appears as an `event`
+record with the same `run_id`, regardless of `--quiet`: the run log is a
+separate seam from the terminal stream, so silencing one never silences the
+other.
+
+The record shape splits into **labels** — flattened at the top level, the
+low-cardinality axes a dashboard groups by: `schema_version`, `run_id`, `ts`,
+`severity`, `event`, `command`, `workflow`, `provider`, `cli`, `model`,
+`variant`, and — where they apply — `failure_kind`, `phase`, `outcome`,
+`exit_code`, `duration_ms` — and a nested **`context`** carrying the
+high-cardinality identifiers a single run has: `issue`, `ticket`, `hu`,
+`repository`, `session_id`, `branch`. `message` is the human line and is never
+what a dashboard groups by.
+
+Writing is best-effort and isolated from the run it describes: a full disk, a
+read-only home, or a path that cannot be created emits one `warn` and disables
+the run log for the remainder of the run. No exit code, checkpoint, terminal
+protocol marker or stdout JSON payload is ever affected by a run log failure —
+a run with a broken sink behaves exactly like one started with
+`--no-log-file`.
+
 ## Default GitHub workflows
 
 Without `--hu`, `plan` and `code` run in GitHub-only scope, each receiving the

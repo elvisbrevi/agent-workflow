@@ -233,6 +233,61 @@ describe("createReporter", () => {
     });
   });
 
+  describe("run log", () => {
+    test("warn y error se reenvian al run log ademas de imprimirse", () => {
+      const { stream } = captureStream();
+      const events: Array<{ severity: string; message: string }> = [];
+      const reporter = createReporter({
+        verbose: false,
+        noColor: true,
+        stream,
+        now,
+        runLog: { event: (severity, message) => events.push({ severity, message }) },
+      });
+
+      reporter.info("no reenviado");
+      reporter.warn("cuidado");
+      reporter.error("fallo");
+
+      expect(events).toEqual([
+        { severity: "warn", message: "cuidado" },
+        { severity: "error", message: "fallo" },
+      ]);
+    });
+
+    test("el reenvio ocurre incluso con --quiet, donde warn no llega a la terminal", () => {
+      const { stream, chunks } = captureStream();
+      const events: Array<{ severity: string; message: string }> = [];
+      const reporter = createReporter({
+        verbose: false,
+        quiet: true,
+        noColor: true,
+        stream,
+        now,
+        runLog: { event: (severity, message) => events.push({ severity, message }) },
+      });
+
+      reporter.warn("silenciado en terminal");
+
+      expect(chunks).toEqual([]);
+      expect(events).toEqual([{ severity: "warn", message: "silenciado en terminal" }]);
+    });
+
+    test("sin runLog no cambia nada del comportamiento existente", () => {
+      const { stream, chunks } = captureStream();
+      const reporter = createReporter({ verbose: false, noColor: true, stream, now });
+
+      expect(() => {
+        reporter.warn("uno");
+        reporter.error("dos");
+      }).not.toThrow();
+      expect(chunks).toEqual([
+        `${FIXED_STAMP} │ ▲ uno\n`,
+        `${FIXED_STAMP} │ ✖ dos\n`,
+      ]);
+    });
+  });
+
   describe("noColor explicito", () => {
     let originalNoColor: string | undefined;
 
