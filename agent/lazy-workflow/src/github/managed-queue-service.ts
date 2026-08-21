@@ -73,7 +73,7 @@ function labelNames(issue: Pick<ManagedIssue, "labels">): string[] {
   return issue.labels.map(({ name }) => (typeof name === "string" ? name : "")).filter(Boolean);
 }
 
-function assigneeLogins(issue: Pick<ManagedIssue, "assignees">): string[] {
+export function assigneeLogins(issue: Pick<ManagedIssue, "assignees">): string[] {
   return issue.assignees.map(({ login }) => (typeof login === "string" ? login : "")).filter(Boolean);
 }
 
@@ -126,10 +126,12 @@ export function orderEligibleManagedIssues(issues: ManagedIssue[]): ManagedIssue
 export interface GitHubManagedQueueAdapter {
   selectAndClaimEligibleIssue(workingDirectory: string): Promise<ManagedQueueOutcome>;
   verifyRepository?(workingDirectory: string): Promise<GitHubRepositoryContext>;
+  verifyAuthentication?(workingDirectory: string): Promise<GitHubAuthenticatedIdentity>;
   selectEligibleIssue?(workingDirectory: string): Promise<ManagedQueueSelection>;
   claimSelectedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
+  releaseOwnClaim?(issueNumber: number, login: string, workingDirectory: string): Promise<void>;
 }
 
 export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {

@@ -79,6 +79,7 @@ function githubDeliveryCli(
     onClear?: () => void;
     nextIssue?: number;
     readIssueDetail?: (issueNumber: number) => Promise<ReturnType<typeof fakeSelectedIssue>>;
+    verifyAuthentication?: () => Promise<{ login: string }>;
   } = {},
 ) {
   let current: GitHubDeliveryCheckpoint | null = checkpoint;
@@ -90,6 +91,7 @@ function githubDeliveryCli(
   const pending = options.nextIssue === undefined ? [] : [options.nextIssue];
   const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
   const { reporterFn, messages: reported } = captureReporter();
+  const released: Array<{ issue: number; login: string }> = [];
   const cli = new LazyWorkflowCli(
     azure,
     agents.source,
@@ -115,11 +117,13 @@ function githubDeliveryCli(
       },
       claimSelectedIssue: async (issue: number) => fakeSelectedIssue(issue),
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+      verifyAuthentication: options.verifyAuthentication ?? (async () => ({ login: "elvis" })),
+      releaseOwnClaim: async (issue: number, login: string) => { released.push({ issue, login }); },
     },
     store,
     lock,
   );
-  return { cli, store, reported, get current() { return current; } };
+  return { cli, store, reported, released, get current() { return current; } };
 }
 
 test("la entrega GitHub reanuda con el CLI que fijó el checkpoint", async () => {
@@ -157,7 +161,7 @@ test("el rechazo de un --cli contradictorio nombra el CLI del checkpoint y cómo
   expect(rejection).toContain("--cli claudecode");
 });
 
-test("un checkpoint sin sesión ni PR se descarta si el issue ya fue cerrado por fuera, sin bloquear por --cli", async () => {
+test("un checkpoint sin sesión ni PR se descarta si el issue ya fue cerrado por fuera, sin bloquear por --cli, y libera la claim propia", async () => {
   const agents = spyingAgents();
   let cleared = false;
   const state = githubDeliveryCli(
@@ -165,7 +169,7 @@ test("un checkpoint sin sesión ni PR se descarta si el issue ya fue cerrado por
     agents,
     {
       onClear: () => { cleared = true; },
-      readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED" }),
+      readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED", assignees: [{ login: "elvis" }] }),
     },
   );
 
@@ -175,8 +179,86 @@ test("un checkpoint sin sesión ni PR se descarta si el issue ya fue cerrado por
   expect(cleared).toBeTrue();
   expect(agents.resumed).toEqual([]);
   expect(state.current).toBeNull();
+  expect(state.released).toEqual([{ issue: 178, login: "elvis" }]);
   expect(state.reported.some((message) => message.includes("el checkpoint pertenece al CLI"))).toBeFalse();
-  expect(state.reported.some((message) => message.includes("ya está cerrado sin PR asociado"))).toBeTrue();
+  const report = state.reported.join("");
+  expect(report).toContain("ya está cerrado sin PR asociado");
+  expect(report).toContain('fase "started"');
+  expect(report).toContain("fecha desconocida");
+});
+
+test("un checkpoint huérfano no toca la claim de otra identidad", async () => {
+  const agents = spyingAgents();
+  const state = githubDeliveryCli(
+    { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started", pullRequest: null },
+    agents,
+    {
+      readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED", assignees: [{ login: "another-runner" }] }),
+    },
+  );
+
+  const code = await state.cli.run(["code", "--cli", "claudecode", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(state.released).toEqual([]);
+  expect(state.current).toBeNull();
+});
+
+test("un checkpoint reporta la fase y la antigüedad del receipt más viejo al descartarse", async () => {
+  const agents = spyingAgents();
+  const checkpoint = {
+    ...githubDeliveryCheckpoint("opencode"),
+    sessionId: null,
+    phase: "implementing" as const,
+    pullRequest: null,
+    receipts: {
+      "issue-claim": { verifiedAt: "2026-08-15T03:40:15.330Z" },
+      "branch-prepared": { verifiedAt: "2026-08-15T04:10:00.000Z" },
+    },
+  };
+  const state = githubDeliveryCli(checkpoint, agents, {
+    readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED" }),
+  });
+
+  await state.cli.run(["code", "--cli", "claudecode", "--working-directory", "/repo"]);
+
+  const report = state.reported.join("");
+  expect(report).toContain('fase "implementing"');
+  expect(report).toContain("2026-08-15T03:40:15.330Z");
+});
+
+test("si GitHub no puede consultarse, el checkpoint se conserva y no se reanuda ni se asume que el issue está cerrado", async () => {
+  const agents = spyingAgents();
+  let cleared = false;
+  const checkpoint = { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started" as const, pullRequest: null };
+  const state = githubDeliveryCli(checkpoint, agents, {
+    onClear: () => { cleared = true; },
+    readIssueDetail: async () => { throw new Error("gh api falló"); },
+  });
+
+  expect(await state.cli.run(["code", "--cli", "opencode", "--working-directory", "/repo"])).toBe(1);
+
+  expect(cleared).toBeFalse();
+  expect(state.released).toEqual([]);
+  expect(agents.resumed).toEqual([]);
+  const rejection = state.reported.join("");
+  expect(rejection).toContain("no se pudo coordinar la entrega GitHub");
+});
+
+test("un estado GitHub desconocido conserva el checkpoint y no lo trata como cerrado", async () => {
+  const agents = spyingAgents();
+  let cleared = false;
+  const checkpoint = { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started" as const, pullRequest: null };
+  const state = githubDeliveryCli(checkpoint, agents, {
+    onClear: () => { cleared = true; },
+    readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "UNKNOWN" }),
+  });
+
+  expect(await state.cli.run(["code", "--working-directory", "/repo"])).toBe(1);
+
+  expect(cleared).toBeFalse();
+  expect(state.current).toEqual(checkpoint);
+  expect(agents.resumed).toEqual([]);
 });
 
 test("un checkpoint sin sesión pero con un PR propio no se descarta aunque el issue ya esté cerrado", async () => {
