@@ -48,6 +48,13 @@ export class GitHubPullRequestConflictError extends Error {
   }
 }
 
+export class GitHubManifestNotVerifiableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "GitHubManifestNotVerifiableError";
+  }
+}
+
 export interface GitHubDeliveryAdapter {
   verifyRepository?(repository: string, workingDirectory: string): Promise<void>;
   checkoutBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
