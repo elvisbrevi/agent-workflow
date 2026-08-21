@@ -27,6 +27,27 @@ export type RunLogSeverity = "info" | "warn" | "error";
 export type RunLogEventKind = "run.started" | "run.finished" | "event";
 export type RunLogOutcome = "success" | "failure" | "interrupted";
 
+/**
+ * The closed vocabulary a coding-agent session lifecycle record is labelled
+ * with (issue #267): one rung's worth of a run, never the whole run itself,
+ * so a dashboard can histogram a session's duration independently of the
+ * process that carried it.
+ */
+export const RUN_LOG_SESSION_EVENTS = [
+  "session_started",
+  "session_finished",
+  "session_failed",
+  "terminal_marker_missing",
+  "provider_exhausted",
+  "fallback_descent",
+  "chain_exhausted",
+  "chain_retry",
+  "session_close_failed",
+  "session_not_found",
+  "cross_cli_handoff",
+] as const;
+export type RunLogSessionEvent = typeof RUN_LOG_SESSION_EVENTS[number];
+
 /** High-cardinality identifiers of a single run; never labels (ADR-0029). */
 export interface RunLogContext {
   issue?: number | null;
@@ -35,6 +56,14 @@ export interface RunLogContext {
   repository?: string | null;
   sessionId?: string | null;
   branch?: string | null;
+  /**
+   * A finished session's own stop reason (a Claude Code `result` subtype, an
+   * OpenCode `step_finish` reason), passed through verbatim from whichever CLI
+   * produced it. Context, not a label (ADR-0029): the vocabulary is the
+   * provider's own and not one this repo declares or bounds, unlike
+   * `reason`'s closed exhaustion-cause set.
+   */
+  stopReason?: string | null;
 }
 
 /** What a call site knows before the sink stamps `schema_version`, `run_id` and `ts`. */
@@ -53,6 +82,12 @@ export interface RunLogRecordInput {
   outcome?: RunLogOutcome | null;
   exitCode?: number | null;
   durationMs?: number | null;
+  /** Set only on a session-lifecycle record (issue #267); absent on a run-level or failure-kind one. */
+  sessionEvent?: RunLogSessionEvent | null;
+  /** The closed exhaustion-cause vocabulary this repo already bounds (`rate_limit`, `billing`, `authentication`, `session_limit`) — a label, unlike a finished session's own stop reason, which travels in `context.stopReason` (ADR-0029). */
+  reason?: string | null;
+  /** Set only on a cross-CLI handoff: the CLI the work yielded from, while `cli` names the one that adopted it. */
+  fromCli?: string | null;
   context: RunLogContext;
   /** The human line; deliberately not a label, and never a credential, a prompt or a diff. */
   message: string;
@@ -134,6 +169,9 @@ function buildLine(record: RunLogRecordInput, runId: string, ts: Date): Record<s
   if (record.outcome != null) line["outcome"] = record.outcome;
   if (record.exitCode != null) line["exit_code"] = record.exitCode;
   if (record.durationMs != null) line["duration_ms"] = record.durationMs;
+  if (record.sessionEvent != null) line["session_event"] = record.sessionEvent;
+  if (record.reason != null) line["reason"] = record.reason;
+  if (record.fromCli != null) line["from_cli"] = record.fromCli;
   line["context"] = {
     issue: record.context.issue ?? null,
     ticket: record.context.ticket ?? null,
@@ -141,6 +179,7 @@ function buildLine(record: RunLogRecordInput, runId: string, ts: Date): Record<s
     repository: record.context.repository ?? null,
     session_id: record.context.sessionId ?? null,
     branch: record.context.branch ?? null,
+    stop_reason: record.context.stopReason ?? null,
   };
   line["message"] = record.message;
   return line;

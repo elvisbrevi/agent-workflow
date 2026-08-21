@@ -33,6 +33,7 @@ import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type Reporter, type ReporterRunLogSink } from "../output/reporter.ts";
 import { reportFailure, type FailureKind } from "../output/failure-kind.ts";
+import { reportSessionEvent } from "../output/session-event.ts";
 import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../output/run-log.ts";
 import { registerInterruptionHandlers, type InterruptionCheckpointProbe, type InterruptionProcess } from "../output/run-interruption.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
@@ -787,6 +788,16 @@ export class LazyWorkflowCli {
           failureKind: detail?.failureKind,
           phase: detail?.phase,
           checkpoint: detail?.checkpoint,
+          sessionEvent: detail?.sessionEvent,
+          reason: detail?.reason,
+          fromCli: detail?.fromCli,
+          // A session record names the rung it actually ran on; every other
+          // record keeps the run's own declared one.
+          cli: detail?.cli ?? base.cli,
+          model: detail?.model ?? base.model,
+          variant: detail?.variant ?? base.variant,
+          durationMs: detail?.durationMs,
+          outcome: detail?.outcome,
           context: detail?.context ? { ...base.context, ...detail.context } : base.context,
         });
       },
@@ -1451,6 +1462,23 @@ export class LazyWorkflowCli {
           handedOff ? "traspasando el trabajo a una sesión nueva" : `reanudando la sesión ${sessionId}`
         }.`,
       );
+      const descentContext = { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId };
+      reportSessionEvent(
+        "fallback_descent",
+        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)}.`,
+        next.rung,
+        descentContext,
+        { reason: current.exhaustion.cause, fromCli: active.cli },
+      );
+      if (handedOff) {
+        reportSessionEvent(
+          "cross_cli_handoff",
+          `lazy-workflow: el trabajo pasa de ${active.cli} a ${next.rung.cli}.`,
+          next.rung,
+          descentContext,
+          { fromCli: active.cli },
+        );
+      }
       active = next.rung;
       index = next.index;
       try {
@@ -1491,19 +1519,34 @@ export class LazyWorkflowCli {
     if (options.fallbackChain.length === 0) return false;
     const remaining = deadline - this.clock.now();
     const exhausted = `escalón ${describeRung(active)} (causa ${exhaustion.cause})`;
+    const retryContext = { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId: null };
     if (remaining < options.fallbackWaitSeconds * 1000) {
       reportFailure(
         "session-failure",
         "reconciling",
-        { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId: null },
+        retryContext,
         `lazy-workflow: la cadena de fallback sigue agotada al alcanzar el tope de ${options.fallbackWaitMaxSeconds}s de espera; último ${exhausted}; checkpoint conservado.`,
         undefined,
         "preserved",
+      );
+      reportSessionEvent(
+        "chain_exhausted",
+        `lazy-workflow: cadena de fallback agotada, último ${exhausted}, tope de ${options.fallbackWaitMaxSeconds}s alcanzado.`,
+        active,
+        retryContext,
+        { reason: exhaustion.cause, checkpoint: "preserved" },
       );
       return false;
     }
     reportOperator(
       `lazy-workflow: cadena de fallback agotada, último ${exhausted}; espero ${options.fallbackWaitSeconds}s y reintento el escalón primario; quedan ${Math.round(remaining / 1000)}s hasta el tope.`,
+    );
+    reportSessionEvent(
+      "chain_retry",
+      `lazy-workflow: cadena de fallback agotada, último ${exhausted}; reintento el escalón primario en ${options.fallbackWaitSeconds}s.`,
+      active,
+      retryContext,
+      { reason: exhaustion.cause },
     );
     await this.retryTimer.wait(options.fallbackWaitSeconds * 1000);
     return true;

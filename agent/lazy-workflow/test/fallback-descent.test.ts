@@ -97,8 +97,13 @@ function checkpointStore(): GitHubCheckpointStore & { written: GitHubDeliveryChe
 }
 
 /** Everything the run says to the operator, so a descent can be read back as it is reported. */
-function captureReporter(): { reporter: Reporter; info: string[] } {
+function captureReporter(): {
+  reporter: Reporter;
+  info: string[];
+  sessionEvents: Array<{ kind: string; message: string; detail?: unknown }>;
+} {
   const info: string[] = [];
+  const sessionEvents: Array<{ kind: string; message: string; detail?: unknown }> = [];
   const reporter: Reporter = {
     tracing: false,
     info: (message: string) => { info.push(message); },
@@ -109,8 +114,9 @@ function captureReporter(): { reporter: Reporter; info: string[] } {
     heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
+    session: (kind, message, detail) => { sessionEvents.push({ kind, message, detail }); },
   };
-  return { reporter, info };
+  return { reporter, info, sessionEvents };
 }
 
 /**
@@ -297,6 +303,35 @@ test("cada descenso se reporta con el escalón anterior, el nuevo y la causa", a
   expect(descent).toContain("opencode:opencode-go/deepseek-v4-pro:high");
   expect(descent).toContain("opencode:provider/respaldo:medium");
   expect(descent).toContain("rate_limit");
+});
+
+test("cada descenso escribe un evento de sesión con el escalón, la causa y el CLI de origen (issue #267)", async () => {
+  const agents = scriptedAgents({ run: [exhausted("provider/primario")], resume: [terminal()] });
+  const { reporter, sessionEvents } = captureReporter();
+
+  const code = await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium"],
+    checkpointStore(),
+    [178],
+    reporter,
+  );
+
+  expect(code).toBe(0);
+  const descent = sessionEvents.find((event) => event.kind === "fallback_descent");
+  expect(descent).toBeDefined();
+  const detail = descent?.detail as {
+    cli?: string;
+    model?: string;
+    variant?: string;
+    reason?: string;
+    fromCli?: string;
+  };
+  expect(detail.cli).toBe("opencode");
+  expect(detail.model).toBe("provider/respaldo");
+  expect(detail.variant).toBe("medium");
+  expect(detail.reason).toBe("rate_limit");
+  expect(detail.fromCli).toBe("opencode");
 });
 
 test("un fallo ordinario al descender conserva la sesión viva en el checkpoint", async () => {

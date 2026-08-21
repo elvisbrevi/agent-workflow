@@ -1209,6 +1209,7 @@ test("OpenCode transmite eventos y usa el working directory solicitado", async (
     heading: () => undefined,
     start: () => ({ stop: () => undefined }),
     stop: () => undefined,
+    session: () => undefined,
   };
   const service = new OpenCodeService((_command, options) => {
     spawnOptions = options;
@@ -1857,6 +1858,7 @@ const captureReporter = () => {
     heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
+    session: () => undefined,
   };
   return { reporter, info, warn, error, debug, trace };
 };

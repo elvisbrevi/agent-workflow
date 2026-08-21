@@ -18,6 +18,7 @@ export function captureReporter(): { reporterFn: typeof createReporter; messages
     heading: (title: string) => { headings.push(title); },
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
+    session: () => undefined,
   };
   return { reporterFn: (() => reporter) as typeof createReporter, messages, headings };
 }
