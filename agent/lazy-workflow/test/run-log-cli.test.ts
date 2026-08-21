@@ -19,10 +19,11 @@ describe("LazyWorkflowCli run log integration", () => {
 
       expect(exit).toBe(1);
       const lines = readLines(logFile);
-      expect(lines).toHaveLength(2);
+      expect(lines).toHaveLength(3);
       expect(lines[0]).toMatchObject({ event: "run.started", command: "code" });
-      expect(lines[1]).toMatchObject({ event: "run.finished", command: "code", outcome: "failure", exit_code: 1 });
-      expect(typeof lines[1]!["duration_ms"]).toBe("number");
+      expect(lines[1]).toMatchObject({ event: "event", failure_kind: "argument-error", severity: "error" });
+      expect(lines[2]).toMatchObject({ event: "run.finished", command: "code", outcome: "failure", exit_code: 1 });
+      expect(typeof lines[2]!["duration_ms"]).toBe("number");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

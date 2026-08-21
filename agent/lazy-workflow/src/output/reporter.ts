@@ -30,6 +30,7 @@ export interface ReporterFailureDetail {
   failureKind?: FailureKind | null;
   phase?: string | null;
   context?: RunLogContext;
+  checkpoint?: "preserved";
 }
 
 export interface Reporter {
