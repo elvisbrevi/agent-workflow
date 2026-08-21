@@ -40,7 +40,7 @@ async function describeCheckpointSafely(probe: InterruptionCheckpointProbe): Pro
   try {
     return await Promise.race([
       probe(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), CHECKPOINT_PROBE_TIMEOUT_MS)),
+      Bun.sleep(CHECKPOINT_PROBE_TIMEOUT_MS).then(() => null),
     ]);
   } catch {
     return null;
@@ -86,7 +86,12 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
     });
   };
 
+  // Installing either listener suppresses Bun's own default report (the stack
+  // trace it dumps to stderr before exiting), so that report is reproduced here
+  // — otherwise the exit code would match today's but the operator's terminal
+  // would go silent on exactly the failure that most needs to be seen.
   const onUncaughtException = (error: unknown): void => {
+    console.error(error);
     if (handled) { proc.exit(UNHANDLED_FAILURE_EXIT_CODE); return; }
     handled = true;
     void writeFinished(
@@ -96,6 +101,7 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
   };
 
   const onUnhandledRejection = (reason: unknown): void => {
+    console.error(reason);
     if (handled) { proc.exit(UNHANDLED_FAILURE_EXIT_CODE); return; }
     handled = true;
     void writeFinished(
