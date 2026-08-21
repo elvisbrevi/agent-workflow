@@ -38,7 +38,7 @@ import {
   type ManagedQueueSelection,
   type SelectedManagedIssue,
 } from "../github/managed-queue-service.ts";
-import { reportOperator } from "../output/operator-output.ts";
+import { reportFailure } from "../output/failure-kind.ts";
 import type { AzurePullRequestTarget } from "../azure/autocode-service.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
@@ -110,6 +110,16 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+function deterministicFailureKind(command: DeterministicToolCommand) {
+  if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
+  if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
+  if (command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
+  if (command.includes("manifest-info")) return "manifest-not-verifiable" as const;
+  if (command === "github-issue-claim") return "claim-verification-failure" as const;
+  if (command.includes("pr-") || command === "github-pr-merge") return "pull-request-failure" as const;
+  return "deterministic-completion-failure" as const;
+}
 
 /**
  * A ref the delivery and git adapters accept. They compare against
@@ -403,10 +413,27 @@ export async function runDeterministicTool(
     return 0;
   } catch (error) {
     if (error instanceof MissingArgument) {
-      reportOperator(error.message);
+      reportFailure("argument-error", "validating", {
+        issue: options.issue,
+        ticket: options.ticket,
+        hu: options.hu,
+        repository: options.workingDirectory,
+        branch: options.branch,
+      }, error.message);
       return 1;
     }
-    reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+    reportFailure(
+      deterministicFailureKind(command),
+      "executing",
+      {
+        issue: options.issue,
+        ticket: options.ticket,
+        hu: options.hu,
+        repository: options.workingDirectory,
+        branch: options.branch,
+      },
+      `lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`,
+    );
     return 1;
   }
 }

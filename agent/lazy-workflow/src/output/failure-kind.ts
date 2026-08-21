@@ -34,6 +34,14 @@ export const FAILURE_KIND_SEVERITY = {
   "checkpoint-unreadable": "error",
   "lock-unavailable": "error",
   "argument-error": "error",
+  "evidence-not-verifiable": "error",
+  "manifest-mismatch": "error",
+  "hu-transition-failure": "error",
+  "ticket-branch-cleanup-failure": "error",
+  "workspace-scope-failure": "error",
+  "topology-preparation-failure": "error",
+  "deployment-authentication-required": "error",
+  "infrastructure-authentication-required": "error",
 } as const satisfies Record<string, "warn" | "error">;
 
 export type FailureKind = keyof typeof FAILURE_KIND_SEVERITY;
@@ -56,7 +64,13 @@ export function reportFailure(
   context: RunLogContext,
   message: string,
   reporter: Reporter = getDefaultReporter(),
+  checkpoint?: "preserved",
 ): void {
   const severity = failureKindSeverity(kind);
-  reporter[severity](message, { failureKind: kind, phase, context });
+  reporter[severity](message, {
+    failureKind: kind,
+    phase,
+    context,
+    ...(checkpoint ? { checkpoint } : {}),
+  });
 }

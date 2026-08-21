@@ -6,6 +6,7 @@ import type { AzurePullRequestTarget } from "../../src/azure/autocode-service.ts
 import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint } from "../../src/azure/azure-workspace-checkpoint.ts";
 import type { AgentCli } from "../../src/coding-agent/agent-cli.ts";
 import type { GitRunner } from "../../src/git/git-ticket-branch-cleaner.ts";
+import type { createReporter } from "../../src/output/reporter.ts";
 
 export const hu = 23438;
 export const ticket = 51;
@@ -66,6 +67,7 @@ export interface AzureWorkspaceHarnessOptions {
   /** Repository (by directory name) already carrying the ticket's Branch ArtifactLink. */
   resolvedPrimary?: string;
   terminal?: boolean;
+  reporterFn?: typeof createReporter;
   /** Observes which coding agent CLI the run resolved, without changing the fake agent. */
   observeCli?: (cli: AgentCli) => void;
 }
@@ -84,7 +86,7 @@ export interface AzureWorkspaceHarness {
   stateDirectory(): string;
   readCheckpoint(): Promise<AzureWorkspaceCheckpoint | null>;
   writeCheckpoint(checkpoint: AzureWorkspaceCheckpoint): Promise<void>;
-  setupCli(overrides?: Partial<AzureBoundary>): Promise<{ cli: LazyWorkflowCli; pathA: string; pathB: string }>;
+  setupCli(overrides?: Partial<AzureBoundary>, reporterFn?: typeof createReporter): Promise<{ cli: LazyWorkflowCli; pathA: string; pathB: string }>;
   cleanup(): Promise<void>;
 }
 
@@ -129,7 +131,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
     writeCheckpoint(checkpoint) {
       return checkpointStore.write(checkpoint, harness.stateDirectory());
     },
-    async setupCli(overrides = {}) {
+    async setupCli(overrides = {}, reporterFn) {
       root = await realpath(await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-")));
       const pathA = await seedRepo(root, repoA, remoteUrlA);
       const pathB = await seedRepo(root, repoB, remoteUrlB);
@@ -355,7 +357,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
         undefined,
         undefined,
         undefined,
-        undefined,
+        options.reporterFn ?? reporterFn,
         undefined,
         undefined,
         undefined,
