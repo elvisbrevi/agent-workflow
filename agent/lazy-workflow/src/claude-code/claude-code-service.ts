@@ -32,6 +32,14 @@ import {
 import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
+import { reportSessionEvent } from "../output/session-event.ts";
+
+/** The CLI identifier this adapter's session-lifecycle records are labelled with, matching `--cli claudecode`. */
+const CLI_NAME = "claudecode";
+
+function containsMarker(text: string, marker: string): boolean {
+  return text.split(/\r?\n/).some((line) => line.trim() === marker);
+}
 
 /** The effort levels Claude Code accepts; `--variant` is passed through as one. */
 export const CLAUDE_CODE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -285,6 +293,8 @@ export class ClaudeCodeService implements CodingAgent {
       options.workingDirectory,
       options.model,
       detectAzureLogin,
+      options.variant,
+      options.terminalMarker,
     );
   }
 
@@ -292,7 +302,7 @@ export class ClaudeCodeService implements CodingAgent {
     sessionId: string,
     prompt = "continue",
     workingDirectory?: string,
-    _terminalMarker?: string,
+    terminalMarker?: string,
     overrides: AgentResumeOverrides = {},
   ): Promise<AgentResult> {
     // A resumed session keeps the model it was opened with unless the run
@@ -314,6 +324,8 @@ export class ClaudeCodeService implements CodingAgent {
       workingDirectory,
       overrides.model,
       true,
+      overrides.variant,
+      terminalMarker,
     );
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar Claude Code");
@@ -353,8 +365,13 @@ export class ClaudeCodeService implements CodingAgent {
     workingDirectory?: string,
     model?: string,
     detectAzureLogin = false,
+    variant?: string,
+    terminalMarker?: string,
   ): Promise<AgentExecution> {
+    const rung = { cli: CLI_NAME, model, variant };
     this.reporter.info(`Claude Code iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
+    const startedAt = Date.now();
+    reportSessionEvent("session_started", "Claude Code inicia sesión", rung, {}, {}, this.reporter);
     const child: AgentProcess = this.spawn(command, { cwd: workingDirectory });
     const reportStdout = (line: string) => {
       for (const { message, severity } of renderEvent(line)) {
@@ -376,8 +393,48 @@ export class ClaudeCodeService implements CodingAgent {
     const events = parseEvents(lines.join("\n"));
     const exhaustion = classifyExhaustion(events, model, exitCode !== 0);
     if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
+    const result = decodeStream(events);
+    const durationMs = Date.now() - startedAt;
+    const context = { sessionId: result.sessionId };
+    if (exhaustion) {
+      reportSessionEvent(
+        "provider_exhausted",
+        describeExhaustion(exhaustion),
+        rung,
+        context,
+        { durationMs, reason: exhaustion.cause },
+        this.reporter,
+      );
+    } else if (terminalMarker && !containsMarker(result.text, terminalMarker)) {
+      reportSessionEvent(
+        "terminal_marker_missing",
+        `Claude Code [sesión ${result.sessionId}] terminó sin ${terminalMarker}`,
+        rung,
+        context,
+        { durationMs, outcome: exitCode === 0 ? "success" : "failure" },
+        this.reporter,
+      );
+    } else if (exitCode !== 0) {
+      reportSessionEvent(
+        "session_failed",
+        `Claude Code [sesión ${result.sessionId}] terminó con error`,
+        rung,
+        context,
+        { durationMs, outcome: "failure" },
+        this.reporter,
+      );
+    } else {
+      reportSessionEvent(
+        "session_finished",
+        `Claude Code [sesión ${result.sessionId}] finalizó`,
+        rung,
+        { ...context, stopReason: result.reason },
+        { durationMs, outcome: "success" },
+        this.reporter,
+      );
+    }
     return {
-      result: decodeStream(events),
+      result,
       azureLoginRequired: detectAzureLogin
         && (requiresAzureLogin(events) || asksForAzureLogin(errorLines.join("\n"))),
       failed: exitCode !== 0,
