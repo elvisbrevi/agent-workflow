@@ -178,6 +178,7 @@ describe("herramientas deterministas como comandos", () => {
       heading: () => undefined,
       start: () => ({ stop: () => undefined }) as never,
       stop: () => undefined,
+      session: () => undefined,
     });
   });
 

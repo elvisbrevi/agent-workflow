@@ -110,6 +110,67 @@ describe("createRunLogSink", () => {
     });
   });
 
+  test("un registro de sesion (issue #267) lleva session_event, reason y from_cli, y usa el cli/model/variant del escalon", () => {
+    withTempDir((dir) => {
+      const path = join(dir, "runs.jsonl");
+      const sink = createRunLogSink({ path, clock, runId: "run-1" });
+      sink.write({
+        ...baseRecord,
+        cli: "opencode",
+        model: "provider/respaldo",
+        variant: "medium",
+        event: "event",
+        severity: "info",
+        sessionEvent: "fallback_descent",
+        reason: "rate_limit",
+        fromCli: "claudecode",
+        durationMs: 1500,
+        outcome: "failure",
+        message: "desciendo",
+      });
+
+      const [descent] = readLines(path) as Array<Record<string, unknown>>;
+      expect(descent).toMatchObject({
+        event: "event",
+        cli: "opencode",
+        model: "provider/respaldo",
+        variant: "medium",
+        session_event: "fallback_descent",
+        reason: "rate_limit",
+        from_cli: "claudecode",
+        duration_ms: 1500,
+        outcome: "failure",
+      });
+    });
+  });
+
+  test("una sesion finalizada (issue #267) lleva su stop reason en el context, no como label", () => {
+    withTempDir((dir) => {
+      const path = join(dir, "runs.jsonl");
+      const sink = createRunLogSink({ path, clock, runId: "run-1" });
+      sink.write({
+        ...baseRecord,
+        cli: "opencode",
+        event: "event",
+        severity: "info",
+        sessionEvent: "session_finished",
+        durationMs: 900,
+        outcome: "success",
+        context: { ...baseRecord.context, sessionId: "ses_1", stopReason: "stop" },
+        message: "finalizada",
+      });
+
+      const [finished] = readLines(path) as Array<Record<string, unknown>>;
+      expect(finished?.["reason"]).toBeUndefined();
+      expect(finished).toMatchObject({
+        session_event: "session_finished",
+        duration_ms: 900,
+        outcome: "success",
+        context: { session_id: "ses_1", stop_reason: "stop" },
+      });
+    });
+  });
+
   test("cada escritura le pertenece a un unico run_id", () => {
     withTempDir((dir) => {
       const path = join(dir, "runs.jsonl");

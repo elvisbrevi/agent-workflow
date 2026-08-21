@@ -14,7 +14,7 @@ import ora, { type Ora } from "ora";
 import chalk from "chalk";
 import { OPERATOR_TIMESTAMP_WIDTH, formatOperatorTimestamp } from "./timestamp.ts";
 import type { FailureKind } from "./failure-kind.ts";
-import type { RunLogContext } from "./run-log.ts";
+import type { RunLogContext, RunLogOutcome, RunLogSessionEvent } from "./run-log.ts";
 
 export type ReporterStream = { write(chunk: string): void };
 
@@ -31,6 +31,16 @@ export interface ReporterFailureDetail {
   phase?: string | null;
   context?: RunLogContext;
   checkpoint?: "preserved";
+  /** Set only by `Reporter.session`, which stamps it from its own `kind` argument. */
+  sessionEvent?: RunLogSessionEvent | null;
+  /** Overrides the run's own declared rung: the CLI/model/variant the session that produced this record actually ran on. */
+  cli?: string | null;
+  model?: string | null;
+  variant?: string | null;
+  durationMs?: number | null;
+  outcome?: RunLogOutcome | null;
+  reason?: string | null;
+  fromCli?: string | null;
 }
 
 export interface Reporter {
@@ -50,11 +60,20 @@ export interface Reporter {
   heading(title: string, details?: readonly string[]): void;
   start(message: string): Ora;
   stop(spinner?: Ora): void;
+  /**
+   * A coding-agent session-lifecycle milestone (issue #267): reaches only the
+   * run log, by construction never the terminal, so wiring a new call site
+   * changes no operator-visible output — the record it writes carries
+   * `detail`'s own `cli`/`model`/`variant` in place of the run's declared
+   * rung whenever a call site names the session's actual one (a fallback
+   * descent, a resumed session on another model).
+   */
+  session(kind: RunLogSessionEvent, message: string, detail?: ReporterFailureDetail): void;
 }
 
-/** Forwards every `warn`/`error` the Reporter emits as a run-log `event` record (ADR-0029). Additive: it never gates what reaches the terminal. */
+/** Forwards every `warn`/`error` (and, for a session-lifecycle record, `session`) the Reporter emits as a run-log `event` record (ADR-0029). Additive: it never gates what reaches the terminal. */
 export interface ReporterRunLogSink {
-  event(severity: "warn" | "error", message: string, detail?: ReporterFailureDetail): void;
+  event(severity: "info" | "warn" | "error", message: string, detail?: ReporterFailureDetail): void;
 }
 
 export interface ReporterOptions {
@@ -207,6 +226,9 @@ export function createReporter(arg: boolean | ReporterOptions): Reporter {
         ...body,
         `${border(`╰${"─".repeat(width + 2)}╯`)}\n`,
       ].join(""));
+    },
+    session(kind, message, detail) {
+      runLog?.event("info", message, { ...detail, sessionEvent: kind });
     },
     start(message) {
       const spinner = ora({

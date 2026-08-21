@@ -41,6 +41,32 @@ const captureReporter = (verbose: boolean): { reporter: Reporter; captured: Capt
   return { reporter, captured };
 };
 
+type SessionEvent = { severity: string; message: string; sessionEvent?: string; cli?: string; model?: string; variant?: string; reason?: string };
+
+/** A reporter wired to a run-log double, so a session-lifecycle record (issue #267) is assertable without a real sink. */
+const captureSessionEvents = (): { reporter: Reporter; events: SessionEvent[] } => {
+  const { stream } = captureStream();
+  const events: SessionEvent[] = [];
+  const reporter = createReporter({
+    verbose: false,
+    stream,
+    runLog: {
+      event: (severity, message, detail) => {
+        events.push({
+          severity,
+          message,
+          sessionEvent: detail?.sessionEvent ?? undefined,
+          cli: detail?.cli ?? undefined,
+          model: detail?.model ?? undefined,
+          variant: detail?.variant ?? undefined,
+          reason: detail?.reason ?? undefined,
+        });
+      },
+    },
+  });
+  return { reporter, events };
+};
+
 const standardOptions = {
   model: "provider/model",
   variant: "high",
@@ -325,6 +351,7 @@ describe("OpenCodeService reporter routing", () => {
         return { text: message, stop: () => { stopped += 1; } };
       },
       stop: (spinner) => spinner?.stop(),
+      session: () => undefined,
     };
 
     const firstEvent = jsonEvent({ type: "session", sessionID: "ses_spin" });
@@ -435,6 +462,39 @@ describe("OpenCodeService reporter routing", () => {
     expect(execution.failed).toBeFalse();
     expect(execution.result.text).toBe("Voy a emitir IMPLEMENTATION_READY pronto");
   });
+
+  test("una sesión que termina sin su marcador terminal escribe un evento de sesión terminal_marker_missing (issue #267)", async () => {
+    const output = [
+      jsonEvent({ type: "session", sessionID: "ses_no_marker" }),
+      jsonEvent({ type: "text", sessionID: "ses_no_marker", part: { type: "text", text: "avancé pero no terminé" } }),
+    ].join("\n");
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService((command) => command[1] === "session"
+      ? {
+        stdout: new Blob([]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      }
+      : {
+        stdout: new Blob([output]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      }, reporter);
+
+    const execution = await service.run({
+      ...standardOptions,
+      terminalMarker: "IMPLEMENTATION_READY",
+    }, true);
+
+    expect(execution.failed).toBeFalse();
+    const missing = events.find((event) => event.sessionEvent === "terminal_marker_missing");
+    expect(missing).toBeDefined();
+    expect(missing?.cli).toBe("opencode");
+    expect(missing?.model).toBe(standardOptions.model);
+    expect(events.some((event) => event.sessionEvent === "session_finished")).toBeFalse();
+  });
 });
 
 // Fragments captured from a real `opencode run --format json` invocation against
@@ -531,6 +591,25 @@ describe("OpenCodeService agotamiento del proveedor", () => {
 
     expect(execution.exhaustion).toBeUndefined();
     expect(execution.failed).toBeFalse();
+  });
+
+  test("un escalón agotado escribe un evento de sesión provider_exhausted con el CLI, modelo y causa (issue #267)", async () => {
+    const output = jsonEvent({
+      type: "error",
+      sessionID: "ses_rate",
+      error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } },
+    });
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService(() => stub(output), reporter);
+
+    await service.run(standardOptions);
+
+    const exhaustion = events.find((event) => event.sessionEvent === "provider_exhausted");
+    expect(exhaustion).toBeDefined();
+    expect(exhaustion?.cli).toBe("opencode");
+    expect(exhaustion?.model).toBe(standardOptions.model);
+    expect(exhaustion?.variant).toBe(standardOptions.variant);
+    expect(exhaustion?.reason).toBe("rate_limit");
   });
 
   test("un evento de error que no impide terminar con exito no se clasifica como agotamiento", async () => {

@@ -117,6 +117,7 @@ beforeEach(() => {
     heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
+    session: () => undefined,
   });
 });
 
