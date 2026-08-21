@@ -482,6 +482,33 @@ export class LazyWorkflowCli {
   }
 
   /**
+   * A checkpoint pinned to an issue that was resolved outside this run's own
+   * completion path (closed by hand, by another automation, or by a run whose
+   * own checkpoint was lost) has nothing left to recover: `reconcileClaimedIssue`
+   * throws once the issue is no longer eligible, and the recovery catch below
+   * only knows how to preserve the checkpoint and ask to retry — so the same
+   * failure repeats on every future invocation instead of ever converging.
+   *
+   * Scoped to checkpoints with no live session and no PR of their own, so an
+   * in-flight completion that is closing the issue itself (still finishing
+   * branch cleanup or parent reconciliation) is never short-circuited here.
+   */
+  private async githubCheckpointResolvedExternally(
+    checkpoint: GitHubDeliveryCheckpoint,
+    workingDirectory: string,
+  ): Promise<boolean> {
+    if (checkpoint.sessionId !== null || checkpoint.pullRequest) return false;
+    const readIssue = this.githubManagedQueue.readIssueDetail?.bind(this.githubManagedQueue);
+    if (!readIssue) return false;
+    try {
+      const issue = await readIssue(checkpoint.issue, workingDirectory);
+      return issue.state !== "OPEN";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * A checkpoint owns the CLI that opened its session, so recovery resumes
    * against that one without the operator declaring it. An explicit `--cli` that
    * contradicts the checkpoint fails closed, with the checkpoint untouched, so a
@@ -2379,6 +2406,15 @@ export class LazyWorkflowCli {
     try {
       release = await lock.acquire(options.workingDirectory);
       const checkpoint = await store.read(options.workingDirectory);
+      if (checkpoint && await this.githubCheckpointResolvedExternally(checkpoint, options.workingDirectory)) {
+        reportOperator(
+          `lazy-workflow: el Issue #${checkpoint.issue} del checkpoint ya está cerrado sin PR asociado; `
+          + "checkpoint descartado, continuando con la cola.",
+        );
+        await store.clear(options.workingDirectory);
+        await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
+        return this.runDefaultCodeWorkflowLoop(options, store);
+      }
       if (checkpoint) {
         const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom);
         if (!adopted) return 1;

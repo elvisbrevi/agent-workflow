@@ -74,13 +74,18 @@ function githubDeliveryCheckpoint(cli: AgentCli): GitHubDeliveryCheckpoint {
 function githubDeliveryCli(
   checkpoint: GitHubDeliveryCheckpoint,
   agents: ReturnType<typeof spyingAgents>,
-  options: { onWrite?: (checkpoint: GitHubDeliveryCheckpoint) => void; nextIssue?: number } = {},
+  options: {
+    onWrite?: (checkpoint: GitHubDeliveryCheckpoint) => void;
+    onClear?: () => void;
+    nextIssue?: number;
+    readIssueDetail?: (issueNumber: number) => Promise<ReturnType<typeof fakeSelectedIssue>>;
+  } = {},
 ) {
   let current: GitHubDeliveryCheckpoint | null = checkpoint;
   const store: GitHubCheckpointStore = {
     read: async () => current,
     write: async (value) => { current = value; options.onWrite?.(value); },
-    clear: async () => { current = null; },
+    clear: async () => { current = null; options.onClear?.(); },
   };
   const pending = options.nextIssue === undefined ? [] : [options.nextIssue];
   const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
@@ -101,6 +106,7 @@ function githubDeliveryCli(
     reporterFn,
     {
       reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+      readIssueDetail: options.readIssueDetail ?? (async (issue: number) => fakeSelectedIssue(issue)),
       selectEligibleIssue: async () => {
         const issue = pending.shift();
         return issue === undefined
@@ -149,6 +155,60 @@ test("el rechazo de un --cli contradictorio nombra el CLI del checkpoint y cómo
   const rejection = state.reported.join("");
   expect(rejection).toContain("el checkpoint pertenece al CLI claudecode");
   expect(rejection).toContain("--cli claudecode");
+});
+
+test("un checkpoint sin sesión ni PR se descarta si el issue ya fue cerrado por fuera, sin bloquear por --cli", async () => {
+  const agents = spyingAgents();
+  let cleared = false;
+  const state = githubDeliveryCli(
+    { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started", pullRequest: null },
+    agents,
+    {
+      onClear: () => { cleared = true; },
+      readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED" }),
+    },
+  );
+
+  const code = await state.cli.run(["code", "--cli", "claudecode", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(cleared).toBeTrue();
+  expect(agents.resumed).toEqual([]);
+  expect(state.current).toBeNull();
+  expect(state.reported.some((message) => message.includes("el checkpoint pertenece al CLI"))).toBeFalse();
+  expect(state.reported.some((message) => message.includes("ya está cerrado sin PR asociado"))).toBeTrue();
+});
+
+test("un checkpoint sin sesión pero con un PR propio no se descarta aunque el issue ya esté cerrado", async () => {
+  const agents = spyingAgents();
+  let cleared = false;
+  const checkpoint = { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started" as const, pullRequest: 42 };
+  const state = githubDeliveryCli(checkpoint, agents, {
+    onClear: () => { cleared = true; },
+    readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "CLOSED" }),
+  });
+
+  await state.cli.run(["code", "--cli", "claudecode", "--working-directory", "/repo"]);
+
+  expect(cleared).toBeFalse();
+  const rejection = state.reported.join("");
+  expect(rejection).toContain("el checkpoint pertenece al CLI opencode");
+});
+
+test("un checkpoint sin sesión ni PR con el issue todavía abierto conserva el bloqueo por --cli", async () => {
+  const agents = spyingAgents();
+  let cleared = false;
+  const checkpoint = { ...githubDeliveryCheckpoint("opencode"), sessionId: null, phase: "started" as const, pullRequest: null };
+  const state = githubDeliveryCli(checkpoint, agents, {
+    onClear: () => { cleared = true; },
+    readIssueDetail: async (issue) => ({ ...fakeSelectedIssue(issue), state: "OPEN" }),
+  });
+
+  await state.cli.run(["code", "--cli", "claudecode", "--working-directory", "/repo"]);
+
+  expect(cleared).toBeFalse();
+  const rejection = state.reported.join("");
+  expect(rejection).toContain("el checkpoint pertenece al CLI opencode");
 });
 
 test("un --variant que el CLI adoptado no acepta detiene el run antes de reanudar y conserva el checkpoint", async () => {
