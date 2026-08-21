@@ -12,7 +12,7 @@ export function captureReporter(): { reporterFn: typeof createReporter; messages
     tracing: false,
     info: (message: string) => { messages.push(message); },
     warn: () => undefined,
-    error: () => undefined,
+    error: (message: string) => { messages.push(message); },
     debug: () => undefined,
     trace: () => undefined,
     heading: (title: string) => { headings.push(title); },
