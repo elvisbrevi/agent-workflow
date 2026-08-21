@@ -21,6 +21,10 @@ import {
 import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
+import { reportSessionEvent } from "../output/session-event.ts";
+
+/** The CLI identifier this adapter's session-lifecycle records are labelled with, matching `--cli opencode`. */
+const CLI_NAME = "opencode";
 
 export type OpenCodeProcess = AgentProcess;
 export type OpenCodeSpawnOptions = AgentSpawnOptions;
@@ -256,7 +260,7 @@ export class OpenCodeService implements CodingAgent {
       "json",
       "--thinking",
       options.prompt,
-    ], detectAzureLogin, options.workingDirectory, options.terminalMarker, options.agent, options.model);
+    ], detectAzureLogin, options.workingDirectory, options.terminalMarker, options.agent, options.model, options.variant);
   }
 
   async resume(
@@ -286,7 +290,7 @@ export class OpenCodeService implements CodingAgent {
       "json",
       "--thinking",
       prompt,
-    ], true, workingDirectory, terminalMarker, overrides.agent, overrides.model);
+    ], true, workingDirectory, terminalMarker, overrides.agent, overrides.model, overrides.variant);
     if (execution.azureLoginRequired) {
       throw new Error("Azure sigue requiriendo autenticacion despues de reanudar OpenCode");
     }
@@ -302,8 +306,12 @@ export class OpenCodeService implements CodingAgent {
     terminalMarker?: string,
     authority?: AgentAuthority,
     model?: string,
+    variant?: string,
   ): Promise<AgentExecution> {
+    const rung = { cli: CLI_NAME, model, variant };
     this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
+    const startedAt = Date.now();
+    reportSessionEvent("session_started", "OpenCode inicia sesión", rung, {}, {}, this.reporter);
     const child = this.spawn(command, {
       cwd: workingDirectory,
       ...(authority ? { env: { OPENCODE_CONFIG: authority.configPath } } : {}),
@@ -375,17 +383,79 @@ export class OpenCodeService implements CodingAgent {
         const sessionIndex = command.indexOf("--session");
         const sessionId = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
         if (sessionId && absentSessionPattern.test(stderr)) {
+          reportSessionEvent(
+            "session_not_found",
+            `La sesión OpenCode ${sessionId} ya no existe`,
+            rung,
+            { sessionId },
+            { durationMs: Date.now() - startedAt },
+            this.reporter,
+          );
           throw new AgentSessionNotFoundError(sessionId, `La sesión OpenCode ${sessionId} ya no existe`);
         }
         throw new Error("OpenCode no devolvio eventos");
       }
 
       const result = AgentResult.fromJsonLines(streamed.lines.join("\n"));
-      if (terminalMarkerReceived) await this.closeSession(result.sessionId, workingDirectory);
+      const context = { sessionId: result.sessionId };
+      if (terminalMarkerReceived) {
+        try {
+          await this.closeSession(result.sessionId, workingDirectory);
+        } catch (error) {
+          reportSessionEvent(
+            "session_close_failed",
+            error instanceof Error ? error.message : String(error),
+            rung,
+            context,
+            { durationMs: Date.now() - startedAt },
+            this.reporter,
+          );
+          throw error;
+        }
+      }
 
       const failed = exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived;
       const exhaustion = classifyExhaustion(streamed.lines, model, failed);
       if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
+
+      const durationMs = Date.now() - startedAt;
+      if (exhaustion) {
+        reportSessionEvent(
+          "provider_exhausted",
+          describeExhaustion(exhaustion),
+          rung,
+          context,
+          { durationMs, reason: exhaustion.cause },
+          this.reporter,
+        );
+      } else if (terminalMarker && !terminalMarkerReceived) {
+        reportSessionEvent(
+          "terminal_marker_missing",
+          `OpenCode terminó sin ${terminalMarker}`,
+          rung,
+          context,
+          { durationMs, outcome: failed ? "failure" : "success" },
+          this.reporter,
+        );
+      } else if (failed) {
+        reportSessionEvent(
+          "session_failed",
+          "OpenCode terminó con error",
+          rung,
+          context,
+          { durationMs, outcome: "failure" },
+          this.reporter,
+        );
+      } else {
+        reportSessionEvent(
+          "session_finished",
+          "OpenCode finalizó la sesión",
+          rung,
+          { ...context, stopReason: result.reason },
+          { durationMs, outcome: "success" },
+          this.reporter,
+        );
+      }
 
       return { result, azureLoginRequired, failed, exhaustion };
     } finally {

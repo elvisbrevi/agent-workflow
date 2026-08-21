@@ -16,6 +16,7 @@ function captureReporter(): { reporter: Reporter; calls: Array<{ level: "info" |
     heading: () => undefined,
     start: () => ({ stop: () => undefined }) as never,
     stop: () => undefined,
+    session: () => undefined,
   };
   return { reporter, calls };
 }
