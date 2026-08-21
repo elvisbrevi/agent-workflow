@@ -42,6 +42,8 @@ export const FAILURE_KIND_SEVERITY = {
   "topology-preparation-failure": "error",
   "deployment-authentication-required": "error",
   "infrastructure-authentication-required": "error",
+  "run-interrupted-signal": "error",
+  "run-interrupted-failure": "error",
 } as const satisfies Record<string, "warn" | "error">;
 
 export type FailureKind = keyof typeof FAILURE_KIND_SEVERITY;
