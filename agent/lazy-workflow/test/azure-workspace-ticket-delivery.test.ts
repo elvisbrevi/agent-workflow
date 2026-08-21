@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { basename } from "node:path";
 import { parseCompletionManifest, type EvidenceKind } from "../src/azure/completion-manifest.ts";
 import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { createReporter, type ReporterOptions, type ReporterStream } from "../src/output/reporter.ts";
 import {
   createAzureWorkspaceHarness as createHarness,
   hu,
@@ -21,6 +22,19 @@ import {
   ticket,
   ticketBranch,
 } from "./_helpers/azure-workspace-fixtures.ts";
+import { parseReportedChunk, type ReportedLine } from "./_helpers/reported-lines.ts";
+
+function captureReporter(): { reporterFn: typeof createReporter; lines: ReportedLine[] } {
+  const lines: ReportedLine[] = [];
+  const stream: ReporterStream = { write: (chunk) => lines.push(...parseReportedChunk(chunk)) };
+  return {
+    lines,
+    reporterFn: ((options: boolean | ReporterOptions) => {
+      const parsed = typeof options === "boolean" ? { verbose: options } : options;
+      return createReporter({ ...parsed, stream, noColor: true });
+    }) as typeof createReporter,
+  };
+}
 
 test("deliverAzureWorkspaceTicket associates every changed-repository PR and merge commit with the ticket serially", async () => {
   const harness = createHarness();
@@ -293,6 +307,48 @@ test("deliverAzureWorkspaceTicket logs HU transition failure and preserves the c
   expect(exit).toBe(0);
   expect(harness.huStateCalls).toHaveLength(1);
   expect(harness.ticketStateCalls.map((entry) => entry.desiredState)).toContain("Done");
+});
+
+test("Azure failure emits an error operator line and an Azure run record", async () => {
+  const harness = createHarness({ huTransitionFails: true });
+  const captured = captureReporter();
+  let exit = -1;
+  let logFile = "";
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({}, captured.reporterFn);
+    logFile = join(pathA, "azure-failure-runs.jsonl");
+    exit = await cli.run(["code", "--quiet", "--hu", `${hu}`, "--ticket", `${ticket}`, "--log-file", logFile, "--working-directory", `${pathA}, ${pathB}`]);
+    const line = captured.lines.find(({ message }) => message.includes("no se pudo transicionar la HU"));
+    expect(line).toMatchObject({ level: "error" });
+    const records = (await Bun.file(logFile).text()).trim().split("\n").map((value) => JSON.parse(value) as Record<string, unknown>);
+    expect(records.find((record) => record.failure_kind === "hu-transition-failure")).toMatchObject({
+      severity: "error",
+      provider: "azure",
+      checkpoint: "preserved",
+      context: { hu, ticket },
+    });
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+});
+
+test("Azure workspace failure records its delivery kind and preserved checkpoint", async () => {
+  const harness = createHarness({ pullRequestFailsIn: repoBId });
+  const captured = captureReporter();
+  let exit = -1;
+  let logFile = "";
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({}, captured.reporterFn);
+    logFile = join(pathA, "azure-workspace-failure-runs.jsonl");
+    exit = await cli.run(["code", "--quiet", "--hu", `${hu}`, "--ticket", `${ticket}`, "--log-file", logFile, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(captured.lines.find(({ message }) => message.includes("no se pudo entregar el repositorio"))).toMatchObject({ level: "error" });
+    const records = (await Bun.file(logFile).text()).trim().split("\n").map((value) => JSON.parse(value) as Record<string, unknown>);
+    expect(records.find((record) => record.failure_kind === "delivery-failure")).toMatchObject({ provider: "azure", checkpoint: "preserved" });
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
 });
 
 test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery unchanged", async () => {
