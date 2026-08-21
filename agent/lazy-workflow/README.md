@@ -429,12 +429,89 @@ other.
 The record shape splits into **labels** — flattened at the top level, the
 low-cardinality axes a dashboard groups by: `schema_version`, `run_id`, `ts`,
 `severity`, `event`, `command`, `workflow`, `provider`, `cli`, `model`,
-`variant`, and — where they apply — `failure_kind`, `phase`, `checkpoint`, `outcome`,
-`exit_code`, `duration_ms` — and a nested **`context`** carrying the
-high-cardinality identifiers a single run has: `issue`, `ticket`, `hu`,
-`repository`, `session_id`, `branch`. A failure that leaves durable work for
-reconciliation carries `checkpoint: "preserved"`. `message` is the human line and is never
-what a dashboard groups by.
+`variant`, and — where they apply — `failure_kind`, `phase`, `checkpoint`,
+`outcome`, `exit_code`, `duration_ms`, `session_event`, `reason`, `from_cli` —
+and a nested **`context`** carrying the high-cardinality identifiers a single
+run has: `issue`, `ticket`, `hu`, `repository`, `session_id`, `branch`,
+`stop_reason`. The split is deliberate: a label is a dashboard axis, so it must
+stay a small closed set, while an Issue number, a session id or a branch would
+explode a time series into one series per issue ever worked, so those stay in
+`context`. A failure that leaves durable work for reconciliation carries
+`checkpoint: "preserved"`. `message` is the human line and is never what a
+dashboard groups by.
+
+`session_event` labels a coding-agent session's own lifecycle (issue #267) —
+one rung of a run, not the whole run — from the closed vocabulary
+`session_started`, `session_finished`, `session_failed`,
+`terminal_marker_missing`, `provider_exhausted`, `fallback_descent`,
+`chain_exhausted`, `chain_retry`, `session_close_failed`, `session_not_found`,
+`cross_cli_handoff`. `reason` carries the closed exhaustion-cause vocabulary
+(`rate_limit`, `billing`, `authentication`, `session_limit`) that explains a
+`fallback_descent` or a `chain_exhausted`; it is a label because it is a small
+closed set, unlike a finished session's own stop reason (a Claude Code
+`result` subtype, an OpenCode `step_finish` reason), which is provider
+vocabulary this repo does not bound and therefore travels as `context.stop_reason`
+instead. `from_cli` appears only on a `cross_cli_handoff` record, naming the
+CLI the work yielded from while `cli` names the one that adopted it.
+
+### Failure kind
+
+`failure_kind` is the closed vocabulary a failure or interruption is
+classified into (ADR-0029), so the same failure is always the same value
+instead of one a reader infers from prose. Every kind currently routes to
+`error` — none is a `warn` — so `--quiet` never drops a failure line:
+
+| `failure_kind` | Severity |
+| --- | --- |
+| `tracker-read-failure` | error |
+| `claim-verification-failure` | error |
+| `branch-preparation-failure` | error |
+| `session-failure` | error |
+| `manifest-not-verifiable` | error |
+| `delivery-failure` | error |
+| `pull-request-failure` | error |
+| `reconciliation-required` | error |
+| `parent-reconciliation-failure` | error |
+| `deterministic-completion-failure` | error |
+| `checkpoint-unreadable` | error |
+| `lock-unavailable` | error |
+| `argument-error` | error |
+| `evidence-not-verifiable` | error |
+| `manifest-mismatch` | error |
+| `hu-transition-failure` | error |
+| `ticket-branch-cleanup-failure` | error |
+| `workspace-scope-failure` | error |
+| `topology-preparation-failure` | error |
+| `deployment-authentication-required` | error |
+| `infrastructure-authentication-required` | error |
+| `run-interrupted-signal` | error |
+| `run-interrupted-failure` | error |
+
+`run-interrupted-signal` and `run-interrupted-failure` are reserved for the
+`run.finished` record a signal or an unhandled exception/rejection produces
+(see the worked example below); every other kind can appear on either an
+`event` record mid-run or on the `run.finished` record that ends the run on
+that failure. This table is pinned by a test (`test/run-log.test.ts`): adding,
+renaming or removing a kind — or moving one off `error` — fails the suite
+until `RUN_LOG_SCHEMA_VERSION` is bumped and this table is updated to match.
+
+### Worked example: a failed `code` run, interrupted
+
+A `code` run that hits a session failure and is then interrupted with
+Ctrl-C leaves three records under the same `run_id` — the failure is recorded
+where it happened, and the interruption is recorded separately from it:
+
+```json
+{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/268"},"message":"lazy-workflow code iniciado"}
+{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:31.000Z","severity":"error","event":"event","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","failure_kind":"session-failure","phase":"implementing","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"no se pudo completar la sesion; ejecucion detenida"}
+{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:47.000Z","severity":"error","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"interrupted","failure_kind":"run-interrupted-signal","checkpoint":"preserved","duration_ms":43210,"context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"lazy-workflow interrumpido por SIGINT (checkpoint conservado: manifest)"}
+```
+
+The first line is always `run.started`; the last is always `run.finished`,
+even on this path — a signal or an unhandled failure above every catch is
+caught by handlers installed for the life of the run, which write this final
+record and then let the default behavior proceed (ADR-0029), so a preserved
+checkpoint is never the only evidence a run stopped.
 
 Writing is best-effort and isolated from the run it describes: a full disk, a
 read-only home, or a path that cannot be created emits one `warn` and disables
@@ -442,6 +519,63 @@ the run log for the remainder of the run. No exit code, checkpoint, terminal
 protocol marker or stdout JSON payload is ever affected by a run log failure —
 a run with a broken sink behaves exactly like one started with
 `--no-log-file`.
+
+### Scraping it
+
+The run log is a plain newline-delimited JSON file, so any NDJSON-capable
+collector — Promtail, Grafana Alloy, Vector, Filebeat — tails it with no
+parser and no schema to register beyond what is documented above. A Loki/Grafana
+stack via Promtail needs only a scrape config pointed at the file, extracting
+the labels a dashboard groups by and leaving `context` and `message` in the
+log line:
+
+```yaml
+# promtail-config.yaml
+scrape_configs:
+  - job_name: lazy-workflow
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: lazy-workflow
+          __path__: /home/*/.local/state/lazy-workflow/runs.jsonl
+    pipeline_stages:
+      - json:
+          expressions:
+            severity: severity
+            event: event
+            command: command
+            workflow: workflow
+            provider: provider
+            cli: cli
+            model: model
+            variant: variant
+            failure_kind: failure_kind
+            outcome: outcome
+            session_event: session_event
+            reason: reason
+      - labels:
+          severity:
+          event:
+          command:
+          workflow:
+          provider:
+          cli:
+          model:
+          variant:
+          failure_kind:
+          outcome:
+          session_event:
+          reason:
+      - timestamp:
+          source: ts
+          format: RFC3339
+```
+
+The equivalent Alloy config replaces the two stanzas above with
+`loki.source.file` reading the path and `loki.process` running the same
+`stage.json` / `stage.labels` / `stage.timestamp` steps, then forwards to
+`loki.write`. Either way the file is the integration: no exporter, no agent
+running inside `lazy-workflow`, and no new runtime dependency.
 
 ## Default GitHub workflows
 

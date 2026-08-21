@@ -7,9 +7,11 @@ import {
   defaultRunLogPath,
   resolveRunLogPath,
   RUN_LOG_SCHEMA_VERSION,
+  RUN_LOG_SESSION_EVENTS,
   type RunLogFs,
   type RunLogRecordInput,
 } from "../src/output/run-log.ts";
+import { FAILURE_KIND_SEVERITY } from "../src/output/failure-kind.ts";
 
 const FIXED_DATE = new Date(2026, 7, 20, 10, 0, 0);
 const clock = { now: () => FIXED_DATE };
@@ -237,6 +239,119 @@ describe("createRunLogSink", () => {
 
       sink.write({ ...baseRecord, event: "run.started", severity: "info", message: "tercero" });
       expect(readFileSync(`${path}.1`, "utf8").trim()).toContain("segundo");
+    });
+  });
+});
+
+/**
+ * The published contract (README `## Run log`, issue #268): a downstream
+ * dashboard or scrape config is built against `schema_version`, the label
+ * set and the failure-kind vocabulary. Renaming or dropping any of them
+ * silently breaks that dashboard instead of failing a test, so this suite
+ * pins all three verbatim. A deliberate change to any of them must bump
+ * `RUN_LOG_SCHEMA_VERSION` and update this test and the README together.
+ */
+describe("contrato publicado del run log (issue #268)", () => {
+  test("RUN_LOG_SCHEMA_VERSION esta fijado", () => {
+    expect(RUN_LOG_SCHEMA_VERSION).toBe(1);
+  });
+
+  test("el conjunto exacto de labels de un registro completo no cambia sin querer", () => {
+    withTempDir((dir) => {
+      const path = join(dir, "runs.jsonl");
+      const sink = createRunLogSink({ path, clock, runId: "run-1" });
+      sink.write({
+        ...baseRecord,
+        event: "event",
+        severity: "error",
+        failureKind: "session-failure",
+        phase: "implementing",
+        checkpoint: "preserved",
+        outcome: "interrupted",
+        exitCode: 1,
+        durationMs: 4200,
+        sessionEvent: "fallback_descent",
+        reason: "rate_limit",
+        fromCli: "claudecode",
+        message: "x",
+      });
+
+      const [line] = readLines(path) as Array<Record<string, unknown>>;
+      expect(Object.keys(line!).sort()).toEqual(
+        [
+          "schema_version",
+          "run_id",
+          "ts",
+          "severity",
+          "event",
+          "command",
+          "workflow",
+          "provider",
+          "cli",
+          "model",
+          "variant",
+          "failure_kind",
+          "phase",
+          "checkpoint",
+          "outcome",
+          "exit_code",
+          "duration_ms",
+          "session_event",
+          "reason",
+          "from_cli",
+          "context",
+          "message",
+        ].sort(),
+      );
+      expect(Object.keys(line!["context"] as Record<string, unknown>).sort()).toEqual(
+        ["issue", "ticket", "hu", "repository", "session_id", "branch", "stop_reason"].sort(),
+      );
+    });
+  });
+
+  test("el vocabulario cerrado de session_event no cambia sin querer", () => {
+    expect([...RUN_LOG_SESSION_EVENTS].sort()).toEqual(
+      [
+        "session_started",
+        "session_finished",
+        "session_failed",
+        "terminal_marker_missing",
+        "provider_exhausted",
+        "fallback_descent",
+        "chain_exhausted",
+        "chain_retry",
+        "session_close_failed",
+        "session_not_found",
+        "cross_cli_handoff",
+      ].sort(),
+    );
+  });
+
+  test("el vocabulario cerrado de failure_kind, con su severidad, no cambia sin querer", () => {
+    expect(FAILURE_KIND_SEVERITY).toEqual({
+      "tracker-read-failure": "error",
+      "claim-verification-failure": "error",
+      "branch-preparation-failure": "error",
+      "session-failure": "error",
+      "manifest-not-verifiable": "error",
+      "delivery-failure": "error",
+      "pull-request-failure": "error",
+      "reconciliation-required": "error",
+      "parent-reconciliation-failure": "error",
+      "deterministic-completion-failure": "error",
+      "checkpoint-unreadable": "error",
+      "lock-unavailable": "error",
+      "argument-error": "error",
+      "evidence-not-verifiable": "error",
+      "manifest-mismatch": "error",
+      "hu-transition-failure": "error",
+      "ticket-branch-cleanup-failure": "error",
+      "workspace-scope-failure": "error",
+      "topology-preparation-failure": "error",
+      "deployment-authentication-required": "error",
+      "infrastructure-authentication-required": "error",
+      "run-interrupted-signal": "error",
+      "run-interrupted-failure": "error",
     });
   });
 });
