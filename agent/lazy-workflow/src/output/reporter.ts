@@ -37,6 +37,11 @@ export interface Reporter {
   stop(spinner?: Ora): void;
 }
 
+/** Forwards every `warn`/`error` the Reporter emits as a run-log `event` record (ADR-0029). Additive: it never gates what reaches the terminal. */
+export interface ReporterRunLogSink {
+  event(severity: "warn" | "error", message: string): void;
+}
+
 export interface ReporterOptions {
   verbose: boolean;
   /** Implies `verbose`, and additionally lets `trace` through. */
@@ -46,6 +51,8 @@ export interface ReporterOptions {
   stream?: ReporterStream;
   /** Injected so a test reads a fixed clock instead of the wall one. */
   now?: () => Date;
+  /** The run log seam; absent means no run log is attached, and nothing else changes. */
+  runLog?: ReporterRunLogSink;
 }
 
 /**
@@ -118,6 +125,7 @@ export function createReporter(arg: boolean | ReporterOptions): Reporter {
   // than `--verbose` does.
   const verbose = options.verbose || verboseOutput;
   const now = options.now ?? (() => new Date());
+  const runLog = options.runLog;
 
   const paint = painter(noColor);
   const paintGutter = paint(BAGELS_PALETTE.panel);
@@ -150,10 +158,14 @@ export function createReporter(arg: boolean | ReporterOptions): Reporter {
       write("info", message);
     },
     warn(message) {
+      // Reported to the run log regardless of `--quiet`: a dashboard needs the
+      // record even on a run whose terminal is silenced.
+      runLog?.event("warn", message);
       if (quiet) return;
       write("warn", message);
     },
     error(message) {
+      runLog?.event("error", message);
       write("error", message);
     },
     debug(message) {

@@ -76,6 +76,10 @@ export interface CliOptions {
   verboseOutput: boolean;
   quiet: boolean;
   noColor: boolean;
+  /** Explicit run-log path; highest precedence (ADR-0029). */
+  logFile: string | null;
+  /** Disables the run log outright; rejected together with `--log-file`. */
+  noLogFile: boolean;
 }
 
 export type CliParseResult =
@@ -250,7 +254,12 @@ export function buildCli(binaryPresent: BinaryProbe = binaryOnPath): CliParser {
       return exitCode;
     };
 
-    const parser = buildParser(rawArgs.slice(1), reportError);
+    // `--no-log-file` is read straight off `rawArgs` in `readOptions` rather than
+    // declared to yargs: `boolean-negation` treats any `--no-<x>` token as also
+    // negating a registered option named `<x>`, and `log-file` is a registered
+    // string one, so yargs would push a stray `false` into its value array. Kept
+    // out of the parser entirely, it never collides with `--log-file`.
+    const parser = buildParser(rawArgs.slice(1).filter((arg) => arg !== "--no-log-file"), reportError);
 
     let argv: ReturnType<typeof parser.parseSync>;
     try {
@@ -307,7 +316,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       "Entrevista de planificacion (solo plan):",
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
-    .group(["verbose", "verbose-output", "quiet", "color"], "Reportador:")
+    .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
     .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
     .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
     .option("cli", {
@@ -389,6 +398,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("verbose-output", { type: "boolean", default: false, describe: "Emite todo lo que entregan los agentes, incluidas las entradas y salidas completas de cada herramienta y el evento crudo; implica --verbose." })
     .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
     .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
+    .option("log-file", stringOption("log-file", "--log-file", "Ruta del run log JSON Lines; tiene precedencia sobre LAZY_WORKFLOW_LOG_FILE y el default. --no-log-file lo deshabilita (no se declara aqui: ver Notas)."))
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
 }
 
@@ -530,6 +540,12 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     throw new Error(`--fallback-wait-max ${waitMaxSeconds} no puede ser menor que --fallback-wait ${waitSeconds}`);
   }
 
+  const noLogFile = flagSupplied(rawArgs, "--no-log-file");
+  const logFile = asString("log-file");
+  if (logFile !== null && noLogFile) {
+    throw new Error("--log-file y --no-log-file son mutuamente excluyentes");
+  }
+
   return {
     command,
     cli,
@@ -586,6 +602,8 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     verboseOutput: parsed["verbose-output"] === true,
     quiet: parsed["quiet"] === true,
     noColor: parsed["color"] === false,
+    logFile,
+    noLogFile,
   };
 }
 
@@ -650,6 +668,7 @@ function renderHelp(parser: YargsInstance): string {
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
     "  herramientas deterministas: no abren sesion, imprimen su resultado como JSON y son las mismas que usa el workflow",
     "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
+    "  --no-log-file: deshabilita el run log de este run; no puede combinarse con --log-file",
   ].join("\n");
 }
 

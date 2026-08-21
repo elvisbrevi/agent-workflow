@@ -597,4 +597,34 @@ describe("buildCli parser", () => {
       expect(parse(["plan", "--interview", "file"]).kind).toBe("error");
     });
   });
+
+  describe("run log", () => {
+    test("por defecto no se declara --log-file ni --no-log-file", () => {
+      const result = parse(["code"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.logFile).toBeNull();
+      expect(result.options.noLogFile).toBeFalse();
+    });
+
+    test("--log-file fija la ruta explicita", () => {
+      const result = parse(["code", "--log-file", "/tmp/runs.jsonl"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.logFile).toBe("/tmp/runs.jsonl");
+      expect(result.options.noLogFile).toBeFalse();
+    });
+
+    test("--no-log-file deshabilita el run log", () => {
+      const result = parse(["code", "--no-log-file"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.logFile).toBeNull();
+      expect(result.options.noLogFile).toBeTrue();
+    });
+
+    test("--log-file y --no-log-file juntos son un error de argumentos", () => {
+      expect(parse(["code", "--log-file", "/tmp/runs.jsonl", "--no-log-file"]).kind).toBe("error");
+    });
+  });
 });
