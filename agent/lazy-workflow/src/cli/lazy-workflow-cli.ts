@@ -31,7 +31,8 @@ import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
-import { createReporter, type Reporter } from "../output/reporter.ts";
+import { createReporter, type Reporter, type ReporterRunLogSink } from "../output/reporter.ts";
+import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../output/run-log.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
@@ -186,6 +187,39 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The run-log `workflow` label: the coarse family a command belongs to, not the command itself (ADR-0029). */
+function runLogWorkflow(command: string): string {
+  if (command === "plan" || command === "code") return command;
+  if (command === "architecture-review-sag" || command === "infra-sag" || command === "deploy-sag") return "sag";
+  return "tool";
+}
+
+/** The run-log `provider` label: which tracker this invocation targets. */
+function runLogProvider(options: Pick<CliOptions, "hu">): "azure" | "github" {
+  return options.hu !== null ? "azure" : "github";
+}
+
+type RunLogBase = Pick<RunLogRecordInput, "command" | "workflow" | "provider" | "cli" | "model" | "variant" | "context">;
+
+function runLogBase(options: CliOptions): RunLogBase {
+  return {
+    command: options.command,
+    workflow: runLogWorkflow(options.command),
+    provider: runLogProvider(options),
+    cli: options.cli,
+    model: options.model,
+    variant: options.variant,
+    context: {
+      issue: options.issue,
+      ticket: options.ticket,
+      hu: options.hu,
+      repository: options.workingDirectory,
+      sessionId: options.session,
+      branch: options.branch,
+    },
+  };
 }
 
 /**
@@ -593,8 +627,64 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    const options = parsed.options;
-    this.applyReporter(options);
+    return this.runParsed(parsed.options, args);
+  }
+
+  /**
+   * The run log's own lifecycle around one invocation: a `run.started` record
+   * before anything runs, a `run.finished` one carrying the outcome, exit code
+   * and duration however the invocation ends, and — in between — every
+   * `warn`/`error` the Reporter emits, forwarded through `applyReporter`'s sink
+   * (ADR-0029). It wraps `dispatchParsed` rather than threading through its many
+   * return paths, so the record contract stays correct without touching them.
+   */
+  private async runParsed(options: CliOptions, args: string[]): Promise<number> {
+    const runLog = createRunLogSink({
+      path: resolveRunLogPath({ logFile: options.logFile, noLogFile: options.noLogFile }),
+      onWriteFailure: (error) => {
+        getDefaultReporter().warn(
+          `lazy-workflow: no se pudo escribir el run log (${errorMessage(error)}); se deshabilita para el resto del run.`,
+        );
+      },
+    });
+    const base = runLogBase(options);
+    const reporterRunLog: ReporterRunLogSink = {
+      event(severity, message) {
+        runLog.write({ ...base, event: "event", severity, message });
+      },
+    };
+    this.applyReporter(options, reporterRunLog);
+
+    // Its own wall clock, deliberately not `this.clock`: that one is rigged by
+    // several tests to a fixed call-order sequence that measures a ticket's
+    // active work duration, and reading it here would consume one of those
+    // calls and shift every business measurement built on it.
+    const startedAt = Date.now();
+    runLog.write({ ...base, event: "run.started", severity: "info", message: `lazy-workflow ${options.command} iniciado` });
+
+    const finish = (exitCode: number, message: string): number => {
+      runLog.write({
+        ...base,
+        event: "run.finished",
+        severity: exitCode === 0 ? "info" : "error",
+        outcome: exitCode === 0 ? "success" : "failure",
+        exitCode,
+        durationMs: Date.now() - startedAt,
+        message,
+      });
+      return exitCode;
+    };
+
+    try {
+      const exitCode = await this.dispatchParsed(options, args);
+      return finish(exitCode, `lazy-workflow ${options.command} finalizado (${exitCode === 0 ? "success" : "failure"})`);
+    } catch (error) {
+      finish(1, `lazy-workflow ${options.command} finalizado con excepcion (${errorMessage(error)})`);
+      throw error;
+    }
+  }
+
+  private async dispatchParsed(options: CliOptions, args: string[]): Promise<number> {
     this.resolveAgent(options.cli);
 
     const command = options.command;
@@ -1091,12 +1181,13 @@ export class LazyWorkflowCli {
     }
   }
 
-  private applyReporter(options: ParsedCliOptions): void {
+  private applyReporter(options: ParsedCliOptions, runLog?: ReporterRunLogSink): void {
     const reporter = this.createReporterFn({
       verbose: options.verbose,
       verboseOutput: options.verboseOutput,
       quiet: options.quiet,
       noColor: options.noColor,
+      runLog,
     });
     setDefaultReporter(reporter);
   }

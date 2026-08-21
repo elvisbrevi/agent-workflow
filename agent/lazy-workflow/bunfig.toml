@@ -1,0 +1,2 @@
+[test]
+preload = ["./test/_helpers/test-run-log-env.ts"]
