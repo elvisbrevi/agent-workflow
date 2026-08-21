@@ -49,6 +49,7 @@ export interface RunLogRecordInput {
   variant: string;
   failureKind?: FailureKind | null;
   phase?: string | null;
+  checkpoint?: "preserved" | null;
   outcome?: RunLogOutcome | null;
   exitCode?: number | null;
   durationMs?: number | null;
@@ -129,6 +130,7 @@ function buildLine(record: RunLogRecordInput, runId: string, ts: Date): Record<s
   };
   if (record.failureKind != null) line["failure_kind"] = record.failureKind;
   if (record.phase != null) line["phase"] = record.phase;
+  if (record.checkpoint != null) line["checkpoint"] = record.checkpoint;
   if (record.outcome != null) line["outcome"] = record.outcome;
   if (record.exitCode != null) line["exit_code"] = record.exitCode;
   if (record.durationMs != null) line["duration_ms"] = record.durationMs;

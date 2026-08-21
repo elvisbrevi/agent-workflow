@@ -191,12 +191,41 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function reportAzureFailure(
+  kind: FailureKind,
+  phase: string,
+  options: Pick<CliOptions, "hu" | "ticket" | "workingDirectory" | "session" | "branch">,
+  message: string,
+  context: Partial<RunLogRecordInput["context"]> = {},
+  checkpoint?: "preserved",
+): void {
+  reportFailure(kind, phase, {
+    hu: options.hu,
+    ticket: options.ticket,
+    repository: options.workingDirectory,
+    sessionId: options.session,
+    branch: options.branch,
+    ...context,
+  }, message, undefined, checkpoint);
+}
+
 /** `completeGitHubDelivery` uses one explicit error type for manifest verification failures. */
 class GitHubCoordinatedFailureError extends Error {
   constructor(readonly failureKind: FailureKind, message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "GitHubCoordinatedFailureError";
   }
+}
+
+class AzureCoordinatedFailureError extends Error {
+  constructor(readonly failureKind: FailureKind, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AzureCoordinatedFailureError";
+  }
+}
+
+function azureFailureKind(error: unknown, fallback: FailureKind): FailureKind {
+  return error instanceof AzureCoordinatedFailureError ? error.failureKind : fallback;
 }
 
 function githubCompletionFailureKind(error: unknown): FailureKind {
@@ -222,17 +251,22 @@ function runLogWorkflow(command: string): string {
 }
 
 /** The run-log `provider` label: which tracker this invocation targets. */
-function runLogProvider(options: Pick<CliOptions, "hu">): "azure" | "github" {
-  return options.hu !== null ? "azure" : "github";
+function runLogProvider(options: Pick<CliOptions, "command" | "hu" | "ticket">): "azure" | "github" {
+  return options.hu !== null
+    || options.ticket !== null
+    || options.command.startsWith("hu-")
+    || options.command.startsWith("ticket-")
+    ? "azure"
+    : "github";
 }
 
 type RunLogBase = Pick<RunLogRecordInput, "command" | "workflow" | "provider" | "cli" | "model" | "variant" | "context">;
 
-function runLogBase(options: CliOptions): RunLogBase {
+function runLogBase(options: CliOptions, provider = runLogProvider(options)): RunLogBase {
   return {
     command: options.command,
     workflow: runLogWorkflow(options.command),
-    provider: runLogProvider(options),
+    provider,
     cli: options.cli,
     model: options.model,
     variant: options.variant,
@@ -393,22 +427,26 @@ function isIncompleteCompletion(
   return verification !== null && "unmetGates" in verification;
 }
 
-function reportUnmetCompletion(ticket: number, verification: IncompleteTicketCompletion): void {
-  reportOperator([
+function reportUnmetCompletion(ticket: number, verification: IncompleteTicketCompletion, options?: CliOptions): void {
+  const message = [
     `lazy-workflow: el ticket ${ticket} no cumple los gates de cierre; checkpoint sessionless conservado.`,
     ...verification.unmetGates.map((gate) => `- ${gate}: ${COMPLETION_GATE_MESSAGES[gate]}`),
-  ].join("\n"));
+  ].join("\n");
+  if (options) reportAzureFailure("deterministic-completion-failure", "completing", options, message, { ticket }, "preserved");
+  else reportOperator(message);
 }
 
 function requireVerifiedCompletion(
   ticket: number,
   verification: TicketCompletionVerification | null,
   fallbackMessage: string,
+  options?: CliOptions,
 ): verification is VerifiedTicketCompletion {
   if (isIncompleteCompletion(verification)) {
-    reportUnmetCompletion(ticket, verification);
+    reportUnmetCompletion(ticket, verification, options);
   } else if (!verification) {
-    reportOperator(fallbackMessage);
+    if (options) reportAzureFailure("deterministic-completion-failure", "completing", options, fallbackMessage, { ticket }, "preserved");
+    else reportOperator(fallbackMessage);
   }
   return verification !== null && !isIncompleteCompletion(verification);
 }
@@ -650,6 +688,19 @@ export class LazyWorkflowCli {
     return declared;
   }
 
+  private async resolveRunLogProvider(options: CliOptions): Promise<"azure" | "github"> {
+    const declared = runLogProvider(options);
+    if (declared === "azure" || options.command !== "code" || options.session === null) return declared;
+    // A session without --hu is Azure only when no GitHub delivery checkpoint owns it.
+    // The dispatch path makes the same distinction before it opens the session.
+    try {
+      if (this.githubCheckpointStore && await this.githubCheckpointStore.read(options.workingDirectory)) return "github";
+    } catch {
+      // A later recovery path reports an unreadable checkpoint; log setup must remain best effort.
+    }
+    return "azure";
+  }
+
   async run(args: string[]): Promise<number> {
     const parsed = parseCli(args, this.cliParser);
     if (parsed.kind === "help") {
@@ -680,7 +731,7 @@ export class LazyWorkflowCli {
         );
       },
     });
-    const base = runLogBase(options);
+    const base = runLogBase(options, await this.resolveRunLogProvider(options));
     const reporterRunLog: ReporterRunLogSink = {
       event(severity, message, detail) {
         runLog.write({
@@ -690,6 +741,7 @@ export class LazyWorkflowCli {
           message,
           failureKind: detail?.failureKind,
           phase: detail?.phase,
+          checkpoint: detail?.checkpoint,
           context: detail?.context ? { ...base.context, ...detail.context } : base.context,
         });
       },
@@ -720,6 +772,12 @@ export class LazyWorkflowCli {
       const exitCode = await this.dispatchParsed(options, args);
       return finish(exitCode, `lazy-workflow ${options.command} finalizado (${exitCode === 0 ? "success" : "failure"})`);
     } catch (error) {
+      reportFailure(
+        "delivery-failure",
+        "dispatching",
+        base.context,
+        `lazy-workflow ${options.command} termino con excepcion (${errorMessage(error)})`,
+      );
       finish(1, `lazy-workflow ${options.command} finalizado con excepcion (${errorMessage(error)})`);
       throw error;
     }
@@ -731,20 +789,20 @@ export class LazyWorkflowCli {
     const command = options.command;
 
     if (options.verbose && options.quiet) {
-      reportOperator("--verbose y --quiet son mutuamente excluyentes");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--verbose y --quiet son mutuamente excluyentes");
       return 1;
     }
 
     if (options.interview.channel !== "off") {
       if (command !== "plan") {
-        reportOperator("--interview solo se permite con plan");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--interview solo se permite con plan");
         return 1;
       }
       // Every channel announces itself through the Reporter — the URL, the tty
       // prompt, the exchange directory — and `--quiet` silences info. A silent
       // interactive run is a run the operator cannot answer.
       if (options.quiet) {
-        reportOperator("--interview y --quiet son mutuamente excluyentes: el canal no podría anunciarse");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--interview y --quiet son mutuamente excluyentes: el canal no podría anunciarse");
         return 1;
       }
     }
@@ -754,7 +812,7 @@ export class LazyWorkflowCli {
 
     if (options.workingDirectory.includes(",")) {
       if (command !== "plan" && command !== "code") {
-        reportOperator("--working-directory CSV solo se permite con plan o code");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--working-directory CSV solo se permite con plan o code");
         return 1;
       }
       // `plan` never mutates branches or tracker state, in either provider.
@@ -764,7 +822,7 @@ export class LazyWorkflowCli {
     }
 
     if (options.normasSag && command !== "plan" && command !== "code") {
-      reportOperator("--normas-sag solo se permite con plan o code");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--normas-sag solo se permite con plan o code");
       return 1;
     }
 
@@ -780,31 +838,31 @@ export class LazyWorkflowCli {
     }
 
     if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "infra-sag") {
-      reportOperator("--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
       return 1;
     }
 
     if (options.environment !== null && command !== "deploy-sag") {
-      reportOperator("--environment solo se permite con deploy-sag");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--environment solo se permite con deploy-sag");
       return 1;
     }
 
     if (command === "deploy-sag" && options.environment !== null && !options.environment?.trim()) {
-       reportOperator("deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
+       reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
       return 1;
     }
 
     if (command === "architecture-review-sag") {
       if (options.hu !== null && options.issue !== null) {
-        reportOperator("architecture-review-sag no permite combinar --hu y --issue");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag no permite combinar --hu y --issue");
         return 1;
       }
       if (options.hu === null && options.issue === null) {
-        reportOperator("architecture-review-sag requiere --hu <id> o --issue <id>");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportOperator("architecture-review-sag no permite --session, --branch ni --base-branch");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
       return this.runArchitectureReview(options);
@@ -815,19 +873,19 @@ export class LazyWorkflowCli {
         .map((arg) => arg?.split("=", 1)[0])
         .find((arg): arg is string => typeof arg === "string" && arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
       if (unsupportedFlag) {
-        reportOperator(`infra-sag no permite ${unsupportedFlag}`);
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, `infra-sag no permite ${unsupportedFlag}`);
         return 1;
       }
       if (options.hu !== null && options.issue !== null) {
-        reportOperator("infra-sag no permite combinar --hu y --issue");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag no permite combinar --hu y --issue");
         return 1;
       }
       if (options.hu === null && options.issue === null) {
-        reportOperator("infra-sag requiere --hu <id> o --issue <id>");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportOperator("infra-sag no permite --session, --branch ni --base-branch");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
       return this.runInfrastructure(options);
@@ -835,24 +893,24 @@ export class LazyWorkflowCli {
 
     if (command === "deploy-sag") {
       if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
-        reportOperator("deploy-sag no permite repetir --environment");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite repetir --environment");
         return 1;
       }
       if (options.hu !== null && options.issue !== null) {
-        reportOperator("deploy-sag no permite combinar --hu y --issue");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite combinar --hu y --issue");
         return 1;
       }
       if (options.hu === null && options.issue === null) {
-        reportOperator("deploy-sag requiere --hu <id> o --issue <id>");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag requiere --hu <id> o --issue <id>");
         return 1;
       }
       const environment = options.environment?.trim().toLowerCase() ?? "dev";
       if (environment !== "dev" && environment !== "test" && environment !== "qa") {
-        reportOperator("deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
         return 1;
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportOperator("deploy-sag no permite --session, --branch ni --base-branch");
+        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite --session, --branch ni --base-branch");
         return 1;
       }
       return this.runDeployment(options, environment);
@@ -862,45 +920,45 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-completion-apply") {
       if (!isValidHu(options.hu)) {
-        reportOperator("ticket-completion-apply requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --hu <id>");
         return 1;
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportOperator("ticket-completion-apply requiere --ticket <id> con un entero positivo");
+        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --ticket <id> con un entero positivo");
         return 1;
       }
       if (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0) {
-        reportOperator("ticket-completion-apply requiere --pr <id> con un entero positivo");
+        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --pr <id> con un entero positivo");
         return 1;
       }
       if (!options.manifest?.trim()) {
-        reportOperator("ticket-completion-apply requiere --manifest <path>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --manifest <path>");
         return 1;
       }
       try {
         console.log(JSON.stringify(await this.applyTicketCompletion(options), null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo ejecutar ticket-completion-apply (${errorMessage(error)})`);
+        reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "completing", options, `lazy-workflow: no se pudo ejecutar ticket-completion-apply (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "ticket-create") {
       if (!isValidHu(options.hu)) {
-        reportOperator("ticket-create requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --hu <id>");
         return 1;
       }
       if (options.type !== "Task" && options.type !== "Bug") {
-        reportOperator("ticket-create requiere --type Task o --type Bug");
+        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --type Task o --type Bug");
         return 1;
       }
       if (!options.title?.trim()) {
-        reportOperator("ticket-create requiere --title <titulo>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --title <titulo>");
         return 1;
       }
       if (!options.descriptionFile?.trim()) {
-        reportOperator("ticket-create requiere --description-file <path>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --description-file <path>");
         return 1;
       }
       try {
@@ -917,7 +975,7 @@ export class LazyWorkflowCli {
         console.log(JSON.stringify(result, null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        reportAzureFailure("delivery-failure", "publishing", options, `lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
         return 1;
       }
     }
@@ -928,7 +986,7 @@ export class LazyWorkflowCli {
         : [options.blocker, options.blocked];
       const flags = command === "ticket-link-parent" ? "--parent <id> y --child <id>" : "--blocker <id> y --blocked <id>";
       if (first === null || second === null) {
-        reportOperator(`${command} requiere ${flags} con enteros positivos`);
+        reportAzureFailure("argument-error", "validating", options, `${command} requiere ${flags} con enteros positivos`);
         return 1;
       }
       try {
@@ -940,22 +998,22 @@ export class LazyWorkflowCli {
         console.log(JSON.stringify(await link(first, second), null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        reportAzureFailure("delivery-failure", "publishing", options, `lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "ticket-description-set" || command === "ticket-state-set" || command === "ticket-effort-set") {
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+        reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
         return 1;
       }
       if (command === "ticket-description-set" && !options.descriptionFile?.trim()) {
-        reportOperator("ticket-description-set requiere --description-file <path>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-description-set requiere --description-file <path>");
         return 1;
       }
       if (command === "ticket-state-set" && (!options.state?.trim() || !options.expectedState?.trim())) {
-        reportOperator("ticket-state-set requiere --state <state> y --expected-state <state>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-state-set requiere --state <state> y --expected-state <state>");
         return 1;
       }
       if (command === "ticket-effort-set" && (
@@ -965,7 +1023,7 @@ export class LazyWorkflowCli {
         || !Number.isFinite(options.realEffortHours) || options.realEffortHours < 0
         || !Number.isInteger(options.expectedRevision) || options.expectedRevision <= 0
       )) {
-        reportOperator("ticket-effort-set requiere --real-effort <hours>, --real-effort-hh <hours> y --expected-rev <rev> válidos");
+        reportAzureFailure("argument-error", "validating", options, "ticket-effort-set requiere --real-effort <hours>, --real-effort-hh <hours> y --expected-rev <rev> válidos");
         return 1;
       }
       try {
@@ -983,31 +1041,31 @@ export class LazyWorkflowCli {
         console.log(JSON.stringify(result, null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        reportAzureFailure("delivery-failure", "evidencing", options, `lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
       if (command === "ticket-pr-link" && !isValidHu(options.hu)) {
-        reportOperator("ticket-pr-link requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-pr-link requiere --hu <id>");
         return 1;
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+        reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
         return 1;
       }
       if ((command === "ticket-pr-link" || command === "ticket-commit-link")
         && (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0)) {
-        reportOperator(`${command} requiere --pr <id> con un entero positivo`);
+        reportAzureFailure("argument-error", "validating", options, `${command} requiere --pr <id> con un entero positivo`);
         return 1;
       }
       if ((command === "ticket-attachment-add" || command === "ticket-evidence-set") && !options.file?.trim()) {
-        reportOperator(`${command} requiere --file <path>`);
+        reportAzureFailure("argument-error", "validating", options, `${command} requiere --file <path>`);
         return 1;
       }
       if (command === "ticket-attachment-add" && !options.evidenceKind) {
-        reportOperator("ticket-attachment-add requiere --kind <http-json|screen|command-output>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-attachment-add requiere --kind <http-json|screen|command-output>");
         return 1;
       }
       try {
@@ -1028,35 +1086,35 @@ export class LazyWorkflowCli {
         console.log(JSON.stringify(result, null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
+        reportAzureFailure("delivery-failure", "executing", options, `lazy-workflow: no se pudo ejecutar ${command} (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "ticket-branch-set") {
       if (!isValidHu(options.hu)) {
-        reportOperator("ticket-branch-set requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --hu <id>");
         return 1;
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportOperator("ticket-branch-set requiere --ticket <id> con un entero positivo");
+        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --ticket <id> con un entero positivo");
         return 1;
       }
       if (!options.branch?.trim()) {
-        reportOperator("ticket-branch-set requiere --branch <name>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --branch <name>");
         return 1;
       }
       if (options.workingDirectory === process.cwd() && !args.some((arg) => arg === "--working-directory" || arg.startsWith("--working-directory="))) {
-        reportOperator("ticket-branch-set requiere --working-directory <path>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --working-directory <path>");
         return 1;
       }
       const workingDirectory = options.workingDirectory;
       if (!workingDirectory?.trim() || workingDirectory.startsWith("--")) {
-        reportOperator("ticket-branch-set requiere --working-directory <path>");
+        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --working-directory <path>");
         return 1;
       }
       if (!this.huInfoService.setTicketBranch) {
-        reportOperator("El servicio Azure no soporta ticket-branch-set");
+        reportAzureFailure("branch-preparation-failure", "preparing", options, "El servicio Azure no soporta ticket-branch-set");
         return 1;
       }
       try {
@@ -1067,50 +1125,56 @@ export class LazyWorkflowCli {
         ));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo vincular la rama del ticket ${options.ticket} (${errorMessage(error)})`);
+        reportAzureFailure("branch-preparation-failure", "started", options, `lazy-workflow: no se pudo vincular la rama del ticket ${options.ticket} (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "hu-info") {
       if (!isValidHu(options.hu)) {
-        reportOperator("hu-info requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "hu-info requiere --hu <id>");
         return 1;
       }
-      const huInfo = await this.huInfoService.getHuInfo(options.hu);
+     let huInfo: HuInfo;
+     try {
+       huInfo = await this.huInfoService.getHuInfo(options.hu);
+     } catch (error) {
+       reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
+       return 1;
+     }
       console.log(JSON.stringify(huInfo, null, 2));
       return 0;
     }
 
     if (command === "hu-branch-info") {
       if (!isValidHu(options.hu)) {
-        reportOperator("hu-branch-info requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "hu-branch-info requiere --hu <id>");
         return 1;
       }
       if (!this.huInfoService.getIntegrationBranchInfo) {
-        reportOperator("El servicio Azure no soporta hu-branch-info");
+        reportAzureFailure("tracker-read-failure", "reading", options, "El servicio Azure no soporta hu-branch-info");
         return 1;
       }
       try {
         console.log(JSON.stringify(await this.huInfoService.getIntegrationBranchInfo(options.hu), null, 2));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo consultar la rama de la HU ${options.hu} (${errorMessage(error)})`);
+        reportAzureFailure("tracker-read-failure", "preparing", options, `lazy-workflow: no se pudo consultar la rama de la HU ${options.hu} (${errorMessage(error)})`);
         return 1;
       }
     }
 
     if (command === "hu-branch-set") {
       if (!isValidHu(options.hu)) {
-        reportOperator("hu-branch-set requiere --hu <id>");
+        reportAzureFailure("argument-error", "validating", options, "hu-branch-set requiere --hu <id>");
         return 1;
       }
       if (!options.branch?.trim()) {
-        reportOperator("hu-branch-set requiere --branch <name>");
+        reportAzureFailure("argument-error", "validating", options, "hu-branch-set requiere --branch <name>");
         return 1;
       }
       if (!this.huInfoService.setIntegrationBranch) {
-        reportOperator("El servicio Azure no soporta hu-branch-set");
+        reportAzureFailure("branch-preparation-failure", "preparing", options, "El servicio Azure no soporta hu-branch-set");
         return 1;
       }
       try {
@@ -1126,7 +1190,7 @@ export class LazyWorkflowCli {
         ));
         return 0;
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo vincular la rama de la HU ${options.hu} (${errorMessage(error)})`);
+        reportAzureFailure("branch-preparation-failure", "preparing", options, `lazy-workflow: no se pudo vincular la rama de la HU ${options.hu} (${errorMessage(error)})`);
         return 1;
       }
     }
@@ -1155,7 +1219,7 @@ export class LazyWorkflowCli {
     // this instead of reinspecting --hu or recovery state again.
     const isAzureHuRun = recoveringAzureCode || options.hu !== null;
     if (!isAzureHuRun && (options.branch !== null || options.baseBranch !== null)) {
-      reportOperator("--branch y --base-branch solo se permiten en flujos Azure");
+      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--branch y --base-branch solo se permiten en flujos Azure");
       return 1;
     }
 
@@ -1172,7 +1236,13 @@ export class LazyWorkflowCli {
 
     if (options.hu === null) return this.runDefaultWorkflow("plan", options);
 
-    const huInfo = await this.huInfoService.getHuInfo(options.hu);
+    let huInfo: HuInfo;
+    try {
+      huInfo = await this.huInfoService.getHuInfo(options.hu);
+    } catch (error) {
+      reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
+      return 1;
+    }
     const norms = await this.loadSagNorms(options, "planning");
     if (options.normasSag && norms === null) return 1;
 
@@ -1185,7 +1255,7 @@ export class LazyWorkflowCli {
     );
     console.log(JSON.stringify(result, null, 2));
     if (failed) return 1;
-    return this.publishAzurePlan(options.hu, result.text);
+    return this.publishAzurePlan(options.hu, result.text, options);
   }
 
   /**
@@ -1193,7 +1263,7 @@ export class LazyWorkflowCli {
    * the work items and their blocking relations is the coordinator's mechanical
    * work, verified through the same ticket-* primitives.
    */
-  private async publishAzurePlan(hu: number, text: string): Promise<number> {
+  private async publishAzurePlan(hu: number, text: string, options: CliOptions): Promise<number> {
     try {
       const tickets = parsePlan(text);
       if (tickets.length === 0) {
@@ -1203,7 +1273,7 @@ export class LazyWorkflowCli {
       // Only a plan with work to publish needs the publication primitives.
       const { createTicket, linkPredecessor } = this.huInfoService;
       if (!createTicket || !linkPredecessor) {
-        reportOperator("lazy-workflow: el coordinador no expone las primitivas de publicación de plan; ejecución detenida.");
+        reportAzureFailure("deterministic-completion-failure", "publishing", options, "lazy-workflow: el coordinador no expone las primitivas de publicación de plan; ejecución detenida.");
         return 1;
       }
       const service = new AzurePlanPublicationService(
@@ -1221,7 +1291,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(publication, null, 2));
       return 0;
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo publicar el plan de la HU ${hu} (${errorMessage(error)}); no se creó trabajo parcial sin verificar.`);
+      reportAzureFailure("deterministic-completion-failure", "publishing", options, `lazy-workflow: no se pudo publicar el plan de la HU ${hu} (${errorMessage(error)}); no se creó trabajo parcial sin verificar.`);
       return 1;
     }
   }
@@ -1367,8 +1437,13 @@ export class LazyWorkflowCli {
     const remaining = deadline - this.clock.now();
     const exhausted = `escalón ${describeRung(active)} (causa ${exhaustion.cause})`;
     if (remaining < options.fallbackWaitSeconds * 1000) {
-      reportOperator(
+      reportFailure(
+        "session-failure",
+        "reconciling",
+        { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId: null },
         `lazy-workflow: la cadena de fallback sigue agotada al alcanzar el tope de ${options.fallbackWaitMaxSeconds}s de espera; último ${exhausted}; checkpoint conservado.`,
+        undefined,
+        "preserved",
       );
       return false;
     }
@@ -1423,15 +1498,15 @@ export class LazyWorkflowCli {
 
   private async runAzureWorkspaceCode(options: CliOptions): Promise<number> {
     if (!this.huInfoService.prepareWorkspaceBranches || !this.huInfoService.prepareWorkspaceTicketBranches) {
-      reportOperator("El servicio Azure no expone la preparación workspace de ramas");
+      reportAzureFailure("topology-preparation-failure", "preparing", options, "El servicio Azure no expone la preparación workspace de ramas");
       return 1;
     }
     if (!isValidHu(options.hu)) {
-      reportOperator("runAzureWorkspaceCode requiere --hu");
+      reportAzureFailure("argument-error", "preparing", options, "runAzureWorkspaceCode requiere --hu");
       return 1;
     }
     if (options.ticket !== null && (!Number.isInteger(options.ticket) || options.ticket <= 0)) {
-      reportOperator("runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo");
+      reportAzureFailure("argument-error", "preparing", options, "runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo");
       return 1;
     }
     if (!this.huInfoService.createOrReusePullRequest || !this.huInfoService.checkoutTicketBranch
@@ -1449,7 +1524,7 @@ export class LazyWorkflowCli {
       || !this.huInfoService.getDescription || !this.huInfoService.getAttachments
       || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext
       || !this.huInfoService.linkTicketBranch) {
-      reportOperator("El servicio Azure no expone todas las primitivas de entrega workspace");
+      reportAzureFailure("delivery-failure", "preparing", options, "El servicio Azure no expone todas las primitivas de entrega workspace");
       return 1;
     }
     const hu = options.hu;
@@ -1465,7 +1540,7 @@ export class LazyWorkflowCli {
       scope = await this.azureWorkspaceScope(options);
       checkpoint = await this.azureWorkspaceCheckpoint.read(scope.stateDirectory);
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
+      reportAzureFailure("workspace-scope-failure", "preparing", options, `lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
     if (checkpoint) {
@@ -1474,7 +1549,7 @@ export class LazyWorkflowCli {
       options = adopted;
     }
     if (options.session !== null && (!checkpoint || checkpoint.sessionId !== options.session)) {
-      reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.");
+      reportAzureFailure("argument-error", "reconciling", options, "lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.", {}, "preserved");
       return 1;
     }
     const resolved = await this.resolveAzureWorkspaceTicket(hu, options, checkpoint);
@@ -1485,7 +1560,7 @@ export class LazyWorkflowCli {
     if (checkpoint) {
       const mismatch = this.azureWorkspaceScopeMismatch(checkpoint, scope, hu, ticket);
       if (mismatch) {
-        reportOperator(`lazy-workflow: ${mismatch}; ejecución detenida.`);
+        reportAzureFailure("workspace-scope-failure", "reconciling", options, `lazy-workflow: ${mismatch}; ejecución detenida.`, {}, "preserved");
         return 1;
       }
     }
@@ -1509,13 +1584,13 @@ export class LazyWorkflowCli {
           repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
         });
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("topology-preparation-failure", "preparing", options, `lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`, {}, checkpoint ? "preserved" : undefined);
         return 1;
       }
       if (checkpoint) {
         const drift = this.azureWorkspaceTopologyMismatch(checkpoint, topology, ticketTopology);
         if (drift) {
-          reportOperator(`lazy-workflow: ${drift}; ejecución detenida.`);
+          reportAzureFailure("topology-preparation-failure", "reconciling", options, `lazy-workflow: ${drift}; ejecución detenida.`, {}, "preserved");
           return 1;
         }
       }
@@ -1542,7 +1617,7 @@ export class LazyWorkflowCli {
             await this.huInfoService.checkoutTicketBranch!(sessionTicketBranch, repository.path);
           }
         } catch (error) {
-          reportOperator(`lazy-workflow: no se pudo situar el workspace en la rama del ticket (${errorMessage(error)}); ejecución detenida.`);
+          reportAzureFailure("branch-preparation-failure", "started", options, `lazy-workflow: no se pudo situar el workspace en la rama del ticket (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
           return 1;
         }
         const resuming = checkpoint.sessionId;
@@ -1561,7 +1636,7 @@ export class LazyWorkflowCli {
         };
         const handOff = async (rung: FallbackRung) => {
           const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-          const handoffRun = await this.azureWorkspacePrompt(handoffOptions, hu, ticket, scope, topology, ticketTopology);
+           const handoffRun = await this.azureWorkspacePrompt(handoffOptions, hu, ticket, scope, topology, ticketTopology, true);
           // The descent has no exit code of its own; an unbuildable prompt is a hard stop for the
           // whole delivery, so it travels as an error rather than as a session spawned blind.
           if (!handoffRun) throw new Error(`El ticket ${ticket} no tiene contexto de entrega verificable`);
@@ -1600,7 +1675,7 @@ export class LazyWorkflowCli {
             execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
           }
         } else {
-          const run = await this.azureWorkspacePrompt(options, hu, ticket, scope, topology, ticketTopology);
+           const run = await this.azureWorkspacePrompt(options, hu, ticket, scope, topology, ticketTopology, true);
           if (!run) return 1;
           execution = await this.codingAgent.run({
             ...options,
@@ -1621,17 +1696,17 @@ export class LazyWorkflowCli {
         };
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
         if (execution.failed) {
-          reportOperator(`lazy-workflow: ${activeCli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`);
+          reportAzureFailure("session-failure", "reconciling", options, `lazy-workflow: ${activeCli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`, { sessionId: execution.result.sessionId }, "preserved");
           return 1;
         }
         if (!terminal) {
-          reportOperator(`lazy-workflow: la sesión ${activeCli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`);
+          reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${activeCli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`, { sessionId: execution.result.sessionId }, "preserved");
           return 1;
         }
       }
       return await this.integrateAzureWorkspaceCode(options, declaredOptions, hu, ticket, scope, topology, ticketTopology, checkpoint, accrue);
     } catch (error) {
-      reportOperator(`lazy-workflow: falló la entrega workspace Azure (${errorMessage(error)}); ejecución detenida.`);
+      reportAzureFailure("delivery-failure", "reconciling", options, `lazy-workflow: falló la entrega workspace Azure (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
       return 1;
     }
   }
@@ -1650,28 +1725,28 @@ export class LazyWorkflowCli {
       // The checkpointed unit is immutable: a contradicting --ticket is an operator error, not a
       // reason to abandon the delivery already in flight.
       if (options.ticket !== null && options.ticket !== checkpoint.ticket) {
-        reportOperator(`lazy-workflow: el checkpoint workspace Azure pertenece al ticket ${checkpoint.ticket}, no al ticket ${options.ticket}; ejecución detenida.`);
+        reportAzureFailure("workspace-scope-failure", "reconciling", options, `lazy-workflow: el checkpoint workspace Azure pertenece al ticket ${checkpoint.ticket}, no al ticket ${options.ticket}; ejecución detenida.`, {}, "preserved");
         return { exit: 1 };
       }
       return { ticket: checkpoint.ticket };
     }
     if (options.ticket !== null) return { ticket: options.ticket };
     if (!this.huInfoService.getAutocodeState) {
-      reportOperator("El servicio Azure no expone la selección de tickets pendientes de la HU");
+      reportAzureFailure("tracker-read-failure", "selecting", options, "El servicio Azure no expone la selección de tickets pendientes de la HU");
       return { exit: 1 };
     }
     let state: AutocodeState;
     try {
       state = await this.huInfoService.getAutocodeState(hu);
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo seleccionar el siguiente ticket de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+      reportAzureFailure("tracker-read-failure", "selecting", options, `lazy-workflow: no se pudo seleccionar el siguiente ticket de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
       return { exit: 1 };
     }
     if (!state.context) {
       // Blocked and empty are different outcomes: pending work with no eligible unit is a
       // dependency wait the operator must resolve, an empty queue is a finished HU.
       if (state.pending) {
-        reportOperator(`lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
+        reportAzureFailure("tracker-read-failure", "selecting", options, `lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
         return { exit: 1 };
       }
       reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
@@ -1764,6 +1839,7 @@ export class LazyWorkflowCli {
     scope: WorkspaceScope,
     topology: AzureWorkspaceBranchTopology,
     ticketTopology: AzureWorkspaceBranchTopology,
+    checkpointPreserved = false,
   ): Promise<{ prompt: string; agent: AgentAuthority } | null> {
     // The session is told where every manifest goes instead of inferring it: the integration phase
     // only ever looks at these paths, so a guessed location reads as a repository with no changes.
@@ -1778,7 +1854,7 @@ export class LazyWorkflowCli {
     // Fail closed rather than open a session with an empty context: an unimplementable prompt is
     // exactly what stalled this run before, and it costs a whole session to find out.
     if (!context) {
-      reportOperator(`lazy-workflow: el ticket ${ticket} no tiene contexto de entrega verificable; ejecución detenida.`);
+      reportAzureFailure("claim-verification-failure", "prompting", options, `lazy-workflow: el ticket ${ticket} no tiene contexto de entrega verificable; ejecución detenida.`, { ticket }, checkpointPreserved ? "preserved" : undefined);
       return null;
     }
     return this.prompt(
@@ -1823,7 +1899,7 @@ export class LazyWorkflowCli {
       if (!exists) {
         const status = await this.git(["status", "--porcelain", "--untracked-files=no"], repository.path);
         if (status.trim()) {
-          reportOperator(`lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`);
+          reportAzureFailure("workspace-scope-failure", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`, { repository: repository.path }, "preserved");
           return 1;
         }
         // Sin manifest el repositorio se entrega como "sin cambios", y la limpieza
@@ -1838,7 +1914,7 @@ export class LazyWorkflowCli {
           repository.path,
         ).catch(() => "0");
         if (unpublished.trim() !== "0") {
-          reportOperator(`lazy-workflow: el repositorio ${repository.path} tiene commits sin manifest verificable; ejecución detenida.`);
+          reportAzureFailure("manifest-not-verifiable", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} tiene commits sin manifest verificable; ejecución detenida.`, { repository: repository.path }, "preserved");
           return 1;
         }
         units.push({ path: repository.path, manifestPath, changed: false });
@@ -1849,7 +1925,7 @@ export class LazyWorkflowCli {
 
     const changedUnits = units.filter((unit) => unit.changed);
     if (changedUnits.length === 0) {
-      reportOperator("lazy-workflow: el workspace no contiene cambios entregables; ejecución detenida.");
+      reportAzureFailure("delivery-failure", "evidencing", options, "lazy-workflow: el workspace no contiene cambios entregables; ejecución detenida.", {}, "preserved");
       return 1;
     }
 
@@ -1864,7 +1940,7 @@ export class LazyWorkflowCli {
         unit.manifest = manifest;
         unit.commit = manifest.commit;
       } catch (error) {
-        reportOperator(`lazy-workflow: el manifest de ${unit.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("manifest-not-verifiable", "evidencing", options, `lazy-workflow: el manifest de ${unit.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: unit.path }, "preserved");
         return 1;
       }
     }
@@ -1880,7 +1956,7 @@ export class LazyWorkflowCli {
       const linked = await boundary.linkTicketBranch!(hu, ticket, ticketBranch, candidates);
       primaryRepository = (linked as { workingDirectory?: string }).workingDirectory ?? candidates[0]!;
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo fijar la rama primaria del ticket (${errorMessage(error)}); ejecución detenida.`);
+      reportAzureFailure("branch-preparation-failure", "integrating", options, `lazy-workflow: no se pudo fijar la rama primaria del ticket (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
       return 1;
     }
     checkpoint = { ...checkpoint, primaryRepository };
@@ -1914,7 +1990,7 @@ export class LazyWorkflowCli {
       const commit = unit.commit!;
       const identity = azureIdentity.get(unit.path);
       if (!identity) {
-        reportOperator(`lazy-workflow: el repositorio ${unit.path} no tiene identidad Azure en la topología; ejecución detenida.`);
+        reportAzureFailure("topology-preparation-failure", "integrating", options, `lazy-workflow: el repositorio ${unit.path} no tiene identidad Azure en la topología; ejecución detenida.`, { repository: unit.path }, "preserved");
         return 1;
       }
       // Azure GUIDs, not names: `az` accepts either, but pull-request payloads only ever carry the
@@ -1954,7 +2030,7 @@ export class LazyWorkflowCli {
       } catch (error) {
         // Fail closed: later repositories stay pending and no merge is rolled back or reverted.
         await save();
-        reportOperator(`lazy-workflow: no se pudo entregar el repositorio ${unit.path} (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("delivery-failure", "integrating", options, `lazy-workflow: no se pudo entregar el repositorio ${unit.path} (${errorMessage(error)}); ejecución detenida.`, { repository: unit.path }, "preserved");
         return 1;
       }
     }
@@ -1985,7 +2061,7 @@ export class LazyWorkflowCli {
       try {
         await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
       } catch (error) {
-        reportOperator(`lazy-workflow: la evidencia ${evidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("evidence-not-verifiable", "evidencing", options, `lazy-workflow: la evidencia ${evidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: evidence.path }, "preserved");
         return 1;
       }
     }
@@ -1995,14 +2071,14 @@ export class LazyWorkflowCli {
     // necesita otra, que es lo que `applyTicketCompletion` sostiene para la ruta de repo único.
     const textEvidence = findTextEvidence(workspaceEvidence);
     if (!textEvidence && !completionInfo.completionEvidence) {
-      reportOperator("lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.");
+      reportAzureFailure("evidence-not-verifiable", "evidencing", options, "lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.", {}, "preserved");
       return 1;
     }
     if (textEvidence) {
       try {
         await boundary.validateEvidence!(ticket, textEvidence.path);
       } catch (error) {
-        reportOperator(`lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("evidence-not-verifiable", "evidencing", options, `lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: textEvidence.path }, "preserved");
         return 1;
       }
     }
@@ -2044,14 +2120,14 @@ export class LazyWorkflowCli {
     const finalInfo = await boundary.getTicketInfo!(hu, ticket);
     const unmetBeforeDone = finalInfo.gates.unmet.filter((gate) => gate !== COMPLETION_GATE.ticketState);
     if (unmetBeforeDone.length > 0) {
-      reportOperator(`lazy-workflow: gates incumplidos en el ticket workspace ${ticket}: ${unmetBeforeDone.join(", ")}`);
+      reportAzureFailure("deterministic-completion-failure", "completing", options, `lazy-workflow: gates incumplidos en el ticket workspace ${ticket}: ${unmetBeforeDone.join(", ")}`, {}, "preserved");
       return 1;
     }
 
     // The ticket and the HU only move once every changed repository carries a verified receipt.
     const pending = checkpoint.units.filter((unit) => unit.changed && !unit.receipts.delivery);
     if (pending.length > 0) {
-      reportOperator(`lazy-workflow: quedan repositorios sin entregar (${pending.map(({ path }) => path).join(", ")}); ejecución detenida.`);
+      reportAzureFailure("delivery-failure", "completing", options, `lazy-workflow: quedan repositorios sin entregar (${pending.map(({ path }) => path).join(", ")}); ejecución detenida.`, {}, "preserved");
       return 1;
     }
     checkpoint = { ...checkpoint, phase: "completing" };
@@ -2064,7 +2140,7 @@ export class LazyWorkflowCli {
 
     const verifyAfter = await boundary.getTicketInfo!(hu, ticket);
     if (verifyAfter.ticket.state !== "Done") {
-      reportOperator(`lazy-workflow: no se pudo verificar la finalización del ticket workspace ${ticket}`);
+      reportAzureFailure("deterministic-completion-failure", "completing", options, `lazy-workflow: no se pudo verificar la finalización del ticket workspace ${ticket}`, {}, "preserved");
       return 1;
     }
 
@@ -2079,12 +2155,12 @@ export class LazyWorkflowCli {
         await boundary.setHuState!(hu, "Desarrollo Terminado", huState.state ?? "En Desarrollo", huState.revision ?? 0);
         const verified = await boundary.getHuState!(hu);
         if (verified.state !== "Desarrollo Terminado") {
-          reportOperator(`lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`);
+          reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`, { ticket }, "preserved");
         } else {
           huTransitionApplied = true;
         }
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo transicionar la HU ${hu} (${errorMessage(error)}); el ticket ${ticket} se conservó en Done`);
+        reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo transicionar la HU ${hu} (${errorMessage(error)}); el ticket ${ticket} se conservó en Done`, {}, "preserved");
       }
     }
 
@@ -2105,7 +2181,7 @@ export class LazyWorkflowCli {
         await save();
       } catch (error) {
         uncleaned.push(unit.path);
-        reportOperator(`lazy-workflow: no se pudo limpiar la rama del ticket en ${unit.path} (${errorMessage(error)})`);
+        reportAzureFailure("ticket-branch-cleanup-failure", "cleaning", options, `lazy-workflow: no se pudo limpiar la rama del ticket en ${unit.path} (${errorMessage(error)})`, { repository: unit.path }, "preserved");
       }
     }
 
@@ -2140,7 +2216,7 @@ export class LazyWorkflowCli {
       } catch (error) {
         // The delivery already landed: keep the checkpoint as the surviving evidence rather than
         // clearing it behind an unwritable manifest.
-        reportOperator(`lazy-workflow: no se pudo escribir el manifest agregado del workspace (${errorMessage(error)}); el checkpoint se conservó.`);
+        reportAzureFailure("manifest-not-verifiable", "cleaning", options, `lazy-workflow: no se pudo escribir el manifest agregado del workspace (${errorMessage(error)}); el checkpoint se conservó.`, {}, "preserved");
         return 1;
       }
       // El manifest por repositorio es la señal de "hay algo que entregar", y
@@ -2187,7 +2263,7 @@ export class LazyWorkflowCli {
           huInfo = await this.huInfoService.getHuInfo(provider.hu);
         } catch (error) {
           // Distinct from the outer catch: this is a tracker read failure, not a workspace one.
-          reportOperator(`lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
+          reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
           return 1;
         }
       }
@@ -2201,7 +2277,12 @@ export class LazyWorkflowCli {
       reportOperator(JSON.stringify(result, null, 2));
       return failed ? 1 : 0;
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`);
+      reportFailure(
+        resolveWorkflowRun(options.hu).kind === "azure-hu-run" ? "workspace-scope-failure" : "delivery-failure",
+        "preparing",
+        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
+        `lazy-workflow: no se pudo preparar el workspace (${errorMessage(error)})`,
+      );
       return 1;
     }
   }
@@ -2221,7 +2302,7 @@ export class LazyWorkflowCli {
         options = adopted;
       }
       if (options.session !== null && (!existing || existing.sessionId !== options.session)) {
-        reportOperator("lazy-workflow: la sesión no coincide con el checkpoint workspace fijado.");
+        reportFailure("argument-error", "reconciling", { issue: existing?.issue, repository: options.workingDirectory, sessionId: options.session }, "lazy-workflow: la sesión no coincide con el checkpoint workspace fijado.");
         return 1;
       }
       if (existing) return await this.resumeWorkspaceCode(options, scope, existing);
@@ -2241,7 +2322,7 @@ export class LazyWorkflowCli {
       const issue = await this.githubManagedQueue.claimSelectedIssue(selection.issue.number, anchor.path);
       return await this.deliverWorkspaceCode(options, scope, issue, null);
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo coordinar la entrega workspace (${errorMessage(error)})`);
+      reportFailure("delivery-failure", "coordinating", { issue: undefined, repository: options.workingDirectory }, `lazy-workflow: no se pudo coordinar la entrega workspace (${errorMessage(error)})`);
       return 1;
     } finally {
       for (const release of releases.reverse()) await release();
@@ -2252,8 +2333,8 @@ export class LazyWorkflowCli {
     const expected = scope.repositories.map(({ path, remote, providerIdentity }) => ({ path, remote, repository: providerIdentity }));
     if (JSON.stringify(expected) !== JSON.stringify(checkpoint.repositories)
       || checkpoint.units.some((unit, index) => unit.path !== expected[index]?.path || unit.repository !== expected[index]?.repository)) {
-      reportOperator("lazy-workflow: el checkpoint workspace no coincide con el alcance declarado; ejecución detenida.");
-      return 1;
+      reportFailure("workspace-scope-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory }, "lazy-workflow: el checkpoint workspace no coincide con el alcance declarado; ejecución detenida.");
+        return 1;
     }
     if (checkpoint.phase === "conflict-resolving") {
       const reconciliation = checkpoint.reconciliation;
@@ -2301,7 +2382,7 @@ export class LazyWorkflowCli {
         };
         await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo reanudar la reconciliación workspace (${errorMessage(error)})`);
+        reportFailure("delivery-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory }, `lazy-workflow: no se pudo reanudar la reconciliación workspace (${errorMessage(error)})`);
         return 1;
       }
     }
@@ -2313,14 +2394,14 @@ export class LazyWorkflowCli {
         checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
         await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo reanudar el workspace (${errorMessage(error)})`);
+        reportFailure("session-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory, sessionId: checkpoint.sessionId }, `lazy-workflow: no se pudo reanudar el workspace (${errorMessage(error)})`);
         return 1;
       }
     }
     if (checkpoint.phase === "selected") {
       const reread = this.githubManagedQueue.reconcileClaimedIssue ?? this.githubManagedQueue.readIssueDetail;
       if (!reread) {
-        reportOperator("lazy-workflow: no se puede verificar el Issue fijado del workspace; ejecución detenida.");
+        reportFailure("claim-verification-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory }, "lazy-workflow: no se puede verificar el Issue fijado del workspace; ejecución detenida.");
         return 1;
       }
       const issue = await reread.call(this.githubManagedQueue, checkpoint.issue, scope.repositories[0]!.path);
@@ -3759,7 +3840,7 @@ export class LazyWorkflowCli {
     try {
       channel = this.createQuestionChannelFn(options.interview, getDefaultReporter());
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo abrir el canal de preguntas (${errorMessage(error)}); ejecución detenida.`);
+      reportFailure("argument-error", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory }, `lazy-workflow: no se pudo abrir el canal de preguntas (${errorMessage(error)}); ejecución detenida.`);
       throw error;
     }
 
@@ -3802,12 +3883,12 @@ export class LazyWorkflowCli {
       try {
         turn = readPlanTurn(result.text);
       } catch (error) {
-        reportOperator(`lazy-workflow: la ronda de preguntas no se pudo leer (${errorMessage(error)}); ejecución detenida.`);
+        reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: result.sessionId }, `lazy-workflow: la ronda de preguntas no se pudo leer (${errorMessage(error)}); ejecución detenida.`);
         return { result, failed: true };
       }
       if (turn.kind === "final") return { result, failed };
       if (failed) {
-        reportOperator("lazy-workflow: la sesión pidió responder preguntas pero terminó con error; ejecución detenida.");
+        reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: result.sessionId }, "lazy-workflow: la sesión pidió responder preguntas pero terminó con error; ejecución detenida.");
         return { result, failed: true };
       }
 
@@ -3839,10 +3920,10 @@ export class LazyWorkflowCli {
         );
       } catch (error) {
         if (error instanceof AgentExhaustionError) {
-          reportOperator(`lazy-workflow: ${describeExhaustion(error.exhaustion)}; entrevista detenida.`);
+          reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: error.result.sessionId }, `lazy-workflow: ${describeExhaustion(error.exhaustion)}; entrevista detenida.`);
           return { result: error.result, failed: true };
         }
-        reportOperator(`lazy-workflow: no se pudo reanudar la sesión de planificación (${errorMessage(error)}); ejecución detenida.`);
+        reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: result.sessionId }, `lazy-workflow: no se pudo reanudar la sesión de planificación (${errorMessage(error)}); ejecución detenida.`);
         return { result, failed: true };
       }
 
@@ -3870,14 +3951,14 @@ export class LazyWorkflowCli {
       }
       return await this.sagNormsService.loadPlanning(options.workingDirectory);
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
+      reportFailure("delivery-failure", phase, { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, `lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
       return null;
     }
   }
 
   private async runDeployment(options: CliOptions, environment: DeploymentEnvironment, authenticationRetried = false): Promise<number> {
     if (!this.sagNormsService.loadDeployment) {
-      reportOperator("lazy-workflow: el servicio SAG no soporta deploy-sag");
+      reportFailure("delivery-failure", "deploying", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta deploy-sag");
       return 1;
     }
     try {
@@ -3901,18 +3982,25 @@ export class LazyWorkflowCli {
     } catch (error) {
       if ((error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
         && options.hu !== null && !authenticationRetried) {
-        reportOperator(`Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
+        reportAzureFailure("deployment-authentication-required", "authenticating", options, `Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
         await this.huInfoService.waitForAccess(options.hu);
         return this.runDeployment(options, environment, true);
       }
-      reportOperator(`lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
+      reportFailure(
+        options.hu !== null && (error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
+          ? "deployment-authentication-required"
+          : "delivery-failure",
+        "deploying",
+        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
+        `lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`,
+      );
       return 1;
     }
   }
 
   private async runInfrastructure(options: CliOptions, authenticationRetried = false): Promise<number> {
     if (!this.sagNormsService.loadInfrastructure) {
-      reportOperator("lazy-workflow: el servicio SAG no soporta infra-sag");
+      reportFailure("delivery-failure", "verifying", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta infra-sag");
       return 1;
     }
     try {
@@ -3983,18 +4071,25 @@ export class LazyWorkflowCli {
     } catch (error) {
       if ((error instanceof InfrastructureAuthenticationRequiredError || isAuthenticationError(error))
         && options.hu !== null && !authenticationRetried) {
-        reportOperator(`Sesion de infraestructura detenida; autenticacion requerida para la HU ${options.hu}.`);
+        reportAzureFailure("infrastructure-authentication-required", "authenticating", options, `Sesion de infraestructura detenida; autenticacion requerida para la HU ${options.hu}.`);
         await this.huInfoService.waitForAccess(options.hu);
         return this.runInfrastructure(options, true);
       }
-      reportOperator(`lazy-workflow: no se pudo ejecutar infra-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`);
+      reportFailure(
+        options.hu !== null && (error instanceof InfrastructureAuthenticationRequiredError || isAuthenticationError(error))
+          ? "infrastructure-authentication-required"
+          : "delivery-failure",
+        "verifying",
+        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
+        `lazy-workflow: no se pudo ejecutar infra-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`,
+      );
       return 1;
     }
   }
 
   private async runArchitectureReview(options: CliOptions): Promise<number> {
     if (!this.sagNormsService.loadArchitectureReview) {
-      reportOperator("lazy-workflow: el servicio SAG no soporta architecture-review-sag");
+      reportFailure("delivery-failure", "reviewing", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta architecture-review-sag");
       return 1;
     }
     try {
@@ -4046,7 +4141,12 @@ export class LazyWorkflowCli {
       }, null, 2));
       return 0;
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`);
+      reportFailure(
+        "delivery-failure",
+        "reviewing",
+        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
+        `lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`,
+      );
       return 1;
     }
   }
@@ -4087,14 +4187,14 @@ export class LazyWorkflowCli {
 
   private async runTicketRead(command: string, options: CliOptions): Promise<number> {
     if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-      reportOperator(`${command} requiere --ticket <id> con un entero positivo`);
+      reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
       return 1;
     }
     const ticket = options.ticket;
     const needsHu = command === "ticket-info" || command === "ticket-branch-info"
       || command === "ticket-pr-info" || command === "ticket-completion-info";
     if (needsHu && !isValidHu(options.hu)) {
-      reportOperator(`${command} requiere --hu <id>`);
+      reportAzureFailure("argument-error", "validating", options, `${command} requiere --hu <id>`);
       return 1;
     }
     try {
@@ -4138,7 +4238,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       return 0;
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo consultar ${command} (${errorMessage(error)})`);
+      reportAzureFailure("tracker-read-failure", "reading", options, `lazy-workflow: no se pudo consultar ${command} (${errorMessage(error)})`);
       return 1;
     }
   }
@@ -4156,8 +4256,13 @@ export class LazyWorkflowCli {
 
     await this.huInfoService.validateDirectTicketContext(options.hu!, options.ticket!);
     let info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    const manifest = await this.huInfoService.readCompletionManifest(options.manifest!, options.workingDirectory);
-    await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
+    let manifest: CompletionManifest;
+    try {
+      manifest = await this.huInfoService.readCompletionManifest(options.manifest!, options.workingDirectory);
+      await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
+    } catch (error) {
+      throw new AzureCoordinatedFailureError("manifest-not-verifiable", errorMessage(error), { cause: error });
+    }
 
     const unreconcilableGates = info.gates.unmet.filter((gate) =>
       gate === COMPLETION_GATE.realEffort
@@ -4168,7 +4273,11 @@ export class LazyWorkflowCli {
     }
 
     for (const evidence of manifest.evidence) {
-      await this.huInfoService.validateEvidenceFile(evidence.path, evidence.kind);
+      try {
+        await this.huInfoService.validateEvidenceFile(evidence.path, evidence.kind);
+      } catch (error) {
+        throw new AzureCoordinatedFailureError("evidence-not-verifiable", errorMessage(error), { cause: error });
+      }
     }
     const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
     const completionEvidenceMissing = !info.completionEvidence;
@@ -4176,7 +4285,11 @@ export class LazyWorkflowCli {
       throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
     if (textEvidence) {
-      await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path);
+      try {
+        await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path);
+      } catch (error) {
+        throw new AzureCoordinatedFailureError("evidence-not-verifiable", errorMessage(error), { cause: error });
+      }
     }
 
     if (info.canonicalPullRequest !== null && info.canonicalPullRequest !== options.pullRequest) {
@@ -4235,15 +4348,25 @@ export class LazyWorkflowCli {
     }
     await this.huInfoService.validateDirectTicketContext(hu, ticket);
     const info = await this.huInfoService.getTicketInfo(hu, ticket);
-    const manifest = await this.huInfoService.readCompletionManifest(manifestPath, workingDirectory);
-    await this.huInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
-    return manifest;
+    try {
+      const manifest = await this.huInfoService.readCompletionManifest(manifestPath, workingDirectory);
+      await this.huInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
+      return manifest;
+    } catch (error) {
+      throw new AzureCoordinatedFailureError("manifest-not-verifiable", errorMessage(error), { cause: error });
+    }
   }
 
   private async runAzureCode(options: CliOptions): Promise<number> {
-    const checkpoint = await this.checkpointStore.read(options.workingDirectory);
+    let checkpoint: StoredAutocodeCheckpoint | null;
+    try {
+      checkpoint = await this.checkpointStore.read(options.workingDirectory);
+    } catch (error) {
+      reportAzureFailure("checkpoint-unreadable", "recovery-checkpoint-read", options, `lazy-workflow: no se pudo leer el checkpoint Azure (${errorMessage(error)}); ejecución detenida.`);
+      return 1;
+    }
     if (options.session !== null && checkpoint === null) {
-      reportOperator("lazy-workflow: no existe un checkpoint para la sesión solicitada.");
+      reportAzureFailure("checkpoint-unreadable", "reconciling", options, "lazy-workflow: no existe un checkpoint para la sesión solicitada.");
       return 1;
     }
     return this.runVersionedAzureCode(options, checkpoint);
@@ -4315,15 +4438,15 @@ export class LazyWorkflowCli {
     };
 
     if (options.hu !== null && checkpoint.hu !== options.hu) {
-      reportOperator(`lazy-workflow: la HU ${options.hu} no coincide con la HU fijada ${checkpoint.hu}.`);
+      reportAzureFailure("argument-error", "reconciling", options, `lazy-workflow: la HU ${options.hu} no coincide con la HU fijada ${checkpoint.hu}.`, {}, "preserved");
       return 1;
     }
     if (options.session !== null && checkpoint.sessionId !== options.session) {
-      reportOperator("lazy-workflow: la sesión no coincide con el checkpoint fijado.");
+      reportAzureFailure("argument-error", "reconciling", options, "lazy-workflow: la sesión no coincide con el checkpoint fijado.", {}, "preserved");
       return 1;
     }
     if (options.session === null && checkpoint.sessionId !== null) {
-      reportOperator(`lazy-workflow: el ticket ${checkpoint.ticket ?? "fijado"} conserva una sesión activa; reanúdala con --session.`);
+      reportAzureFailure("argument-error", "reconciling", options, `lazy-workflow: el ticket ${checkpoint.ticket ?? "fijado"} conserva una sesión activa; reanúdala con --session.`, { ticket: checkpoint.ticket }, "preserved");
       return 1;
     }
     const hu = checkpoint.hu;
@@ -4337,14 +4460,14 @@ export class LazyWorkflowCli {
           `refs/heads/hu/${hu}`,
         );
         if (!integrationBranch) {
-          reportOperator(`lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`);
+          reportAzureFailure("branch-preparation-failure", "preflight-hu", options, `lazy-workflow: no se encontró la rama de integración para la HU ${hu}; ejecución detenida.`, {}, "preserved");
           return 1;
         }
       }
       checkpoint = { ...checkpoint, integrationBranch };
       if (checkpoint.phase === "preflight-hu") await markPhase("selected", { integrationBranch });
     } catch (error) {
-      reportOperator(`lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
+      reportAzureFailure("branch-preparation-failure", "preflight-hu", options, `lazy-workflow: no se pudo preparar la rama de integración de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
       return 1;
     }
 
@@ -4360,27 +4483,47 @@ export class LazyWorkflowCli {
           };
           await save();
           if (!checkpoint.manifestPath) {
-            reportOperator(`lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero falta su manifest; checkpoint sessionless conservado.`);
+            reportAzureFailure("manifest-not-verifiable", "reconciling", options, `lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero falta su manifest; checkpoint sessionless conservado.`, { ticket: checkpoint.ticket }, "preserved");
             return 1;
           }
         }
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo reconciliar el PR canónico del ticket ${checkpoint.ticket} (${errorMessage(error)}); ejecución detenida.`);
+        reportAzureFailure("pull-request-failure", "reconciling", options, `lazy-workflow: no se pudo reconciliar el PR canónico del ticket ${checkpoint.ticket} (${errorMessage(error)}); ejecución detenida.`, { ticket: checkpoint.ticket }, "preserved");
         return 1;
       }
     }
 
     if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null && !checkpoint.manifestPath) {
-      if (!this.huInfoService.getAutocodeContextForTicket) return 1;
-      const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
-      if (!context || !this.huInfoService.verifyTicketCompletion) {
-        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] });
+      if (!this.huInfoService.getAutocodeContextForTicket) {
+        reportAzureFailure("claim-verification-failure", "reconciling", options, `lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`, { ticket: checkpoint.ticket }, "preserved");
         return 1;
       }
-      const verification = await this.huInfoService.verifyTicketCompletion(context);
-      if (!requireVerifiedCompletion(checkpoint.ticket, verification, `lazy-workflow: el ticket ${checkpoint.ticket} todavía no cumple el cierre verificable.`)) return 1;
-      await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
-      await this.checkpointStore.clear(options.workingDirectory);
+      let context: AutocodeContext | null;
+      try {
+        context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
+      } catch (error) {
+        reportAzureFailure("claim-verification-failure", "reconciling", options, `lazy-workflow: no se pudo reconstruir el ticket ${checkpoint.ticket} (${errorMessage(error)}); ejecución detenida.`, { ticket: checkpoint.ticket }, "preserved");
+        return 1;
+      }
+      if (!context || !this.huInfoService.verifyTicketCompletion) {
+        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] }, options);
+        return 1;
+      }
+      let verification: TicketCompletionVerification | null;
+      try {
+        verification = await this.huInfoService.verifyTicketCompletion(context);
+      } catch (error) {
+        reportAzureFailure("deterministic-completion-failure", "completing", options, `lazy-workflow: no se pudo verificar el cierre del ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`, { ticket: checkpoint.ticket }, "preserved");
+        return 1;
+      }
+      if (!requireVerifiedCompletion(checkpoint.ticket, verification, `lazy-workflow: el ticket ${checkpoint.ticket} todavía no cumple el cierre verificable.`, options)) return 1;
+      try {
+        await this.cleanupCompletedTicketBranch(context, options.workingDirectory, verification.ticketBranch);
+        await this.checkpointStore.clear(options.workingDirectory);
+      } catch (error) {
+        reportAzureFailure(azureFailureKind(error, "ticket-branch-cleanup-failure"), "cleaning", options, `lazy-workflow: no se pudo limpiar el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`, { ticket: checkpoint.ticket }, "preserved");
+        return 1;
+      }
       return 0;
     }
 
@@ -4389,7 +4532,7 @@ export class LazyWorkflowCli {
       && this.huInfoService.getAutocodeContextForTicket && checkpoint.ticketBranch) {
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
       if (!context) {
-        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] });
+        reportUnmetCompletion(checkpoint.ticket, { ticketId: checkpoint.ticket, unmetGates: [COMPLETION_GATE.pinnedTicketContext] }, options);
         return 1;
       }
       try {
@@ -4471,7 +4614,7 @@ export class LazyWorkflowCli {
         await this.checkpointStore.clear(options.workingDirectory);
         return this.runVersionedAzureCode({ ...options, session: null }, null);
       } catch (error) {
-        reportOperator(`lazy-workflow: no se pudo reconciliar determinísticamente el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`);
+        reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "reconciling", options, `lazy-workflow: no se pudo reconciliar determinísticamente el ticket ${checkpoint.ticket} (${errorMessage(error)}); checkpoint conservado.`, { ticket: checkpoint.ticket }, "preserved");
         return 1;
       }
     }
@@ -4479,7 +4622,7 @@ export class LazyWorkflowCli {
     let context: AutocodeContext | null = null;
     if (checkpoint.ticket !== null) {
       if (!this.huInfoService.getAutocodeContextForTicket) {
-        reportOperator(`lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`);
+        reportAzureFailure("claim-verification-failure", "reconciling", options, `lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`, { ticket: checkpoint.ticket }, "preserved");
         return 1;
       }
       context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
@@ -4488,7 +4631,7 @@ export class LazyWorkflowCli {
       const state = await this.huInfoService.getAutocodeState(hu, integrationBranch);
       if (!state.context) {
         if (state.pending) {
-          reportOperator(`lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
+          reportAzureFailure("tracker-read-failure", "selecting", options, `lazy-workflow: no hay un ticket elegible todavía para la HU ${hu}.`);
           return 1;
         }
         reportOperator(`lazy-workflow: no hay tickets pendientes para la HU ${hu}.`);
@@ -4498,7 +4641,7 @@ export class LazyWorkflowCli {
       context = state.context;
     }
     if (!context || context.hu.id !== hu || context.integrationBranch !== integrationBranch || !integrationBranch) {
-      reportOperator(`lazy-workflow: no se pudo reconstruir el ticket fijado de la HU ${hu}.`);
+      reportAzureFailure("claim-verification-failure", "selecting", options, `lazy-workflow: no se pudo reconstruir el ticket fijado de la HU ${hu}.`, {}, "preserved");
       return 1;
     }
 
@@ -4527,15 +4670,15 @@ export class LazyWorkflowCli {
       : null;
     ticketBranch = ticketBranch ?? existingBranch?.branch ?? `refs/heads/ticket/${ticket}`;
     if (existingBranch?.integrationBranch !== null && existingBranch?.integrationBranch !== undefined && existingBranch.integrationBranch !== integrationBranch) {
-      reportOperator(`lazy-workflow: la rama de integración del ticket ${ticket} no coincide con la HU fijada; ejecución detenida.`);
+      reportAzureFailure("branch-preparation-failure", "started", options, `lazy-workflow: la rama de integración del ticket ${ticket} no coincide con la HU fijada; ejecución detenida.`, { ticket }, "preserved");
       return 1;
     }
     if (checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
-      reportOperator(`lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      reportAzureFailure("manifest-mismatch", "reconciling", options, `lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`, { ticket }, "preserved");
       return 1;
     }
     if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch !== ticketBranch) {
-      reportOperator(`lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`);
+      reportAzureFailure("manifest-mismatch", "reconciling", options, `lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`, { ticket }, "preserved");
       return 1;
     }
     await markPhase("started", { ticketBranch });
@@ -4725,11 +4868,11 @@ export class LazyWorkflowCli {
               await this.checkpointStore.clear(options.workingDirectory);
               return this.runVersionedAzureCode({ ...options, session: null }, null);
             } catch (error) {
-              reportOperator(`lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`);
+              reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "reconciling", options, `lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`, { ticket }, "preserved");
               return 1;
             }
           }
-          reportOperator(`lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`);
+          reportAzureFailure("deterministic-completion-failure", "completing", options, `lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`, { ticket }, "preserved");
           return 1;
         }
         if (execution.failed) throw new Error(`la sesión ${options.cli} termino con error`);
@@ -4739,10 +4882,10 @@ export class LazyWorkflowCli {
         if (error instanceof AgentSessionNotFoundError || error instanceof AgentSessionCloseError) {
           checkpoint = { ...checkpoint, phase: "reconciling", sessionId: null, activeSince: null, intent: null };
           await save();
-          reportOperator(`lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`);
+          reportAzureFailure("session-failure", "reconciling", options, `lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`, { ticket, sessionId: error.sessionId }, "preserved");
           return 1;
         }
-        reportOperator(`lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`);
+        reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`, { ticket }, "preserved");
         await this.retryTimer.wait(10_000);
         resumePrompt = options.prompt;
       }
@@ -4754,7 +4897,11 @@ export class LazyWorkflowCli {
     workingDirectory: string,
     verifiedTicketBranch: string,
   ): Promise<void> {
-    await this.ticketBranchCleaner.deleteTicketBranch(verifiedTicketBranch, context.integrationBranch, workingDirectory);
+    try {
+      await this.ticketBranchCleaner.deleteTicketBranch(verifiedTicketBranch, context.integrationBranch, workingDirectory);
+    } catch (error) {
+      throw new AzureCoordinatedFailureError("ticket-branch-cleanup-failure", errorMessage(error), { cause: error });
+    }
     reportOperator(`lazy-workflow: rama completada ${verifiedTicketBranch} eliminada local y remotamente.`);
   }
 }

@@ -429,10 +429,11 @@ other.
 The record shape splits into **labels** — flattened at the top level, the
 low-cardinality axes a dashboard groups by: `schema_version`, `run_id`, `ts`,
 `severity`, `event`, `command`, `workflow`, `provider`, `cli`, `model`,
-`variant`, and — where they apply — `failure_kind`, `phase`, `outcome`,
+`variant`, and — where they apply — `failure_kind`, `phase`, `checkpoint`, `outcome`,
 `exit_code`, `duration_ms` — and a nested **`context`** carrying the
 high-cardinality identifiers a single run has: `issue`, `ticket`, `hu`,
-`repository`, `session_id`, `branch`. `message` is the human line and is never
+`repository`, `session_id`, `branch`. A failure that leaves durable work for
+reconciliation carries `checkpoint: "preserved"`. `message` is the human line and is never
 what a dashboard groups by.
 
 Writing is best-effort and isolated from the run it describes: a full disk, a
