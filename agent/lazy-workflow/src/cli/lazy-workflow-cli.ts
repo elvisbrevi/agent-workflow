@@ -34,6 +34,7 @@ import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultRe
 import { createReporter, type Reporter, type ReporterRunLogSink } from "../output/reporter.ts";
 import { reportFailure, type FailureKind } from "../output/failure-kind.ts";
 import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../output/run-log.ts";
+import { registerInterruptionHandlers, type InterruptionCheckpointProbe, type InterruptionProcess } from "../output/run-interruption.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
@@ -550,6 +551,12 @@ export class LazyWorkflowCli {
      * socket or a terminal (ADR-0027).
      */
     private readonly createQuestionChannelFn: QuestionChannelFactory = createQuestionChannel,
+    /**
+     * The process a run installs its interruption handlers on. Injected like
+     * every other boundary, so a test drives a signal or an unhandled
+     * rejection without touching the real process running the suite.
+     */
+    private readonly processSignals: InterruptionProcess = process as unknown as InterruptionProcess,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -722,6 +729,44 @@ export class LazyWorkflowCli {
    * (ADR-0029). It wraps `dispatchParsed` rather than threading through its many
    * return paths, so the record contract stays correct without touching them.
    */
+  /**
+   * A best-effort read of whatever checkpoint this run's own scope already
+   * writes to disk, so an interruption record names what needs reconciling
+   * instead of just saying a checkpoint might exist. Every store it reads is
+   * one this class already owns for its normal work; nothing new is written
+   * here, and a store that has nothing for this run, or fails to read, is
+   * silently `null` rather than a reason to fail the interruption record.
+   */
+  private describeInterruptionCheckpoint(options: CliOptions): InterruptionCheckpointProbe {
+    const workingDirectory = options.workingDirectory.split(",")[0]!.trim();
+    const isWorkspace = options.workingDirectory.includes(",");
+    return async () => {
+      try {
+        if (isWorkspace) {
+          if (options.hu !== null) {
+            const checkpoint = await this.azureWorkspaceCheckpoint.read(workingDirectory);
+            return checkpoint ? `azure-workspace hu ${checkpoint.hu} ticket ${checkpoint.ticket} (phase ${checkpoint.phase})` : null;
+          }
+          const checkpoint = await this.githubWorkspaceCheckpoint.read(workingDirectory);
+          return checkpoint ? `github-workspace issue ${checkpoint.issue} (phase ${checkpoint.phase})` : null;
+        }
+        if (this.githubCheckpointStore) {
+          const checkpoint = await this.githubCheckpointStore.read(workingDirectory);
+          if (checkpoint) return `github issue ${checkpoint.issue} (phase ${checkpoint.phase})`;
+        }
+        const azureCheckpoint = await this.checkpointStore.read(workingDirectory);
+        if (azureCheckpoint) {
+          return "phase" in azureCheckpoint
+            ? `azure hu ${azureCheckpoint.hu} ticket ${azureCheckpoint.ticket} (phase ${azureCheckpoint.phase})`
+            : `azure hu ${azureCheckpoint.hu} ticket ${azureCheckpoint.ticket}`;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+  }
+
   private async runParsed(options: CliOptions, args: string[]): Promise<number> {
     const runLog = createRunLogSink({
       path: resolveRunLogPath({ logFile: options.logFile, noLogFile: options.noLogFile }),
@@ -755,7 +800,17 @@ export class LazyWorkflowCli {
     const startedAt = Date.now();
     runLog.write({ ...base, event: "run.started", severity: "info", message: `lazy-workflow ${options.command} iniciado` });
 
+    const teardownInterruptionHandlers = registerInterruptionHandlers({
+      runLog,
+      base,
+      startedAt,
+      describeCheckpoint: this.describeInterruptionCheckpoint(options),
+      errorMessage,
+      process: this.processSignals,
+    });
+
     const finish = (exitCode: number, message: string): number => {
+      teardownInterruptionHandlers();
       runLog.write({
         ...base,
         event: "run.finished",

@@ -25,7 +25,7 @@ export const DEFAULT_RUN_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 export type RunLogSeverity = "info" | "warn" | "error";
 export type RunLogEventKind = "run.started" | "run.finished" | "event";
-export type RunLogOutcome = "success" | "failure";
+export type RunLogOutcome = "success" | "failure" | "interrupted";
 
 /** High-cardinality identifiers of a single run; never labels (ADR-0029). */
 export interface RunLogContext {
