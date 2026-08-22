@@ -33,6 +33,7 @@ inside that directory rather than a skill directory.
 | Change what a run is permitted to execute with OpenCode | `agent/lazy-workflow/opencode/authority.json` |
 | Change what a run is permitted to execute with Claude Code | `agent/lazy-workflow/claudecode/<profile>.json` |
 | Change which profile a run gets, or where each CLI reads its authority | `agent/lazy-workflow/src/prompts/authority-profile.ts` |
+| Change how a run powers the machine down when it ends (`--off`) | `agent/lazy-workflow/src/system/shutdown-service.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
 | Change installation or symlink behavior | `install.sh` and `tests/install_test.sh` |
 | Change user-facing orientation | `README.md` and `agent/lazy-workflow/README.md` |
