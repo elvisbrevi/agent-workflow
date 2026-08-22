@@ -211,9 +211,13 @@ by driving the request in the browser Chrome MCP opens:
 ```
 
 Several exchanges may share one file under a `captures` array, and the screenshot
-a capture names must travel in the same manifest as `screen` evidence. The shape
-is checked by `ticket-manifest-set`, so a file that cannot be laid out is refused
-while the session that wrote it is still alive to fix it.
+a capture names must travel in the same manifest as `screen` evidence, written
+beside the capture file: the two are paired by file name within their directory,
+so two repositories of one delivery can both call theirs `pantalla.png`. The
+shape is checked by `ticket-manifest-set`, where the session that wrote the file
+is still alive to fix it; evidence written before the shape existed still
+publishes, as plain JSON, so a manifest already on disk never becomes
+unpublishable.
 
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not

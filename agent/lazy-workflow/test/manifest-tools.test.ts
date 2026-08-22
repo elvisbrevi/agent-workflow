@@ -173,6 +173,16 @@ describe("ticket-manifest-set", () => {
     expect(await Bun.file(manifestPath()).exists()).toBeFalse();
   });
 
+  test("un http-json libre sigue siendo publicable, aunque ya no sea escribible", async () => {
+    // La forma se exige al escribir, donde la sesión puede rehacer el archivo. Exigirla también al
+    // publicar dejaba sin salida a toda entrega cuyo manifest es anterior a la forma, en una
+    // compuerta a la que se llega con los PR ya mergeados; esa evidencia se publica como JSON.
+    const evidence = await evidenceFile("pago-endpoint.json", '{\n  "ok": true\n}\n');
+    const service = new AzureTicketInfoService(async () => "", gitRunner());
+
+    await expect(service.validateEvidenceFile(evidence, "http-json")).resolves.toBeUndefined();
+  });
+
   test("una captura que nombra una pantalla no declarada no entra al manifest", async () => {
     // La captura publicada muestra la imagen del navegador que hizo la petición: si esa imagen no
     // viaja como evidencia del mismo manifest, el ticket publica un intercambio sin su prueba.

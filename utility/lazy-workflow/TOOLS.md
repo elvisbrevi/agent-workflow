@@ -128,10 +128,12 @@ Five rules govern these:
   `body`) and a `response` (`status`, optional `statusText`, `headers`, optional
   `body`); several exchanges may share one file under a `captures` array. Take it
   by driving the request in the browser Chrome MCP opens, and pass that
-  screenshot in the same manifest as `screen` evidence. The coordinator renders
-  those fields into the ticket's completion-evidence field as endpoint, header
-  tables, pretty-printed bodies and the screenshot beside them, so a file in any
-  other shape is refused when the manifest is written (ADR-0031).
+  screenshot in the same manifest as `screen` evidence, written beside the
+  capture file — the two are paired by file name within their directory. The
+  coordinator renders those fields into the ticket's completion-evidence field as
+  endpoint, header tables, pretty-printed bodies and the screenshot beside them,
+  so a file in any other shape is refused when the manifest is written — and only
+  then, so a manifest already on disk stays publishable (ADR-0031).
 
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It

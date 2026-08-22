@@ -76,7 +76,9 @@ export const HTTP_EVIDENCE_INSTRUCTION = [
   "put several exchanges in one file under a `captures` array when they belong together.",
   "The coordinator publishes those fields as the endpoint, header tables and pretty-printed bodies of the ticket,",
   "with the screenshot shown beside them, so a file in any other shape is refused when the manifest is written.",
-  `The screenshot a capture names must travel in the same manifest as ${SCREEN_EVIDENCE_KIND} evidence.`,
+  `The screenshot a capture names must travel in the same manifest as ${SCREEN_EVIDENCE_KIND} evidence,`,
+  "written beside the capture file itself: the two are paired by file name within their directory,",
+  "so a screenshot somewhere else is a screenshot no capture can show.",
   "Never persist credentials, tokens, cookies, authorization header values, or other secrets: name the header and redact its value.",
 ].join(" ");
 

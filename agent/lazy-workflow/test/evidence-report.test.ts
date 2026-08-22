@@ -126,6 +126,28 @@ describe("documento Markdown de GitHub", () => {
     expect(markdown).toContain(`![${SCREENSHOT_NAME}](https://azure.test/attachments/1?fileName=pantalla.png)`);
   });
 
+  test("cada captura muestra la pantalla que vive junto a ella, no la homónima de otro repositorio", () => {
+    // Dos repositorios de una entrega transversal llaman `pantalla.png` a la suya: emparejar por
+    // nombre publicaba el navegador de uno al lado de la petición del otro.
+    const otra = { ...HTTP_CAPTURE, title: "Segundo repositorio" };
+    const rendered = renderEvidenceMarkdown({
+      ...documentInput,
+      files: [
+        { name: `api/${SCREENSHOT_NAME}`, path: `api/${SCREENSHOT_NAME}`, kind: "screen", imageUrl: "https://test/api.png" },
+        { name: "api/captura.json", path: "api/captura.json", kind: "http-json", content: HTTP_CAPTURE_BODY },
+        { name: `web/${SCREENSHOT_NAME}`, path: `web/${SCREENSHOT_NAME}`, kind: "screen", imageUrl: "https://test/web.png" },
+        { name: "web/captura.json", path: "web/captura.json", kind: "http-json", content: `${JSON.stringify(otra, null, 2)}\n` },
+      ],
+    });
+
+    const [antesDeWeb, despuesDeWeb] = rendered.split("#### Segundo repositorio") as [string, string];
+    expect(antesDeWeb).toContain("https://test/api.png");
+    expect(antesDeWeb).not.toContain("https://test/web.png");
+    expect(despuesDeWeb).toContain("https://test/web.png");
+    // Ambas quedaron dentro de su intercambio: no sobra ninguna para la galería del final.
+    expect(rendered).not.toContain("### Capturas de pantalla");
+  });
+
   test("una celda con barras no puede cerrar la fila que la lleva", () => {
     const rendered = renderEvidenceMarkdown({
       ...documentInput,
@@ -160,12 +182,15 @@ describe("documento Markdown de GitHub", () => {
 
 describe("entrega GitHub", () => {
   /** A repository with the evidence a manifest names, and a `gh` that records what it was told. */
-  function delivery(calls: string[][]) {
+  function delivery(calls: string[][], repositoryFails = false) {
     const root = mkdtempSync(join(tmpdir(), "lazy-workflow-github-evidence-"));
     const service = new GitHubDeliveryService(
       async (args) => {
         calls.push(args);
-        if (args[0] === "repo") return JSON.stringify({ nameWithOwner: "elvisbrevi/agent-workflow", defaultBranchRef: { name: "main" } });
+        if (args[0] === "repo") {
+          if (repositoryFails) throw new Error("gh repo view no responde");
+          return JSON.stringify({ nameWithOwner: "elvisbrevi/agent-workflow", defaultBranchRef: { name: "main" } });
+        }
         if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ state: args.includes("state,comments") ? "OPEN" : "CLOSED", comments: [] });
         return "";
       },
@@ -204,6 +229,9 @@ describe("entrega GitHub", () => {
       expect(body).toContain(
         `![docs/evidence/${SCREENSHOT_NAME}](https://github.com/elvisbrevi/agent-workflow/blob/${"c".repeat(40)}/docs/evidence/${SCREENSHOT_NAME}?raw=1)`,
       );
+      // Dentro de su propio intercambio, no en la galería suelta del final.
+      expect(body).toContain("**Captura del navegador · docs/evidence/pantalla.png**");
+      expect(body).not.toContain("### Capturas de pantalla");
       expect(body).toContain("Integra la reconciliación de pagos");
       // El marcador es lo que una repetición reconoce: nunca se pierde detrás de la evidencia.
       expect(body).toContain(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
@@ -245,6 +273,34 @@ describe("entrega GitHub", () => {
       expect(body).toContain("`POST` **/payment-attempts/42/reconcile** → **200 OK**");
       expect(body).toContain("evidencia truncada");
       expect(body).toContain(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("un repositorio que no se puede resolver deja el marcador, no imágenes rotas", async () => {
+    // Resolver el repositorio fuera del respaldo publicaba un comentario cuyas imágenes apuntaban
+    // a `https://github.com//blob/...` y quedaban rotas para siempre.
+    const calls: string[][] = [];
+    const { root, service } = delivery(calls, true);
+    try {
+      await Bun.write(join(root, `docs/evidence/${SCREENSHOT_NAME}`), SCREENSHOT_BYTES);
+
+      await service.closeIssue(201, 12, "c".repeat(40), root, {
+        directory: root,
+        manifest: {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          commit: "a".repeat(40),
+          validation: [{ command: "bun test", result: "198 pass" }],
+          clean: true,
+          summary: "Integra la reconciliación de pagos",
+          evidence: [{ path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) }],
+        },
+      });
+
+      const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
+      expect(comment?.[comment.indexOf("--body") + 1]).toBe(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
