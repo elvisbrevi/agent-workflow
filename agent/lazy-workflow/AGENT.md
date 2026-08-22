@@ -38,5 +38,11 @@ cannot settle alone, and the coordinator carries them to the operator and
 resumes that same session with the answers. An expired round takes the answers
 the session recommended, so an unattended run behaves exactly as it always did.
 
+Any command may end by powering the machine down: `--off '<sudo password>'`
+(also `-off`) shuts down when the run finishes, whatever its outcome, except
+when it died on an argument error. `--off-delay` sets the cancellable grace
+period, and `LAZY_WORKFLOW_OFF_PASSWORD` supplies the password without leaving
+it in `ps` or the shell history.
+
 Each run also carries an agent authority profile whose permission deny rules
 OpenCode enforces, so the boundary does not rest on prompt prose.

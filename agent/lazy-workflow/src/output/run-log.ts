@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { FailureKind } from "./failure-kind.ts";
 
-export const RUN_LOG_SCHEMA_VERSION = 1;
+export const RUN_LOG_SCHEMA_VERSION = 2;
 export const RUN_LOG_FILENAME = "runs.jsonl";
 /** 5 MiB: generous for a laptop, small enough that an unbounded file never becomes the reason logging gets switched off. */
 export const DEFAULT_RUN_LOG_MAX_BYTES = 5 * 1024 * 1024;
