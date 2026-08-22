@@ -627,4 +627,77 @@ describe("buildCli parser", () => {
       expect(parse(["code", "--log-file", "/tmp/runs.jsonl", "--no-log-file"]).kind).toBe("error");
     });
   });
+
+  describe("apagado del equipo (--off)", () => {
+    // Sin entorno propio, un LAZY_WORKFLOW_OFF_PASSWORD de la maquina que corre
+    // la suite cambiaria lo que estas pruebas afirman.
+    const parseOff = (args: string[], env: NodeJS.ProcessEnv = {}): CliParseResult =>
+      captureParse(buildCli(undefined, env), args);
+
+    test("sin --off no hay apagado declarado", () => {
+      const result = parseOff(["code"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toBeNull();
+    });
+
+    test("--off <contrasena> declara el apagado con la gracia por defecto", () => {
+      const result = parseOff(["code", "--off", "MiPassword123"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toEqual({ password: "MiPassword123", delaySeconds: 15 });
+    });
+
+    test("-off <contrasena> es la misma forma con un solo guion", () => {
+      const result = parseOff(["code", "-off", "MiPassword123"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toEqual({ password: "MiPassword123", delaySeconds: 15 });
+    });
+
+    test("--off sin valor toma la contrasena de LAZY_WORKFLOW_OFF_PASSWORD", () => {
+      const result = parseOff(["code", "--off"], { LAZY_WORKFLOW_OFF_PASSWORD: "desde-el-entorno" });
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toEqual({ password: "desde-el-entorno", delaySeconds: 15 });
+    });
+
+    test("--off sin valor ni entorno apaga con un sudo que no pide contrasena", () => {
+      const result = parseOff(["code", "--off"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toEqual({ password: null, delaySeconds: 15 });
+    });
+
+    test("--off no se traga el flag siguiente como contrasena", () => {
+      const result = parseOff(["code", "--off", "--quiet"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.shutdown).toEqual({ password: null, delaySeconds: 15 });
+      expect(result.options.quiet).toBeTrue();
+    });
+
+    test("--off-delay acota la gracia y admite 0", () => {
+      const inmediato = parseOff(["code", "--off", "clave", "--off-delay", "0"]);
+      expect(inmediato.kind).toBe("options");
+      if (inmediato.kind !== "options") return;
+      expect(inmediato.options.shutdown).toEqual({ password: "clave", delaySeconds: 0 });
+
+      const largo = parseOff(["code", "--off", "clave", "--off-delay", "120"]);
+      expect(largo.kind).toBe("options");
+      if (largo.kind !== "options") return;
+      expect(largo.options.shutdown).toEqual({ password: "clave", delaySeconds: 120 });
+    });
+
+    test("--off-delay sin --off es un error de argumentos", () => {
+      const result = parseOff(["code", "--off-delay", "30"]);
+      expect(result.kind).toBe("error");
+      if (result.kind !== "error") return;
+      expect(result.message).toContain("--off-delay requiere --off");
+    });
+
+    test("--off-delay negativo es un error de argumentos", () => {
+      expect(parseOff(["code", "--off", "clave", "--off-delay", "-5"]).kind).toBe("error");
+    });
+  });
 });

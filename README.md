@@ -166,6 +166,22 @@ is in [`agent/lazy-workflow/README.md`](agent/lazy-workflow/README.md#fallback-c
 and a runnable example of every lazy-workflow command is in
 [Practical examples](agent/lazy-workflow/README.md#practical-examples).
 
+Any command can also power the machine down when it ends, with a global
+`--off '<sudo password>'` (`-off` works too), so an overnight run does not leave
+the machine awake until morning:
+
+```bash
+bun run main.ts code --off 'MiPassword123' --working-directory /path/to/repository
+```
+
+The run shuts down whatever its outcome, except when it died on an argument
+error — there the operator is still at the keyboard. The shutdown announces
+itself and waits `--off-delay` seconds (15 by default) first, so Ctrl-C cancels
+it. The password reaches `sudo -S shutdown -h now` through stdin, and
+`LAZY_WORKFLOW_OFF_PASSWORD` keeps it out of `ps` and the shell history
+altogether: with that variable set, `--off` takes no value. The details are in
+[Unattended shutdown](agent/lazy-workflow/README.md#unattended-shutdown).
+
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
 remote SAG `master` branch. The selected repository must contain an explicit
 `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt

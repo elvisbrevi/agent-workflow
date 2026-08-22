@@ -253,7 +253,7 @@ describe("createRunLogSink", () => {
  */
 describe("contrato publicado del run log (issue #268)", () => {
   test("RUN_LOG_SCHEMA_VERSION esta fijado", () => {
-    expect(RUN_LOG_SCHEMA_VERSION).toBe(1);
+    expect(RUN_LOG_SCHEMA_VERSION).toBe(2);
   });
 
   test("el conjunto exacto de labels de un registro completo no cambia sin querer", () => {
@@ -352,6 +352,7 @@ describe("contrato publicado del run log (issue #268)", () => {
       "infrastructure-authentication-required": "error",
       "run-interrupted-signal": "error",
       "run-interrupted-failure": "error",
+      "shutdown-failure": "error",
     });
   });
 });

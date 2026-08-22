@@ -75,6 +75,7 @@ import {
   type GitHubWorkspaceUnit,
 } from "../github/github-workspace-checkpoint.ts";
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
+import { SudoSystemShutdown, type SystemShutdown } from "../system/shutdown-service.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
   markerResumePrompt,
@@ -568,6 +569,12 @@ export class LazyWorkflowCli {
      * rejection without touching the real process running the suite.
      */
     private readonly processSignals: InterruptionProcess = process as unknown as InterruptionProcess,
+    /**
+     * How the machine is powered off when a run declares `--off`. Injected like
+     * every other boundary, so a test verifies the decision without shutting
+     * down the machine running the suite.
+     */
+    private readonly systemShutdown: SystemShutdown = new SudoSystemShutdown(),
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -816,8 +823,13 @@ export class LazyWorkflowCli {
       },
     });
     const base = runLogBase(options, await this.resolveRunLogProvider(options));
+    // `--off` never shuts down a run that died on an invalid argument, and the
+    // one place every failure already passes through — without threading the
+    // dozens of returns of `dispatchParsed` — is the sink the Reporter feeds.
+    let argumentError = false;
     const reporterRunLog: ReporterRunLogSink = {
       event(severity, message, detail) {
+        if (detail?.failureKind === "argument-error") argumentError = true;
         runLog.write({
           ...base,
           event: "event",
@@ -874,6 +886,9 @@ export class LazyWorkflowCli {
 
     try {
       const exitCode = await this.dispatchParsed(options, args);
+      // Before `finish`, so the shutdown and whatever happens to it stay inside
+      // the run that asked for it: `run.finished` is still the last record.
+      await this.shutDownSystem(options, argumentError);
       return finish(exitCode, `lazy-workflow ${options.command} finalizado (${exitCode === 0 ? "success" : "failure"})`);
     } catch (error) {
       reportFailure(
@@ -882,6 +897,7 @@ export class LazyWorkflowCli {
         base.context,
         `lazy-workflow ${options.command} termino con excepcion (${errorMessage(error)})`,
       );
+      await this.shutDownSystem(options, argumentError);
       finish(1, `lazy-workflow ${options.command} finalizado con excepcion (${errorMessage(error)})`);
       throw error;
     }
@@ -1400,6 +1416,43 @@ export class LazyWorkflowCli {
     }
   }
 
+  /**
+   * The shutdown `--off` declares: the last action of an unattended run,
+   * whatever its outcome, because whoever asked for it is no longer at the
+   * machine (ADR-0030).
+   *
+   * A run that died on an invalid argument is the exception: there the operator
+   * is at the keyboard, and powering their machine off for a typo is never what
+   * was asked. The grace period is the second way out — the interruption
+   * handlers are still installed while it runs, so Ctrl-C cancels the shutdown
+   * and leaves the run recorded as interrupted.
+   *
+   * None of this changes the run's own result: a shutdown that fails is reported
+   * like any other failure and the run ends exactly as it was going to.
+   */
+  private async shutDownSystem(options: CliOptions, argumentError: boolean): Promise<void> {
+    const request = options.shutdown;
+    if (!request || argumentError) return;
+    const context = { hu: options.hu, issue: options.issue, repository: options.workingDirectory };
+    getDefaultReporter().warn(
+      request.delaySeconds > 0
+        ? `lazy-workflow: --off apagará el equipo en ${request.delaySeconds}s (Ctrl-C cancela)`
+        : "lazy-workflow: --off apaga el equipo ahora",
+      { phase: "shutting-down", context },
+    );
+    if (request.delaySeconds > 0) await this.retryTimer.wait(request.delaySeconds * 1000);
+    try {
+      await this.systemShutdown.shutdown(request.password);
+    } catch (error) {
+      reportFailure(
+        "shutdown-failure",
+        "shutting-down",
+        context,
+        `lazy-workflow: no se pudo apagar el equipo (${errorMessage(error)})`,
+      );
+    }
+  }
+
   private applyReporter(options: ParsedCliOptions, runLog?: ReporterRunLogSink): void {
     const reporter = this.createReporterFn({
       verbose: options.verbose,
@@ -1440,6 +1493,9 @@ export class LazyWorkflowCli {
       // channel's own address is announced when it opens, since an ephemeral
       // port does not exist yet while the panel is being drawn.
       ...(options.interview.channel === "off" ? [] : [`entrevista ${options.interview.channel}`]),
+      // A run that will power the machine off says so in the panel, not only
+      // once there is nothing left to do.
+      ...(options.shutdown ? [`apagado    al terminar${options.shutdown.delaySeconds > 0 ? ` (+${options.shutdown.delaySeconds}s)` : ""}`] : []),
       `directorio ${options.workingDirectory}`,
       `salida     ${verbosity}`,
     ]);

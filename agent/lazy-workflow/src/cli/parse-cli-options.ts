@@ -4,6 +4,7 @@ import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 import { AGENT_CLI_BINARIES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
+import type { ShutdownRequest } from "../system/shutdown-service.ts";
 import { DETERMINISTIC_TOOL_COMMANDS, DETERMINISTIC_TOOL_FORMS } from "./tool-commands.ts";
 
 /** One step of a declared fallback chain: the primary is rung zero, implicitly. */
@@ -80,6 +81,8 @@ export interface CliOptions {
   logFile: string | null;
   /** Disables the run log outright; rejected together with `--log-file`. */
   noLogFile: boolean;
+  /** `--off`: apaga el equipo al terminar el run; null cuando el operador no lo pidio. */
+  shutdown: ShutdownRequest | null;
 }
 
 export type CliParseResult =
@@ -113,6 +116,10 @@ const DEFAULT_INTERVIEW_HOST = "127.0.0.1";
 const DEFAULT_INTERVIEW_PORT = 0;
 const DEFAULT_FALLBACK_WAIT_SECONDS = 300;
 const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
+/** The default grace of `--off`: long enough for a present operator to cancel with Ctrl-C, short for one who already left. */
+const DEFAULT_OFF_DELAY_SECONDS = 15;
+/** Where the sudo password comes from when `--off` is declared without a value, so it never reaches `ps` or the shell history. */
+const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
 const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
@@ -232,8 +239,20 @@ const nonNegativeIntegerOption = (name: string, flag: string, describe: string, 
   },
 });
 
-export function buildCli(binaryPresent: BinaryProbe = binaryOnPath): CliParser {
-  return (rawArgs, hooks) => {
+/**
+ * `-off` is the form the operator types, but yargs reads a single dash carrying
+ * several letters as a group of short flags (`-o -f -f`). Normalizing the token
+ * before parsing keeps that form valid without loosening the parser anywhere
+ * else.
+ */
+const SINGLE_DASH_ALIASES = new Set(["-off", "-off-delay"]);
+
+const normalizeSingleDashAliases = (args: string[]): string[] =>
+  args.map((arg) => (SINGLE_DASH_ALIASES.has(arg.split("=")[0] ?? "") ? `-${arg}` : arg));
+
+export function buildCli(binaryPresent: BinaryProbe = binaryOnPath, env: NodeJS.ProcessEnv = process.env): CliParser {
+  return (declaredArgs, hooks) => {
+    const rawArgs = normalizeSingleDashAliases(declaredArgs);
     const command = rawArgs[0];
     if (typeof command !== "string" || !SUPPORTED_COMMANDS.has(command)) {
       const output = renderHelp(buildParserForHelp(rawArgs.slice(1)));
@@ -275,7 +294,7 @@ export function buildCli(binaryPresent: BinaryProbe = binaryOnPath): CliParser {
     // Reading the options can still reject a malformed value (`--field` pairs),
     // and that is an argument error like any other yargs raises.
     try {
-      return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1), binaryPresent) };
+      return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1), binaryPresent, env) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       hooks.onError(message, 1);
@@ -317,6 +336,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
     .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
+    .group(["off", "off-delay"], "Apagado del equipo:")
     .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
     .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
     .option("cli", {
@@ -399,6 +419,13 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
     .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
     .option("log-file", stringOption("log-file", "--log-file", "Ruta del run log JSON Lines; tiene precedencia sobre LAZY_WORKFLOW_LOG_FILE y el default. --no-log-file lo deshabilita (no se declara aqui: ver Notas)."))
+    // No `requiresArg`: a bare `--off` is the form that takes its password from
+    // LAZY_WORKFLOW_OFF_PASSWORD, or none at all when sudo does not need one.
+    .option("off", {
+      type: "string",
+      describe: `Apaga el equipo al terminar el run; el valor es la contrasena de sudo. Sin valor toma ${OFF_PASSWORD_ENV} o un sudo sin contrasena. Tambien se acepta -off <contrasena>.`,
+    })
+    .option("off-delay", nonNegativeIntegerOption("off-delay", "--off-delay", "Segundos de gracia antes del apagado; 0 apaga de inmediato.", DEFAULT_OFF_DELAY_SECONDS))
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
 }
 
@@ -518,7 +545,7 @@ function parseFields(value: unknown): Array<{ referenceName: string; value: stri
   });
 }
 
-function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPresent: BinaryProbe): CliOptions {
+function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPresent: BinaryProbe, env: NodeJS.ProcessEnv): CliOptions {
   const parsed = argv as Record<string, unknown>;
   const asNumber = (key: string): number | null => {
     const value = parsed[key];
@@ -604,7 +631,35 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     noColor: parsed["color"] === false,
     logFile,
     noLogFile,
+    shutdown: readShutdown(parsed, rawArgs, asNumber, env),
   };
+}
+
+/**
+ * The shutdown `--off` declares. The password travels as a value because that is
+ * how the operator asks for it, but declaring the flag without one takes it from
+ * `LAZY_WORKFLOW_OFF_PASSWORD` — the only form that leaves it out of `ps` and
+ * the shell history — and, with that unset too, the shutdown runs through a sudo
+ * that does not need one. `--off-delay` without `--off` is a typo: it bounds a
+ * grace period that will never exist, and is rejected like any other invalid
+ * argument.
+ */
+function readShutdown(
+  parsed: Record<string, unknown>,
+  rawArgs: string[],
+  asNumber: (key: string) => number | null,
+  env: NodeJS.ProcessEnv,
+): ShutdownRequest | null {
+  if (!flagSupplied(rawArgs, "--off")) {
+    if (flagSupplied(rawArgs, "--off-delay")) {
+      throw new Error("--off-delay requiere --off: sin apagado no hay gracia que acotar");
+    }
+    return null;
+  }
+  const declared = typeof parsed["off"] === "string" ? parsed["off"] : "";
+  const fromEnv = env[OFF_PASSWORD_ENV] ?? "";
+  const password = declared.length > 0 ? declared : fromEnv.length > 0 ? fromEnv : null;
+  return { password, delaySeconds: asNumber("off-delay") ?? DEFAULT_OFF_DELAY_SECONDS };
 }
 
 /**
@@ -669,6 +724,8 @@ function renderHelp(parser: YargsInstance): string {
     "  herramientas deterministas: no abren sesion, imprimen su resultado como JSON y son las mismas que usa el workflow",
     "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
     "  --no-log-file: deshabilita el run log de este run; no puede combinarse con --log-file",
+    "  --off: apaga el equipo cuando el run termina, con exito o con falla; un error de argumentos nunca apaga",
+    "  --off: la contrasena en la linea de comandos queda visible en ps y en el historial; " + OFF_PASSWORD_ENV + " la evita",
   ].join("\n");
 }
 

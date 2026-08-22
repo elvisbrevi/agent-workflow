@@ -66,6 +66,15 @@ record, so the durable state a run left behind — a preserved checkpoint above
 all — is never the only evidence that it stopped.
 _Avoid_: a silent exit, treating a preserved checkpoint as the record
 
+**Unattended shutdown**:
+The machine powering down because the run that asked for it ended. Declared
+globally with `--off <contrasena>`, it is the last action of an invocation and
+never a step of a workflow: it runs whatever the outcome was, except after an
+argument error, and it cannot change the exit code the run already earned
+(ADR-0030). The grace period it waits first is the operator's way out, not a
+timeout.
+_Avoid_: a shell chain that shuts down on any exit, a per-command flag
+
 **Deterministic tool**:
 An operation a workflow performs against Azure Boards, GitHub or git without
 opening a session. Every one of them is reachable as its own command, shares the
