@@ -5,6 +5,8 @@ import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type 
 import { writeVerifiedManifest } from "../manifest/verified-write.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
+import { renderEvidenceMarkdown, type EvidenceFile } from "../evidence/evidence-report.ts";
+import type { EvidenceKind } from "../azure/completion-manifest.ts";
 
 export interface GitHubReadyManifest {
   issue: number;
@@ -63,12 +65,12 @@ export interface GitHubDeliveryAdapter {
   readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
   writeManifest?(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
-  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string): Promise<GitHubPullRequest>;
+  createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string, manifest?: GitHubReadyManifest): Promise<GitHubPullRequest>;
   preparePullRequestReconciliation?(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<{ baseCommit: string }>;
   verifyPendingPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, workingDirectory: string): Promise<void>;
   verifyPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, reconciledCommit: string, workingDirectory: string): Promise<void>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
-  closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void>;
+  closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, manifest?: GitHubReadyManifest): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
 }
 
@@ -128,6 +130,34 @@ export function githubRepositoryFromRemote(remote: string): string | null {
 
 function referencesIssue(body: string, issue: number): boolean {
   return new RegExp(`(?:^|\\s)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${issue}(?!\\d)`).test(body);
+}
+
+/**
+ * A GitHub manifest names evidence files without naming their kind, because in this workflow the
+ * evidence lives in the repository and the file already says what it is. The extension is the only
+ * declaration there is, so it is the one the renderer reads.
+ */
+function githubEvidenceKind(path: string): EvidenceKind {
+  if (/\.(?:png|jpe?g|webp)$/i.test(path)) return "screen";
+  return /\.json$/i.test(path) ? "http-json" : "command-output";
+}
+
+/** Where a repository file can be shown from, pinned to the commit that carries it. */
+const blobUrl = (repository: string, commit: string, path: string): string =>
+  `https://github.com/${repository}/blob/${commit}/${path.split("/").map(encodeURIComponent).join("/")}?raw=1`;
+
+/**
+ * A GitHub comment has a size of its own, and evidence can be long. Cutting at a section boundary
+ * is what keeps a truncated document readable: a cut inside a fenced block leaves the rest of the
+ * comment rendered as code.
+ */
+const MAX_COMMENT_CHARACTERS = 55000;
+
+function capMarkdown(body: string): string | null {
+  if (body.length <= MAX_COMMENT_CHARACTERS) return body;
+  const boundary = body.lastIndexOf("\n### ", MAX_COMMENT_CHARACTERS);
+  if (boundary <= 0) return null;
+  return `${body.slice(0, boundary)}\n\n_(evidencia truncada; el resto vive en el repositorio)_`;
 }
 
 function validationResultIsNotFailure(result: string): boolean {
@@ -329,7 +359,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     await pushGitBranch(this.git, branch, workingDirectory);
   }
 
-  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue = true, issueReference = `#${issue}`): Promise<GitHubPullRequest> {
+  async createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue = true, issueReference = `#${issue}`, manifest?: GitHubReadyManifest): Promise<GitHubPullRequest> {
     const { name } = await this.repository(workingDirectory);
     const head = branchName(branch);
     const base = branchName(baseBranch);
@@ -342,9 +372,27 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     if (relatedPullRequests.some((pr) => pr.headRefOid !== commit)) throw new Error(`El Issue #${issue} tiene un PR con una rama o commit conflictivo`);
     if (pullRequests.length > 1) throw new Error(`El Issue #${issue} tiene múltiples PR canónicos`);
     if (pullRequests.length === 1) return { number: pullRequests[0]!.number! };
+    const reference = closesIssue ? `Closes ${issueReference}` : `Tracks ${issueReference}`;
+    // The body a reviewer opens is the delivery itself: what changed, what was validated, and every
+    // capture the session produced, shown where the review happens instead of listed as file names.
+    const body = manifest
+      ? await this.evidenceMarkdown(
+        `Issue #${issue}`,
+        [{ label: "Rama", value: head }, { label: "Commit", value: commit }],
+        manifest,
+        name,
+        commit,
+        workingDirectory,
+      ).then((report) => {
+        const capped = capMarkdown(report);
+        // The reference is what ties the pull request to its issue, and every later check reads it
+        // back out of the body: it is added after the cap so no truncation can ever drop it.
+        return capped === null ? reference : [reference, "", manifest.summary, "", capped].join("\n");
+      }).catch(() => reference)
+      : reference;
     const created = await this.gh([
       "pr", "create", "--repo", name, "--base", base, "--head", head,
-      "--title", `Issue #${issue}`, "--body", closesIssue ? `Closes ${issueReference}` : `Tracks ${issueReference}`,
+      "--title", `Issue #${issue}`, "--body", body,
     ], workingDirectory);
     const match = created.match(/\/pull\/(\d+)(?:\s|$)/);
     if (!match) throw new Error("gh pr create no devolvió un PR verificable");
@@ -466,16 +514,82 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     return { number: pullRequest, mergeCommit };
   }
 
-  async closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string): Promise<void> {
+  async closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, manifest?: GitHubReadyManifest): Promise<void> {
     const state = parseJson<{ state?: string; comments?: Array<{ body?: string }> }>(await this.gh(["issue", "view", `${issue}`, "--json", "state,comments"], workingDirectory), "gh issue view");
     if (state.state === "CLOSED") return;
     const marker = `lazy-workflow: delivered PR #${pullRequest} (${mergeCommit})`;
     if (!(state.comments ?? []).some(({ body }) => body?.includes(marker))) {
-      await this.gh(["issue", "comment", `${issue}`, "--body", marker], workingDirectory);
+      // The marker stays in the body it always was, because a rerun still recognises the delivery
+      // by it; what changed is everything around it, which is the evidence a reader came for.
+      await this.gh(["issue", "comment", `${issue}`, "--body", await this.closureComment(issue, pullRequest, mergeCommit, marker, workingDirectory, manifest)], workingDirectory);
     }
     await this.gh(["issue", "close", `${issue}`], workingDirectory);
     const verified = parseJson<{ state?: string }>(await this.gh(["issue", "view", `${issue}`, "--json", "state"], workingDirectory), "gh issue view");
     if (verified.state !== "CLOSED") throw new Error(`El Issue #${issue} no quedó cerrado`);
+  }
+
+  /**
+   * The delivery as one readable document.
+   *
+   * Evidence a GitHub delivery produces lives in the repository, so the files can be shown where
+   * they already are: a screenshot becomes an image pinned to the commit that carries it, and a
+   * browser capture becomes its endpoint, its headers, its body and its response laid out as
+   * tables. Rendering it here rather than at the call sites is what keeps the pull request and the
+   * closing comment showing the same thing.
+   */
+  private async evidenceMarkdown(
+    subject: string,
+    facts: Array<{ label: string; value: string }>,
+    manifest: GitHubReadyManifest,
+    repository: string,
+    commit: string,
+    workingDirectory: string,
+  ): Promise<string> {
+    const files: EvidenceFile[] = [];
+    for (const { path } of manifest.evidence ?? []) {
+      const kind = githubEvidenceKind(path);
+      if (kind === "screen") {
+        files.push({ name: path, kind, imageUrl: blobUrl(repository, commit, path) });
+        continue;
+      }
+      // A file that cannot be read is worth less than the rest of the document is worth losing.
+      const content = await Bun.file(resolve(workingDirectory, path)).text().catch(() => "");
+      if (content.trim()) files.push({ name: path, kind, content });
+    }
+    return renderEvidenceMarkdown({ subject, facts, validation: manifest.validation, files });
+  }
+
+  /** The closing comment: the delivery's evidence, with the marker a rerun recognises. */
+  private async closureComment(
+    issue: number,
+    pullRequest: number,
+    mergeCommit: string,
+    marker: string,
+    workingDirectory: string,
+    manifest?: GitHubReadyManifest,
+  ): Promise<string> {
+    if (!manifest) return marker;
+    try {
+      const { name } = await this.repository(workingDirectory);
+      const report = await this.evidenceMarkdown(
+        `Issue #${issue}`,
+        [
+          { label: "Pull request", value: `#${pullRequest}` },
+          { label: "Commit de merge", value: mergeCommit },
+          { label: "Rama", value: branchName(manifest.branch) },
+        ],
+        manifest,
+        name,
+        mergeCommit,
+        workingDirectory,
+      );
+      const capped = capMarkdown(report);
+      // The marker is what a rerun recognises the delivery by, so it survives truncation too.
+      return capped === null ? marker : [capped, "", manifest.summary, "", marker].join("\n");
+    } catch {
+      // Evidence that cannot be rendered must not cost the issue its closure.
+      return marker;
+    }
   }
 
   async cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void> {

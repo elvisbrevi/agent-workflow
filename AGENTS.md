@@ -22,6 +22,7 @@ inside that directory rather than a skill directory.
 | Change the run log's record contract, its path resolution, or its rotation | `agent/lazy-workflow/src/output/run-log.ts` |
 | Change what a tool call reports about the artifact it touches | `agent/lazy-workflow/src/output/agent-tool-detail.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
+| Change how completion evidence is laid out, or the shape of a browser HTTP capture | `agent/lazy-workflow/src/evidence/` |
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
 | Change how Claude Code is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/claude-code/` |
