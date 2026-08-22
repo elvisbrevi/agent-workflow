@@ -361,11 +361,13 @@ An `http-json` evidence file, written as the object the delivery renders from:
 `title`, `screenshot`, a `request` with its method, URL, headers and optional
 body, and a `response` with its status, headers and optional body. It is taken by
 driving the request in the browser Chrome MCP opens, and the screenshot it names
-travels in the same manifest as `screen` evidence. The shape is checked when the
-manifest is written, so a file that cannot be laid out is refused while the
-session can still rewrite it.
+travels in the same manifest as `screen` evidence, beside the capture file: the
+two are paired by file name within their directory. The shape is checked when the
+manifest is written and only there, so a file that cannot be laid out is refused
+while the session can still rewrite it, while a manifest that predates the shape
+still publishes.
 _Avoid_: a pasted `curl` transcript, a body with no endpoint, a capture whose
-screenshot no manifest declares
+screenshot lives somewhere else, the shape demanded at publication
 
 **Rendered completion evidence**:
 The single document the coordinator publishes from a verified manifest: the

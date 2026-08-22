@@ -394,7 +394,6 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const report = manifest && await this.evidenceReport(
       `Issue #${issue}`,
       [{ label: "Rama", value: head }, { label: "Commit", value: commit }],
-      name,
       commit,
       { manifest, directory: workingDirectory },
     );
@@ -537,7 +536,6 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
           { label: "Commit de merge", value: mergeCommit },
           { label: "Rama", value: branchName(evidence.manifest.branch) },
         ],
-        await this.repository(evidence.directory).then(({ name }) => name).catch(() => ""),
         mergeCommit,
         evidence,
       );
@@ -564,21 +562,23 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   private async evidenceReport(
     subject: string,
     facts: Array<{ label: string; value: string }>,
-    repository: string,
     commit: string,
     { manifest, directory }: DeliveredEvidence,
   ): Promise<string | null> {
     try {
+      // Resolved in here, under the same fallback: a lookup that failed outside it published a
+      // comment whose every image pointed at `https://github.com//blob/...` and stayed broken.
+      const { name: repository } = await this.repository(directory);
       const files: EvidenceFile[] = [];
       for (const { path } of manifest.evidence ?? []) {
         const kind = githubEvidenceKind(path);
         if (kind === "screen") {
-          files.push({ name: path, kind, imageUrl: blobUrl(repository, commit, path) });
+          files.push({ name: path, path, kind, imageUrl: blobUrl(repository, commit, path) });
           continue;
         }
         // A file that cannot be read is worth less than the rest of the document is worth losing.
         const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
-        if (content.trim()) files.push({ name: path, kind, content });
+        if (content.trim()) files.push({ name: path, path, kind, content });
       }
       return capMarkdown(renderEvidenceMarkdown({ subject, facts, validation: manifest.validation, files }));
     } catch {

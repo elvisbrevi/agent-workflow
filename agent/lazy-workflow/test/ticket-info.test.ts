@@ -1300,10 +1300,11 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
 });
 
 test("completion apply reconciles missing effects before moving the ticket to Done", async () => {
-  const evidencePath = `/tmp/lazy-workflow-completion-${crypto.randomUUID()}.json`;
-  // La captura se busca por su nombre de archivo, así que vive en su propio directorio.
-  const screenshotRoot = mkdtempSync(join(tmpdir(), "lazy-workflow-capture-"));
-  const screenshotPath = join(screenshotRoot, SCREENSHOT_NAME);
+  // La captura se empareja por nombre de archivo dentro de su directorio, así que la evidencia
+  // HTTP y la pantalla que nombra viven juntas, como el prompt le pide a la sesión.
+  const evidenceRoot = mkdtempSync(join(tmpdir(), "lazy-workflow-capture-"));
+  const evidencePath = join(evidenceRoot, "pago-endpoint.json");
+  const screenshotPath = join(evidenceRoot, SCREENSHOT_NAME);
   const manifestPath = `/tmp/lazy-workflow-manifest-${crypto.randomUUID()}.json`;
   const commit = "a".repeat(40);
   const evidence = HTTP_CAPTURE_BODY;
@@ -1432,9 +1433,8 @@ test("completion apply reconciles missing effects before moving the ticket to Do
     // Una por evidencia: la captura HTTP y la pantalla del navegador que la respalda.
     expect(calls).toEqual(["pr", "commit", "attachment", "attachment", "evidence", "state"]);
   } finally {
-    await unlink(evidencePath);
     await unlink(manifestPath);
-    rmSync(screenshotRoot, { recursive: true, force: true });
+    rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });
 

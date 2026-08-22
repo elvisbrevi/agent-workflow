@@ -22,14 +22,27 @@ import { readHttpCaptures, type HttpCapture, type HttpCaptureHeader } from "./ht
 
 /** One evidence file as the renderer needs it: already read, already resolved. */
 export interface EvidenceFile {
-  /** The file name a reader sees, without its directory. */
+  /** What a reader sees: a bare file name on a ticket, a repository-relative path on an issue. */
   name: string;
+  /**
+   * Where the file lives, when the display name is not that. A capture names its screenshot by
+   * bare file name, so pairing the two is a question about locations, not about labels: two
+   * repositories of one transversal delivery both call their screenshot `pantalla.png`, and
+   * matching on the name alone would show one repository's browser beside the other's request.
+   */
+  path?: string;
   kind: EvidenceKind;
   /** The decoded text of a `http-json` or `command-output` file. */
   content?: string;
   /** Where a `screen` file can be displayed from, when it has been published. */
   imageUrl?: string | null;
 }
+
+const located = (file: EvidenceFile): string => file.path ?? file.name;
+
+const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
+
+const directoryOf = (file: EvidenceFile): string => located(file).slice(0, -baseName(located(file)).length);
 
 export interface EvidenceDocumentInput {
   /** What the evidence is about: `Ticket 23575`, `Issue #201`. */
@@ -132,8 +145,10 @@ function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDocument {
       const parsed = readHttpCaptures(content);
       if (parsed) {
         for (const capture of parsed) {
-          const screenshot = screens.find(({ name }) => name.toLowerCase() === capture.screenshot.toLowerCase()) ?? null;
-          if (screenshot) claimed.add(screenshot.name.toLowerCase());
+          const screenshot = screens.find((screen) =>
+            baseName(located(screen)).toLowerCase() === capture.screenshot.toLowerCase()
+            && directoryOf(screen) === directoryOf(file)) ?? null;
+          if (screenshot) claimed.add(located(screenshot).toLowerCase());
           captures.push({ source: file.name, capture, screenshot });
         }
         continue;
@@ -155,7 +170,7 @@ function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDocument {
     captures,
     documents,
     outputs,
-    screens: screens.filter(({ name }) => !claimed.has(name.toLowerCase())),
+    screens: screens.filter((screen) => !claimed.has(located(screen).toLowerCase())),
   };
 }
 

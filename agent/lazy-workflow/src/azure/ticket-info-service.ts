@@ -572,12 +572,28 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
     if (content.trim() !== JSON.stringify(parsed, null, 2)) {
       throw new Error("La evidencia JSON debe estar pretty-printed con indentación estable");
     }
-    // A ticket shows the endpoint, the headers, the body and the response in tables of their own,
-    // and it can only do that if the file says which is which. Free-form JSON -- a pasted `curl`
-    // transcript, a body with no endpoint -- has nothing to lay out, so the ticket fell back to a
-    // wall of monospace. The shape is required here, where a session can still rewrite the file.
-    parseHttpCaptures(parsed);
   }
+}
+
+/**
+ * The shape every capture must have, demanded where a session can still rewrite the file.
+ *
+ * A ticket shows the endpoint, the headers, the body and the response in tables of their own, and
+ * it can only do that if the file says which is which: free-form JSON -- a pasted `curl`
+ * transcript, a body with no endpoint -- has nothing to lay out. The demand belongs to the writing
+ * gate and to nothing else. Made a condition of publication too, it would strand every delivery
+ * whose manifest predates the shape at a gate reached with the pull requests already merged, which
+ * is the failure this contract exists to prevent; those publish as plain JSON instead.
+ */
+async function requireCaptureShape(
+  evidence: ReadonlyArray<{ path: string; kind: EvidenceKind }>,
+): Promise<void> {
+  for (const entry of evidence) {
+    if (entry.kind !== "http-json") continue;
+    // Every file here already passed `validateEvidenceContent`, so its JSON is known to parse.
+    parseHttpCaptures(JSON.parse(await readUtf8File(resolve(entry.path))));
+  }
+  await requireCaptureScreenshots(evidence);
 }
 
 const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
@@ -592,17 +608,21 @@ const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 async function requireCaptureScreenshots(
   evidence: ReadonlyArray<{ path: string; kind: EvidenceKind }>,
 ): Promise<void> {
-  const screens = new Set(
-    evidence.filter(({ kind }) => kind === "screen").map(({ path }) => fileName(path).toLowerCase()),
-  );
+  // A capture names its screenshot by bare file name, so the pair is only unambiguous where they
+  // live together: two repositories of one transversal delivery both call theirs `pantalla.png`.
+  const beside = (directory: string, name: string): string => `${directory}/${name}`.toLowerCase();
+  const screens = new Set(evidence
+    .filter(({ kind }) => kind === "screen")
+    .map(({ path }) => beside(dirname(resolve(path)), fileName(path))));
   for (const entry of evidence) {
     if (entry.kind !== "http-json") continue;
     // The manifest is validated before its files' content is, so a file that is not a capture at
     // all still reaches here; it has no screenshot to cross-check and is left to that later gate.
     for (const { screenshot } of readHttpCaptures(await readUtf8File(resolve(entry.path))) ?? []) {
-      if (!screens.has(screenshot.toLowerCase())) {
+      if (!screens.has(beside(dirname(resolve(entry.path)), screenshot))) {
         throw new Error(
-          `La captura ${screenshot} que nombra ${fileName(entry.path)} no está declarada como evidencia screen`,
+          `La captura ${screenshot} que nombra ${fileName(entry.path)}`
+          + " no está declarada como evidencia screen junto a ella",
         );
       }
     }
@@ -1240,7 +1260,7 @@ export class AzureTicketInfoService {
       // by which point the pull requests had already merged and there was nothing cheap left to do.
       await this.validateEvidenceFile(resolve(evidence.path), evidence.kind);
     }
-    await requireCaptureScreenshots(input.evidence);
+    await requireCaptureShape(input.evidence);
     // A session that types the commit types the wrong one, and the manifest must
     // name what it validated: HEAD is read here unless a commit is pinned.
     const commit = input.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
@@ -1617,13 +1637,13 @@ export class AzureTicketInfoService {
     for (const entry of report.evidence) {
       const name = fileName(entry.path);
       if (entry.kind === "screen") {
-        files.push({ name, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
+        files.push({ name, path: entry.path, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
         continue;
       }
       // A file the manifest names but this run cannot read must not cost the delivery its evidence:
       // the entry the caller already read is always available, and the rest is best effort.
       const decoded = resolve(entry.path) === resolve(filePath) ? content : await readUtf8File(entry.path).catch(() => "");
-      if (decoded.trim()) files.push({ name, kind: entry.kind, content: decoded });
+      if (decoded.trim()) files.push({ name, path: entry.path, kind: entry.kind, content: decoded });
     }
     return renderEvidenceHtml({
       subject: `Ticket ${ticket}`,

@@ -102,7 +102,7 @@ worktree cleanliness. Screenshots must be polished and readable. An `http-json`
 file is a browser capture taken through Chrome MCP — `title`, `screenshot`,
 `request` and `response`, sanitized and pretty-printed with stable indentation —
 and the screenshot it names must appear as `screen` evidence in the same
-manifest; the coordinator renders those fields into the ticket's
+manifest, written beside the capture file; the coordinator renders those fields into the ticket's
 completion-evidence field as endpoint, header tables, pretty-printed bodies and
 the screenshot beside them (ADR-0031). Missing required evidence keeps the ticket
 incomplete.
