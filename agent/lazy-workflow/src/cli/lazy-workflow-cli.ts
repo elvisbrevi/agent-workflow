@@ -61,6 +61,7 @@ import {
   GitHubPullRequestConflictError,
   githubRepositoryFromRemote,
   type GitHubDeliveryAdapter,
+  type DeliveredEvidence,
   type GitHubReadyManifest,
 } from "../github/github-delivery-service.ts";
 import {
@@ -2809,7 +2810,13 @@ export class LazyWorkflowCli {
       await save();
     }
     const first = delivered[0]!;
-    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path, manifests.get(scope.repositories[0]!.path)));
+    // El Issue vive en el repositorio ancla, pero la evidencia y su manifest pertenecen al
+    // repositorio que efectivamente cambió: el comentario de cierre lee ambos donde están.
+    const evidenceOf = (path: string): DeliveredEvidence | undefined => {
+      const manifest = manifests.get(path);
+      return manifest ? { manifest, directory: path } : undefined;
+    };
+    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path, evidenceOf(first.path)));
     for (const changedUnit of changed) {
       const unit = checkpoint.units.find(({ path }) => path === changedUnit.path) ?? changedUnit;
       if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
@@ -3550,7 +3557,7 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "reconciling", mergeCommit };
     await save();
     if (!checkpoint.receipts["issue-closure"]) {
-      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory, manifest));
+      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory, { manifest, directory: options.workingDirectory }));
     }
     checkpoint = { ...checkpoint, phase: "cleaning" };
     await save();

@@ -210,10 +210,9 @@ by driving the request in the browser Chrome MCP opens:
 }
 ```
 
-Several exchanges may share one file under a `captures` array, headers may also
-be written as a list of `{ "name", "value" }` pairs, and the screenshot a capture
-names must travel in the same manifest as `screen` evidence. The shape is
-checked by `ticket-manifest-set`, so a file that cannot be laid out is refused
+Several exchanges may share one file under a `captures` array, and the screenshot
+a capture names must travel in the same manifest as `screen` evidence. The shape
+is checked by `ticket-manifest-set`, so a file that cannot be laid out is refused
 while the session that wrote it is still alive to fix it.
 
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires

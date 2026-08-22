@@ -31,15 +31,15 @@ const documentInput = {
 };
 
 describe("http capture", () => {
-  test("acepta las cabeceras como mapa y como lista de pares, conservando el orden", () => {
-    const [asMap] = parseHttpCaptures(capture);
-    const [asList] = parseHttpCaptures({
-      ...capture,
-      request: { ...capture.request, headers: [{ name: "content-type", value: "application/json" }] },
-    });
+  test("lee las cabeceras como el mapa que un panel de devtools copia, conservando el orden", () => {
+    const [parsed] = parseHttpCaptures(capture);
 
-    expect(asMap!.request.headers[0]).toEqual({ name: "content-type", value: "application/json" });
-    expect(asList!.request.headers).toEqual([{ name: "content-type", value: "application/json" }]);
+    expect(parsed!.request.headers).toEqual([
+      { name: "content-type", value: "application/json" },
+      { name: "x-api-key", value: "[REDACTED - ADMIN_API_TOKEN]" },
+    ]);
+    expect(() => parseHttpCaptures({ ...capture, request: { ...capture.request, headers: [] } }))
+      .toThrow("request.headers debe ser un objeto de cabeceras");
   });
 
   test("nombra el campo que falta en vez de rechazar el archivo entero", () => {
@@ -51,9 +51,10 @@ describe("http capture", () => {
     expect(() => parseHttpCaptures({ ...capture, screenshot: "pantalla.txt" })).toThrow(".png");
   });
 
-  test("lee varias capturas de un solo archivo", () => {
+  test("lee varias capturas de un solo archivo bajo `captures`", () => {
     expect(parseHttpCaptures({ captures: [capture, { ...capture, title: "Segunda" }] })).toHaveLength(2);
-    expect(parseHttpCaptures([capture])).toHaveLength(1);
+    // Una sola forma declarada: un arreglo suelto no es ninguna de las dos que el prompt documenta.
+    expect(() => parseHttpCaptures([capture])).toThrow("cada captura debe ser un objeto");
   });
 
   test("un JSON que no es una captura se reconoce como tal, sin lanzar", () => {
@@ -66,7 +67,7 @@ describe("documento HTML del ticket", () => {
   const html = renderEvidenceHtml(documentInput);
 
   test("muestra endpoint, estado, cabeceras y cuerpos donde un lector los busca", () => {
-    expect(html).toContain("Evidencia de completitud &mdash; Ticket 23575");
+    expect(html).toContain("Evidencia de completitud — Ticket 23575");
     expect(html).toContain("Validaciones ejecutadas");
     expect(html).toContain("198 pass, 0 fail");
     expect(html).toContain("<b>POST</b> https://api.test/payment-attempts/42/reconcile");
@@ -135,6 +136,18 @@ describe("documento Markdown de GitHub", () => {
     expect(rendered).toContain("bun test \\| tee salida.txt");
   });
 
+  test("una corrida de líneas en blanco dentro del bloque sobrevive al documento", () => {
+    // Colapsar los saltos sobre el texto ya unido reescribía el interior del cerco, y una salida de
+    // comando que ya no coincide con su digest no es la evidencia que el manifest fijó.
+    const salida = "primera\n\n\n\nsegunda\n";
+    const rendered = renderEvidenceMarkdown({
+      ...documentInput,
+      files: [{ name: "salida.txt", kind: "command-output", content: salida }],
+    });
+
+    expect(rendered).toContain(salida.trimEnd());
+  });
+
   test("un bloque que contiene un cerco no termina el bloque antes de tiempo", () => {
     const rendered = renderEvidenceMarkdown({
       ...documentInput,
@@ -169,16 +182,19 @@ describe("entrega GitHub", () => {
       await Bun.write(join(root, `docs/evidence/${SCREENSHOT_NAME}`), SCREENSHOT_BYTES);
 
       await service.closeIssue(201, 12, "c".repeat(40), root, {
-        issue: 201,
-        branch: "refs/heads/issue/201",
-        commit: "a".repeat(40),
-        validation: [{ command: "bun test", result: "198 pass" }],
-        clean: true,
-        summary: "Integra la reconciliación de pagos",
-        evidence: [
-          { path: "docs/evidence/api.json", sha256: "a".repeat(64) },
-          { path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) },
-        ],
+        directory: root,
+        manifest: {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          commit: "a".repeat(40),
+          validation: [{ command: "bun test", result: "198 pass" }],
+          clean: true,
+          summary: "Integra la reconciliación de pagos",
+          evidence: [
+            { path: "docs/evidence/api.json", sha256: "a".repeat(64) },
+            { path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) },
+          ],
+        },
       });
 
       const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
@@ -190,6 +206,44 @@ describe("entrega GitHub", () => {
       );
       expect(body).toContain("Integra la reconciliación de pagos");
       // El marcador es lo que una repetición reconoce: nunca se pierde detrás de la evidencia.
+      expect(body).toContain(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("un comentario demasiado largo conserva las capturas que caben, no solo su título", async () => {
+    // Recortar únicamente en `###` retrocedía hasta el encabezado de la sección y tiraba todas las
+    // capturas, incluida la que sí cabía: una captura es un `####` dentro de esa misma sección.
+    const calls: string[][] = [];
+    const { root, service } = delivery(calls);
+    try {
+      await Bun.write(join(root, "docs/evidence/api.json"), HTTP_CAPTURE_BODY);
+      // Suficientes salidas detrás de la captura para que el documento entero no quepa en un
+      // comentario, aun con cada bloque ya recortado a su propio máximo.
+      const salidas = await Promise.all([...Array(12)].map(async (_unused, index) => {
+        const path = `docs/evidence/salida-${index}.txt`;
+        await Bun.write(join(root, path), "x".repeat(9000));
+        return { path, sha256: `${index}`.repeat(64).slice(0, 64) };
+      }));
+
+      await service.closeIssue(201, 12, "c".repeat(40), root, {
+        directory: root,
+        manifest: {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          commit: "a".repeat(40),
+          validation: [{ command: "bun test", result: "198 pass" }],
+          clean: true,
+          summary: "Integra la reconciliación de pagos",
+          evidence: [{ path: "docs/evidence/api.json", sha256: "a".repeat(64) }, ...salidas],
+        },
+      });
+
+      const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
+      const body = comment?.[comment.indexOf("--body") + 1] ?? "";
+      expect(body).toContain("`POST` **/payment-attempts/42/reconcile** → **200 OK**");
+      expect(body).toContain("evidencia truncada");
       expect(body).toContain(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
     } finally {
       rmSync(root, { recursive: true, force: true });

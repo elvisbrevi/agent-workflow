@@ -1974,6 +1974,35 @@ test("ticket-evidence-set sin manifest publica el archivo tal como se escribió"
   }
 });
 
+test("la evidencia que una versión anterior dejó en crudo se reconoce como propia, no como conflicto", async () => {
+  // El campo lleva ahora un documento, pero un ticket completado antes lleva los bytes del archivo.
+  // Juzgar solo contra el documento volvía cada repetición sobre ese ticket un conflicto que nadie
+  // podía limpiar, en una compuerta a la que se llega con los PR ya mergeados.
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.txt`;
+  const crudo = "Validaciones ejecutadas: npm test.\n";
+  await Bun.write(path, crudo);
+  const patches: unknown[][] = [];
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: crudo,
+      onPatch: (body) => patches.push(body),
+    });
+    const report = {
+      ticketBranch: "refs/heads/ticket/51",
+      commit: "a".repeat(40),
+      validation: [{ command: "bun test", result: "198 pass" }],
+      evidence: [{ path, kind: "command-output" as const, sha256: "a".repeat(64) }],
+    };
+
+    await expect(service.validateEvidence(51, path, report)).resolves.toBeUndefined();
+    await expect(service.setEvidence(51, path, report)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(0);
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
 test("completion-evidence publica un documento con las secciones que un lector busca", async () => {
   // El campo llevaba los bytes del archivo tal cual: un muro de monoespaciado sin endpoint, sin
   // estado y sin la imagen del navegador, aunque las capturas ya estuvieran adjuntas al ticket.
