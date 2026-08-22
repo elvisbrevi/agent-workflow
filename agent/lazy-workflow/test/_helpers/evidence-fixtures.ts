@@ -34,11 +34,3 @@ export const HTTP_CAPTURE = {
 
 /** The file as it must reach disk: pretty-printed with the indentation the delivery requires. */
 export const HTTP_CAPTURE_BODY = `${JSON.stringify(HTTP_CAPTURE, null, 2)}\n`;
-
-export async function digestOf(value: Uint8Array | string): Promise<string> {
-  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
-  const buffer = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buffer).set(bytes);
-  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}

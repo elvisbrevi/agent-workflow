@@ -26,29 +26,25 @@ export interface HttpCaptureHeader {
   value: string;
 }
 
-export interface HttpCaptureRequest {
-  method: string;
-  url: string;
-  headers: HttpCaptureHeader[];
-  /** Absent when the request carried no body, which is not the same as an empty one. */
-  body?: unknown;
-}
-
-export interface HttpCaptureResponse {
-  status: number;
-  statusText?: string;
-  headers: HttpCaptureHeader[];
-  body?: unknown;
-}
-
 export interface HttpCapture {
   title: string;
   /** File name of the `screen` evidence showing this exchange in the browser. */
   screenshot: string;
   /** How the exchange was observed, shown as provenance when a session declares it. */
   capturedWith?: string;
-  request: HttpCaptureRequest;
-  response: HttpCaptureResponse;
+  request: {
+    method: string;
+    url: string;
+    headers: HttpCaptureHeader[];
+    /** Absent when the request carried no body, which is not the same as an empty one. */
+    body?: unknown;
+  };
+  response: {
+    status: number;
+    statusText?: string;
+    headers: HttpCaptureHeader[];
+    body?: unknown;
+  };
 }
 
 const SCREENSHOT_NAME = /\.(?:png|jpe?g|webp)$/i;
@@ -67,27 +63,17 @@ function requireText(value: unknown, field: string): string {
   return (value as string).trim();
 }
 
-/**
- * Headers as a list, from either form a session may write them in: the object map
- * a browser devtools panel copies out, or an explicit list of pairs.
- */
+/** Headers as the object map a browser devtools panel copies out, kept in declared order. */
 function parseHeaders(value: unknown, field: string): HttpCaptureHeader[] {
   if (value === undefined || value === null) return [];
-  if (Array.isArray(value)) {
-    return value.map((entry, index) => {
-      if (typeof entry !== "object" || entry === null) fail(`${field}[${index}] debe ser un objeto {name, value}`);
-      const header = entry as { name?: unknown; value?: unknown };
-      return { name: requireText(header.name, `${field}[${index}].name`), value: String(header.value ?? "") };
-    });
-  }
-  if (typeof value !== "object") fail(`${field} debe ser un objeto o una lista de {name, value}`);
+  if (typeof value !== "object" || Array.isArray(value)) fail(`${field} debe ser un objeto de cabeceras`);
   return Object.entries(value as Record<string, unknown>).map(([name, headerValue]) => ({
     name,
     value: String(headerValue ?? ""),
   }));
 }
 
-function parseRequest(value: unknown): HttpCaptureRequest {
+function parseRequest(value: unknown): HttpCapture["request"] {
   if (typeof value !== "object" || value === null) fail("request debe ser un objeto");
   const request = value as { method?: unknown; url?: unknown; headers?: unknown; body?: unknown };
   const url = requireText(request.url, "request.url");
@@ -100,7 +86,7 @@ function parseRequest(value: unknown): HttpCaptureRequest {
   };
 }
 
-function parseResponse(value: unknown): HttpCaptureResponse {
+function parseResponse(value: unknown): HttpCapture["response"] {
   if (typeof value !== "object" || value === null) fail("response debe ser un objeto");
   const response = value as { status?: unknown; statusText?: unknown; headers?: unknown; body?: unknown };
   const status = response.status;
@@ -135,11 +121,8 @@ function parseCapture(value: unknown, index: number, total: number): HttpCapture
 
 /** The captures inside one parsed `http-json` document, in the order they were written. */
 export function parseHttpCaptures(value: unknown): HttpCapture[] {
-  const declared = Array.isArray(value)
-    ? value
-    : typeof value === "object" && value !== null && Array.isArray((value as { captures?: unknown }).captures)
-      ? (value as { captures: unknown[] }).captures
-      : [value];
+  const captures = (value as { captures?: unknown } | null)?.captures;
+  const declared = Array.isArray(captures) ? captures : [value];
   if (declared.length === 0) fail("el archivo no declara ninguna captura");
   return declared.map((capture, index) => parseCapture(capture, index, declared.length));
 }
@@ -157,9 +140,4 @@ export function readHttpCaptures(content: string): HttpCapture[] | null {
   } catch {
     return null;
   }
-}
-
-/** Every screenshot a document's captures name, deduplicated, lowercased for comparison. */
-export function capturedScreenshotNames(captures: readonly HttpCapture[]): string[] {
-  return [...new Set(captures.map(({ screenshot }) => screenshot.toLowerCase()))];
 }

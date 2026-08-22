@@ -104,6 +104,10 @@ function statusColor(status: number): string {
   return "#d1242f";
 }
 
+/** Where the capture came from, named the same way in both renderings. */
+const provenance = (capture: HttpCapture, source: string): string =>
+  capture.capturedWith ? `Capturado con ${capture.capturedWith} · ${source}` : source;
+
 function endpointPath(url: string): string {
   try {
     const parsed = new URL(url);
@@ -113,7 +117,7 @@ function endpointPath(url: string): string {
   }
 }
 
-export function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDocument {
+function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDocument {
   const screens = input.files.filter(({ kind }) => kind === "screen");
   const claimed = new Set<string>();
   const captures: CaptureSection[] = [];
@@ -157,7 +161,7 @@ export function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDoc
 
 // ---------------------------------------------------------------- HTML (Azure)
 
-export function escapeHtml(value: string): string {
+function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -221,10 +225,8 @@ function captureHtml({ capture, screenshot, source }: CaptureSection): string {
     + `<div style="${FONT};font-size:13px;font-weight:600;color:#1f2328">${escapeHtml(capture.title)}</div>`
     + `<div style="font-family:Consolas,Menlo,monospace;font-size:12px;margin-top:4px;word-break:break-all">`
     + `<b>${escapeHtml(request.method)}</b> ${escapeHtml(request.url)} `
-    + `&rarr; <b style="color:${color}">${escapeHtml(statusLabel(response))}</b></div>`
-    + (capture.capturedWith
-      ? `<div style="${FONT};font-size:11px;color:${MUTED};margin-top:4px">Capturado con ${escapeHtml(capture.capturedWith)} · ${escapeHtml(source)}</div>`
-      : `<div style="${FONT};font-size:11px;color:${MUTED};margin-top:4px">${escapeHtml(source)}</div>`)
+    + `→ <b style="color:${color}">${escapeHtml(statusLabel(response))}</b></div>`
+    + `<div style="${FONT};font-size:11px;color:${MUTED};margin-top:4px">${escapeHtml(provenance(capture, source))}</div>`
     + `</div>`;
   const body = [
     table(["Cabecera de la petición", "Valor"], headerRows(request.headers)),
@@ -242,7 +244,7 @@ export function renderEvidenceHtml(input: EvidenceDocumentInput): string {
   const document = buildEvidenceDocument(input);
   const parts: string[] = [
     `<div style="${FONT};font-size:13px;color:#1f2328">`,
-    `<h2 style="${FONT};font-size:16px;margin:0 0 8px 0">Evidencia de completitud &mdash; ${escapeHtml(document.subject)}</h2>`,
+    `<h2 style="${FONT};font-size:16px;margin:0 0 8px 0">Evidencia de completitud — ${escapeHtml(document.subject)}</h2>`,
   ];
   if (document.facts.length > 0) {
     parts.push(table(["Dato", "Valor"], document.facts.map(({ label, value }) => [label, value] as [string, string])));
@@ -305,7 +307,7 @@ function captureMarkdown({ capture, screenshot, source }: CaptureSection): strin
     "",
     `\`${request.method}\` **${endpointPath(request.url)}** → **${statusLabel(response)}**`,
     "",
-    `<sub>${request.url}${capture.capturedWith ? ` · capturado con ${capture.capturedWith}` : ""} · \`${source}\`</sub>`,
+    `<sub>${request.url} · ${provenance(capture, source)}</sub>`,
     "",
     ...markdownTable(["Cabecera de la petición", "Valor"], headerRows(request.headers)),
   ];
@@ -343,5 +345,8 @@ export function renderEvidenceMarkdown(input: EvidenceDocumentInput): string {
     lines.push("### Capturas de pantalla", "");
     for (const screen of document.screens) lines.push(...markdownImage(screen, screen.name));
   }
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // Collapsing blank runs over the joined text would rewrite the inside of a fenced block, and a
+  // command output that no longer matches its own digest is not the evidence the manifest pinned.
+  // Every block is one entry here, so the runs to collapse are the empty entries between them.
+  return lines.filter((line, index) => line !== "" || lines[index - 1] !== "").join("\n").trim();
 }

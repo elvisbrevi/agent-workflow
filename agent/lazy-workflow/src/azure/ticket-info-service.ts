@@ -36,8 +36,9 @@ export { TEXT_EVIDENCE_KINDS, findTextEvidence } from "./completion-manifest.ts"
  */
 export interface CompletionEvidenceReport {
   ticketBranch?: string;
+  /** Absent when the delivery spans repositories and no single commit describes it. */
   commit?: string;
-  validation?: ReadonlyArray<{ command: string; result: string }>;
+  validation: ReadonlyArray<{ command: string; result: string }>;
   evidence: ReadonlyArray<CompletionManifestEvidence>;
 }
 
@@ -286,6 +287,19 @@ function evidenceTextContent(value: string): string {
     .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Whether the evidence a ticket already carries is this delivery's own.
+ *
+ * The field carries the rendered document now, but a ticket completed before it did carries the
+ * bytes of the text file instead. Judging only against the document turns every rerun over such a
+ * ticket into a conflict nobody can clear — at a gate reached with the pull requests already
+ * merged, which is exactly where a delivery must not become unrecoverable.
+ */
+function publishedAlready(existing: string, ...candidates: string[]): boolean {
+  const stored = evidenceTextContent(existing);
+  return candidates.some((candidate) => evidenceTextContent(candidate) === stored);
 }
 
 function hasEvidenceCapture(item: WorkItem): boolean {
@@ -568,14 +582,6 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
 
 const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 
-function isJson(content: string): boolean {
-  try {
-    JSON.parse(content);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Every browser capture names the screenshot it was taken from, and that screenshot has to be
@@ -591,7 +597,8 @@ async function requireCaptureScreenshots(
   );
   for (const entry of evidence) {
     if (entry.kind !== "http-json") continue;
-    // A file that is not a capture never reaches here: `validateEvidenceContent` refused it first.
+    // The manifest is validated before its files' content is, so a file that is not a capture at
+    // all still reaches here; it has no screenshot to cross-check and is left to that later gate.
     for (const { screenshot } of readHttpCaptures(await readUtf8File(resolve(entry.path))) ?? []) {
       if (!screens.has(screenshot.toLowerCase())) {
         throw new Error(
@@ -1553,11 +1560,8 @@ export class AzureTicketInfoService {
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
-    // The field carries the rendered document, not the file, so "already written" is judged against
-    // what this run would publish. Comparing the raw file against a rendered field turned every
-    // rerun of the same delivery into a conflict nobody could clear.
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && evidenceTextContent(existing) !== evidenceTextContent(rendered)) {
+    if (existing && !publishedAlready(existing, rendered, content)) {
       throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     }
   }
@@ -1577,7 +1581,7 @@ export class AzureTicketInfoService {
     const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && evidenceTextContent(existing) === evidenceTextContent(rendered)) {
+    if (existing && publishedAlready(existing, rendered, content)) {
       return { ticket, completionEvidence: existing };
     }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
@@ -1621,17 +1625,13 @@ export class AzureTicketInfoService {
       const decoded = resolve(entry.path) === resolve(filePath) ? content : await readUtf8File(entry.path).catch(() => "");
       if (decoded.trim()) files.push({ name, kind: entry.kind, content: decoded });
     }
-    // The entry that populates the field is the one thing the document cannot be missing.
-    if (files.every(({ kind }) => kind === "screen")) {
-      files.push({ name: fileName(filePath), kind: isJson(content) ? "http-json" : "command-output", content });
-    }
     return renderEvidenceHtml({
       subject: `Ticket ${ticket}`,
       facts: [
         { label: "Rama del ticket", value: report.ticketBranch ?? "" },
         { label: "Commit", value: report.commit ?? "" },
       ],
-      validation: [...(report.validation ?? [])],
+      validation: [...report.validation],
       files,
     });
   }
