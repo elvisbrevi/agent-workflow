@@ -14,7 +14,7 @@ import {
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
 import { findTextEvidence } from "../azure/ticket-info-service.ts";
-import type { CompletionManifest, CompletionManifestEvidence, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
+import type { CompletionEvidenceReport, CompletionManifest, CompletionManifestEvidence, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
@@ -142,7 +142,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   writeCompletionManifest?(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   validateEvidenceFile?(filePath: string, kind: EvidenceKind): Promise<void>;
-  validateEvidence?(ticket: number, filePath: string): Promise<void>;
+  validateEvidence?(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void>;
   prepareWorkspaceBranches?(options: { hu: number; repositories: readonly AzureWorkspaceRepositoryInput[]; baseBranch?: string | null; integrationBranch?: string }): Promise<AzureWorkspaceBranchTopology>;
   prepareWorkspaceTicketBranches?(options: { hu: number; ticket: number; integrationBranch: string; repositories: readonly AzureWorkspaceRepositoryInput[]; ticketBranch?: string; ticketBranchAnchor?: string | null }): Promise<AzureWorkspaceBranchTopology>;
   linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, candidates: readonly string[]): Promise<unknown>;
@@ -174,7 +174,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   linkPullRequest?(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
-  setEvidence?(ticket: number, filePath: string): Promise<unknown>;
+  setEvidence?(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown>;
   publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
   publishInfrastructureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
@@ -2234,6 +2234,7 @@ export class LazyWorkflowCli {
     // contra el ticket ya entregado, porque los merges adelantaron la rama.
     const completionInfo = await boundary.getTicketInfo!(hu, ticket);
     const workspaceEvidence: CompletionManifestEvidence[] = [];
+    const workspaceValidation: Array<{ command: string; result: string }> = [];
     for (const unit of changedUnits) {
       await boundary.validateCompletionManifest!(unit.manifest!, completionInfo, ticket, unit.path);
       for (const evidence of unit.manifest!.evidence) {
@@ -2242,7 +2243,21 @@ export class LazyWorkflowCli {
           workspaceEvidence.push(evidence);
         }
       }
+      // Lo mismo vale para las validaciones: el documento publicado las lista una vez cada una.
+      for (const entry of unit.manifest!.validation) {
+        if (!workspaceValidation.some(({ command, result }) => command === entry.command && result === entry.result)) {
+          workspaceValidation.push(entry);
+        }
+      }
     }
+    // El ticket publica la entrega completa, no el archivo textual suelto: las capturas, las
+    // salidas y las validaciones de todos los repositorios se leen como un solo documento.
+    const evidenceReport: CompletionEvidenceReport = {
+      ticketBranch,
+      ...(changedUnits.length === 1 ? { commit: changedUnits[0]!.manifest!.commit } : {}),
+      validation: workspaceValidation,
+      evidence: workspaceEvidence,
+    };
 
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
@@ -2268,7 +2283,7 @@ export class LazyWorkflowCli {
     }
     if (textEvidence) {
       try {
-        await boundary.validateEvidence!(ticket, textEvidence.path);
+        await boundary.validateEvidence!(ticket, textEvidence.path, evidenceReport);
       } catch (error) {
         reportAzureFailure("evidence-not-verifiable", "evidencing", options, `lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: textEvidence.path }, "preserved");
         return 1;
@@ -2289,7 +2304,7 @@ export class LazyWorkflowCli {
 
     const refreshedInfo = await boundary.getTicketInfo!(hu, ticket);
     if (textEvidence && !refreshedInfo.completionEvidence) {
-      await boundary.setEvidence!(ticket, textEvidence.path);
+      await boundary.setEvidence!(ticket, textEvidence.path, evidenceReport);
     }
 
     // Effort has to be reconciled before the completion gates are judged, not after: real-effort and
@@ -2675,6 +2690,10 @@ export class LazyWorkflowCli {
     const delivery = this.githubDelivery;
     if (!delivery) throw new Error("el coordinador GitHub no está habilitado");
     const changed: GitHubWorkspaceUnit[] = [];
+    // El manifest de cada repositorio es lo único que sabe qué se validó y qué se entregó, y el
+    // checkpoint no lo guarda: se conserva aquí para que el PR y el cierre publiquen la evidencia
+    // en vez del texto mínimo. Una recuperación que ya no lee manifests cae en ese texto mínimo.
+    const manifests = new Map<string, GitHubReadyManifest>();
     for (const unit of checkpoint.units) {
       if (checkpoint.receipts[`cleanup:${unit.path}`]) {
         changed.push({ ...unit, changed: unit.changed ?? unit.commit !== null, phase: "cleaning" });
@@ -2682,6 +2701,7 @@ export class LazyWorkflowCli {
         const manifest = await delivery.readManifest(unit.manifestPath, unit.path);
         if (manifest.issue !== checkpoint.issue || manifest.branch !== unit.branch) throw new Error(`el manifest de ${unit.path} no coincide con el Issue o la rama fijados`);
         if (!manifest.evidence?.length) throw new Error(`el manifest de ${unit.path} no contiene evidencia verificable`);
+        manifests.set(unit.path, manifest);
         changed.push({ ...unit, changed: true, commit: manifest.commit, evidence: manifest.evidence, phase: "implementation-ready", receipts: { ...unit.receipts, manifest: { verifiedAt: new Date().toISOString() } } });
       } else {
         const status = await this.git(["status", "--porcelain", "--untracked-files=no"], unit.path);
@@ -2725,7 +2745,7 @@ export class LazyWorkflowCli {
       }
       let pullRequest = currentUnit.pullRequest;
       if (!pullRequest) {
-        await effect(`pull-request:${currentUnit.path}`, currentUnit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, currentUnit.branch, currentUnit.baseBranch!, currentUnit.commit!, currentUnit.path, false, `${checkpoint.repositories[0]!.repository}#${checkpoint.issue}`)).number; });
+        await effect(`pull-request:${currentUnit.path}`, currentUnit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, currentUnit.branch, currentUnit.baseBranch!, currentUnit.commit!, currentUnit.path, false, `${checkpoint.repositories[0]!.repository}#${checkpoint.issue}`, manifests.get(currentUnit.path))).number; });
         currentUnit = { ...currentUnit, pullRequest, receipts: { ...currentUnit.receipts, "pull-request": { verifiedAt: new Date().toISOString() } } };
         checkpoint = { ...checkpoint, units: checkpoint.units.map((candidate) => candidate.path === currentUnit.path ? currentUnit : candidate) };
         await save();
@@ -2789,7 +2809,7 @@ export class LazyWorkflowCli {
       await save();
     }
     const first = delivered[0]!;
-    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path));
+    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path, manifests.get(scope.repositories[0]!.path)));
     for (const changedUnit of changed) {
       const unit = checkpoint.units.find(({ path }) => path === changedUnit.path) ?? changedUnit;
       if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
@@ -3462,7 +3482,7 @@ export class LazyWorkflowCli {
     let pullRequest = checkpoint.pullRequest;
     if (!pullRequest) {
       await effect("pull-request", fixedBranch, async () => {
-        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory);
+        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory, true, `#${checkpoint.issue}`, manifest);
         pullRequest = created.number;
         checkpoint = { ...checkpoint, pullRequest };
       });
@@ -3530,7 +3550,7 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "reconciling", mergeCommit };
     await save();
     if (!checkpoint.receipts["issue-closure"]) {
-      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory));
+      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory, manifest));
     }
     checkpoint = { ...checkpoint, phase: "cleaning" };
     await save();
@@ -4480,9 +4500,15 @@ export class LazyWorkflowCli {
     if (!textEvidence && completionEvidenceMissing) {
       throw new Error("El manifest no contiene evidencia textual para completion-evidence");
     }
+    const evidenceReport: CompletionEvidenceReport = {
+      ticketBranch: manifest.ticketBranch,
+      commit: manifest.commit,
+      validation: manifest.validation,
+      evidence: manifest.evidence,
+    };
     if (textEvidence) {
       try {
-        await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path);
+        await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path, evidenceReport);
       } catch (error) {
         throw new AzureCoordinatedFailureError("evidence-not-verifiable", errorMessage(error), { cause: error });
       }
@@ -4513,7 +4539,7 @@ export class LazyWorkflowCli {
     }
 
     if (textEvidence && completionEvidenceMissing) {
-      await runEffect("evidence", textEvidence.path, () => this.huInfoService!.setEvidence!(options.ticket!, textEvidence.path).then(() => undefined));
+      await runEffect("evidence", textEvidence.path, () => this.huInfoService!.setEvidence!(options.ticket!, textEvidence.path, evidenceReport).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 

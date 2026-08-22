@@ -14,6 +14,8 @@ import {
   type CompletionManifestInput,
   type EvidenceKind,
 } from "./completion-manifest.ts";
+import { renderEvidenceHtml, type EvidenceFile } from "../evidence/evidence-report.ts";
+import { parseHttpCaptures, readHttpCaptures } from "../evidence/http-capture.ts";
 
 export {
   EVIDENCE_KINDS,
@@ -23,6 +25,21 @@ export {
   type EvidenceKind,
 };
 export { TEXT_EVIDENCE_KINDS, findTextEvidence } from "./completion-manifest.ts";
+
+/**
+ * What the coordinator knows about a delivery when it publishes the evidence.
+ *
+ * The completion-evidence field used to receive one file's bytes, because one file is all the
+ * publishing call was given. The rest of the proof — the other captures, the validations that ran,
+ * the branch and commit they ran against — was already in the manifest the coordinator had just
+ * verified, so passing it through is what turns the field from a paste into a document.
+ */
+export interface CompletionEvidenceReport {
+  ticketBranch?: string;
+  commit?: string;
+  validation?: ReadonlyArray<{ command: string; result: string }>;
+  evidence: ReadonlyArray<CompletionManifestEvidence>;
+}
 
 const ORGANIZATION = "https://dev.azure.com/SubdepartamentoSolucionesTI";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
@@ -281,6 +298,23 @@ function hasEvidenceCapture(item: WorkItem): boolean {
   );
 }
 
+/**
+ * Where an already-attached capture can be displayed from inside the field.
+ *
+ * Azure serves a work-item attachment from the relation's own URL, and the web UI appends the file
+ * name so the browser knows what it is receiving. An `<img>` pointing at the bare URL renders as a
+ * broken image in some viewers, which is the whole difference between a ticket that shows its
+ * screenshots and one that merely lists them.
+ */
+function attachmentImageUrl(item: WorkItem, digest: string, name: string): string | null {
+  const relation = (item.relations ?? []).find(({ rel, url, attributes }) =>
+    rel === "AttachedFile" && typeof url === "string" && url.trim().length > 0
+    && attachmentDigest(attributes?.comment) === digest.toLowerCase());
+  const url = relation?.url?.trim();
+  if (!url) return null;
+  return url.includes("?") ? url : `${url}?fileName=${encodeURIComponent(relation?.attributes?.name ?? name)}`;
+}
+
 function number(item: WorkItem, names: readonly string[]): number | undefined {
   for (const name of names) {
     const value = item.fields?.[name];
@@ -524,8 +558,50 @@ function validateEvidenceContent(content: string, kind: EvidenceKind): void {
     if (content.trim() !== JSON.stringify(parsed, null, 2)) {
       throw new Error("La evidencia JSON debe estar pretty-printed con indentación estable");
     }
+    // A ticket shows the endpoint, the headers, the body and the response in tables of their own,
+    // and it can only do that if the file says which is which. Free-form JSON -- a pasted `curl`
+    // transcript, a body with no endpoint -- has nothing to lay out, so the ticket fell back to a
+    // wall of monospace. The shape is required here, where a session can still rewrite the file.
+    parseHttpCaptures(parsed);
   }
 }
+
+const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
+
+function isJson(content: string): boolean {
+  try {
+    JSON.parse(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every browser capture names the screenshot it was taken from, and that screenshot has to be
+ * evidence of this same delivery. Checking it across the manifest -- rather than inside the one
+ * file that names it -- is what keeps an `http-json` capture from pointing at an image nobody
+ * attached, which would publish an exchange with no picture of the browser that performed it.
+ */
+async function requireCaptureScreenshots(
+  evidence: ReadonlyArray<{ path: string; kind: EvidenceKind }>,
+): Promise<void> {
+  const screens = new Set(
+    evidence.filter(({ kind }) => kind === "screen").map(({ path }) => fileName(path).toLowerCase()),
+  );
+  for (const entry of evidence) {
+    if (entry.kind !== "http-json") continue;
+    // A file that is not a capture never reaches here: `validateEvidenceContent` refused it first.
+    for (const { screenshot } of readHttpCaptures(await readUtf8File(resolve(entry.path))) ?? []) {
+      if (!screens.has(screenshot.toLowerCase())) {
+        throw new Error(
+          `La captura ${screenshot} que nombra ${fileName(entry.path)} no está declarada como evidencia screen`,
+        );
+      }
+    }
+  }
+}
+
 
 async function readUtf8File(filePath: string): Promise<string> {
   const file = Bun.file(filePath);
@@ -1157,6 +1233,7 @@ export class AzureTicketInfoService {
       // by which point the pull requests had already merged and there was nothing cheap left to do.
       await this.validateEvidenceFile(resolve(evidence.path), evidence.kind);
     }
+    await requireCaptureScreenshots(input.evidence);
     // A session that types the commit types the wrong one, and the manifest must
     // name what it validated: HEAD is read here unless a commit is pinned.
     const commit = input.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
@@ -1222,6 +1299,7 @@ export class AzureTicketInfoService {
       const digest = await sha256(new Uint8Array(await file.arrayBuffer()));
       if (digest !== expectedDigest) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
     }
+    await requireCaptureScreenshots(manifest.evidence);
   }
 
   /** Un ref ausente no es un fallo que deba propagarse: es la respuesta "no lo tengo". */
@@ -1467,7 +1545,7 @@ export class AzureTicketInfoService {
     await this.readEvidenceFile(filePath, kind);
   }
 
-  async validateEvidence(ticket: number, filePath: string): Promise<void> {
+  async validateEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void> {
     positiveId(ticket, "El ticket");
     const content = await readUtf8File(filePath);
     if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
@@ -1475,12 +1553,20 @@ export class AzureTicketInfoService {
     const item = await this.readWorkItemValidated(ticket);
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
-    if (existing && evidenceTextContent(existing) !== evidenceTextContent(content)) {
+    // The field carries the rendered document, not the file, so "already written" is judged against
+    // what this run would publish. Comparing the raw file against a rendered field turned every
+    // rerun of the same delivery into a conflict nobody could clear.
+    const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
+    if (existing && evidenceTextContent(existing) !== evidenceTextContent(rendered)) {
       throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     }
   }
 
-  async setEvidence(ticket: number, filePath: string): Promise<{ ticket: number; completionEvidence: string }> {
+  async setEvidence(
+    ticket: number,
+    filePath: string,
+    report?: CompletionEvidenceReport,
+  ): Promise<{ ticket: number; completionEvidence: string }> {
     positiveId(ticket, "El ticket");
     const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
     const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -1490,16 +1576,64 @@ export class AzureTicketInfoService {
     await this.readDirectParent(ticket, item);
     const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
-    if (existing && evidenceTextContent(existing) === evidenceTextContent(content)) {
+    const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
+    if (existing && evidenceTextContent(existing) === evidenceTextContent(rendered)) {
       return { ticket, completionEvidence: existing };
     }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     await this.patchWorkItem(item, [{
       op: "test", path: "/rev", value: item.rev,
-    }, { op: "add", path: `/fields/${fieldName}`, value: content }]);
+    }, { op: "add", path: `/fields/${fieldName}`, value: rendered }]);
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  /**
+   * The whole delivery as one readable document, ready for the field.
+   *
+   * The manifest is what makes it whole: the file the caller points at is only the entry that may
+   * populate the field, while the captures, the outputs and the screenshots around it are the rest
+   * of the proof. Screenshots are matched to the attachments already uploaded for this ticket, by
+   * the digest the attachment comment carries, so the field shows the images instead of naming
+   * files a reader cannot open.
+   */
+  private async renderCompletionEvidence(
+    ticket: number,
+    item: WorkItem,
+    filePath: string,
+    content: string,
+    report?: CompletionEvidenceReport,
+  ): Promise<string> {
+    // Without a manifest there is nothing to lay out and no attachment to resolve. The file is
+    // published as it was written, which is what `ticket-evidence-set` has always done for an
+    // operator repairing a delivery by hand with HTML or Markdown source of their own.
+    if (!report) return content;
+    const files: EvidenceFile[] = [];
+    for (const entry of report.evidence) {
+      const name = fileName(entry.path);
+      if (entry.kind === "screen") {
+        files.push({ name, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
+        continue;
+      }
+      // A file the manifest names but this run cannot read must not cost the delivery its evidence:
+      // the entry the caller already read is always available, and the rest is best effort.
+      const decoded = resolve(entry.path) === resolve(filePath) ? content : await readUtf8File(entry.path).catch(() => "");
+      if (decoded.trim()) files.push({ name, kind: entry.kind, content: decoded });
+    }
+    // The entry that populates the field is the one thing the document cannot be missing.
+    if (files.every(({ kind }) => kind === "screen")) {
+      files.push({ name: fileName(filePath), kind: isJson(content) ? "http-json" : "command-output", content });
+    }
+    return renderEvidenceHtml({
+      subject: `Ticket ${ticket}`,
+      facts: [
+        { label: "Rama del ticket", value: report.ticketBranch ?? "" },
+        { label: "Commit", value: report.commit ?? "" },
+      ],
+      validation: [...(report.validation ?? [])],
+      files,
+    });
   }
 
   /**

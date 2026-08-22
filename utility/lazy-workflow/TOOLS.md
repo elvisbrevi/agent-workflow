@@ -104,7 +104,7 @@ lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path
   --evidence <http-json|screen|command-output>:<path> --working-directory <path>
 ```
 
-Four rules govern these:
+Five rules govern these:
 
 - **Optimistic writes.** `ticket-state-set` requires the `--expected-state` it
   will find, and `ticket-effort-set` the `--expected-rev` the ticket was read at,
@@ -123,6 +123,15 @@ Four rules govern these:
   gate runs — so a manifest either lands verifiable or does not land at all. A
   manifest typed by hand is how a delivery ends with `"ticket": "23575"`, a
   `currentCommit` key, or an evidence kind that was never in the enum.
+- **`http-json` evidence is a browser capture.** It is a JSON object with
+  `title`, `screenshot`, a `request` (`method`, `url`, `headers`, optional
+  `body`) and a `response` (`status`, optional `statusText`, `headers`, optional
+  `body`); several exchanges may share one file under a `captures` array. Take it
+  by driving the request in the browser Chrome MCP opens, and pass that
+  screenshot in the same manifest as `screen` evidence. The coordinator renders
+  those fields into the ticket's completion-evidence field as endpoint, header
+  tables, pretty-printed bodies and the screenshot beside them, so a file in any
+  other shape is refused when the manifest is written (ADR-0031).
 
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It
@@ -172,7 +181,11 @@ session produces its manifest in the first place. It fills in what it can verify
 the commit from HEAD, `clean` from the real worktree state, every digest from the
 file — so the only things declared are the ones only the session knows. Its
 `--evidence` paths live **inside** the repository, unlike the Azure manifest's,
-whose evidence must stay out of the worktree.
+whose evidence must stay out of the worktree. The coordinator renders that
+evidence into the pull-request body and into the comment that closes the issue —
+validations, HTTP captures and screenshots as one Markdown document, with the
+images shown from the commit that carries them — so a session names its evidence
+files and never formats or comments them itself.
 
 ## git
 

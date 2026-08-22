@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEXT_EVIDENCE_REQUIRED } from "../src/azure/completion-manifest.ts";
+import { HTTP_CAPTURE_BODY, SCREENSHOT_BYTES, SCREENSHOT_NAME } from "./_helpers/evidence-fixtures.ts";
 import { AzureTicketInfoService } from "../src/azure/ticket-info-service.ts";
 import { GitHubDeliveryService } from "../src/github/github-delivery-service.ts";
 import { runDeterministicTool, type DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
@@ -20,7 +21,7 @@ import { setDefaultReporter } from "../src/output/operator-output.ts";
 
 const COMMIT = "a".repeat(40);
 const OTHER_COMMIT = "b".repeat(40);
-const EVIDENCE_BODY = '{\n  "ok": true\n}\n';
+const EVIDENCE_BODY = HTTP_CAPTURE_BODY;
 
 /** The digest the tool must arrive at, computed here from the bytes rather than copied. */
 const EVIDENCE_DIGEST = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(EVIDENCE_BODY)))]
@@ -75,11 +76,20 @@ async function evidenceFile(name: string, content = EVIDENCE_BODY): Promise<stri
   return path;
 }
 
-/** A real PNG signature: `screen` evidence is judged by its magic bytes, not by its extension. */
 async function screenFile(name: string): Promise<string> {
   const path = join(root, ".git/lazy-workflow", name);
-  await Bun.write(path, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
+  await Bun.write(path, SCREENSHOT_BYTES);
   return path;
+}
+
+/**
+ * The pair a backend delivery leaves behind: the capture and the browser screenshot it names.
+ * They travel together because a capture that names a screenshot nobody declared is refused.
+ */
+async function capturePair(): Promise<string[]> {
+  const capture = await evidenceFile("pago-endpoint.json");
+  const screenshot = await screenFile(SCREENSHOT_NAME);
+  return ["--evidence", `http-json:${capture}`, "--evidence", `screen:${screenshot}`];
 }
 
 const azureArgs = (extra: string[]): string[] => [
@@ -128,9 +138,9 @@ afterEach(() => {
 
 describe("ticket-manifest-set", () => {
   test("escribe el manifest exacto que el validador del coordinador acepta", async () => {
-    const evidence = await evidenceFile("pago-endpoint.json");
+    const evidence = join(root, ".git/lazy-workflow", "pago-endpoint.json");
 
-    const { code, printed } = await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+    const { code, printed } = await runTool(azureArgs([...VALIDATION, ...await capturePair()]));
 
     expect({ code, messages }).toEqual({ code: 0, messages: [] });
     const manifest = await written(manifestPath()) as Record<string, unknown>;
@@ -141,18 +151,42 @@ describe("ticket-manifest-set", () => {
     expect(manifest.ticketBranch).toBe("refs/heads/ticket/23575");
     expect(manifest.commit).toBe(COMMIT);
     expect(manifest.validation).toEqual([{ command: "bun test", result: "198 pass, 0 fail" }]);
-    expect(manifest.evidence).toEqual([{
+    expect((manifest.evidence as unknown[])[0]).toEqual({
       path: evidence,
       kind: "http-json",
       // El digest lo calcula la herramienta leyendo el archivo, no la sesión.
       sha256: EVIDENCE_DIGEST,
-    }]);
+    });
     expect(JSON.parse(printed[0] ?? "null")).toEqual(manifest);
   });
 
-  test("el manifest escrito vuelve a leerse por la misma puerta que usa la entrega", async () => {
+  test("una evidencia http-json que no es una captura del navegador no entra al manifest", async () => {
+    // El campo del ticket muestra endpoint, cabeceras, cuerpo y respuesta en tablas propias, y solo
+    // puede hacerlo si el archivo dice cuál es cuál. Un JSON libre no tiene nada que maquetar, así
+    // que el ticket volvía al muro de monoespaciado que esta forma existe para evitar.
+    const evidence = await evidenceFile("pago-endpoint.json", '{\n  "ok": true\n}\n');
+
+    const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+
+    expect(code).toBe(1);
+    expect(messages[0]).toContain("captura del navegador");
+    expect(await Bun.file(manifestPath()).exists()).toBeFalse();
+  });
+
+  test("una captura que nombra una pantalla no declarada no entra al manifest", async () => {
+    // La captura publicada muestra la imagen del navegador que hizo la petición: si esa imagen no
+    // viaja como evidencia del mismo manifest, el ticket publica un intercambio sin su prueba.
     const evidence = await evidenceFile("pago-endpoint.json");
-    await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+
+    const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+
+    expect(code).toBe(1);
+    expect(messages[0]).toContain(`La captura ${SCREENSHOT_NAME} que nombra pago-endpoint.json no está declarada`);
+    expect(await Bun.file(manifestPath()).exists()).toBeFalse();
+  });
+
+  test("el manifest escrito vuelve a leerse por la misma puerta que usa la entrega", async () => {
+    await runTool(azureArgs([...VALIDATION, ...await capturePair()]));
 
     // Sin stubs: el servicio real relee el archivo real. Si la herramienta y el
     // validador se separaran alguna vez, esto es lo que falla primero.
@@ -164,14 +198,7 @@ describe("ticket-manifest-set", () => {
     // `evidenceDirectory` es el directorio del manifest, dentro del directorio
     // Git común: exigir que la evidencia estuviera fuera del repositorio volvía
     // inverificable todo manifest que siguiera la instrucción del coordinador.
-    const captura = await screenFile("pantalla.png");
-    const salida = await evidenceFile("pago-endpoint.json");
-
-    const { code } = await runTool(azureArgs([
-      ...VALIDATION,
-      "--evidence", `screen:${captura}`,
-      "--evidence", `http-json:${salida}`,
-    ]));
+    const { code } = await runTool(azureArgs([...VALIDATION, ...await capturePair()]));
 
     expect(code).toBe(0);
   });
@@ -277,19 +304,18 @@ describe("ticket-manifest-set", () => {
   });
 
   test("el commit es HEAD salvo que se fije uno explícito", async () => {
-    const evidence = await evidenceFile("pago-endpoint.json");
+    const pair = await capturePair();
 
-    await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+    await runTool(azureArgs([...VALIDATION, ...pair]));
     const porDefecto = await written(manifestPath()) as { commit: string };
-    await runTool(azureArgs([...VALIDATION, "--commit", OTHER_COMMIT, "--evidence", `http-json:${evidence}`]));
+    await runTool(azureArgs([...VALIDATION, "--commit", OTHER_COMMIT, ...pair]));
     const fijado = await written(manifestPath()) as { commit: string };
 
     expect([porDefecto.commit, fijado.commit]).toEqual([COMMIT, OTHER_COMMIT]);
   });
 
   test("un intento fallido deja intacto el manifest que ya estaba escrito", async () => {
-    const evidence = await evidenceFile("pago-endpoint.json");
-    await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${evidence}`]));
+    await runTool(azureArgs([...VALIDATION, ...await capturePair()]));
     const original = await Bun.file(manifestPath()).text();
 
     const { code } = await runTool(azureArgs([...VALIDATION, "--evidence", `http-json:${join(root, "docs/nope.json")}`]));
@@ -302,7 +328,7 @@ describe("ticket-manifest-set", () => {
 describe("github-manifest-set", () => {
   test("escribe exactamente las claves que el validador GitHub permite", async () => {
     const evidence = join(root, "docs/evidence/run.json");
-    await Bun.write(evidence, '{\n  "ok": true\n}\n');
+    await Bun.write(evidence, EVIDENCE_BODY);
 
     const { code, printed } = await runTool(githubArgs([...VALIDATION, "--evidence", evidence]));
 

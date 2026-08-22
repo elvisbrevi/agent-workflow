@@ -6,6 +6,7 @@ import {
   CONTRACT_LITERALS,
   GITHUB_MANIFEST_COMMAND,
   GITHUB_MANIFEST_TOOL_INSTRUCTION,
+  HTTP_EVIDENCE_INSTRUCTION,
   IMPLEMENTATION_READY_MARKER,
   QUESTIONS_ANSWERED_MARKER,
   QUESTIONS_PENDING_MARKER,
@@ -81,6 +82,24 @@ test("el contrato del manifest nombra la herramienta y prohíbe escribir el arch
   // Y la regla que la sesión solo descubría en la última compuerta, con los PR ya mergeados.
   expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}`);
   expect(GITHUB_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${GITHUB_MANIFEST_COMMAND}`);
+});
+
+test("la instrucción de evidencia HTTP nombra el navegador y la forma que el coordinador maqueta", () => {
+  // Sin la forma, una sesión satisfacía "evidencia de endpoint" con un `curl` pegado, y el ticket
+  // publicaba un muro de monoespaciado sin endpoint, sin estado y sin el navegador que lo hizo.
+  expect(HTTP_EVIDENCE_INSTRUCTION).toContain("Chrome MCP");
+  for (const field of ["title", "screenshot", "request", "response", "status", "headers"]) {
+    expect(`${field}: ${HTTP_EVIDENCE_INSTRUCTION.includes(`\`${field}\``)}`).toBe(`${field}: true`);
+  }
+  expect(HTTP_EVIDENCE_INSTRUCTION).toContain(EVIDENCE_KINDS[0]);
+});
+
+test("los prompts de entrega piden la evidencia por el contrato, no por su cuenta", async () => {
+  const directory = new URL("../prompts/", import.meta.url);
+  for (const asset of ["autocode-prompt.md", "github-code-prompt.md"]) {
+    const raw = await Bun.file(new URL(asset, directory)).text();
+    expect(`${asset}: ${raw.includes("{{HTTP_EVIDENCE}}")}`).toBe(`${asset}: true`);
+  }
 });
 
 test("renderContract falla cerrado ante un placeholder desconocido", () => {

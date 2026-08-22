@@ -178,6 +178,44 @@ lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 \
 and `--field <referenceName>=<value>` is repeatable — Azure reference names are
 never inferred from display labels.
 
+Evidence is published as a document, not as the bytes of a file. From the
+verified manifest the coordinator renders one HTML page into the ticket's
+completion-evidence field: the ticket branch and commit, the validations that
+ran, every HTTP exchange as its endpoint, header tables and pretty-printed
+bodies, every command output, and every screenshot shown inline from the
+attachment uploaded for it. A GitHub delivery renders the same document as
+Markdown into the pull-request body and into the comment that closes the issue,
+with the screenshots shown from the commit that carries them.
+
+An `http-json` evidence file is therefore a browser capture with a shape, taken
+by driving the request in the browser Chrome MCP opens:
+
+```json
+{
+  "title": "Reconciliación de un intento de pago",
+  "screenshot": "pantalla.png",
+  "capturedWith": "chrome-devtools-mcp",
+  "request": {
+    "method": "POST",
+    "url": "https://api.example/payment-attempts/42/reconcile",
+    "headers": { "content-type": "application/json", "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" },
+    "body": { "reason": "manual" }
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "headers": { "content-type": "application/json" },
+    "body": { "reconciled": true, "attempt": 42 }
+  }
+}
+```
+
+Several exchanges may share one file under a `captures` array, headers may also
+be written as a list of `{ "name", "value" }` pairs, and the screenshot a capture
+names must travel in the same manifest as `screen` evidence. The shape is
+checked by `ticket-manifest-set`, so a file that cannot be laid out is refused
+while the session that wrote it is still alive to fix it.
+
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not
 allow, and `ticket-effort-set` requires the `--expected-rev` it was read at, so a

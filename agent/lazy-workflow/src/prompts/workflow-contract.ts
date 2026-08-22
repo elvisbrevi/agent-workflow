@@ -53,6 +53,33 @@ export const markerResumePrompt = (marker: string): string => [
 export const AZURE_MANIFEST_COMMAND: typeof AZURE_TOOL_COMMANDS[number] = "ticket-manifest-set";
 export const GITHUB_MANIFEST_COMMAND: typeof GITHUB_TOOL_COMMANDS[number] = "github-manifest-set";
 
+/**
+ * How a session proves an endpoint, spelled once.
+ *
+ * "Sanitized endpoint/parameters/headers/response evidence" was as far as the instruction went, and
+ * a session satisfied it with whatever a terminal had printed: a pasted `curl` transcript, a body
+ * with no endpoint above it, a response nobody could tell from a request. None of that can be laid
+ * out, so the ticket published a wall of monospace and no picture of the browser that performed the
+ * exchange. The shape and its provenance are stated here because the coordinator renders from them.
+ */
+const HTTP_EVIDENCE_KIND: typeof EVIDENCE_KINDS[number] = "http-json";
+const SCREEN_EVIDENCE_KIND: typeof EVIDENCE_KINDS[number] = "screen";
+
+export const HTTP_EVIDENCE_INSTRUCTION = [
+  "Capture HTTP evidence through the Chrome MCP browser rather than pasting a terminal transcript:",
+  "drive the request in the browser Chrome MCP opens, screenshot the exchange it shows, and save that screenshot",
+  `as ${SCREEN_EVIDENCE_KIND} evidence.`,
+  `Write one ${HTTP_EVIDENCE_KIND} file per exchange, pretty-printed with two-space indentation, as a JSON object with`,
+  "`title`, `screenshot` (the file name of that screenshot, with no directory),",
+  "`request` (`method`, `url`, `headers`, and `body` when the request carries one) and",
+  "`response` (`status`, `statusText`, `headers`, and `body` when the response carries one);",
+  "put several exchanges in one file under a `captures` array when they belong together.",
+  "The coordinator publishes those fields as the endpoint, header tables and pretty-printed bodies of the ticket,",
+  "with the screenshot shown beside them, so a file in any other shape is refused when the manifest is written.",
+  `The screenshot a capture names must travel in the same manifest as ${SCREEN_EVIDENCE_KIND} evidence.`,
+  "Never persist credentials, tokens, cookies, authorization header values, or other secrets: name the header and redact its value.",
+].join(" ");
+
 const VALIDATION_FLAGS =
   'one --validation "<command you ran>" with its --validation-result "<the outcome>" per validation, paired in the order you pass them';
 
@@ -114,6 +141,7 @@ const CONTRACT_VALUES: Record<string, string> = {
   GITHUB_MANIFEST_COMMAND,
   AZURE_MANIFEST_TOOL: AZURE_MANIFEST_TOOL_INSTRUCTION,
   GITHUB_MANIFEST_TOOL: GITHUB_MANIFEST_TOOL_INSTRUCTION,
+  HTTP_EVIDENCE: HTTP_EVIDENCE_INSTRUCTION,
 };
 
 /** Marker literals that must never appear hardcoded in a prompt asset. */

@@ -4,6 +4,7 @@ import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git
 import {
   AzureTicketInfoService,
   runAzureCommand,
+  type CompletionEvidenceReport,
   type CompletionManifest,
   type CompletionManifestInput,
   type EvidenceKind,
@@ -140,7 +141,7 @@ export interface AutocodeAzureService {
   writeCompletionManifest(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
   validateCompletionManifest(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
   validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void>;
-  validateEvidence(ticket: number, filePath: string): Promise<void>;
+  validateEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void>;
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket(ticket: number): Promise<DeliveryTicket>;
   getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
@@ -158,7 +159,7 @@ export interface AutocodeAzureService {
   linkPullRequest(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   linkCommit(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
-  setEvidence(ticket: number, filePath: string): Promise<unknown>;
+  setEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown>;
   waitForAccess(hu: number): Promise<void>;
   publishInfrastructureFindings(hu: number, specification: { title: string; body: string }, tickets: Array<{ title: string; body: string }>): Promise<InfrastructurePublication>;
 }
@@ -385,8 +386,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.validateEvidenceFile(filePath, kind);
   }
 
-  validateEvidence(ticket: number, filePath: string): Promise<void> {
-    return this.ticketInfoService.validateEvidence(ticket, filePath);
+  validateEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void> {
+    return this.ticketInfoService.validateEvidence(ticket, filePath, report);
   }
 
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }> {
@@ -457,8 +458,8 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.addAttachment(ticket, filePath, kind);
   }
 
-  setEvidence(ticket: number, filePath: string): Promise<unknown> {
-    return this.ticketInfoService.setEvidence(ticket, filePath);
+  setEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown> {
+    return this.ticketInfoService.setEvidence(ticket, filePath, report);
   }
 
   async getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo> {
