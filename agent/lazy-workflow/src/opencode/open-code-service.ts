@@ -36,7 +36,12 @@ const spawnOpenCode: OpenCodeSpawner = spawnAgentProcess;
 
 const absentSessionPattern = /(?:session|sesion|sesión).*(?:not found|does not exist|no existe)|(?:not found|does not exist|no existe).*(?:session|sesion|sesión)/i;
 const SPINNER_RESTART_MS = 2_000;
-const SPINNER_TEXT = "OpenCode ejecutándose";
+/**
+ * The spinner runs untitled: its animation alone says the agent is still
+ * working, so the phrase it used to carry no longer competes with the event
+ * stream the operator is actually reading.
+ */
+const SPINNER_TEXT = "";
 
 /**
  * The arguments of a tool call as OpenCode reports them. A call may carry them
