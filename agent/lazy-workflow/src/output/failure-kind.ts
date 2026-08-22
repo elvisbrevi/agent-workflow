@@ -44,6 +44,7 @@ export const FAILURE_KIND_SEVERITY = {
   "infrastructure-authentication-required": "error",
   "run-interrupted-signal": "error",
   "run-interrupted-failure": "error",
+  "shutdown-failure": "error",
 } as const satisfies Record<string, "warn" | "error">;
 
 export type FailureKind = keyof typeof FAILURE_KIND_SEVERITY;

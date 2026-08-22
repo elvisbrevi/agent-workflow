@@ -33,8 +33,9 @@ Every use of lazy-workflow, one runnable command each. Inside this directory
 `bun run main.ts <command>` and the globally installed `lazy-workflow <command>`
 are interchangeable. Every command below also accepts the coding agent flags
 (`--cli`, `--model`, `--variant`, `--fallback`) and the reporter flags
-(`--verbose`, `--verbose-output`, `--quiet`, `--no-color`); the sections after
-this one explain the behaviour behind each example. The deterministic tools take
+(`--verbose`, `--verbose-output`, `--quiet`, `--no-color`), and every one of
+them accepts `--off` to power the machine down when the run ends; the sections
+after this one explain the behaviour behind each example. The deterministic tools take
 the reporter flags only: they open no session.
 
 ### Planning
@@ -86,6 +87,9 @@ lazy-workflow code --hu 23438 --base-branch main \
 # Deliver one Azure ticket across a multi-repository workspace
 lazy-workflow code --hu 23438 --ticket 51 \
   --working-directory /path/to/repo-a,/path/to/repo-b
+
+# Drain the queue overnight and power the machine down when the run ends
+lazy-workflow code --off 'MiPassword123' --working-directory /path/to/repository
 ```
 
 ### Resuming an interrupted run
@@ -387,6 +391,45 @@ run is silent unless something fails:
 `--no-color` can be stacked on top of any of the modes above and strips ANSI
 from every line, leaving the stamp, the gutter, the glyph and the message.
 
+## Unattended shutdown
+
+`--off` powers the machine down when the run ends, so an overnight `plan`, a
+drained GitHub queue or a multi-repository Azure delivery does not leave a
+laptop awake until morning (ADR-0030). It is global: every command takes it, and
+the deterministic tools take it too.
+
+```bash
+lazy-workflow code --off 'MiPassword123' --working-directory /repo   # drain the queue, then shut down
+lazy-workflow code -off 'MiPassword123' --working-directory /repo    # the same flag, single dash
+lazy-workflow plan --off 'MiPassword123' --working-directory /repo   # planning ends the same way
+lazy-workflow code --off 'MiPassword123' --off-delay 0 --working-directory /repo   # no grace period
+LAZY_WORKFLOW_OFF_PASSWORD='MiPassword123' lazy-workflow code --off --working-directory /repo
+```
+
+The value is the sudo password, and it reaches `sudo -S shutdown -h now` through
+stdin — never as an argument. A password typed on the command line is still
+visible in `ps` and in the shell history, so `LAZY_WORKFLOW_OFF_PASSWORD` is the
+form to prefer: with `--off` declared and no value, the run reads that variable,
+and with neither it falls back to `sudo -n`, which fails immediately instead of
+waiting on a prompt nobody will answer. Whatever sudo writes back is redacted
+before it is reported.
+
+What ends the machine and what does not:
+
+- The run shuts down whatever its outcome — a failed delivery at 3am is still a
+  run nobody is watching.
+- A run that died on an **argument error** never shuts down: the operator is at
+  the keyboard, having just mistyped a flag.
+- The shutdown announces itself and waits `--off-delay` seconds (15 by default)
+  before running the command. Ctrl-C during that window cancels the shutdown and
+  records the run as interrupted; `--off-delay 0` removes the window.
+- A shutdown that fails is reported as `shutdown-failure` and leaves the run's
+  exit code exactly as it was.
+
+```text
+22/08/26 03:14:07 │ ▲ lazy-workflow: --off apagará el equipo en 15s (Ctrl-C cancela)
+```
+
 ## Run log
 
 Every command also appends to a run log: one JSON Lines file, so a metrics or
@@ -414,8 +457,8 @@ generation (`runs.jsonl.1`); reaching the cap renames the current file to
 Every record is one JSON object per line:
 
 ```json
-{"schema_version":1,"run_id":"…","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code iniciado"}
-{"schema_version":1,"run_id":"…","ts":"2026-08-20T23:12:41.000Z","severity":"info","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"success","exit_code":0,"duration_ms":37210,"context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code finalizado (success)"}
+{"schema_version":2,"run_id":"…","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code iniciado"}
+{"schema_version":2,"run_id":"…","ts":"2026-08-20T23:12:41.000Z","severity":"info","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"success","exit_code":0,"duration_ms":37210,"context":{"issue":263,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/263"},"message":"lazy-workflow code finalizado (success)"}
 ```
 
 The first line of a run is always a `run.started` record and the last is
@@ -486,6 +529,7 @@ instead of one a reader infers from prose. Every kind currently routes to
 | `infrastructure-authentication-required` | error |
 | `run-interrupted-signal` | error |
 | `run-interrupted-failure` | error |
+| `shutdown-failure` | error |
 
 `run-interrupted-signal` and `run-interrupted-failure` are reserved for the
 `run.finished` record a signal or an unhandled exception/rejection produces
@@ -502,9 +546,9 @@ Ctrl-C leaves three records under the same `run_id` — the failure is recorded
 where it happened, and the interruption is recorded separately from it:
 
 ```json
-{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/268"},"message":"lazy-workflow code iniciado"}
-{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:31.000Z","severity":"error","event":"event","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","failure_kind":"session-failure","phase":"implementing","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"no se pudo completar la sesion; ejecucion detenida"}
-{"schema_version":1,"run_id":"r-1","ts":"2026-08-20T23:12:47.000Z","severity":"error","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"interrupted","failure_kind":"run-interrupted-signal","checkpoint":"preserved","duration_ms":43210,"context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"lazy-workflow interrumpido por SIGINT (checkpoint conservado: manifest)"}
+{"schema_version":2,"run_id":"r-1","ts":"2026-08-20T23:12:04.000Z","severity":"info","event":"run.started","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":null,"branch":"issue/268"},"message":"lazy-workflow code iniciado"}
+{"schema_version":2,"run_id":"r-1","ts":"2026-08-20T23:12:31.000Z","severity":"error","event":"event","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","failure_kind":"session-failure","phase":"implementing","context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"no se pudo completar la sesion; ejecucion detenida"}
+{"schema_version":2,"run_id":"r-1","ts":"2026-08-20T23:12:47.000Z","severity":"error","event":"run.finished","command":"code","workflow":"code","provider":"github","cli":"claudecode","model":"claude-sonnet-5","variant":"high","outcome":"interrupted","failure_kind":"run-interrupted-signal","checkpoint":"preserved","duration_ms":43210,"context":{"issue":268,"ticket":null,"hu":null,"repository":"/path/to/repository","session_id":"ses_1","branch":"issue/268"},"message":"lazy-workflow interrumpido por SIGINT (checkpoint conservado: manifest)"}
 ```
 
 The first line is always `run.started`; the last is always `run.finished`,
@@ -1237,6 +1281,7 @@ src/github/             GitHub tracker boundaries for SAG review publication
 src/sag/                SAG norm retrieval and deployment coordination
 src/cli/                Workflow coordination
 src/git/                Verified ticket-branch cleanup
+src/system/             Machine shutdown when a run declares --off
 src/coding-agent/       Coding agent seam: contract, result, process and CLI selection
 src/opencode/           OpenCode execution and JSONL result
 src/claude-code/        Claude Code execution and stream JSON result
