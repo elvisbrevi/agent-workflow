@@ -219,6 +219,11 @@ is still alive to fix it; evidence written before the shape existed still
 publishes, as plain JSON, so a manifest already on disk never becomes
 unpublishable.
 
+A GitHub delivery keeps its evidence in the repository and `github-manifest-set`
+requires every evidence file to be in the commit it names, because the published
+document shows each screenshot from that commit and a file nobody committed
+would be a broken image on an issue already closed.
+
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not
 allow, and `ticket-effort-set` requires the `--expected-rev` it was read at, so a

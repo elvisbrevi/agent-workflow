@@ -362,10 +362,11 @@ An `http-json` evidence file, written as the object the delivery renders from:
 body, and a `response` with its status, headers and optional body. It is taken by
 driving the request in the browser Chrome MCP opens, and the screenshot it names
 travels in the same manifest as `screen` evidence, beside the capture file: the
-two are paired by file name within their directory. The shape is checked when the
-manifest is written and only there, so a file that cannot be laid out is refused
-while the session can still rewrite it, while a manifest that predates the shape
-still publishes.
+two are paired by file name within their directory. `ticket-manifest-set` checks
+the shape when it writes an Azure manifest, and only there, so a file that cannot
+be laid out is refused while the session can still rewrite it, while a manifest
+that predates the shape still publishes — as a plain JSON blob, which is what a
+GitHub delivery also publishes for evidence in any other shape.
 _Avoid_: a pasted `curl` transcript, a body with no endpoint, a capture whose
 screenshot lives somewhere else, the shape demanded at publication
 

@@ -31,13 +31,19 @@ let root: string;
 let messages: string[];
 
 /** A worktree with a Git directory, but no `git`: every command a tool runs is answered here. */
-function gitRunner(overrides: { head?: string; status?: string; branch?: string } = {}) {
+function gitRunner(overrides: { head?: string; status?: string; branch?: string; untracked?: string[] } = {}) {
   return async (args: string[]): Promise<string> => {
     if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return ".git\n";
     if (args[0] === "rev-parse") return `${overrides.head ?? COMMIT}\n`;
     if (args[0] === "status") return overrides.status ?? "";
     if (args[0] === "symbolic-ref") return `${overrides.branch ?? "ticket/23575"}\n`;
     if (args[0] === "merge-base") return "";
+    // `cat-file -e <commit>:<path>` responde por exit code, que GitRunner convierte en throw.
+    if (args[0] === "cat-file") {
+      const path = args[2]?.split(":")[1] ?? "";
+      if ((overrides.untracked ?? []).includes(path)) throw new Error(`path '${path}' does not exist`);
+      return "";
+    }
     throw new Error(`unexpected git command: ${args.join(" ")}`);
   };
 }
@@ -356,6 +362,23 @@ describe("github-manifest-set", () => {
       sha256: EVIDENCE_DIGEST,
     }]);
     expect(JSON.parse(printed[0] ?? "null")).toEqual(manifest);
+  });
+
+  test("la evidencia que el commit no lleva se rechaza antes de dejar una imagen rota", async () => {
+    // El comentario de cierre publica cada captura desde `blob/<commit>/<ruta>`: un archivo que la
+    // sesión escribió pero no comiteó deja una imagen rota para siempre en un Issue ya cerrado, y
+    // `git status --untracked-files=no` no lo ve. Se le pregunta al commit, con la sesión viva.
+    const evidence = join(root, "docs/evidence/run.json");
+    await Bun.write(evidence, EVIDENCE_BODY);
+
+    const { code } = await runTool(
+      githubArgs([...VALIDATION, "--evidence", evidence]),
+      gitRunner({ untracked: ["docs/evidence/run.json"] }),
+    );
+
+    expect(code).toBe(1);
+    expect(messages[0]).toContain("La evidencia del manifest no está en el commit: ");
+    expect(await Bun.file(join(root, ".git/manifest.json")).exists()).toBeFalse();
   });
 
   test("una entrega sin evidencia omite la clave en vez de escribirla vacía", async () => {

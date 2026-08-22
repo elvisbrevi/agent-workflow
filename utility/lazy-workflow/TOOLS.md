@@ -132,8 +132,8 @@ Five rules govern these:
   capture file — the two are paired by file name within their directory. The
   coordinator renders those fields into the ticket's completion-evidence field as
   endpoint, header tables, pretty-printed bodies and the screenshot beside them,
-  so a file in any other shape is refused when the manifest is written — and only
-  then, so a manifest already on disk stays publishable (ADR-0031).
+  so `ticket-manifest-set` refuses a file in any other shape — and only that tool
+  does, so a manifest already on disk stays publishable (ADR-0031).
 
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It
@@ -183,7 +183,9 @@ session produces its manifest in the first place. It fills in what it can verify
 the commit from HEAD, `clean` from the real worktree state, every digest from the
 file — so the only things declared are the ones only the session knows. Its
 `--evidence` paths live **inside** the repository, unlike the Azure manifest's,
-whose evidence must stay out of the worktree. The coordinator renders that
+whose evidence must stay out of the worktree — and they must be in the commit the
+manifest names, because the published document shows each screenshot from that
+commit. The coordinator renders that
 evidence into the pull-request body and into the comment that closes the issue —
 validations, HTTP captures and screenshots as one Markdown document, with the
 images shown from the commit that carries them — so a session names its evidence

@@ -151,30 +151,55 @@ function referencesIssue(body: string, issue: number): boolean {
  * declaration there is, so it is the one the renderer reads.
  */
 function githubEvidenceKind(path: string): EvidenceKind {
-  if (/\.(?:png|jpe?g|webp)$/i.test(path)) return "screen";
+  if (/\.(?:png|jpe?g|gif|webp)$/i.test(path)) return "screen";
   return /\.json$/i.test(path) ? "http-json" : "command-output";
 }
+
+/**
+ * Whether a file's decoded bytes are text a comment can carry.
+ *
+ * The extension decides the kind, and no list of extensions ever names every binary a repository
+ * holds: a `.pdf`, an `.mp4` or a font declared as evidence decodes into control characters and
+ * replacement marks, and eight thousand of them fenced into a pull request is worse than the file
+ * being left out. The bytes answer for themselves.
+ */
+const readsAsText = (content: string): boolean => !/[\u0000-\u0008\u000e-\u001f\ufffd]/.test(content);
 
 /** Where a repository file can be shown from, pinned to the commit that carries it. */
 const blobUrl = (repository: string, commit: string, path: string): string =>
   `https://github.com/${repository}/blob/${commit}/${path.split("/").map(encodeURIComponent).join("/")}?raw=1`;
 
 /**
- * A GitHub comment has a size of its own, and evidence can be long. Cutting at a section boundary
- * is what keeps a truncated document readable: a cut inside a fenced block leaves the rest of the
- * comment rendered as code.
+ * A GitHub comment has a size of its own, and evidence can be long. What is left after the cut has
+ * to stay readable, so the cut lands on a heading — any level the document uses, since a capture is
+ * a `####` and cutting only at `###` threw away every capture that fit — and it has to be a heading
+ * this document emitted: an evidence file whose own content starts a line with `## ` would
+ * otherwise move the cut inside a fenced block and render the rest of the comment as code.
+ *
+ * The budget is the report's alone. What is added around it — the summary, the marker, the issue
+ * reference — is bounded separately and stays outside, so the assembled body cannot outgrow what
+ * GitHub accepts however long a session's own summary runs.
  */
-const MAX_COMMENT_CHARACTERS = 55000;
+const MAX_REPORT_CHARACTERS = 55000;
+const MAX_SUMMARY_CHARACTERS = 1000;
 
 function capMarkdown(body: string): string | null {
-  if (body.length <= MAX_COMMENT_CHARACTERS) return body;
-  // Any heading the document uses, not just the top level: cutting only at `###` threw away every
-  // capture that fit, because a capture is a `####` inside the section the cut fell back to.
-  const headings = [...body.slice(0, MAX_COMMENT_CHARACTERS).matchAll(/\n#{2,4} /g)];
-  const boundary = headings.at(-1)?.index ?? -1;
+  if (body.length <= MAX_REPORT_CHARACTERS) return body;
+  let offset = 0;
+  let fenced = false;
+  let boundary = -1;
+  for (const line of body.split("\n")) {
+    if (offset > MAX_REPORT_CHARACTERS) break;
+    if (/^`{3,}/.test(line)) fenced = !fenced;
+    else if (!fenced && offset > 0 && /^#{2,4} /.test(line)) boundary = offset;
+    offset += line.length + 1;
+  }
   if (boundary <= 0) return null;
-  return `${body.slice(0, boundary)}\n\n_(evidencia truncada; el resto vive en el repositorio)_`;
+  return `${body.slice(0, boundary)}\n_(evidencia truncada; el resto vive en el repositorio)_`;
 }
+
+/** A summary is a sentence about the delivery; a body that quotes it must not depend on that. */
+const summaryOf = ({ summary }: GitHubReadyManifest): string => summary.slice(0, MAX_SUMMARY_CHARACTERS);
 
 function validationResultIsNotFailure(result: string): boolean {
   return !/^(?:fail(?:ed|ure)?|error)(?:\b|:)/i.test(result.trim()) && !/^exit\s+[1-9]/i.test(result.trim());
@@ -347,8 +372,18 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       if (outsideRepository || !await Bun.file(evidencePath).exists()) {
         throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${declared}`);
       }
+      // Evidence is published from the commit (`blob/<commit>/<path>?raw=1`), so a file the commit
+      // does not carry leaves a permanently broken image on an issue already closed. A clean
+      // worktree does not answer this: `--untracked-files=no` cannot see a file that was never
+      // added. Ask the commit itself, here, where the session can still commit what it wrote.
+      const trackedPath = relativePath.split(sep).join("/");
+      try {
+        await this.git(["cat-file", "-e", `${commit}:${trackedPath}`], workingDirectory);
+      } catch {
+        throw new Error(`La evidencia del manifest no está en el commit: ${declared}`);
+      }
       evidence.push({
-        path: relativePath,
+        path: trackedPath,
         sha256: createHash("sha256").update(new Uint8Array(await Bun.file(evidencePath).arrayBuffer())).digest("hex"),
       });
     }
@@ -399,7 +434,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     );
     // The reference is what ties the pull request to its issue, and every later check reads it back
     // out of the body: it is added around the report so no truncation can ever drop it.
-    const body = report ? [reference, "", manifest!.summary, "", report].join("\n") : reference;
+    const body = report ? [reference, "", summaryOf(manifest!), "", report].join("\n") : reference;
     const created = await this.gh([
       "pr", "create", "--repo", name, "--base", base, "--head", head,
       "--title", `Issue #${issue}`, "--body", body,
@@ -541,7 +576,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       );
       // The marker stays in the body it always was, because a rerun still recognises the delivery
       // by it; it is added around the report so no truncation can drop it.
-      const body = report ? [report, "", evidence!.manifest.summary, "", marker].join("\n") : marker;
+      const body = report ? [report, "", summaryOf(evidence!.manifest), "", marker].join("\n") : marker;
       await this.gh(["issue", "comment", `${issue}`, "--body", body], workingDirectory);
     }
     await this.gh(["issue", "close", `${issue}`], workingDirectory);
@@ -578,7 +613,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
         }
         // A file that cannot be read is worth less than the rest of the document is worth losing.
         const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
-        if (content.trim()) files.push({ name: path, path, kind, content });
+        if (content.trim() && readsAsText(content)) files.push({ name: path, path, kind, content });
       }
       return capMarkdown(renderEvidenceMarkdown({ subject, facts, validation: manifest.validation, files }));
     } catch {

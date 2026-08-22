@@ -75,7 +75,7 @@ export const HTTP_EVIDENCE_INSTRUCTION = [
   "`response` (`status`, `statusText`, `headers`, and `body` when the response carries one);",
   "put several exchanges in one file under a `captures` array when they belong together.",
   "The coordinator publishes those fields as the endpoint, header tables and pretty-printed bodies of the ticket,",
-  "with the screenshot shown beside them, so a file in any other shape is refused when the manifest is written.",
+  "with the screenshot shown beside them; a file in any other shape publishes as a plain JSON blob nobody can read.",
   `The screenshot a capture names must travel in the same manifest as ${SCREEN_EVIDENCE_KIND} evidence,`,
   "written beside the capture file itself: the two are paired by file name within their directory,",
   "so a screenshot somewhere else is a screenshot no capture can show.",
@@ -93,6 +93,7 @@ export const AZURE_MANIFEST_TOOL_INSTRUCTION = [
   // the last gate, once its pull requests have already merged.
   `At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}: screenshots alone cannot satisfy the ticket's completion-evidence field.`,
   "It resolves the commit from HEAD and computes every SHA-256 digest itself, and it refuses to write a manifest the coordinator would reject.",
+  `It also refuses an ${HTTP_EVIDENCE_KIND} file that is not a browser capture, or a capture whose screenshot is not declared beside it.`,
   "If it fails, fix exactly what its message names and run it again.",
 ].join(" ");
 

@@ -92,6 +92,10 @@ test("la instrucción de evidencia HTTP nombra el navegador y la forma que el co
     expect(`${field}: ${HTTP_EVIDENCE_INSTRUCTION.includes(`\`${field}\``)}`).toBe(`${field}: true`);
   }
   expect(HTTP_EVIDENCE_INSTRUCTION).toContain(EVIDENCE_KINDS[0]);
+  // La forma se exige donde se exige: el prompt compartido describe el documento que el
+  // coordinador arma, y la herramienta Azure es la que dice que rechaza lo demás.
+  expect(HTTP_EVIDENCE_INSTRUCTION).not.toContain("refused");
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`refuses an ${EVIDENCE_KINDS[0]} file that is not a browser capture`);
 });
 
 test("los prompts de entrega piden la evidencia por el contrato, no por su cuenta", async () => {

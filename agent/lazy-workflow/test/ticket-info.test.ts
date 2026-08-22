@@ -1990,7 +1990,6 @@ test("la evidencia que una versión anterior dejó en crudo se reconoce como pro
     });
     const report = {
       ticketBranch: "refs/heads/ticket/51",
-      commit: "a".repeat(40),
       validation: [{ command: "bun test", result: "198 pass" }],
       evidence: [{ path, kind: "command-output" as const, sha256: "a".repeat(64) }],
     };
@@ -2029,7 +2028,6 @@ test("completion-evidence publica un documento con las secciones que un lector b
 
     await service.setEvidence(51, capture, {
       ticketBranch: "refs/heads/ticket/51",
-      commit: "a".repeat(40),
       validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
       evidence: [
         { path: capture, kind: "http-json", sha256: await digest(await Bun.file(capture).arrayBuffer()) },
@@ -2043,6 +2041,11 @@ test("completion-evidence publica un documento con las secciones que un lector b
     expect(published).toContain("https://api.test/payment-attempts/42/reconcile");
     expect(published).toContain("200 OK");
     expect(published).toContain("Cabecera de la respuesta");
+    expect(published).toContain("refs/heads/ticket/51");
+    // El commit no: una entrega transversal tiene uno por repositorio y una de repositorio único
+    // tiene exactamente uno, así que nombrarlo hacía que el mismo ticket rindiera dos documentos
+    // distintos según qué ruta publicara, y la segunda leía a la primera como conflicto.
+    expect(published).not.toContain("a".repeat(40));
     // La captura del navegador se muestra desde el adjunto que el ticket ya tiene, no se nombra.
     expect(published).toContain(`<img src="https://example.test/_apis/wit/attachments/abc?fileName=${SCREENSHOT_NAME}"`);
   } finally {

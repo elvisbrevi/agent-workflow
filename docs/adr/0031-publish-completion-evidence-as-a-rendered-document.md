@@ -43,13 +43,30 @@ pasted `curl` transcript, a body with no endpoint above it, a response
 indistinguishable from a request. Nothing in that can be put in one table rather
 than another, so the field fell back to a wall of monospace.
 
-The shape is demanded when the manifest is written, and there only. That is the
+The shape is demanded when an Azure manifest is written, and there only. That is the
 one moment the session is still alive to rewrite the file, and it is also the
 reason the demand must not become a condition of publication: a manifest written
 before the shape existed would then fail at a gate reached with the pull requests
 already merged — the precise unrecoverable ending this contract exists to
 prevent. Evidence in any other form still publishes, as pretty-printed JSON
-rather than as a laid-out exchange.
+rather than as a laid-out exchange — which is also what a GitHub delivery does,
+since there the file kind is read off an extension and a `.json` that is not a
+capture may be perfectly good evidence of something else.
+
+The document names no commit. A transversal delivery has one merge commit per
+repository and a single-repository one has exactly one, so a commit among the
+document's facts made the same ticket render two different documents depending on
+which publication path reached it — and the second to run would then read the
+first's evidence as a conflict it could never clear. Every merge commit is
+already on the work item as the native artifact link a completion gate requires,
+so the field loses nothing by not repeating it.
+
+GitHub evidence must be in the commit its manifest names. The published document
+shows each screenshot from that commit, and a clean worktree does not answer the
+question: `git status --untracked-files=no` cannot see a file that was never
+added, so evidence a session wrote but did not commit would leave a permanently
+broken image on an issue already closed. The commit is asked directly, at the
+writing gate, where committing it is still possible.
 
 The screenshot requirement follows the same reasoning as the evidence rule it
 extends (ADR-0008): evidence of an endpoint is trustworthy when a human can see
@@ -67,9 +84,13 @@ keeps its caption — identical to the one it carries once attached, so the same
 delivery rendered before and after its upload cannot read as two different
 values — a file that cannot be read is left out rather than propagated as a
 failure, a repository that cannot be resolved gives up the document rather than
-publishing images that point nowhere, and a GitHub comment that would exceed what
-GitHub accepts is cut at a heading boundary, with the marker that a rerun
-recognises and the issue reference that ties a pull request to its issue added
-around the cut so no truncation can drop either. For the same reason a ticket
+publishing images that point nowhere, a file whose bytes do not decode as text is
+left out rather than fenced into a comment as noise, and a GitHub comment that
+would exceed what GitHub accepts is cut at a heading the document itself emitted
+— tracked past its own fenced blocks, so a cut never lands inside one — with the
+bounded summary, the marker that a rerun recognises and the issue reference that
+ties a pull request to its issue all added around the cut, so no truncation can
+drop any of them and no session's summary can push the body past what GitHub
+accepts. For the same reason a ticket
 completed before the field carried a document is recognised by the raw bytes it
 still holds, and not reported as a conflict against evidence it already has.

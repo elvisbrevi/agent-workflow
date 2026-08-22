@@ -36,8 +36,6 @@ export { TEXT_EVIDENCE_KINDS, findTextEvidence } from "./completion-manifest.ts"
  */
 export interface CompletionEvidenceReport {
   ticketBranch?: string;
-  /** Absent when the delivery spans repositories and no single commit describes it. */
-  commit?: string;
   validation: ReadonlyArray<{ command: string; result: string }>;
   evidence: ReadonlyArray<CompletionManifestEvidence>;
 }
@@ -1647,10 +1645,13 @@ export class AzureTicketInfoService {
     }
     return renderEvidenceHtml({
       subject: `Ticket ${ticket}`,
-      facts: [
-        { label: "Rama del ticket", value: report.ticketBranch ?? "" },
-        { label: "Commit", value: report.commit ?? "" },
-      ],
+      // The commit is deliberately not among them. A transversal delivery has one per repository
+      // and a single-repository one has exactly one, so naming it here made the same ticket render
+      // two different documents depending on which path published it -- and the second one to run
+      // would then read the first one's evidence as a conflict it could never clear. The ticket
+      // already carries every merge commit natively, as the artifact link a completion gate
+      // requires, so the field loses nothing by not repeating it.
+      facts: [{ label: "Rama del ticket", value: report.ticketBranch ?? "" }],
       validation: [...report.validation],
       files,
     });

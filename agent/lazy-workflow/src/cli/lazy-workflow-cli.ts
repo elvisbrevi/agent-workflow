@@ -2255,7 +2255,6 @@ export class LazyWorkflowCli {
     // salidas y las validaciones de todos los repositorios se leen como un solo documento.
     const evidenceReport: CompletionEvidenceReport = {
       ticketBranch,
-      ...(changedUnits.length === 1 ? { commit: changedUnits[0]!.manifest!.commit } : {}),
       validation: workspaceValidation,
       evidence: workspaceEvidence,
     };
@@ -4509,7 +4508,6 @@ export class LazyWorkflowCli {
     }
     const evidenceReport: CompletionEvidenceReport = {
       ticketBranch: manifest.ticketBranch,
-      commit: manifest.commit,
       validation: manifest.validation,
       evidence: manifest.evidence,
     };
