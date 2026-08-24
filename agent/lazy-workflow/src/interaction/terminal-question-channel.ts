@@ -46,7 +46,6 @@ export function openTerminalIo(): TerminalIo {
   }
 }
 
-/** Reads one line at a time off a stream that stays open between rounds. */
 /**
  * The two calls this reader needs. Structural rather than a named reader type,
  * because Bun's own declaration and the `node:stream/web` one differ in members
@@ -57,34 +56,89 @@ interface StreamReader {
   cancel(): Promise<unknown>;
 }
 
+interface ReadCancellation {
+  readonly promise: Promise<void>;
+  readonly cancelled: boolean;
+}
+
+class ReadLineCancelledError extends Error {
+  constructor() {
+    super("La lectura de la ronda fue cancelada");
+    this.name = "ReadLineCancelledError";
+  }
+}
+
+/** Reads one line at a time off a stream that stays open between rounds. */
 class LineReader {
   private readonly reader: StreamReader;
   private readonly decoder = new TextDecoder();
   private buffer = "";
+  private reading: Promise<void> | null = null;
+  private ended = false;
+  private closed = false;
 
   constructor(stream: ReadableStream<Uint8Array>) {
     this.reader = stream.getReader() as StreamReader;
   }
 
-  async readLine(): Promise<string | null> {
+  async readLine(cancellation?: ReadCancellation): Promise<string | null> {
     for (;;) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline >= 0) {
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
-        return line.replace(/\r$/, "");
-      }
-      const { done, value } = await this.reader.read();
-      if (done) {
+      if (cancellation?.cancelled) throw new ReadLineCancelledError();
+
+      const line = this.takeLine();
+      if (line !== undefined) return line;
+      if (this.ended) {
         const rest = this.buffer;
         this.buffer = "";
         return rest.length > 0 ? rest : null;
       }
+
+      const reading = this.readChunk();
+      if (cancellation) {
+        await Promise.race([
+          reading,
+          cancellation.promise.then(() => { throw new ReadLineCancelledError(); }),
+        ]);
+      } else {
+        await reading;
+      }
+    }
+  }
+
+  private takeLine(): string | undefined {
+    const newline = this.buffer.indexOf("\n");
+    if (newline < 0) return undefined;
+    const line = this.buffer.slice(0, newline);
+    this.buffer = this.buffer.slice(newline + 1);
+    return line.replace(/\r$/, "");
+  }
+
+  private readChunk(): Promise<void> {
+    if (this.reading) return this.reading;
+    const reading = this.readChunkFromStream();
+    this.reading = reading;
+    void reading.finally(() => {
+      if (this.reading === reading) this.reading = null;
+    });
+    return reading;
+  }
+
+  private async readChunkFromStream(): Promise<void> {
+    try {
+      const { done, value } = await this.reader.read();
+      if (done) {
+        this.ended = true;
+        return;
+      }
       this.buffer += this.decoder.decode(value, { stream: true });
+    } catch {
+      this.ended = true;
     }
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    this.ended = true;
     try {
       await this.reader.cancel();
     } catch {
@@ -110,7 +164,23 @@ export class TerminalQuestionChannel implements QuestionChannel {
 
   async ask(round: QuestionRound): Promise<QuestionAnswers> {
     if (this.closed) throw new QuestionChannelUnavailableError("El canal terminal de preguntas ya fue cerrado");
-    return withRoundDeadline(round, this.settings.timeoutSeconds, this.deps.deadline, this.prompt(round));
+    let cancelRead = () => undefined;
+    const cancellation: { cancelled: boolean; promise: Promise<void> } = {
+      cancelled: false,
+      promise: new Promise<void>((resolve) => {
+        cancelRead = () => {
+          cancellation.cancelled = true;
+          resolve();
+        };
+      }),
+    };
+    const deadline = (milliseconds: number) => {
+      const pending = this.deps.deadline(milliseconds);
+      void pending.expired.then(cancelRead);
+      return pending;
+    };
+    const prompted = this.prompt(round, cancellation);
+    return withRoundDeadline(round, this.settings.timeoutSeconds, deadline, prompted);
   }
 
   async close(): Promise<void> {
@@ -119,7 +189,7 @@ export class TerminalQuestionChannel implements QuestionChannel {
     await this.lines.close();
   }
 
-  private async prompt(round: QuestionRound): Promise<QuestionAnswers> {
+  private async prompt(round: QuestionRound, cancellation: ReadCancellation): Promise<QuestionAnswers> {
     const given: PlanAnswer[] = [];
     for (const [index, question] of round.questions.entries()) {
       this.deps.reporter.info(`Ronda ${round.round} · pregunta ${index + 1}/${round.questions.length}: ${question.question}`);
@@ -130,7 +200,7 @@ export class TerminalQuestionChannel implements QuestionChannel {
       this.deps.reporter.info(`  recomendación: ${question.recommended}`);
       this.io.write("> ");
 
-      const line = await this.lines.readLine();
+      const line = await this.lines.readLine(cancellation);
       if (line === null) {
         throw new QuestionChannelUnavailableError("La terminal se cerró durante la ronda de preguntas");
       }
