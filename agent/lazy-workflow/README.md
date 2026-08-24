@@ -178,6 +178,60 @@ lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 \
 and `--field <referenceName>=<value>` is repeatable — Azure reference names are
 never inferred from display labels.
 
+Evidence is published as a document, not as the bytes of a file. From the
+verified manifest the coordinator renders one HTML page into the ticket's
+completion-evidence field: the ticket branch and commit, the validations that
+ran, every HTTP exchange as its endpoint, header tables and pretty-printed
+bodies, every command output, and every screenshot shown inline from the
+attachment uploaded for it. A GitHub delivery renders the same document as
+Markdown into the pull-request body and into the comment that closes the issue,
+with the screenshots shown from the commit that carries them.
+
+An `http-json` evidence file is therefore a browser capture with a shape, taken
+by driving the request in the browser Chrome MCP opens:
+
+```json
+{
+  "title": "Reconciliación de un intento de pago",
+  "screenshot": "pantalla.png",
+  "capturedWith": "chrome-devtools-mcp",
+  "request": {
+    "method": "POST",
+    "url": "https://api.example/payment-attempts/42/reconcile",
+    "headers": { "content-type": "application/json", "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" },
+    "body": { "reason": "manual" }
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "headers": { "content-type": "application/json" },
+    "body": { "reconciled": true, "attempt": 42 }
+  }
+}
+```
+
+Several exchanges may share one file under a `captures` array, and the screenshot
+a capture names must travel in the same manifest as `screen` evidence, written
+beside the capture file: the two are paired by file name within their directory,
+so two repositories of one delivery can both call theirs `pantalla.png`. The
+shape is checked by `ticket-manifest-set`, where the session that wrote the file
+is still alive to fix it; evidence written before the shape existed still
+publishes, as plain JSON, so a manifest already on disk never becomes
+unpublishable.
+
+Both documents end by naming the evidence files they were rendered from, with the
+first twelve characters of each file's SHA-256. That is how a rerun recognises
+evidence it published itself: the same proof renders differently depending on how
+much of it the publishing path could see, so the digests answer where the text
+cannot.
+
+A GitHub delivery keeps its evidence in the repository and `github-manifest-set`
+requires every evidence file to be in the commit it names, because the published
+document shows each screenshot from that commit and a file nobody committed
+would be a broken image on an issue already closed. It refuses evidence carrying
+a credential for the same reason the Azure ticket does: the pull-request body and
+the closing comment now carry that file's own text.
+
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not
 allow, and `ticket-effort-set` requires the `--expected-rev` it was read at, so a

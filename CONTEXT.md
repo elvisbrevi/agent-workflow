@@ -356,6 +356,31 @@ delivery reads the evidence of every changed repository as one set, so the
 textual entry may live in any of them.
 _Avoid_: a manifest of screenshots alone, evidence read from one repository only
 
+**Browser HTTP capture**:
+An `http-json` evidence file, written as the object the delivery renders from:
+`title`, `screenshot`, a `request` with its method, URL, headers and optional
+body, and a `response` with its status, headers and optional body. It is taken by
+driving the request in the browser Chrome MCP opens, and the screenshot it names
+travels in the same manifest as `screen` evidence, beside the capture file: the
+two are paired by file name within their directory. `ticket-manifest-set` checks
+the shape when it writes an Azure manifest, and only there, so a file that cannot
+be laid out is refused while the session can still rewrite it, while a manifest
+that predates the shape still publishes — as a plain JSON blob, which is what a
+GitHub delivery also publishes for evidence in any other shape.
+_Avoid_: a pasted `curl` transcript, a body with no endpoint, a capture whose
+screenshot lives somewhere else, the shape demanded at publication
+
+**Rendered completion evidence**:
+The single document the coordinator publishes from a verified manifest: the
+delivery's identities, the validations that ran, every capture as endpoint,
+header tables and pretty-printed bodies, every command output, and every
+screenshot shown inline. It is written as HTML into an Azure ticket's
+completion-evidence field, and as Markdown into a GitHub pull-request body and
+the comment that closes the issue. The session produces content; the coordinator
+produces presentation.
+_Avoid_: a session formatting the field itself, the raw bytes of one file as the
+whole evidence, screenshots attached but referenced by nobody
+
 **Aggregate workspace manifest**:
 The validated proof, written to the workspace state directory once every changed
 repository carries a delivery receipt and every tracker gate passes, that a whole

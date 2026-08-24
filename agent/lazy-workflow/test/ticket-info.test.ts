@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { HTTP_CAPTURE_BODY, SCREENSHOT_BYTES, SCREENSHOT_NAME } from "./_helpers/evidence-fixtures.ts";
 
 const branch = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438";
 
@@ -540,7 +541,7 @@ test("linking a participant merge commit is idempotent and keeps the primary Fix
 
 test("attachment validation records a digest and retries by digest", async () => {
   const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-evidence-${crypto.randomUUID()}.json`;
-  await Bun.write(path, '{\n  "status": "ok"\n}\n');
+  await Bun.write(path, HTTP_CAPTURE_BODY);
   let attached = false;
   let uploads = 0;
   // Azure keeps only its own relation attributes, so the fake persists name and comment and drops
@@ -1299,19 +1300,32 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
 });
 
 test("completion apply reconciles missing effects before moving the ticket to Done", async () => {
-  const evidencePath = `/tmp/lazy-workflow-completion-${crypto.randomUUID()}.json`;
+  // La captura se empareja por nombre de archivo dentro de su directorio, así que la evidencia
+  // HTTP y la pantalla que nombra viven juntas, como el prompt le pide a la sesión.
+  const evidenceRoot = mkdtempSync(join(tmpdir(), "lazy-workflow-capture-"));
+  const evidencePath = join(evidenceRoot, "pago-endpoint.json");
+  const screenshotPath = join(evidenceRoot, SCREENSHOT_NAME);
   const manifestPath = `/tmp/lazy-workflow-manifest-${crypto.randomUUID()}.json`;
   const commit = "a".repeat(40);
-  const evidence = '{\n  "ok": true\n}\n';
-  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(evidence)))]
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const evidence = HTTP_CAPTURE_BODY;
+  const hex = (bytes: ArrayBuffer): string =>
+    [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const digest = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(evidence)));
+  // La captura que el http-json nombra viaja en el mismo manifest: sin ella la evidencia publica
+  // un intercambio del que nadie puede ver el navegador que lo hizo.
+  const screenshotDigest = hex(await crypto.subtle.digest("SHA-256", SCREENSHOT_BYTES));
   await Bun.write(evidencePath, evidence);
+  await Bun.write(screenshotPath, SCREENSHOT_BYTES);
+  const manifestEvidence = [
+    { path: evidencePath, kind: "http-json", sha256: digest },
+    { path: screenshotPath, kind: "screen", sha256: screenshotDigest },
+  ];
   await Bun.write(manifestPath, JSON.stringify({
     ticket: 51,
     ticketBranch: "refs/heads/ticket/51",
     commit,
     validation: [{ command: "bun test", result: "18 passed" }],
-    evidence: [{ path: evidencePath, kind: "http-json", sha256: digest }],
+    evidence: manifestEvidence,
   }));
 
   const calls: string[] = [];
@@ -1356,7 +1370,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
           ticketBranch: "refs/heads/ticket/51",
           commit,
           validation: [{ command: "bun test", result: "18 passed" }],
-          evidence: [{ path: evidencePath, kind: "http-json", sha256: digest }],
+          evidence: manifestEvidence,
         };
       }
 
@@ -1416,10 +1430,11 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
       "--manifest", manifestPath, "--working-directory", process.cwd(),
     ])).resolves.toBe(0);
-    expect(calls).toEqual(["pr", "commit", "attachment", "evidence", "state"]);
+    // Una por evidencia: la captura HTTP y la pantalla del navegador que la respalda.
+    expect(calls).toEqual(["pr", "commit", "attachment", "attachment", "evidence", "state"]);
   } finally {
-    await unlink(evidencePath);
     await unlink(manifestPath);
+    rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });
 
@@ -1827,6 +1842,8 @@ test("la compuerta de evidencia lee el digest del comment, no de un atributo que
 function completionEvidenceService(options: {
   definedFields: string[];
   existing?: string;
+  /** Relations the ticket already carries, so a published document can point at real attachments. */
+  attachments?: unknown[];
   onPatch?: (body: unknown[]) => void;
 }) {
   const stored: Record<string, string> = options.existing
@@ -1842,7 +1859,10 @@ function completionEvidenceService(options: {
       id: 51,
       rev: 4,
       fields: { "System.WorkItemType": "Task", ...stored },
-      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
+        ...(options.attachments ?? []),
+      ],
     });
     if (args[0] === "rest" && args.includes("get")) {
       // The project defines only some of the candidate reference names; Azure answers TF51535 for
@@ -1895,15 +1915,34 @@ test("completion-evidence falla claro si el proyecto no define ningún campo can
   }
 });
 
+/**
+ * What Azure hands back after storing a document in an html field: the same text, with the markup
+ * normalized to its own — attributes dropped, newlines turned into breaks. Equality is judged on
+ * the text, so a round trip through this must not read as a different value.
+ */
+const azureNormalized = (value: string): string =>
+  value.replace(/ style="[^"]*"/g, "").replace(/\n/g, "<br>").replace(/<\/td><td>/g, "</td> <td>");
+
+/** The document `setEvidence` publishes for a delivery, read off the write it performed. */
+async function publishedEvidence(path: string): Promise<string> {
+  const patches: Array<Array<{ op: string; path: string; value?: unknown }>> = [];
+  const service = completionEvidenceService({
+    definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+    onPatch: (body) => patches.push(body as Array<{ op: string; path: string; value?: unknown }>),
+  });
+  await service.setEvidence(51, path);
+  const written = patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value;
+  return String(written);
+}
+
 test("completion-evidence ya escrita en un campo html no se lee como conflicto", async () => {
   const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
   await Bun.write(path, "Validaciones ejecutadas: npm test & npm run build.\n");
   const patches: unknown[][] = [];
   try {
-    // What Azure hands back after storing that text in an html field: same text, markup added.
     const service = completionEvidenceService({
       definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: "<div>Validaciones ejecutadas: npm test &amp; npm run build.</div>",
+      existing: azureNormalized(await publishedEvidence(path)),
       onPatch: (body) => patches.push(body),
     });
 
@@ -1911,6 +1950,205 @@ test("completion-evidence ya escrita en un campo html no se lee como conflicto",
     expect(patches).toHaveLength(0);
   } finally {
     await unlink(path).catch(() => undefined);
+  }
+});
+
+test("ticket-evidence-set sin manifest publica el archivo tal como se escribió", async () => {
+  // La reparación manual sigue siendo la fuente HTML que un operador escribió: sin manifest no hay
+  // nada que maquetar ni adjunto que resolver, y escapar ese HTML lo volvería texto.
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.html`;
+  const source = "<div><b>Validaciones</b>: npm test.</div>\n";
+  await Bun.write(path, source);
+  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+
+    await service.setEvidence(51, path);
+
+    expect(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value).toBe(source);
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("la evidencia que una versión anterior dejó en crudo se reconoce como propia, no como conflicto", async () => {
+  // El campo lleva ahora un documento, pero un ticket completado antes lleva los bytes del archivo.
+  // Juzgar solo contra el documento volvía cada repetición sobre ese ticket un conflicto que nadie
+  // podía limpiar, en una compuerta a la que se llega con los PR ya mergeados.
+  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.txt`;
+  const crudo = "Validaciones ejecutadas: npm test.\n";
+  await Bun.write(path, crudo);
+  const patches: unknown[][] = [];
+  try {
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: crudo,
+      onPatch: (body) => patches.push(body),
+    });
+    const report = {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass" }],
+      evidence: [{ path, kind: "command-output" as const, sha256: "a".repeat(64) }],
+    };
+
+    await expect(service.validateEvidence(51, path, report)).resolves.toBeUndefined();
+    await expect(service.setEvidence(51, path, report)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(0);
+  } finally {
+    await unlink(path).catch(() => undefined);
+  }
+});
+
+test("ticket-evidence-set sigue siendo repetible sobre un ticket que ya publicó su documento", async () => {
+  // La herramienta de reparación corre sin manifest, así que solo puede rendir el archivo que le
+  // pasaron, nunca el documento que el coordinador armó con la entrega entera. Compararlos como
+  // iguales la volvía un conflicto duro sobre un ticket que ya lleva exactamente esa evidencia,
+  // que es lo único que esa herramienta existe para poder repetir sin miedo.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-repair-"));
+  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+  try {
+    const salida = join(root, "bun-test.txt");
+    // Con color y larga: el documento le quita los escapes y recorta el bloque, así que su texto
+    // crudo tampoco está ahí -- lo que queda para reconocerla es el digest que el documento nombra.
+    await Bun.write(salida, `\u001b[32mbun test\u001b[0m\n${"detalle de la corrida\n".repeat(600)}198 pass, 0 fail\n`);
+    const digest = async (path: string): Promise<string> =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const publicado = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    await publicado.setEvidence(51, salida, {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
+      evidence: [{ path: salida, kind: "command-output", sha256: await digest(salida) }],
+    });
+    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
+
+    const reparacion = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: documento,
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+
+    await expect(reparacion.validateEvidence(51, salida)).resolves.toBeUndefined();
+    await expect(reparacion.setEvidence(51, salida)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(1);
+
+    // Y lo mismo cuando Azure devuelve su propia normalización del documento: un documento hecho
+    // casi entero de tablas se comparaba con sus celdas pegadas, así que cualquier espacio que
+    // Azure metiera entre ellas volvía cada repetición un conflicto que no se limpiaba nunca.
+    const normalizado = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: azureNormalized(documento),
+    });
+    await expect(normalizado.validateEvidence(51, salida)).resolves.toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("la reparación de un ticket transversal no lee como conflicto lo que ella misma publicó", async () => {
+  // La entrega transversal publica la evidencia de todos los repositorios de una vez, y el comando
+  // de reparación que la sigue lee un solo manifest: rinden documentos distintos sobre la misma
+  // prueba, y preguntados como iguales el segundo reporta conflicto contra lo que ya está ahí.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-transversal-"));
+  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+  try {
+    const digest = async (path: string): Promise<string> =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    // Una captura, no una salida suelta: el renderizado la vuelve tablas y cuerpos, así que su
+    // texto crudo no aparece en el documento y solo el digest puede reconocerla.
+    const api = join(root, "pago-endpoint.json");
+    const web = join(root, "web.txt");
+    await Bun.write(api, HTTP_CAPTURE_BODY);
+    await Bun.write(web, "web: 78 pass, 0 fail\n");
+
+    const transversal = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    await transversal.setEvidence(51, api, {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
+      evidence: [
+        { path: api, kind: "http-json", sha256: await digest(api) },
+        { path: web, kind: "command-output", sha256: await digest(web) },
+      ],
+    });
+    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
+
+    const reparacion = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: documento,
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    const unSoloManifest = {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "120 pass" }],
+      evidence: [{ path: api, kind: "http-json" as const, sha256: await digest(api) }],
+    };
+
+    await expect(reparacion.validateEvidence(51, api, unSoloManifest)).resolves.toBeUndefined();
+    await expect(reparacion.setEvidence(51, api, unSoloManifest)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("completion-evidence publica un documento con las secciones que un lector busca", async () => {
+  // El campo llevaba los bytes del archivo tal cual: un muro de monoespaciado sin endpoint, sin
+  // estado y sin la imagen del navegador, aunque las capturas ya estuvieran adjuntas al ticket.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-html-"));
+  try {
+    const capture = join(root, "pago-endpoint.json");
+    const screenshot = join(root, SCREENSHOT_NAME);
+    await Bun.write(capture, HTTP_CAPTURE_BODY);
+    await Bun.write(screenshot, SCREENSHOT_BYTES);
+    const digest = async (bytes: ArrayBuffer): Promise<string> =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const screenshotDigest = await digest(await Bun.file(screenshot).arrayBuffer());
+    const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+    const service = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      attachments: [{
+        rel: "AttachedFile",
+        url: "https://example.test/_apis/wit/attachments/abc",
+        attributes: { name: SCREENSHOT_NAME, comment: `screen sha256:${screenshotDigest}` },
+      }],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+
+    await service.setEvidence(51, capture, {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
+      evidence: [
+        { path: capture, kind: "http-json", sha256: await digest(await Bun.file(capture).arrayBuffer()) },
+        { path: screenshot, kind: "screen", sha256: screenshotDigest },
+      ],
+    });
+
+    const published = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
+    expect(published).toContain("Validaciones ejecutadas");
+    expect(published).toContain("bun test");
+    expect(published).toContain("https://api.test/payment-attempts/42/reconcile");
+    expect(published).toContain("200 OK");
+    expect(published).toContain("Cabecera de la respuesta");
+    expect(published).toContain("refs/heads/ticket/51");
+    // El commit no: una entrega transversal tiene uno por repositorio y una de repositorio único
+    // tiene exactamente uno, así que nombrarlo hacía que el mismo ticket rindiera dos documentos
+    // distintos según qué ruta publicara, y la segunda leía a la primera como conflicto.
+    expect(published).not.toContain("a".repeat(40));
+    // La captura del navegador se muestra desde el adjunto que el ticket ya tiene, no se nombra.
+    expect(published).toContain(`<img src="https://example.test/_apis/wit/attachments/abc?fileName=${SCREENSHOT_NAME}"`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -1937,7 +2175,7 @@ test("validateEvidence no confunde el re-serializado html de Azure con un confli
   try {
     const service = completionEvidenceService({
       definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: "<div>Validaciones ejecutadas: npm test &amp; npm run build.</div>",
+      existing: azureNormalized(await publishedEvidence(path)),
     });
     await expect(service.validateEvidence(51, path)).resolves.toBeUndefined();
   } finally {
@@ -1984,6 +2222,10 @@ test("la evidencia que redacta un secreto pasa; la que lo publica no", async () 
     await accepts('"token": "<TOKEN>"');
     await accepts('"password": "***"');
     await accepts('"cookie": "[REDACTED]"');
+    // Prosa, no filtración: un esquema nombra su secreto por posición y el español pone palabras
+    // en esa posición. Rechazarla volvía irrechazable cualquier evidencia que explicara el endpoint.
+    await accepts("El endpoint exige Basic authentication para responder.");
+    await accepts("Se envía Bearer token obtenido del flujo de login.");
 
     await rejects('"authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"');
     await rejects("Authorization: Basic dXNlcjpwYXNzd29yZA==");
@@ -2001,10 +2243,16 @@ test("la evidencia HTTP del ticket 23579 vuelve a ser verificable", async () => 
   const root = mkdtempSync(join(tmpdir(), "lazy-workflow-23579-"));
   const service = new AzureTicketInfoService(async () => "", async () => "");
   const evidence = {
-    endpoint: "POST /payment-attempts/:id/reconcile",
+    title: "Reconciliación de un intento de pago",
+    screenshot: "pantalla.png",
+    capturedWith: "chrome-devtools-mcp",
     providerToken: "nunca expuesto por este endpoint (ver `PaymentAttemptsController.sanitize`)",
-    request: { headers: { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" } },
-    response: { headers: { authorization: "[REDACTED - Bearer ADMIN_API_TOKEN]" } },
+    request: {
+      method: "POST",
+      url: "https://api.test/payment-attempts/42/reconcile",
+      headers: { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" },
+    },
+    response: { status: 200, headers: { authorization: "[REDACTED - Bearer ADMIN_API_TOKEN]" } },
   };
 
   try {
