@@ -89,6 +89,28 @@ run reports it and continues with the recommendations rather than failing.
 [Watching a run](CODING-AGENTS.md#watching-a-run). `--verbose` and `--quiet` are
 mutually exclusive; `--verbose-output` implies `--verbose`.
 
+## Unattended shutdown
+
+`--off [password]` is global: every command takes it, deterministic tools
+included, and it powers the machine down once the run ends — whatever its
+outcome (ADR-0030). The password reaches `sudo -S shutdown -h now` through
+stdin, never as an argument; prefer the environment variable so it stays out of
+`ps` and shell history:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--off [password]` | — | Shut down when the run ends; with no value it reads `LAZY_WORKFLOW_OFF_PASSWORD`, then falls back to passwordless `sudo -n` |
+| `--off-delay <s>` | `15` | Grace window before the command runs; Ctrl-C inside it cancels the shutdown and records the run as interrupted; `0` removes the window |
+
+A run that died on an argument error never shuts down — the operator is at the
+keyboard having just mistyped a flag. A failed shutdown is reported as
+`shutdown-failure` and leaves the run's exit code exactly as it was.
+
+```bash
+LAZY_WORKFLOW_OFF_PASSWORD='…' lazy-workflow code --off --working-directory /repo   # drain the queue, then power down
+lazy-workflow code --off '…' --off-delay 0 --working-directory /repo                # no grace period
+```
+
 ## Multi-repository workspaces
 
 ```bash

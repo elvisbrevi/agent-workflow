@@ -150,6 +150,8 @@ because they cost nothing to avoid and a full error message to discover.
 - Azure multi-repository `code` requires `--hu`; `--ticket` is optional and
   narrows the run to that single unit instead of draining the HU.
 - `--commit` always takes the full object name.
+- `--off-delay <s>` requires `--off`; the shutdown password belongs in
+  `LAZY_WORKFLOW_OFF_PASSWORD`, not on the command line.
 
 ## How to answer
 
