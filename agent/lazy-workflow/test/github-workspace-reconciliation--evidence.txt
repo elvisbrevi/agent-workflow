@@ -1,0 +1,38 @@
+Validation: bun test test/github-workspace-reconciliation.test.ts
+Outcome:
+bun test v1.3.14
+1 pass
+0 fail
+Ran 1 test across 1 file.
+
+Validation: bun test test/workspace-coordination.test.ts
+Outcome:
+7 pass
+0 fail
+Ran 7 tests across 1 file.
+
+Validation: bun test test/github-delivery.test.ts
+Outcome:
+16 pass
+0 fail
+Ran 16 tests across 1 file.
+
+Validation: (cd agent/lazy-workflow && bun test)
+Outcome:
+910 pass
+0 fail
+3131 expect() calls
+Ran 910 tests across 47 files.
+
+Validation: bash tests/install_test.sh
+Outcome:
+6 installer tests passed.
+
+Validation: git diff --check
+Outcome:
+passed
+
+Regression check: temporarily removing manifests.set(currentUnit.path, manifest)
+from lazy-workflow-cli.ts made the focused reconciliation test fail because
+closeIssue received original-evidence.txt and the original commit. The
+production line was restored before the final validation and commit.
