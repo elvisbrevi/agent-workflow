@@ -2002,6 +2002,44 @@ test("la evidencia que una versión anterior dejó en crudo se reconoce como pro
   }
 });
 
+test("ticket-evidence-set sigue siendo repetible sobre un ticket que ya publicó su documento", async () => {
+  // La herramienta de reparación corre sin manifest, así que solo puede rendir el archivo que le
+  // pasaron, nunca el documento que el coordinador armó con la entrega entera. Compararlos como
+  // iguales la volvía un conflicto duro sobre un ticket que ya lleva exactamente esa evidencia,
+  // que es lo único que esa herramienta existe para poder repetir sin miedo.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-repair-"));
+  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+  try {
+    const salida = join(root, "bun-test.txt");
+    await Bun.write(salida, "bun test\n198 pass, 0 fail\n");
+    const digest = async (path: string): Promise<string> =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const publicado = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    await publicado.setEvidence(51, salida, {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
+      evidence: [{ path: salida, kind: "command-output", sha256: await digest(salida) }],
+    });
+    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
+
+    const reparacion = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: documento,
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+
+    await expect(reparacion.validateEvidence(51, salida)).resolves.toBeUndefined();
+    await expect(reparacion.setEvidence(51, salida)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("completion-evidence publica un documento con las secciones que un lector busca", async () => {
   // El campo llevaba los bytes del archivo tal cual: un muro de monoespaciado sin endpoint, sin
   // estado y sin la imagen del navegador, aunque las capturas ya estuvieran adjuntas al ticket.

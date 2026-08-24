@@ -300,6 +300,22 @@ function publishedAlready(existing: string, ...candidates: string[]): boolean {
   return candidates.some((candidate) => evidenceTextContent(candidate) === stored);
 }
 
+/**
+ * Whether a document already published carries this file's own text.
+ *
+ * `ticket-evidence-set` runs without a manifest, so all it can render is the file it was handed --
+ * never the document the coordinator assembled from the whole delivery. Judging the two as equals
+ * turned the operator's repair tool into a hard conflict on a ticket that already carries exactly
+ * this evidence, which is the one thing that tool exists to be safe to rerun. So it asks the
+ * weaker question it can actually answer: is this file already in there.
+ */
+const MIN_EVIDENCE_MATCH = 20;
+
+function carriesEvidence(existing: string, content: string): boolean {
+  const text = evidenceTextContent(content);
+  return text.length >= MIN_EVIDENCE_MATCH && evidenceTextContent(existing).includes(text);
+}
+
 function hasEvidenceCapture(item: WorkItem): boolean {
   return (item.relations ?? []).some(({ rel, url, attributes }) =>
     rel === "AttachedFile"
@@ -1579,7 +1595,7 @@ export class AzureTicketInfoService {
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && !publishedAlready(existing, rendered, content)) {
+    if (existing && !this.alreadyPublished(existing, rendered, content, report)) {
       throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     }
   }
@@ -1599,7 +1615,7 @@ export class AzureTicketInfoService {
     const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && publishedAlready(existing, rendered, content)) {
+    if (existing && this.alreadyPublished(existing, rendered, content, report)) {
       return { ticket, completionEvidence: existing };
     }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
@@ -1609,6 +1625,16 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  /** Whether the field already carries this delivery's evidence, in either form it may take. */
+  private alreadyPublished(
+    existing: string,
+    rendered: string,
+    content: string,
+    report?: CompletionEvidenceReport,
+  ): boolean {
+    return publishedAlready(existing, rendered, content) || (!report && carriesEvidence(existing, content));
   }
 
   /**

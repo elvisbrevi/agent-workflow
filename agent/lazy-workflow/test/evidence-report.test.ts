@@ -148,6 +148,16 @@ describe("documento Markdown de GitHub", () => {
     expect(rendered).not.toContain("### Capturas de pantalla");
   });
 
+  test("el color de una salida no se publica como códigos de escape", () => {
+    const rendered = renderEvidenceMarkdown({
+      ...documentInput,
+      files: [{ name: "salida.txt", kind: "command-output", content: "\u001b[32m198 pass\u001b[0m\n" }],
+    });
+
+    expect(rendered).toContain("198 pass");
+    expect(rendered).not.toContain("\u001b");
+  });
+
   test("una celda con barras no puede cerrar la fila que la lleva", () => {
     const rendered = renderEvidenceMarkdown({
       ...documentInput,
@@ -206,8 +216,9 @@ describe("entrega GitHub", () => {
       await Bun.write(join(root, "docs/evidence/api.json"), HTTP_CAPTURE_BODY);
       await Bun.write(join(root, `docs/evidence/${SCREENSHOT_NAME}`), SCREENSHOT_BYTES);
 
-      await service.closeIssue(201, 12, "c".repeat(40), root, {
+      await service.closeIssue(201, 12, "c".repeat(40), root, [{
         directory: root,
+        commit: "c".repeat(40),
         manifest: {
           issue: 201,
           branch: "refs/heads/issue/201",
@@ -220,7 +231,7 @@ describe("entrega GitHub", () => {
             { path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) },
           ],
         },
-      });
+      }]);
 
       const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
       const body = comment?.[comment.indexOf("--body") + 1] ?? "";
@@ -255,8 +266,9 @@ describe("entrega GitHub", () => {
         return { path, sha256: `${index}`.repeat(64).slice(0, 64) };
       }));
 
-      await service.closeIssue(201, 12, "c".repeat(40), root, {
+      await service.closeIssue(201, 12, "c".repeat(40), root, [{
         directory: root,
+        commit: "c".repeat(40),
         manifest: {
           issue: 201,
           branch: "refs/heads/issue/201",
@@ -266,7 +278,7 @@ describe("entrega GitHub", () => {
           summary: "Integra la reconciliación de pagos",
           evidence: [{ path: "docs/evidence/api.json", sha256: "a".repeat(64) }, ...salidas],
         },
-      });
+      }]);
 
       const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
       const body = comment?.[comment.indexOf("--body") + 1] ?? "";
@@ -286,8 +298,9 @@ describe("entrega GitHub", () => {
     try {
       await Bun.write(join(root, `docs/evidence/${SCREENSHOT_NAME}`), SCREENSHOT_BYTES);
 
-      await service.closeIssue(201, 12, "c".repeat(40), root, {
+      await service.closeIssue(201, 12, "c".repeat(40), root, [{
         directory: root,
+        commit: "c".repeat(40),
         manifest: {
           issue: 201,
           branch: "refs/heads/issue/201",
@@ -297,12 +310,115 @@ describe("entrega GitHub", () => {
           summary: "Integra la reconciliación de pagos",
           evidence: [{ path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) }],
         },
-      });
+      }]);
 
       const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
       expect(comment?.[comment.indexOf("--body") + 1]).toBe(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** The document's own fences, walked by the rule that closes one: a run at least as long. */
+  function unclosedFence(body: string): boolean {
+    let open = 0;
+    for (const line of body.split("\n")) {
+      const run = /^`{3,}/.exec(line)?.[0].length ?? 0;
+      if (open === 0 && run > 0) open = run;
+      else if (open > 0 && run >= open) open = 0;
+    }
+    return open > 0;
+  }
+
+  test("el recorte no parte un bloque cercado con más de tres comillas", async () => {
+    // Un bloque cuyo contenido lleva una corrida de tres se cerca con cuatro: tratar cada corrida
+    // como un interruptor invertía el estado justo donde ese escalado existe para ayudar, y dejaba
+    // el corte dentro del bloque que evitaba — con el marcador rindiéndose como código.
+    const calls: string[][] = [];
+    const { root, service } = delivery(calls);
+    try {
+      const conCerco = `${"```\ninterno\n```\n".repeat(300)}fin\n`;
+      const salidas = await Promise.all([...Array(12)].map(async (_unused, index) => {
+        const path = `docs/evidence/salida-${index}.txt`;
+        await Bun.write(join(root, path), conCerco);
+        return { path, sha256: `${index}`.repeat(64).slice(0, 64) };
+      }));
+
+      await service.closeIssue(201, 12, "c".repeat(40), root, [{
+        directory: root,
+        commit: "c".repeat(40),
+        manifest: {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          commit: "a".repeat(40),
+          validation: [{ command: "bun test", result: "198 pass" }],
+          clean: true,
+          summary: "Integra la reconciliación de pagos",
+          evidence: salidas,
+        },
+      }]);
+
+      const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
+      const body = comment?.[comment.indexOf("--body") + 1] ?? "";
+      expect(body).toContain("evidencia truncada");
+      expect(body).toContain(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
+      expect(unclosedFence(body)).toBeFalse();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("el cierre de una entrega transversal publica la evidencia de cada repositorio", async () => {
+    // El Issue es el de todos los repositorios que cambiaron: publicar solo el primero dejaba
+    // fuera la evidencia de los demás, que nadie vuelve a mirar una vez cerrado.
+    const calls: string[][] = [];
+    const workspace = mkdtempSync(join(tmpdir(), "lazy-workflow-github-workspace-"));
+    const repositoryOf = (directory: string): string => `elvisbrevi/${directory.split("/").pop()}`;
+    const service = new GitHubDeliveryService(
+      async (args, workingDirectory) => {
+        calls.push(args);
+        if (args[0] === "repo") {
+          return JSON.stringify({ nameWithOwner: repositoryOf(workingDirectory), defaultBranchRef: { name: "main" } });
+        }
+        if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ state: args.includes("state,comments") ? "OPEN" : "CLOSED", comments: [] });
+        return "";
+      },
+      async (args, workingDirectory) => (args[0] === "remote" ? `git@github.com:${repositoryOf(workingDirectory)}.git\n` : ""),
+    );
+    try {
+      const unit = async (name: string): Promise<string> => {
+        const directory = join(workspace, name);
+        await Bun.write(join(directory, `docs/evidence/${SCREENSHOT_NAME}`), SCREENSHOT_BYTES);
+        return directory;
+      };
+      const api = await unit("api");
+      const web = await unit("web");
+      const manifest = (issueBranch: string) => ({
+        issue: 201,
+        branch: issueBranch,
+        commit: "a".repeat(40),
+        validation: [{ command: "bun test", result: "198 pass" }],
+        clean: true,
+        summary: "Integra la reconciliación de pagos",
+        evidence: [{ path: `docs/evidence/${SCREENSHOT_NAME}`, sha256: "b".repeat(64) }],
+      });
+
+      await service.closeIssue(201, 12, "c".repeat(40), api, [
+        { directory: api, commit: "c".repeat(40), manifest: manifest("refs/heads/issue/201") },
+        { directory: web, commit: "d".repeat(40), manifest: manifest("refs/heads/issue/201") },
+      ]);
+
+      const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
+      const body = comment?.[comment.indexOf("--body") + 1] ?? "";
+      expect(body).toContain(`https://github.com/elvisbrevi/api/blob/${"c".repeat(40)}/docs/evidence/${SCREENSHOT_NAME}?raw=1`);
+      expect(body).toContain(`https://github.com/elvisbrevi/web/blob/${"d".repeat(40)}/docs/evidence/${SCREENSHOT_NAME}?raw=1`);
+      // Con más de un repositorio que distinguir, cada archivo dice de cuál viene.
+      expect(body).toContain(`elvisbrevi/api/docs/evidence/${SCREENSHOT_NAME}`);
+      expect(body).toContain(`elvisbrevi/web/docs/evidence/${SCREENSHOT_NAME}`);
+      // Y lo que ambos repositorios validaron se lista una vez, no una por repositorio.
+      expect(body.split("| bun test | 198 pass |")).toHaveLength(2);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

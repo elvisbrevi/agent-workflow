@@ -36,13 +36,17 @@ export interface GitHubManifestInput {
  * The evidence a closure publishes, and the repository it lives in.
  *
  * In a workspace delivery the issue lives in the anchor repository while the manifest and its
- * evidence files belong to whichever repository actually changed, so the directory travels with the
- * manifest: reading the files, resolving the repository name and pinning the image URLs all follow
- * it rather than the directory the `gh` commands run in.
+ * evidence files belong to whichever repository actually changed, so the directory and the commit
+ * travel with the manifest: reading the files, resolving the repository name and pinning the image
+ * URLs all follow them rather than the directory the `gh` commands run in. One delivery can change
+ * several repositories, and the issue it closes is the issue of all of them, so the closure carries
+ * one of these per repository that changed.
  */
 export interface DeliveredEvidence {
   manifest: GitHubReadyManifest;
   directory: string;
+  /** The commit this repository's files are shown from. */
+  commit: string;
 }
 
 export interface GitHubBranchPreparation {
@@ -83,7 +87,7 @@ export interface GitHubDeliveryAdapter {
   verifyPendingPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, workingDirectory: string): Promise<void>;
   verifyPullRequestReconciliation?(branch: string, originalCommit: string, baseCommit: string, reconciledCommit: string, workingDirectory: string): Promise<void>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
-  closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, evidence?: DeliveredEvidence): Promise<void>;
+  closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, evidence?: readonly DeliveredEvidence[]): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
 }
 
@@ -161,9 +165,10 @@ function githubEvidenceKind(path: string): EvidenceKind {
  * The extension decides the kind, and no list of extensions ever names every binary a repository
  * holds: a `.pdf`, an `.mp4` or a font declared as evidence decodes into control characters and
  * replacement marks, and eight thousand of them fenced into a pull request is worse than the file
- * being left out. The bytes answer for themselves.
+ * being left out. The bytes answer for themselves -- and only the bytes no text carries, since a
+ * test runner's colour codes are text a reader wants, cleaned when the document is rendered.
  */
-const readsAsText = (content: string): boolean => !/[\u0000-\u0008\u000e-\u001f\ufffd]/.test(content);
+const readsAsText = (content: string): boolean => !/[\u0000-\u0008\ufffd]/.test(content);
 
 /** Where a repository file can be shown from, pinned to the commit that carries it. */
 const blobUrl = (repository: string, commit: string, path: string): string =>
@@ -186,20 +191,24 @@ const MAX_SUMMARY_CHARACTERS = 1000;
 function capMarkdown(body: string): string | null {
   if (body.length <= MAX_REPORT_CHARACTERS) return body;
   let offset = 0;
-  let fenced = false;
+  // The length of the open fence, zero outside one. A block whose content holds a three-backtick
+  // run is fenced with four, so treating every run as a toggle inverted the state exactly where
+  // that escalation exists to help -- and put the cut inside the block it was avoiding.
+  let fence = 0;
   let boundary = -1;
   for (const line of body.split("\n")) {
     if (offset > MAX_REPORT_CHARACTERS) break;
-    if (/^`{3,}/.test(line)) fenced = !fenced;
-    else if (!fenced && offset > 0 && /^#{2,4} /.test(line)) boundary = offset;
+    const run = /^`{3,}/.exec(line)?.[0].length ?? 0;
+    if (fence === 0 && run > 0) fence = run;
+    else if (fence > 0 && run >= fence) fence = 0;
+    else if (fence === 0 && offset > 0 && /^#{2,4} /.test(line)) boundary = offset;
     offset += line.length + 1;
   }
   if (boundary <= 0) return null;
   return `${body.slice(0, boundary)}\n_(evidencia truncada; el resto vive en el repositorio)_`;
 }
 
-/** A summary is a sentence about the delivery; a body that quotes it must not depend on that. */
-const summaryOf = ({ summary }: GitHubReadyManifest): string => summary.slice(0, MAX_SUMMARY_CHARACTERS);
+
 
 function validationResultIsNotFailure(result: string): boolean {
   return !/^(?:fail(?:ed|ure)?|error)(?:\b|:)/i.test(result.trim()) && !/^exit\s+[1-9]/i.test(result.trim());
@@ -426,15 +435,17 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     const reference = closesIssue ? `Closes ${issueReference}` : `Tracks ${issueReference}`;
     // The body a reviewer opens is the delivery itself: what changed, what was validated, and every
     // capture the session produced, shown where the review happens instead of listed as file names.
-    const report = manifest && await this.evidenceReport(
+    const delivered = manifest ? [{ manifest, directory: workingDirectory, commit }] : [];
+    const report = delivered.length > 0 && await this.evidenceReport(
       `Issue #${issue}`,
       [{ label: "Rama", value: head }, { label: "Commit", value: commit }],
-      commit,
-      { manifest, directory: workingDirectory },
+      delivered,
     );
     // The reference is what ties the pull request to its issue, and every later check reads it back
     // out of the body: it is added around the report so no truncation can ever drop it.
-    const body = report ? [reference, "", summaryOf(manifest!), "", report].join("\n") : reference;
+    const body = report
+      ? [reference, "", GitHubDeliveryService.summaryOf(delivered), "", report].join("\n")
+      : reference;
     const created = await this.gh([
       "pr", "create", "--repo", name, "--base", base, "--head", head,
       "--title", `Issue #${issue}`, "--body", body,
@@ -559,24 +570,26 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     return { number: pullRequest, mergeCommit };
   }
 
-  async closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, evidence?: DeliveredEvidence): Promise<void> {
+  async closeIssue(issue: number, pullRequest: number, mergeCommit: string, workingDirectory: string, evidence?: readonly DeliveredEvidence[]): Promise<void> {
     const state = parseJson<{ state?: string; comments?: Array<{ body?: string }> }>(await this.gh(["issue", "view", `${issue}`, "--json", "state,comments"], workingDirectory), "gh issue view");
     if (state.state === "CLOSED") return;
     const marker = `lazy-workflow: delivered PR #${pullRequest} (${mergeCommit})`;
     if (!(state.comments ?? []).some(({ body }) => body?.includes(marker))) {
-      const report = evidence && await this.evidenceReport(
+      const delivered = evidence ?? [];
+      const report = delivered.length > 0 && await this.evidenceReport(
         `Issue #${issue}`,
         [
           { label: "Pull request", value: `#${pullRequest}` },
           { label: "Commit de merge", value: mergeCommit },
-          { label: "Rama", value: branchName(evidence.manifest.branch) },
+          { label: "Rama", value: branchName(delivered[0]!.manifest.branch) },
         ],
-        mergeCommit,
-        evidence,
+        delivered,
       );
       // The marker stays in the body it always was, because a rerun still recognises the delivery
       // by it; it is added around the report so no truncation can drop it.
-      const body = report ? [report, "", summaryOf(evidence!.manifest), "", marker].join("\n") : marker;
+      const body = report
+        ? [report, "", GitHubDeliveryService.summaryOf(delivered), "", marker].join("\n")
+        : marker;
       await this.gh(["issue", "comment", `${issue}`, "--body", body], workingDirectory);
     }
     await this.gh(["issue", "close", `${issue}`], workingDirectory);
@@ -597,28 +610,46 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   private async evidenceReport(
     subject: string,
     facts: Array<{ label: string; value: string }>,
-    commit: string,
-    { manifest, directory }: DeliveredEvidence,
+    delivered: readonly DeliveredEvidence[],
   ): Promise<string | null> {
     try {
-      // Resolved in here, under the same fallback: a lookup that failed outside it published a
-      // comment whose every image pointed at `https://github.com//blob/...` and stayed broken.
-      const { name: repository } = await this.repository(directory);
       const files: EvidenceFile[] = [];
-      for (const { path } of manifest.evidence ?? []) {
-        const kind = githubEvidenceKind(path);
-        if (kind === "screen") {
-          files.push({ name: path, path, kind, imageUrl: blobUrl(repository, commit, path) });
-          continue;
+      const validation: Array<{ command: string; result: string }> = [];
+      for (const { manifest, directory, commit } of delivered) {
+        // Resolved in here, under the same fallback: a lookup that failed outside it published a
+        // comment whose every image pointed at `https://github.com//blob/...` and stayed broken.
+        const { name: repository } = await this.repository(directory);
+        for (const { path } of manifest.evidence ?? []) {
+          const kind = githubEvidenceKind(path);
+          // Two repositories of one delivery hold the same relative path, so what pairs a capture
+          // with its screenshot is where the file really is; what a reader sees names its
+          // repository only when there is more than one to tell apart.
+          const name = delivered.length > 1 ? `${repository}/${path}` : path;
+          const located = `${directory}/${path}`;
+          if (kind === "screen") {
+            files.push({ name, path: located, kind, imageUrl: blobUrl(repository, commit, path) });
+            continue;
+          }
+          // A file that cannot be read is worth less than the rest of the document is worth losing.
+          const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
+          if (content.trim() && readsAsText(content)) files.push({ name, path: located, kind, content });
         }
-        // A file that cannot be read is worth less than the rest of the document is worth losing.
-        const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
-        if (content.trim() && readsAsText(content)) files.push({ name: path, path, kind, content });
+        for (const entry of manifest.validation) {
+          if (!validation.some(({ command, result }) => command === entry.command && result === entry.result)) {
+            validation.push(entry);
+          }
+        }
       }
-      return capMarkdown(renderEvidenceMarkdown({ subject, facts, validation: manifest.validation, files }));
+      return capMarkdown(renderEvidenceMarkdown({ subject, facts, validation, files }));
     } catch {
       return null;
     }
+  }
+
+  /** What the delivery says it did, once per distinct thing it said. */
+  private static summaryOf(delivered: readonly DeliveredEvidence[]): string {
+    return [...new Set(delivered.map(({ manifest }) => manifest.summary.trim()))]
+      .join("\n\n").slice(0, MAX_SUMMARY_CHARACTERS);
   }
 
   async cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void> {

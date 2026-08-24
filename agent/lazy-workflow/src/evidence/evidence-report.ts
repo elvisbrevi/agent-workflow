@@ -82,6 +82,14 @@ function clamp(value: string): string {
   return value.length <= MAX_BLOCK_CHARACTERS ? value : value.slice(0, MAX_BLOCK_CHARACTERS) + TRUNCATED;
 }
 
+/**
+ * A test runner colours its output, and colour is escape codes. Published raw they are the ugliest
+ * thing in the document -- a `[0m` scattered through every line -- for a decoration no tracker
+ * renders. The file the manifest pinned keeps them; the document a person reads does not.
+ */
+const plainText = (content: string): string =>
+  content.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\s+$/, "");
+
 function prettyJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2) ?? String(value);
@@ -160,7 +168,7 @@ function buildEvidenceDocument(input: EvidenceDocumentInput): EvidenceDocument {
         // A file that is neither a capture nor JSON still has something to say.
       }
     }
-    outputs.push({ source: file.name, text: content.replace(/\s+$/, "") });
+    outputs.push({ source: file.name, text: plainText(content) });
   }
 
   return {

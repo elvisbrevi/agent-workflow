@@ -11,7 +11,9 @@ ran, every HTTP exchange laid out as endpoint, header tables and pretty-printed
 bodies, every command output, and every screenshot shown inline from the
 attachment already uploaded for it. For a GitHub issue the same document is
 rendered as Markdown into the pull-request body and into the comment that closes
-the issue, with the screenshots shown from the commit that carries them. HTTP
+the issue, with the screenshots shown from the commit that carries them — one
+repository's worth for a pull request, every changed repository's for a closure,
+since the issue a transversal delivery closes is the issue of all of them. HTTP
 evidence is a browser capture — an `http-json` file that names its endpoint, its
 headers, its bodies, its status and the screenshot of the Chrome MCP browser the
 exchange was performed in — and that named screenshot must travel as `screen`
@@ -85,7 +87,9 @@ delivery rendered before and after its upload cannot read as two different
 values — a file that cannot be read is left out rather than propagated as a
 failure, a repository that cannot be resolved gives up the document rather than
 publishing images that point nowhere, a file whose bytes do not decode as text is
-left out rather than fenced into a comment as noise, and a GitHub comment that
+left out rather than fenced into a comment as noise — while a file that is only
+coloured keeps its text, since a test runner's escape codes are decoration the
+document drops rather than evidence it refuses — and a GitHub comment that
 would exceed what GitHub accepts is cut at a heading the document itself emitted
 — tracked past its own fenced blocks, so a cut never lands inside one — with the
 bounded summary, the marker that a rerun recognises and the issue reference that
@@ -93,4 +97,9 @@ ties a pull request to its issue all added around the cut, so no truncation can
 drop any of them and no session's summary can push the body past what GitHub
 accepts. For the same reason a ticket
 completed before the field carried a document is recognised by the raw bytes it
-still holds, and not reported as a conflict against evidence it already has.
+still holds, and not reported as a conflict against evidence it already has. The
+operator's repair tool runs without a manifest and so can only ever render the
+one file it was handed; against a field that already carries the coordinator's
+whole document it asks the weaker question it can actually answer — whether that
+file is in there — because a repair tool that cannot be rerun is not a repair
+tool.
