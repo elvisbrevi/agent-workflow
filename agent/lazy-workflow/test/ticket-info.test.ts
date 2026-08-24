@@ -4,11 +4,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
+import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { HTTP_CAPTURE_BODY, SCREENSHOT_BYTES, SCREENSHOT_NAME } from "./_helpers/evidence-fixtures.ts";
 
 const branch = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438";
+
+test("el boundary Azure de produccion expone las primitivas de publicación", () => {
+  const service = new AzureAutocodeService(async () => JSON.stringify({ id: 1, relations: [] }));
+
+  for (const operation of ["createTicket", "linkParent", "linkPredecessor"] as const) {
+    expect(typeof service[operation]).toBe("function");
+  }
+});
 
 function fixture() {
   const commands: string[][] = [];
@@ -744,6 +753,46 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
     [51, "/tmp/evidence.html"],
   ]);
   expect(output).toHaveLength(4);
+});
+
+test("ticket publication commands reach the required Azure boundary operations", async () => {
+  const calls: unknown[][] = [];
+  const output: string[] = [];
+  const originalLog = console.log;
+  const service = {
+    getHuInfo: async () => { throw new Error("must not use generic HU read"); },
+    waitForAccess: async () => undefined,
+    createTicket: async (...args: [{ hu: number; type: string; title: string; descriptionFile: string }]) => {
+      calls.push(args);
+      return { hu: args[0].hu, ticket: 52, type: args[0].type, title: args[0].title, created: true };
+    },
+    linkParent: async (...args: [number, number]) => {
+      calls.push(args);
+      return { parent: args[0], child: args[1], linked: true };
+    },
+    linkPredecessor: async (...args: [number, number]) => {
+      calls.push(args);
+      return { blocker: args[0], blocked: args[1], linked: true };
+    },
+  };
+
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    expect(await new LazyWorkflowCli(service).run([
+      "ticket-create", "--hu", "23438", "--type", "Task", "--title", "Slice", "--description-file", "/tmp/slice.html",
+    ])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run(["ticket-link-parent", "--parent", "23438", "--child", "52"])).toBe(0);
+    expect(await new LazyWorkflowCli(service).run(["ticket-link-predecessor", "--blocker", "52", "--blocked", "53"])).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(calls).toEqual([
+    [{ hu: 23438, type: "Task", title: "Slice", descriptionFile: "/tmp/slice.html" }],
+    [23438, 52],
+    [52, 53],
+  ]);
+  expect(output).toHaveLength(3);
 });
 
 test("ticket field setters use revision guards, reread their results, and retry idempotently", async () => {

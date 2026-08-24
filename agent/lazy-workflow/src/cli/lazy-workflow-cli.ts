@@ -8,6 +8,7 @@ import {
   COMPLETION_GATE,
   type AutocodeContext,
   type AutocodeState,
+  type AutocodeAzureService,
   type CompletionGate,
   type IncompleteTicketCompletion,
   type TicketCompletionVerification,
@@ -122,7 +123,9 @@ type GitHubReconciliationOutcome =
   | { kind: "pending"; sessionId: string }
   | { kind: "ready"; manifest: GitHubReadyManifest };
 
-export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> & Partial<{
+export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
+  & Pick<AutocodeAzureService, "createTicket" | "linkParent" | "linkPredecessor">
+  & Partial<{
   getIntegrationBranchInfo(hu: number): Promise<{ hu: number; branch: string | null }>;
   setIntegrationBranch?(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch?(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
@@ -161,17 +164,6 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess"> &
   setHuState?(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
   getHuChildren?(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
   hasOpenDeliveryChildren?(hu: number): Promise<boolean>;
-  createTicket?(input: {
-    hu: number;
-    type: string;
-    title: string;
-    descriptionFile: string;
-    estimate?: number;
-    assignee?: string;
-    fields?: Array<{ referenceName: string; value: string }>;
-  }): Promise<{ hu: number; ticket: number; type: string; title: string; created: boolean }>;
-  linkParent?(parent: number, child: number): Promise<{ parent: number; child: number; linked: boolean }>;
-  linkPredecessor?(blocker: number, blocked: number): Promise<{ blocker: number; blocked: number; linked: boolean }>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
@@ -1090,7 +1082,6 @@ export class LazyWorkflowCli {
         return 1;
       }
       try {
-        if (!this.huInfoService.createTicket) throw new Error("El servicio Azure no soporta ticket-create");
         const result = await this.huInfoService.createTicket({
           hu: options.hu,
           type: options.type,
@@ -1120,9 +1111,8 @@ export class LazyWorkflowCli {
       try {
         const service = this.huInfoService;
         const link = command === "ticket-link-parent"
-          ? service.linkParent?.bind(service)
-          : service.linkPredecessor?.bind(service);
-        if (!link) throw new Error(`El servicio Azure no soporta ${command}`);
+          ? service.linkParent.bind(service)
+          : service.linkPredecessor.bind(service);
         console.log(JSON.stringify(await link(first, second), null, 2));
         return 0;
       } catch (error) {
@@ -1399,15 +1389,10 @@ export class LazyWorkflowCli {
         return 0;
       }
       // Only a plan with work to publish needs the publication primitives.
-      const { createTicket, linkPredecessor } = this.huInfoService;
-      if (!createTicket || !linkPredecessor) {
-        reportAzureFailure("deterministic-completion-failure", "publishing", options, "lazy-workflow: el coordinador no expone las primitivas de publicación de plan; ejecución detenida.");
-        return 1;
-      }
       const service = new AzurePlanPublicationService(
         {
-          createTicket: createTicket.bind(this.huInfoService),
-          linkPredecessor: linkPredecessor.bind(this.huInfoService),
+          createTicket: this.huInfoService.createTicket.bind(this.huInfoService),
+          linkPredecessor: this.huInfoService.linkPredecessor.bind(this.huInfoService),
         },
         async (body) => {
           const path = join(await mkdtemp(join(tmpdir(), "lazy-workflow-plan-")), "description.html");

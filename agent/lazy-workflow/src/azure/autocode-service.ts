@@ -154,6 +154,17 @@ export interface AutocodeAzureService {
   setState(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
   setEffort(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
   setHuState(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }>;
+  createTicket(input: {
+    hu: number;
+    type: string;
+    title: string;
+    descriptionFile: string;
+    estimate?: number;
+    assignee?: string;
+    fields?: Array<{ referenceName: string; value: string }>;
+  }): Promise<{ hu: number; ticket: number; type: string; title: string; created: boolean }>;
+  linkParent(parent: number, child: number): Promise<{ parent: number; child: number; linked: boolean }>;
+  linkPredecessor(blocker: number, blocked: number): Promise<{ blocker: number; blocked: number; linked: boolean }>;
   getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>>;
   hasOpenDeliveryChildren(hu: number): Promise<boolean>;
   linkPullRequest(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
@@ -436,6 +447,26 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   setHuState(hu: number, desiredState: string, expectedState: string, expectedRevision: number): Promise<{ hu: number; state: string; revision: number }> {
     return this.ticketInfoService.setHuState(hu, desiredState, expectedState, expectedRevision);
+  }
+
+  createTicket(input: {
+    hu: number;
+    type: string;
+    title: string;
+    descriptionFile: string;
+    estimate?: number;
+    assignee?: string;
+    fields?: Array<{ referenceName: string; value: string }>;
+  }): Promise<{ hu: number; ticket: number; type: string; title: string; created: boolean }> {
+    return this.ticketInfoService.createTicket(input);
+  }
+
+  linkParent(parent: number, child: number): Promise<{ parent: number; child: number; linked: boolean }> {
+    return this.ticketInfoService.linkParent(parent, child);
+  }
+
+  linkPredecessor(blocker: number, blocked: number): Promise<{ blocker: number; blocked: number; linked: boolean }> {
+    return this.ticketInfoService.linkPredecessor(blocker, blocked);
   }
 
   getHuChildren(hu: number): Promise<Array<{ id: number; type: string; state: string; title?: string }>> {
