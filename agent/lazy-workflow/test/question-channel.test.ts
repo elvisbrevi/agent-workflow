@@ -227,6 +227,38 @@ test("una terminal cerrada a mitad de ronda deja el canal inutilizable", async (
   }
 });
 
+test("una ronda vencida no consume la respuesta de la ronda siguiente", async () => {
+  const { reporterFn } = captureReporter();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const input = new ReadableStream<Uint8Array>({
+    start: (streamController) => { controller = streamController; },
+  });
+  let deadlines = 0;
+  const channel = new TerminalQuestionChannel(
+    settings({ channel: "terminal" }),
+    {
+      reporter: reporterFn(true),
+      deadline: () => deadlines++ === 0 ? alreadyExpired() : neverExpires(),
+    },
+    { input, write: () => undefined },
+  );
+  try {
+    await expect(channel.ask(round)).rejects.toThrow(QuestionTimeoutError);
+
+    const nextRound = { ...round, round: 2 };
+    const asked = channel.ask(nextRound);
+    controller.enqueue(new TextEncoder().encode("dos\nno\n"));
+
+    expect(await asked).toEqual({
+      round: 2,
+      source: "operator",
+      answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }],
+    });
+  } finally {
+    await channel.close();
+  }
+});
+
 test("el canal de archivos escribe la ronda y lee las respuestas que aparecen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "lazy-workflow-interview-"));
   const channel = new FileQuestionChannel(
