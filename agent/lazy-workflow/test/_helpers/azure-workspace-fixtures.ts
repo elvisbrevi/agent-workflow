@@ -66,6 +66,8 @@ export interface AzureWorkspaceHarnessOptions {
   unpublishedIn?: string[];
   /** Repository (by directory name) already carrying the ticket's Branch ArtifactLink. */
   resolvedPrimary?: string;
+  /** Total silence the fake session reports as idle-nudged, so effort tests pin its exclusion (issue #292). */
+  idleMs?: number;
   terminal?: boolean;
   reporterFn?: typeof createReporter;
   /** Observes which coding agent CLI the run resolved, without changing the fake agent. */
@@ -330,6 +332,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
             result: { text: terminal ? "IMPLEMENTATION_READY" : "still working", sessionId: "ses", failed: false } as never,
             azureLoginRequired: false,
             failed: false,
+            ...(options.idleMs ? { idleMs: options.idleMs } : {}),
           };
         },
         resume: async () => {

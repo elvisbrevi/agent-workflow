@@ -186,6 +186,42 @@ function containsTerminalMarker(line: string, marker: string | undefined): boole
   }
 }
 
+/**
+ * What the coordinator says when it nudges a silent session, mirroring the
+ * operator's own manual "como vas? continua" and the marker contract of
+ * `markerResumePrompt` (issue #292).
+ */
+const IDLE_NUDGE_TEXT = "¿Cómo vas? Continúa donde quedaste.";
+
+function idleNudgePrompt(terminalMarker?: string): string {
+  if (!terminalMarker) {
+    return `${IDLE_NUDGE_TEXT} Si ya terminaste, entrega tu resultado final; no abras trabajo nuevo.`;
+  }
+  return [
+    IDLE_NUDGE_TEXT,
+    `Si el trabajo ya está completo, no preguntes nada y no repitas el trabajo: vuelve a emitir ${terminalMarker} como única línea de tu respuesta final.`,
+    `Si queda trabajo por hacer, termínalo y cierra con ${terminalMarker} en su propia línea.`,
+  ].join(" ");
+}
+
+/**
+ * The same invocation pointed back at the session it just timed out on: the
+ * resume keeps every flag the original had (authority, model, variant, format)
+ * and only swaps the prompt for the nudge (issue #292).
+ */
+function commandWithSessionAndPrompt(command: string[], sessionId: string, prompt: string): string[] {
+  const next = [...command];
+  const thinking = next.indexOf("--thinking");
+  if (thinking >= 0 && thinking + 1 < next.length) next[thinking + 1] = prompt;
+  const session = next.indexOf("--session");
+  if (session >= 0 && session + 1 < next.length) next[session + 1] = sessionId;
+  else {
+    const anchor = next.indexOf("--auto");
+    next.splice(anchor >= 0 ? anchor + 1 : 2, 0, "--session", sessionId);
+  }
+  return next;
+}
+
 async function readLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => boolean,
@@ -248,6 +284,11 @@ export class OpenCodeService implements CodingAgent {
     private readonly spawn: OpenCodeSpawner = spawnOpenCode,
     private readonly reporter: Reporter = getDefaultReporter(),
     private readonly shutdownGraceMs = 5_000,
+    /**
+     * The silence tolerated before the session is terminated and resumed with
+     * the idle nudge; unlimited nudges, never a failure (issue #292).
+     */
+    private readonly idleTimeoutMs = 15 * 60 * 1000,
   ) {}
 
   async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
@@ -321,6 +362,28 @@ export class OpenCodeService implements CodingAgent {
       cwd: workingDirectory,
       ...(authority ? { env: { OPENCODE_CONFIG: authority.configPath } } : {}),
     });
+    const stdoutAbort = new AbortController();
+    const stderrAbort = new AbortController();
+    let idleFired = false;
+    let idleMs = 0;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const disarmIdle = (): void => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+    const armIdle = (): void => {
+      disarmIdle();
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        idleFired = true;
+        idleMs += this.idleTimeoutMs;
+        stdoutAbort.abort();
+        stderrAbort.abort();
+      }, this.idleTimeoutMs);
+    };
+    armIdle();
     let spinner: ReturnType<Reporter["start"]> | null = this.reporter.start(SPINNER_TEXT);
     let restartTimer: ReturnType<typeof setTimeout> | null = null;
     const stopSpinner = () => {
@@ -355,35 +418,67 @@ export class OpenCodeService implements CodingAgent {
     const reportStdout = (line: string) => {
       stopSpinner();
       emitEvent(line);
+      armIdle();
       scheduleSpinner();
     };
     const reportStderr = (line: string) => {
       stopSpinner();
       this.reporter.info(`OpenCode stderr: ${line}`);
+      armIdle();
       scheduleSpinner();
     };
 
     try {
-      const stderrAbort = new AbortController();
       const stderrPromise = readLines(child.stderr, () => false, reportStderr, stderrAbort.signal);
       const streamed = await readLines(
         child.stdout,
         (line) => (detectAzureLogin && requiresAzureLogin(line)) || containsTerminalMarker(line, terminalMarker),
         reportStdout,
+        stdoutAbort.signal,
       );
       let exitCode: number;
       let stderrOutput: Awaited<ReturnType<typeof readLines>>;
-      if (streamed.stopped) {
+      if (streamed.stopped || idleFired) {
         exitCode = await this.terminate(child);
         stderrAbort.abort();
         stderrOutput = await stderrPromise;
       } else {
         [exitCode, stderrOutput] = await Promise.all([child.exited, stderrPromise]);
       }
+      const markerArrived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
+      if (idleFired && !streamed.stopped && !markerArrived) {
+        const idleSessionId = streamed.lines
+          .map(parseEvent)
+          .find((event) => typeof event?.sessionID === "string")
+          ?.sessionID;
+        const idleMinutes = Math.max(1, Math.round(this.idleTimeoutMs / 60_000));
+        if (!idleSessionId) {
+          throw new Error(`OpenCode estuvo ${idleMinutes} min sin eventos y sin identificador de sesión; no hay sesión que reanudar`);
+        }
+        reportSessionEvent(
+          "session_idle_timeout",
+          `OpenCode estuvo ${idleMinutes} min sin eventos; se reanuda la sesión con un empujón`,
+          rung,
+          { sessionId: idleSessionId },
+          { durationMs: idleMs },
+          this.reporter,
+        );
+        this.reporter.info(`OpenCode sin eventos durante ${idleMinutes} min; reanudo la sesión ${idleSessionId} automáticamente.`);
+        const resumed = await this.execute(
+          commandWithSessionAndPrompt(command, idleSessionId, idleNudgePrompt(terminalMarker)),
+          detectAzureLogin,
+          workingDirectory,
+          terminalMarker,
+          authority,
+          model,
+          variant,
+        );
+        return { ...resumed, idleMs: (resumed.idleMs ?? 0) + idleMs };
+      }
       const stderr = stderrOutput.lines.join("\n");
       const azureLoginRequired = detectAzureLogin
         && (streamed.lines.some(requiresAzureLogin) || asksForAzureLogin(stderr));
-      const terminalMarkerReceived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
+      const terminalMarkerReceived = markerArrived;
       if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
         const sessionIndex = command.indexOf("--session");
         const sessionId = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
@@ -464,6 +559,7 @@ export class OpenCodeService implements CodingAgent {
 
       return { result, azureLoginRequired, failed, exhaustion };
     } finally {
+      disarmIdle();
       stopSpinner();
     }
   }

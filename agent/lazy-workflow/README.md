@@ -542,14 +542,19 @@ one rung of a run, not the whole run — from the closed vocabulary
 `session_started`, `session_finished`, `session_failed`,
 `terminal_marker_missing`, `provider_exhausted`, `fallback_descent`,
 `chain_exhausted`, `chain_retry`, `session_close_failed`, `session_not_found`,
-`cross_cli_handoff`. `reason` carries the closed exhaustion-cause vocabulary
-(`rate_limit`, `billing`, `authentication`, `session_limit`) that explains a
-`fallback_descent` or a `chain_exhausted`; it is a label because it is a small
-closed set, unlike a finished session's own stop reason (a Claude Code
-`result` subtype, an OpenCode `step_finish` reason), which is provider
-vocabulary this repo does not bound and therefore travels as `context.stop_reason`
-instead. `from_cli` appears only on a `cross_cli_handoff` record, naming the
-CLI the work yielded from while `cli` names the one that adopted it.
+`cross_cli_handoff`, `session_idle_timeout`. `reason` carries the closed
+exhaustion-cause vocabulary (`rate_limit`, `billing`, `authentication`,
+`session_limit`) that explains a `fallback_descent` or a `chain_exhausted`; it
+is a label because it is a small closed set, unlike a finished session's own
+stop reason (a Claude Code `result` subtype, an OpenCode `step_finish` reason),
+which is provider vocabulary this repo does not bound and therefore travels as
+`context.stop_reason` instead. `from_cli` appears only on a `cross_cli_handoff`
+record, naming the CLI the work yielded from while `cli` names the one that
+adopted it. `session_idle_timeout` records the automatic nudge: an OpenCode
+session silent for 15 minutes is terminated and resumed in the same session id
+with a "¿Cómo vas? Continúa donde quedaste." prompt, as many times as it takes,
+without deleting the session, descending the fallback chain, or counting the
+silent intervals as active effort (issue #292).
 
 ### Failure kind
 

@@ -43,6 +43,11 @@ export interface AgentExecution {
   failed?: boolean;
   /** Set only when `failed` is provider exhaustion rather than an ordinary failure. */
   exhaustion?: ProviderExhaustion;
+  /**
+   * Total silence the session sat in before the idle watchdog resumed it, so the
+   * coordinator's effort accounting can exclude those intervals (issue #292).
+   */
+  idleMs?: number;
 }
 
 export type AgentResumeOverrides = Partial<Pick<AgentRunOptions, "model" | "variant" | "agent">>;

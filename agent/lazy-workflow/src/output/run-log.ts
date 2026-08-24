@@ -45,6 +45,7 @@ export const RUN_LOG_SESSION_EVENTS = [
   "session_close_failed",
   "session_not_found",
   "cross_cli_handoff",
+  "session_idle_timeout",
 ] as const;
 export type RunLogSessionEvent = typeof RUN_LOG_SESSION_EVENTS[number];
 

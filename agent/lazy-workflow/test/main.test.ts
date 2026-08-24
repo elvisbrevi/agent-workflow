@@ -1645,6 +1645,83 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   expect(openCodePrompt).toContain('"completionGates":["pinned-ticket-context"');
 });
 
+test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo en single-repo", async () => {
+  const effortCalls: Array<{ realEffort: number; realEffortHours: number; expectedRevision: number }> = [];
+  let ticketState = "En progreso";
+  let clockTicks = 0;
+  let queueHasTicket = true;
+  const manifest = {
+    ticket: 51,
+    ticketBranch: "refs/heads/ticket/51",
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "pass" }],
+    evidence: [{ path: "/tmp/evidence.json", kind: "http-json" as const, sha256: "b".repeat(64) }],
+  };
+  const info = async () => ({
+    hu: { id: 23438 },
+    ticket: { id: 51, type: "Task" as const, state: ticketState },
+    branch: "refs/heads/ticket/51",
+    integrationBranch: "refs/heads/hu/23438",
+    effort: { real: 1, realHours: 1 },
+    pullRequests: [],
+    canonicalPullRequest: null,
+    mergeCommit: null,
+    attachments: [],
+    completionEvidence: null,
+    gates: { satisfied: [], unmet: [] },
+  });
+  const result = AgentResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
+  }));
+  const code = await new LazyWorkflowCli(
+    {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => queueHasTicket
+        ? ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true })
+        : ({ context: null, pending: false }),
+      getState: async () => ({ ticket: 51, state: ticketState, revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async (_ticket: number, desiredState: string) => { ticketState = desiredState; },
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
+      checkoutTicketBranch: async () => undefined,
+      pushTicketBranch: async () => undefined,
+      getCompletionManifestPath: async () => "/tmp/completion.json",
+      createOrReusePullRequest: async () => ({ pullRequest: 99, mergeCommit: "merge" }),
+      setEffort: async (_ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number) => {
+        effortCalls.push({ realEffort, realEffortHours, expectedRevision });
+        return undefined;
+      },
+      getTicketInfo: info,
+      validateDirectTicketContext: async () => undefined,
+      readCompletionManifest: async () => manifest,
+      validateCompletionManifest: async () => undefined,
+      validateEvidenceFile: async () => undefined,
+      validateEvidence: async () => undefined,
+      linkPullRequest: async () => undefined,
+      linkCommit: async () => undefined,
+      addAttachment: async () => undefined,
+      setEvidence: async () => undefined,
+    },
+    { run: async () => ({ result, azureLoginRequired: false, idleMs: 900_000 }), resume: async () => result },
+    { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    undefined,
+    { deleteTicketBranch: async () => { queueHasTicket = false; } },
+    { now: () => 1_800_000 * clockTicks++ },
+  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(effortCalls).toHaveLength(1);
+  // Six tracked 30-min windows (integration branch, ticket branch, checkout,
+  // session, push, pull request) minus the 15 nudged-idle minutes: 165 active
+  // minutes -> 2.75 h over the baseline of 1, where the raw wall clock would
+  // have reported 3.0 h.
+  expect(effortCalls[0]?.realEffort).toBe(3.75);
+  expect(effortCalls[0]?.realEffortHours).toBe(3.75);
+});
+
 /**
  * The same single-repository delivery boundary as the completion test above, minus the coding
  * agent: each fallback test scripts its own, and none of them need the completion gates to

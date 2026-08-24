@@ -671,3 +671,155 @@ describe("OpenCodeService agotamiento del proveedor", () => {
     )).toBeTrue();
   });
 });
+
+describe("OpenCodeService watchdog de inactividad (issue #292)", () => {
+  const encoder = new TextEncoder();
+
+  const emptyProcess = () => ({
+    stdout: new Blob([]).stream(),
+    stderr: new Blob([]).stream(),
+    exited: Promise.resolve(0),
+    kill: () => undefined,
+  });
+
+  test("reanuda la misma sesión con un empujón tras el silencio y conserva el marcador", async () => {
+    const commands: string[][] = [];
+    const signals: string[] = [];
+    let resolveFirstExit: (code: number) => void = () => undefined;
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService((command) => {
+      commands.push(command);
+      if (command[1] === "session") return emptyProcess();
+      if (commands.length === 1) {
+        return {
+          stdout: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(`${jsonEvent({ type: "session", sessionID: "ses_idle" })}\n`));
+            },
+          }),
+          stderr: new Blob([]).stream(),
+          exited: new Promise<number>((resolve) => { resolveFirstExit = resolve; }),
+          kill: (signal) => {
+            signals.push(signal);
+            if (signal === "SIGKILL") resolveFirstExit(137);
+          },
+        };
+      }
+      return {
+        stdout: new Blob([jsonEvent({ type: "text", sessionID: "ses_idle", part: { type: "text", text: "IMPLEMENTATION_READY" } })]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      };
+    }, reporter, 5, 40);
+
+    const execution = await service.run({ ...standardOptions, terminalMarker: "IMPLEMENTATION_READY" }, true);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.idleMs).toBeGreaterThanOrEqual(40);
+    expect(commands[1]?.slice(0, 5)).toEqual(["opencode", "run", "--auto", "--session", "ses_idle"]);
+    const nudge = commands[1]?.[commands[1]!.indexOf("--thinking") + 1] ?? "";
+    expect(nudge).toContain("¿Cómo vas? Continúa donde quedaste.");
+    expect(nudge).toContain("IMPLEMENTATION_READY");
+    expect(commands.at(-1)).toEqual(["opencode", "session", "delete", "ses_idle"]);
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    const nudgeEvent = events.find((event) => event.sessionEvent === "session_idle_timeout");
+    expect(nudgeEvent).toBeDefined();
+    expect(nudgeEvent?.cli).toBe("opencode");
+    expect(nudgeEvent?.model).toBe(standardOptions.model);
+  });
+
+  test("un silencio sin identificador de sesión falla cerrado sin abrir otra sesión", async () => {
+    const commands: string[][] = [];
+    let resolveExit: (code: number) => void = () => undefined;
+    const service = new OpenCodeService((command) => {
+      commands.push(command);
+      return {
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stderr: new Blob([]).stream(),
+        exited: new Promise<number>((resolve) => { resolveExit = resolve; }),
+        kill: (signal) => {
+          if (signal === "SIGKILL") resolveExit(137);
+        },
+      };
+    }, undefined, 5, 40);
+
+    await expect(
+      service.run({ ...standardOptions, terminalMarker: "IMPLEMENTATION_READY" }, true),
+    ).rejects.toThrow(/identificador de sesión/);
+    expect(commands).toHaveLength(1);
+  });
+
+  test("cualquier evento reinicia el contador de inactividad y evita el empujón", async () => {
+    const commands: string[][] = [];
+    let kills = 0;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => controller.enqueue(encoder.encode(`${jsonEvent({ type: "session", sessionID: "ses_live" })}\n`)), 10);
+        setTimeout(() => controller.enqueue(encoder.encode(`${jsonEvent({ type: "text", sessionID: "ses_live", part: { type: "text", text: "avance" } })}\n`)), 40);
+        setTimeout(() => {
+          controller.enqueue(encoder.encode(`${jsonEvent({ type: "text", sessionID: "ses_live", part: { type: "text", text: "IMPLEMENTATION_READY" } })}\n`));
+          controller.close();
+        }, 70);
+      },
+    });
+    const service = new OpenCodeService((command) => {
+      commands.push(command);
+      return command[1] === "session"
+        ? emptyProcess()
+        : {
+          stdout,
+          stderr: new Blob([]).stream(),
+          exited: Promise.resolve(0),
+          kill: () => { kills += 1; },
+        };
+    }, undefined, 5, 50);
+
+    const execution = await service.run({ ...standardOptions, terminalMarker: "IMPLEMENTATION_READY" }, true);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.idleMs).toBeUndefined();
+    expect(commands.filter((command) => command[1] === "run")).toHaveLength(1);
+    expect(kills).toBe(1);
+  });
+
+  test("repite el empujón las veces que haga falta hasta el marcador", async () => {
+    const commands: string[][] = [];
+    const runCount = (): number => commands.filter((command) => command[1] === "run").length;
+    const service = new OpenCodeService((command) => {
+      commands.push(command);
+      if (command[1] === "session") return emptyProcess();
+      if (runCount() <= 2) {
+        let resolveExit: (code: number) => void = () => undefined;
+        return {
+          stdout: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(`${jsonEvent({ type: "session", sessionID: "ses_multi" })}\n`));
+            },
+          }),
+          stderr: new Blob([]).stream(),
+          exited: new Promise<number>((resolve) => { resolveExit = resolve; }),
+          kill: (signal) => {
+            if (signal === "SIGKILL") resolveExit(137);
+          },
+        };
+      }
+      return {
+        stdout: new Blob([jsonEvent({ type: "text", sessionID: "ses_multi", part: { type: "text", text: "IMPLEMENTATION_READY" } })]).stream(),
+        stderr: new Blob([]).stream(),
+        exited: Promise.resolve(0),
+        kill: () => undefined,
+      };
+    }, undefined, 5, 30);
+
+    const execution = await service.run({ ...standardOptions, terminalMarker: "IMPLEMENTATION_READY" }, true);
+
+    expect(execution.failed).toBeFalse();
+    expect(execution.idleMs).toBeGreaterThanOrEqual(60);
+    const runs = commands.filter((command) => command[1] === "run");
+    expect(runs).toHaveLength(3);
+    expect(runs[1]).toContain("ses_multi");
+    expect(runs[2]).toContain("ses_multi");
+    expect(commands.at(-1)).toEqual(["opencode", "session", "delete", "ses_multi"]);
+  });
+});

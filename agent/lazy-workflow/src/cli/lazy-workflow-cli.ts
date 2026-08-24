@@ -1877,7 +1877,9 @@ export class LazyWorkflowCli {
           cli: activeCli,
           phase: terminal ? "implementation-ready" : "implementing",
           sessionId: terminal ? null : execution.result.sessionId,
-          activeDurationMs: checkpoint.activeDurationMs + accrue(),
+          // The idle watchdog's silent intervals are nudged waits, not active
+          // effort, so they come back out of the accrued window (issue #292).
+          activeDurationMs: checkpoint.activeDurationMs + Math.max(0, accrue() - (execution.idleMs ?? 0)),
         };
         await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
         if (execution.failed) {
@@ -5026,6 +5028,12 @@ export class LazyWorkflowCli {
           }
           return await this.descendFallbackChain(options, started, resumeFn, onDescent, handOff);
         });
+        // Same exclusion as the workspace path: the idle watchdog's silent
+        // intervals never count as active effort (issue #292).
+        if (execution.idleMs) {
+          checkpoint = { ...checkpoint, activeDurationMs: Math.max(0, checkpoint.activeDurationMs - execution.idleMs) };
+          await save();
+        }
         sessionId = execution.result.sessionId;
         checkpoint = { ...checkpoint, cli: activeCli };
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);

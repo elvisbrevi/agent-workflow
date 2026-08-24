@@ -355,3 +355,19 @@ test("azure workspace recovery stops when --ticket contradicts the checkpointed 
   expect(harness.events).not.toContain("opencode:run");
   expect(preserved?.ticket).toBe(ticket);
 });
+
+test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo", async () => {
+  // 30 min of wall clock in the session window, 15 of them the silent interval the
+  // idle watchdog nudged: only the 15 active minutes count, over the baseline of 1.
+  const harness = createAzureWorkspaceHarness({ idleMs: 900_000, elapsedMs: 1_800_000 });
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.effortCalls).toHaveLength(1);
+  expect(harness.effortCalls[0]).toMatchObject({ realEffort: 1.25, realEffortHours: 1.25 });
+});

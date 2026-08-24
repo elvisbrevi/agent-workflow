@@ -323,6 +323,7 @@ describe("contrato publicado del run log (issue #268)", () => {
         "session_close_failed",
         "session_not_found",
         "cross_cli_handoff",
+        "session_idle_timeout",
       ].sort(),
     );
   });
