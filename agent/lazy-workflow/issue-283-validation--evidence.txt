@@ -1,0 +1,19 @@
+Issue #283 validation output
+
+$ bun test test/deterministic-tools.test.ts
+31 pass
+0 fail
+185 expect() calls
+Ran 31 tests across 1 file.
+
+$ bun test
+909 pass
+0 fail
+3122 expect() calls
+Ran 909 tests across 46 files.
+
+$ bash tests/install_test.sh
+6 installer tests passed.
+
+$ git diff --check
+Exit status: 0
