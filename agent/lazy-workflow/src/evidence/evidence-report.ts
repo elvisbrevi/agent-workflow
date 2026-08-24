@@ -262,38 +262,52 @@ function captureHtml({ capture, screenshot, source }: CaptureSection): string {
     + header + `<div style="padding:10px 12px">${body}</div></div>`;
 }
 
+/**
+ * A tracker field has a size of its own too, and clamping each block does not bound their number.
+ * Whole sections are dropped rather than cut, because a document cut mid-tag is not a document.
+ */
+const MAX_DOCUMENT_CHARACTERS = 120000;
+
 /** The completion-evidence field's whole content, for one delivery. */
 export function renderEvidenceHtml(input: EvidenceDocumentInput): string {
   const document = buildEvidenceDocument(input);
-  const parts: string[] = [
-    `<div style="${FONT};font-size:13px;color:#1f2328">`,
+  const sections: string[] = [
     `<h2 style="${FONT};font-size:16px;margin:0 0 8px 0">Evidencia de completitud — ${escapeHtml(document.subject)}</h2>`,
   ];
   if (document.facts.length > 0) {
-    parts.push(table(["Dato", "Valor"], document.facts.map(({ label, value }) => [label, value] as [string, string])));
+    sections.push(table(["Dato", "Valor"], document.facts.map(({ label, value }) => [label, value] as [string, string])));
   }
   if (document.validation.length > 0) {
-    parts.push(heading("Validaciones ejecutadas"));
-    parts.push(table(["Comando", "Resultado"], document.validation.map(({ command, result }) => [command, result] as [string, string])));
+    sections.push(heading("Validaciones ejecutadas"));
+    sections.push(table(["Comando", "Resultado"], document.validation.map(({ command, result }) => [command, result] as [string, string])));
   }
   if (document.captures.length > 0) {
-    parts.push(heading("Capturas HTTP"));
-    parts.push(...document.captures.map(captureHtml));
+    sections.push(heading("Capturas HTTP"));
+    sections.push(...document.captures.map(captureHtml));
   }
   for (const { source, json } of document.documents) {
-    parts.push(heading(`JSON · ${source}`));
-    parts.push(block(json));
+    sections.push(heading(`JSON · ${source}`), block(json));
   }
   for (const { source, text } of document.outputs) {
-    parts.push(heading(`Salida · ${source}`));
-    parts.push(block(text));
+    sections.push(heading(`Salida · ${source}`), block(text));
   }
   if (document.screens.length > 0) {
-    parts.push(heading("Capturas de pantalla"));
-    parts.push(...document.screens.map((screen) => image(screen, screen.name)));
+    sections.push(heading("Capturas de pantalla"));
+    sections.push(...document.screens.map((screen) => image(screen, screen.name)));
   }
-  parts.push("</div>");
-  return parts.filter(Boolean).join("\n");
+
+  const kept: string[] = [`<div style="${FONT};font-size:13px;color:#1f2328">`];
+  let size = 0;
+  for (const section of sections.filter(Boolean)) {
+    if (size + section.length > MAX_DOCUMENT_CHARACTERS) {
+      kept.push(`<div style="${FONT};font-size:12px;color:${MUTED}">(evidencia truncada; el resto vive en los adjuntos del ticket)</div>`);
+      break;
+    }
+    kept.push(section);
+    size += section.length;
+  }
+  kept.push("</div>");
+  return kept.join("\n");
 }
 
 // ------------------------------------------------------------ Markdown (GitHub)

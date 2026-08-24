@@ -185,7 +185,8 @@ file — so the only things declared are the ones only the session knows. Its
 `--evidence` paths live **inside** the repository, unlike the Azure manifest's,
 whose evidence must stay out of the worktree — and they must be in the commit the
 manifest names, because the published document shows each screenshot from that
-commit. The coordinator renders that
+commit. Their text reaches the pull request and the closing comment, so the same
+credential gate the Azure ticket applies runs here too. The coordinator renders that
 evidence into the pull-request body and into the comment that closes the issue —
 validations, HTTP captures and screenshots as one Markdown document, with the
 images shown from the commit that carries them — so a session names its evidence

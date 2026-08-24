@@ -222,7 +222,9 @@ unpublishable.
 A GitHub delivery keeps its evidence in the repository and `github-manifest-set`
 requires every evidence file to be in the commit it names, because the published
 document shows each screenshot from that commit and a file nobody committed
-would be a broken image on an issue already closed.
+would be a broken image on an issue already closed. It refuses evidence carrying
+a credential for the same reason the Azure ticket does: the pull-request body and
+the closing comment now carry that file's own text.
 
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not

@@ -15,6 +15,7 @@ import {
   type EvidenceKind,
 } from "./completion-manifest.ts";
 import { renderEvidenceHtml, type EvidenceFile } from "../evidence/evidence-report.ts";
+import { assertEvidenceIsPublishable } from "../evidence/evidence-safety.ts";
 import { parseHttpCaptures, readHttpCaptures } from "../evidence/http-capture.ts";
 
 export {
@@ -275,7 +276,10 @@ function attachmentDigest(comment: string | undefined): string | undefined {
 function evidenceTextContent(value: string): string {
   return value
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(?:div|p|li|tr|h[1-6])>/gi, "\n")
+    // A cell boundary is a boundary: without it a table -- which is most of the document now --
+    // compares as its cells run together, so two different documents can read as the same one and
+    // any spacing Azure adds between cells on read-back reads as a conflict that never clears.
+    .replace(/<\/(?:div|p|li|tr|td|th|h[1-6])>/gi, "\n")
     .replace(/<[^>]*>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&lt;/gi, "<")
@@ -315,6 +319,19 @@ function carriesEvidence(existing: string, content: string): boolean {
   const text = evidenceTextContent(content);
   return text.length >= MIN_EVIDENCE_MATCH && evidenceTextContent(existing).includes(text);
 }
+
+/**
+ * Whether the field already carries this delivery's evidence, in any form it may take.
+ *
+ * Equality answers for a field this same path published. It cannot answer for the others: a
+ * transversal delivery publishes every repository's evidence at once, and the repair command that
+ * follows it reads a single manifest, so the two render different documents over the same proof.
+ * Asked only as equals, the second one reports a conflict against evidence that is already there,
+ * at a gate reached with the pull requests merged. So when equality fails the weaker question is
+ * asked, and it is the honest one: is this file's evidence already published.
+ */
+const alreadyPublished = (existing: string, rendered: string, content: string): boolean =>
+  publishedAlready(existing, rendered, content) || carriesEvidence(existing, content);
 
 function hasEvidenceCapture(item: WorkItem): boolean {
   return (item.relations ?? []).some(({ rel, url, attributes }) =>
@@ -529,53 +546,8 @@ function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
   }
 }
 
-/**
- * Evidence for an authenticated endpoint has to name the header it sent, and naming a header is
- * not leaking it. Judging the key alone rejected every value a careful session could write --
- * `"authorization": "[REDACTED - Bearer ADMIN_API_TOKEN]"` included -- which left authenticated
- * HTTP evidence impossible to pass at all, stranding a delivery whose pull request had already
- * merged at its last gate. So the value decides, and placeholders are neutralized before anything
- * is read: whatever a session wrapped in brackets it withheld on purpose, and the scheme arm must
- * not mistake the withheld name for the secret itself.
- */
-const PLACEHOLDER = /\[[^\]\n]*\]|<[^>\n]*>/g;
-const SECRET_ASSIGNMENT = /["']?(?:authorization|access[_-]?token|token|api[_-]?key|apikey|secret|password|passwd|cookie|set-cookie|pat|AZURE_DEVOPS_EXT_PAT)["']?\s*[:=]\s*("(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\s,;}\]]+)/gi;
-const SECRET_FLAG = /--(?:token|api-key|password)[\s=]+(\S+)/gi;
-const SECRET_SCHEME = /\b(?:bearer|basic)\s+(\S+)/gi;
-
-const MASKED = /^(?:\[[^\]]*\]|<[^>]*>|[*x•]{3,}|redacted|omitted|none|null|undefined|true|false|\d+)$/i;
-/** `ADMIN_API_TOKEN` names the variable that holds the secret; it is not the secret. */
-const ENVIRONMENT_REFERENCE = /^[A-Z][A-Z0-9_]*$/;
-const MIN_CREDENTIAL_LENGTH = 8;
-
-/** Whether `value`, read off the right of a secret-shaped key, is a live credential. */
-function looksLikeCredential(value: string): boolean {
-  let candidate = value.trim().replace(/^["']|["']$/g, "").trim();
-  // `Bearer <token>` carries a space the prose test below would forgive, so the scheme is peeled
-  // off and the token behind it judged on its own.
-  const scheme = /^(?:bearer|basic)\s+/i.exec(candidate);
-  if (scheme) candidate = candidate.slice(scheme[0].length).trim();
-  if (!candidate || MASKED.test(candidate)) return false;
-  // Whitespace means the session described the field instead of quoting its value.
-  if (/\s/.test(candidate)) return false;
-  if (ENVIRONMENT_REFERENCE.test(candidate)) return false;
-  return candidate.length >= MIN_CREDENTIAL_LENGTH;
-}
-
-function containsCredential(content: string): boolean {
-  const probe = content.replace(PLACEHOLDER, "[REDACTED]");
-  return [SECRET_ASSIGNMENT, SECRET_FLAG, SECRET_SCHEME].some((pattern) =>
-    [...probe.matchAll(pattern)].some((match) => looksLikeCredential(match[1] ?? ""))
-  );
-}
-
 function validateEvidenceContent(content: string, kind: EvidenceKind): void {
-  if (containsCredential(content)) {
-    throw new Error("La evidencia contiene credenciales o secretos");
-  }
-  if (/<script\b|javascript\s*:|\bon[a-z]+\s*=/i.test(content)) {
-    throw new Error("La evidencia contiene contenido ejecutable no permitido");
-  }
+  assertEvidenceIsPublishable(content);
   if (kind === "http-json") {
     let parsed: unknown;
     try {
@@ -1595,7 +1567,7 @@ export class AzureTicketInfoService {
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && !this.alreadyPublished(existing, rendered, content, report)) {
+    if (existing && !alreadyPublished(existing, rendered, content)) {
       throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     }
   }
@@ -1615,7 +1587,7 @@ export class AzureTicketInfoService {
     const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && this.alreadyPublished(existing, rendered, content, report)) {
+    if (existing && alreadyPublished(existing, rendered, content)) {
       return { ticket, completionEvidence: existing };
     }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
@@ -1625,16 +1597,6 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
-  }
-
-  /** Whether the field already carries this delivery's evidence, in either form it may take. */
-  private alreadyPublished(
-    existing: string,
-    rendered: string,
-    content: string,
-    report?: CompletionEvidenceReport,
-  ): boolean {
-    return publishedAlready(existing, rendered, content) || (!report && carriesEvidence(existing, content));
   }
 
   /**

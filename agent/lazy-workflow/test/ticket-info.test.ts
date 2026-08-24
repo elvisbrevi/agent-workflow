@@ -1921,7 +1921,7 @@ test("completion-evidence falla claro si el proyecto no define ningún campo can
  * the text, so a round trip through this must not read as a different value.
  */
 const azureNormalized = (value: string): string =>
-  value.replace(/ style="[^"]*"/g, "").replace(/\n/g, "<br>");
+  value.replace(/ style="[^"]*"/g, "").replace(/\n/g, "<br>").replace(/<\/td><td>/g, "</td> <td>");
 
 /** The document `setEvidence` publishes for a delivery, read off the write it performed. */
 async function publishedEvidence(path: string): Promise<string> {
@@ -2034,6 +2034,63 @@ test("ticket-evidence-set sigue siendo repetible sobre un ticket que ya publicó
 
     await expect(reparacion.validateEvidence(51, salida)).resolves.toBeUndefined();
     await expect(reparacion.setEvidence(51, salida)).resolves.toMatchObject({ ticket: 51 });
+    expect(patches).toHaveLength(1);
+
+    // Y lo mismo cuando Azure devuelve su propia normalización del documento: un documento hecho
+    // casi entero de tablas se comparaba con sus celdas pegadas, así que cualquier espacio que
+    // Azure metiera entre ellas volvía cada repetición un conflicto que no se limpiaba nunca.
+    const normalizado = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: azureNormalized(documento),
+    });
+    await expect(normalizado.validateEvidence(51, salida)).resolves.toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("la reparación de un ticket transversal no lee como conflicto lo que ella misma publicó", async () => {
+  // La entrega transversal publica la evidencia de todos los repositorios de una vez, y el comando
+  // de reparación que la sigue lee un solo manifest: rinden documentos distintos sobre la misma
+  // prueba, y preguntados como iguales el segundo reporta conflicto contra lo que ya está ahí.
+  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-transversal-"));
+  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
+  try {
+    const digest = async (path: string): Promise<string> =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const api = join(root, "api.txt");
+    const web = join(root, "web.txt");
+    await Bun.write(api, "api: 120 pass, 0 fail\n");
+    await Bun.write(web, "web: 78 pass, 0 fail\n");
+
+    const transversal = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    await transversal.setEvidence(51, api, {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
+      evidence: [
+        { path: api, kind: "command-output", sha256: await digest(api) },
+        { path: web, kind: "command-output", sha256: await digest(web) },
+      ],
+    });
+    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
+
+    const reparacion = completionEvidenceService({
+      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
+      existing: documento,
+      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
+    });
+    const unSoloManifest = {
+      ticketBranch: "refs/heads/ticket/51",
+      validation: [{ command: "bun test", result: "120 pass" }],
+      evidence: [{ path: api, kind: "command-output" as const, sha256: await digest(api) }],
+    };
+
+    await expect(reparacion.validateEvidence(51, api, unSoloManifest)).resolves.toBeUndefined();
+    await expect(reparacion.setEvidence(51, api, unSoloManifest)).resolves.toMatchObject({ ticket: 51 });
     expect(patches).toHaveLength(1);
   } finally {
     rmSync(root, { recursive: true, force: true });

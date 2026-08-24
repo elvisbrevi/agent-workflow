@@ -381,6 +381,19 @@ describe("github-manifest-set", () => {
     expect(await Bun.file(join(root, ".git/manifest.json")).exists()).toBeFalse();
   });
 
+  test("una evidencia con un secreto no entra al manifest GitHub, que ahora la publica", async () => {
+    // Antes la evidencia GitHub solo se digestaba; ahora su texto viaja al cuerpo del PR y al
+    // comentario de cierre, así que la misma puerta que protege al ticket protege al repositorio.
+    const evidence = join(root, "docs/evidence/run.txt");
+    await Bun.write(evidence, 'curl -H "authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"\n');
+
+    const { code } = await runTool(githubArgs([...VALIDATION, "--evidence", evidence]));
+
+    expect(code).toBe(1);
+    expect(messages[0]).toContain("La evidencia contiene credenciales o secretos");
+    expect(await Bun.file(join(root, ".git/manifest.json")).exists()).toBeFalse();
+  });
+
   test("una entrega sin evidencia omite la clave en vez de escribirla vacía", async () => {
     const { code } = await runTool(githubArgs(VALIDATION));
 

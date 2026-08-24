@@ -63,7 +63,17 @@ first's evidence as a conflict it could never clear. Every merge commit is
 already on the work item as the native artifact link a completion gate requires,
 so the field loses nothing by not repeating it.
 
-GitHub evidence must be in the commit its manifest names. The published document
+GitHub evidence must pass the same gate the Azure ticket applies. The rule that
+evidence never publishes a credential or executable content belonged to the work
+item because the work item was the only place evidence content reached; now the
+pull-request body and the closing comment carry the same files, and a repository
+is a more public place than a work item. A rule that protects one surface and not
+the other protects neither, so it is one rule and both surfaces call it — at the
+writing gate, where a session can still redact, and again where the document is
+rendered, so a manifest written before the gate cannot publish what the gate
+refuses.
+
+GitHub evidence must also be in the commit its manifest names. The published document
 shows each screenshot from that commit, and a clean worktree does not answer the
 question: `git status --untracked-files=no` cannot see a file that was never
 added, so evidence a session wrote but did not commit would leave a permanently

@@ -6,6 +6,7 @@ import { writeVerifiedManifest } from "../manifest/verified-write.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 import { renderEvidenceMarkdown, type EvidenceFile } from "../evidence/evidence-report.ts";
+import { assertEvidenceIsPublishable } from "../evidence/evidence-safety.ts";
 import type { EvidenceKind } from "../azure/completion-manifest.ts";
 
 export interface GitHubReadyManifest {
@@ -381,6 +382,12 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       if (outsideRepository || !await Bun.file(evidencePath).exists()) {
         throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${declared}`);
       }
+      // The pull request and the closing comment now carry this file's own text, and a repository
+      // is a more public place than a work item: what the Azure ticket refuses to publish, the
+      // GitHub surface refuses too. Judged here, where the session can still redact and recommit.
+      const bytes = new Uint8Array(await Bun.file(evidencePath).arrayBuffer());
+      const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      if (readsAsText(decoded)) assertEvidenceIsPublishable(decoded);
       // Evidence is published from the commit (`blob/<commit>/<path>?raw=1`), so a file the commit
       // does not carry leaves a permanently broken image on an issue already closed. A clean
       // worktree does not answer this: `--untracked-files=no` cannot see a file that was never
@@ -391,10 +398,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
       } catch {
         throw new Error(`La evidencia del manifest no está en el commit: ${declared}`);
       }
-      evidence.push({
-        path: trackedPath,
-        sha256: createHash("sha256").update(new Uint8Array(await Bun.file(evidencePath).arrayBuffer())).digest("hex"),
-      });
+      evidence.push({ path: trackedPath, sha256: createHash("sha256").update(bytes).digest("hex") });
     }
     const manifest: GitHubReadyManifest = {
       issue: input.issue,
@@ -630,9 +634,13 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
             files.push({ name, path: located, kind, imageUrl: blobUrl(repository, commit, path) });
             continue;
           }
-          // A file that cannot be read is worth less than the rest of the document is worth losing.
+          // A file that cannot be read is worth less than the rest of the document is worth losing,
+          // and a file that must not be published is worth more than the document is worth having:
+          // a manifest written before the gate above existed still passes through here.
           const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
-          if (content.trim() && readsAsText(content)) files.push({ name, path: located, kind, content });
+          if (!content.trim() || !readsAsText(content)) continue;
+          assertEvidenceIsPublishable(content);
+          files.push({ name, path: located, kind, content });
         }
         for (const entry of manifest.validation) {
           if (!validation.some(({ command, result }) => command === entry.command && result === entry.result)) {

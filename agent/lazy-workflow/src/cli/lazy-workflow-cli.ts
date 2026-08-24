@@ -2235,10 +2235,15 @@ export class LazyWorkflowCli {
     // contra el ticket ya entregado, porque los merges adelantaron la rama.
     const completionInfo = await boundary.getTicketInfo!(hu, ticket);
     const workspaceEvidence: CompletionManifestEvidence[] = [];
+    // El documento publicado sí las lleva todas: una captura se empareja con la pantalla que vive
+    // junto a ella, así que quedarse solo con la primera de dos pantallas idénticas dejaba al
+    // segundo repositorio publicando su intercambio sin la imagen del navegador que lo hizo.
+    const reportEvidence: CompletionManifestEvidence[] = [];
     const workspaceValidation: Array<{ command: string; result: string }> = [];
     for (const unit of changedUnits) {
       await boundary.validateCompletionManifest!(unit.manifest!, completionInfo, ticket, unit.path);
       for (const evidence of unit.manifest!.evidence) {
+        if (!reportEvidence.some(({ path }) => path === evidence.path)) reportEvidence.push(evidence);
         // Dos repositorios pueden declarar el mismo archivo; el ticket lo adjunta una sola vez.
         if (!workspaceEvidence.some(({ sha256 }) => sha256.toLowerCase() === evidence.sha256.toLowerCase())) {
           workspaceEvidence.push(evidence);
@@ -2256,7 +2261,7 @@ export class LazyWorkflowCli {
     const evidenceReport: CompletionEvidenceReport = {
       ticketBranch,
       validation: workspaceValidation,
-      evidence: workspaceEvidence,
+      evidence: reportEvidence,
     };
 
     const ticketEffortBefore = await boundary.getEffort!(ticket);

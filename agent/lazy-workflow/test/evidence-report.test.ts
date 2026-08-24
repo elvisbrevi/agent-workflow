@@ -94,6 +94,25 @@ describe("documento HTML del ticket", () => {
     expect(rendered).not.toContain("<img onerror");
   });
 
+  test("un documento con demasiadas secciones se corta entero, nunca a mitad de una etiqueta", () => {
+    // Recortar cada bloque no acota cuántos hay: un manifest con muchos archivos podía producir un
+    // valor que el propio PATCH de Azure rechaza en la última compuerta.
+    const rendered = renderEvidenceHtml({
+      ...documentInput,
+      files: [...Array(40)].map((_unused, index) => ({
+        name: `salida-${index}.txt`,
+        kind: "command-output" as const,
+        content: "x".repeat(9000),
+      })),
+    });
+
+    expect(rendered).toContain("evidencia truncada");
+    expect(rendered.length).toBeLessThan(140000);
+    expect(rendered.endsWith("</div>")).toBeTrue();
+    // Ninguna etiqueta partida: cada `<` abierto tiene su `>`.
+    expect(rendered.split("<").length).toBe(rendered.split(">").length);
+  });
+
   test("una captura sin adjunto publicado se nombra sin romper la imagen ni cambiar el texto", () => {
     // La publicación adjunta y solo después escribe el campo, así que la misma entrega renderiza
     // dos veces: si el texto cambiara entre ambas, una repetición leería su propia evidencia como
@@ -419,6 +438,39 @@ describe("entrega GitHub", () => {
       expect(body.split("| bun test | 198 pass |")).toHaveLength(2);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("una evidencia con un secreto no se publica en GitHub, como no se publica en el ticket", async () => {
+    // El cuerpo del PR y el comentario de cierre llevan ahora el texto del archivo, y un
+    // repositorio es un lugar más público que un work item: lo que el ticket rechaza publicar, la
+    // superficie GitHub lo rechaza también.
+    const calls: string[][] = [];
+    const { root, service } = delivery(calls);
+    try {
+      await Bun.write(join(root, "docs/evidence/api.txt"), 'curl -H "authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"\n');
+
+      await service.closeIssue(201, 12, "c".repeat(40), root, [{
+        directory: root,
+        commit: "c".repeat(40),
+        manifest: {
+          issue: 201,
+          branch: "refs/heads/issue/201",
+          commit: "a".repeat(40),
+          validation: [{ command: "bun test", result: "198 pass" }],
+          clean: true,
+          summary: "Integra la reconciliación de pagos",
+          evidence: [{ path: "docs/evidence/api.txt", sha256: "b".repeat(64) }],
+        },
+      }]);
+
+      const comment = calls.find(([command, action]) => command === "issue" && action === "comment");
+      const body = comment?.[comment.indexOf("--body") + 1] ?? "";
+      expect(body).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+      // Y el Issue se cierra igual: un secreto no publicado no puede costar la entrega.
+      expect(body).toBe(`lazy-workflow: delivered PR #12 (${"c".repeat(40)})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

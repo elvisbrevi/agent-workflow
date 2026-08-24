@@ -101,6 +101,7 @@ export const GITHUB_MANIFEST_TOOL_INSTRUCTION = [
   `Create the manifest only by running \`lazy-workflow ${GITHUB_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
   `It takes --issue, --branch, --manifest, --summary, ${VALIDATION_FLAGS}, and one --evidence <path> per in-repository evidence file.`,
   "It resolves the commit from HEAD, verifies the worktree is clean, and computes every SHA-256 digest itself.",
+  "It refuses evidence the commit does not carry — the published document shows each file from that commit — and evidence whose text holds a credential.",
   "If it fails, fix exactly what its message names and run it again.",
 ].join(" ");
 
