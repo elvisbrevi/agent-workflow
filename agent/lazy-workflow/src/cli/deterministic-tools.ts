@@ -111,11 +111,11 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-function deterministicFailureKind(command: DeterministicToolCommand) {
+export function deterministicFailureKind(command: DeterministicToolCommand) {
+  if (command.includes("manifest")) return "manifest-not-verifiable" as const;
   if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
   if (command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
-  if (command.includes("manifest-info")) return "manifest-not-verifiable" as const;
   if (command === "github-issue-claim") return "claim-verification-failure" as const;
   if (command.includes("pr-") || command === "github-pr-merge") return "pull-request-failure" as const;
   return "deterministic-completion-failure" as const;

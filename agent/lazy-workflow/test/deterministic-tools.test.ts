@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import {
   createDeterministicToolServices,
+  deterministicFailureKind,
   isDeterministicToolCommand,
   runDeterministicTool,
   toBranchRef,
@@ -11,6 +12,7 @@ import {
 import { DETERMINISTIC_TOOL_COMMANDS } from "../src/cli/tool-commands.ts";
 import { buildCli, type CliOptions } from "../src/cli/parse-cli-options.ts";
 import { createReporter } from "../src/output/reporter.ts";
+import type { FailureKind } from "../src/output/failure-kind.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
 
@@ -200,6 +202,41 @@ describe("herramientas deterministas como comandos", () => {
       const result = buildCli(() => true)([command], { onHelp: () => 0, onError: () => 1 });
       expect(result.kind).toBe("options");
       if (result.kind === "options") expect(result.options.command).toBe(command);
+    }
+  });
+
+  test("clasifica cada comando determinista con su failure kind", () => {
+    const expected: Record<typeof DETERMINISTIC_TOOL_COMMANDS[number], FailureKind> = {
+      "hu-children-info": "tracker-read-failure",
+      "hu-state-set": "deterministic-completion-failure",
+      "hu-branch-ensure": "branch-preparation-failure",
+      "ticket-type-info": "tracker-read-failure",
+      "ticket-pr-create": "pull-request-failure",
+      "ticket-branch-push": "deterministic-completion-failure",
+      "ticket-branch-checkout": "branch-preparation-failure",
+      "ticket-manifest-set": "manifest-not-verifiable",
+      "github-auth-info": "tracker-read-failure",
+      "github-repo-info": "tracker-read-failure",
+      "github-issue-list": "tracker-read-failure",
+      "github-issue-select": "tracker-read-failure",
+      "github-issue-info": "tracker-read-failure",
+      "github-issue-claim": "claim-verification-failure",
+      "github-issue-release": "deterministic-completion-failure",
+      "github-issue-close": "deterministic-completion-failure",
+      "github-branch-prepare": "branch-preparation-failure",
+      "github-branch-checkout": "branch-preparation-failure",
+      "github-branch-verify": "branch-preparation-failure",
+      "github-branch-cleanup": "deterministic-completion-failure",
+      "github-manifest-info": "manifest-not-verifiable",
+      "github-manifest-set": "manifest-not-verifiable",
+      "github-commit-push": "deterministic-completion-failure",
+      "github-pr-create": "pull-request-failure",
+      "github-pr-merge": "pull-request-failure",
+      "git-branch-delete": "ticket-branch-cleanup-failure",
+    };
+
+    for (const command of DETERMINISTIC_TOOL_COMMANDS) {
+      expect(deterministicFailureKind(command)).toBe(expected[command]);
     }
   });
 
