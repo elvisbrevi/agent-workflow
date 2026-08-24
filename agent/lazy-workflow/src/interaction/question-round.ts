@@ -36,6 +36,12 @@ export interface PlanAnswer {
   answer: string;
 }
 
+export function isPlanAnswer(candidate: unknown): candidate is PlanAnswer {
+  const answer = candidate as PlanAnswer;
+  return typeof candidate === "object" && candidate !== null
+    && typeof answer.id === "string" && typeof answer.answer === "string";
+}
+
 /**
  * Where the answers came from, so the session knows whether a decision was
  * really made: an expired deadline resolves to `recommended`, which is a default

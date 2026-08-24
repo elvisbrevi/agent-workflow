@@ -149,6 +149,35 @@ test("el canal http rechaza un cuerpo sin la forma de respuestas", async () => {
   }
 });
 
+test("un answer no string se puede corregir sin dejar la ronda respondida", async () => {
+  const channel = new HttpQuestionChannel(settings(), deps());
+  try {
+    const asked = channel.ask(round);
+    const invalid = await fetch(`${channel.url}/answers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ round: 1, answers: [{ id: "q1", answer: 2 }] }),
+    });
+
+    expect(invalid.status).toBe(400);
+
+    const valid = await fetch(`${channel.url}/answers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ round: 1, answers: [{ id: "q1", answer: "dos" }] }),
+    });
+
+    expect(valid.status).toBe(200);
+    expect(await asked).toEqual({
+      round: 1,
+      source: "mixed",
+      answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "sí" }],
+    });
+  } finally {
+    await channel.close();
+  }
+});
+
 test("una ronda http que vence lanza el vencimiento con su número y su plazo", async () => {
   const channel = new HttpQuestionChannel(settings({ timeoutSeconds: 30 }), deps(alreadyExpired));
   try {
