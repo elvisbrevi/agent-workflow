@@ -10,7 +10,7 @@
  */
 
 import { join } from "node:path";
-import { completeAnswers, unknownAnswerIds, type PlanAnswer, type QuestionAnswers, type QuestionRound } from "./question-round.ts";
+import { completeAnswers, isPlanAnswer, unknownAnswerIds, type PlanAnswer, type QuestionAnswers, type QuestionRound } from "./question-round.ts";
 import {
   QuestionChannelUnavailableError,
   withRoundDeadline,
@@ -84,7 +84,7 @@ export class FileQuestionChannel implements QuestionChannel {
       return null;
     }
     const given = (parsed as { answers?: unknown })?.answers;
-    if (!Array.isArray(given) || given.some((answer) => typeof answer?.id !== "string" || typeof answer?.answer !== "string")) {
+    if (!Array.isArray(given) || given.some((answer) => !isPlanAnswer(answer))) {
       throw new QuestionChannelUnavailableError(`${path} debe traer answers: [{id, answer}]`);
     }
     const unknown = unknownAnswerIds(round, given as PlanAnswer[]);

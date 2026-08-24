@@ -8,7 +8,7 @@
  * agent is still thinking about its first question.
  */
 
-import { completeAnswers, unknownAnswerIds, type PlanAnswer, type QuestionAnswers, type QuestionRound } from "./question-round.ts";
+import { completeAnswers, isPlanAnswer, unknownAnswerIds, type PlanAnswer, type QuestionAnswers, type QuestionRound } from "./question-round.ts";
 import {
   QuestionChannelUnavailableError,
   withRoundDeadline,
@@ -269,7 +269,7 @@ export class HttpQuestionChannel implements QuestionChannel {
     const round = (body as { round?: unknown })?.round;
     const given = (body as { answers?: unknown })?.answers;
     if (typeof round !== "number") return json({ error: "El cuerpo debe declarar la ronda" }, 400);
-    if (!Array.isArray(given) || given.some((answer) => typeof answer?.id !== "string")) {
+    if (!Array.isArray(given) || given.some((answer) => !isPlanAnswer(answer))) {
       return json({ error: "El cuerpo debe traer answers: [{id, answer}]" }, 400);
     }
     if (this.answered.has(round)) return json({ error: `La ronda ${round} ya fue respondida` }, 409);
@@ -280,8 +280,9 @@ export class HttpQuestionChannel implements QuestionChannel {
     if (unknown.length > 0) {
       this.deps.reporter.warn(`Se descartan respuestas a preguntas que la ronda no hizo: ${unknown.join(", ")}`);
     }
+    const answers = completeAnswers(waiting.round, given as PlanAnswer[]);
     this.answered.add(round);
-    waiting.resolve(completeAnswers(waiting.round, given as PlanAnswer[]));
+    waiting.resolve(answers);
     return json({ status: "ok" });
   }
 }
