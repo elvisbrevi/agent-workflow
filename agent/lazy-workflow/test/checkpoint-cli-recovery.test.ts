@@ -10,6 +10,7 @@ import { AgentExhaustionError } from "../src/coding-agent/coding-agent.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AutocodeCheckpointStore, VersionedAutocodeCheckpoint } from "../src/azure/autocode-checkpoint.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
+import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubWorkspaceCheckpoint } from "../src/github/github-workspace-checkpoint.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
@@ -80,6 +81,7 @@ function githubDeliveryCli(
     nextIssue?: number;
     readIssueDetail?: (issueNumber: number) => Promise<ReturnType<typeof fakeSelectedIssue>>;
     verifyAuthentication?: () => Promise<{ login: string }>;
+    githubDelivery?: GitHubDeliveryAdapter;
   } = {},
 ) {
   let current: GitHubDeliveryCheckpoint | null = checkpoint;
@@ -122,6 +124,7 @@ function githubDeliveryCli(
     },
     store,
     lock,
+    options.githubDelivery,
   );
   return { cli, store, reported, released, get current() { return current; } };
 }
@@ -543,6 +546,123 @@ test("un agotamiento al reanudar el Issue GitHub con --session desciende a otro 
   expect(started.map(({ cli: startedCli }) => startedCli)).toEqual(["opencode"]);
   expect(started[0]?.session).toBeNull();
   expect(exit).toBe(0);
+});
+
+/**
+ * A `GitHubDeliveryAdapter` that completes the first unit's own delivery (issue 178, on
+ * whatever branch its checkpoint fixed) and hands the second unit (issue 179) a fresh
+ * branch to prepare into. The second unit's session never gets far enough to need more
+ * than `prepareBranch`: the test's fake agent throws right after recording which CLI
+ * opened it.
+ */
+function deliveryAdapterStub(firstUnitBranch: string): GitHubDeliveryAdapter {
+  return {
+    prepareBranch: async (issue) => ({
+      branch: `refs/heads/issue/${issue}`,
+      baseBranch: "refs/heads/main",
+      manifestPath: `/repo/lazy-workflow/completion-manifest-${issue}.json`,
+    }),
+    readManifest: async () => ({
+      issue: 178,
+      branch: firstUnitBranch,
+      commit: "c".repeat(40),
+      validation: [],
+      clean: true,
+      summary: "ok",
+    }),
+    pushCommit: async () => undefined,
+    createOrReusePullRequest: async () => ({ number: 1 }),
+    mergePullRequest: async () => ({ number: 1, mergeCommit: "merge-1" }),
+    closeIssue: async () => undefined,
+    cleanupBranch: async () => undefined,
+  };
+}
+
+/**
+ * Runs the shared scenario both `restoreDeclaredCli` tests below need: a checkpointed
+ * GitHub recovery whose only unit hits a mid-unit fallback handoff (claudecode ->
+ * opencode), immediately followed by a second, freshly-selected unit (issue 179). Only
+ * the run args differ between the two tests -- whether `--cli` is declared -- so this
+ * carries everything else: the agent spies, the checkpoint, and the delivery stub.
+ */
+async function runMidUnitHandoffThenNextUnit(extraArgs: string[]): Promise<{
+  resumed: string[];
+  started: Array<{ cli: AgentCli; session: string | null }>;
+}> {
+  const resumed: string[] = [];
+  const started: Array<{ cli: AgentCli; session: string | null }> = [];
+  const STOP = new Error("la unidad siguiente ya abrió sesión; no hace falta seguir");
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (opts) => {
+      started.push({ cli, session: opts.session });
+      if (started.length > 1) throw STOP;
+      return {
+        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_new", part: { type: "text", text: "IMPLEMENTATION_READY" } })),
+        azureLoginRequired: false,
+        failed: false,
+      };
+    },
+    resume: async (sessionId) => {
+      resumed.push(sessionId);
+      throw new AgentExhaustionError(
+        { cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" },
+        AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "You've hit your session limit" } })),
+      );
+    },
+  });
+  const checkpoint: GitHubDeliveryCheckpoint = {
+    ...githubDeliveryCheckpoint("claudecode"),
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/repo/lazy-workflow/completion-manifest.json",
+  };
+  const githubDelivery = deliveryAdapterStub("refs/heads/issue/178");
+  const state = githubDeliveryCli(checkpoint, { requested: [], resumed: [], overrides: [], source: agentSource }, {
+    nextIssue: 179,
+    githubDelivery,
+  });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run([
+      "code", "--session", "ses_recovered", "--model", "claude-sonnet-5",
+      "--fallback", "opencode:github-copilot/gpt-5.5:high", "--working-directory", "/repo",
+      ...extraArgs,
+    ]).catch(() => undefined);
+  } finally {
+    console.log = originalLog;
+  }
+
+  return { resumed, started };
+}
+
+test("sin --cli declarado, un traspaso a mitad de la primera unidad no deja la unidad siguiente en el CLI equivocado", async () => {
+  // La primera unidad recupera un checkpoint claudecode con --session, sin --cli.
+  // Un agotamiento la traspasa a opencode a mitad de la unidad (this.activeAgent se
+  // mueve a opencode sin que options.cli lo refleje nunca). Sin --cli declarado no
+  // hay nada que restoreDeclaredCli reconcilie explícitamente, así que antes del fix
+  // dejaba this.activeAgent en opencode: la unidad siguiente abría ahí en vez de en
+  // claudecode, que es lo que options.cli y el checkpoint que ella misma escribe dicen.
+  const { resumed, started } = await runMidUnitHandoffThenNextUnit([]);
+
+  expect(resumed).toEqual(["ses_recovered"]);
+  expect(started[0]).toEqual({ cli: "opencode", session: null });
+  expect(started[1]?.cli).toBe("claudecode");
+});
+
+test("con --cli declarado, un traspaso a mitad de la primera unidad deja la unidad siguiente en el CLI declarado aunque coincida con el adoptado", async () => {
+  // Mismo traspaso mid-unit que el test anterior, pero ahora con --cli claudecode
+  // declarado explícitamente -- el mismo CLI que el checkpoint ya nombraba, así que
+  // declared.cli === adopted.cli. Esto guarda contra la regresión que el comentario
+  // de restoreDeclaredCli ya describía: un optimizador que salte el resolveAgent
+  // cuando las dos options ya "coinciden" pasaría por alto que this.activeAgent quedó
+  // en opencode por el traspaso, no en claudecode.
+  const { resumed, started } = await runMidUnitHandoffThenNextUnit(["--cli", "claudecode"]);
+
+  expect(resumed).toEqual(["ses_recovered"]);
+  expect(started[0]).toEqual({ cli: "opencode", session: null });
+  expect(started[1]?.cli).toBe("claudecode");
 });
 
 function autocodeCheckpoint(cli: AgentCli): VersionedAutocodeCheckpoint {

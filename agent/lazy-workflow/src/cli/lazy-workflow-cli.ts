@@ -730,14 +730,21 @@ export class LazyWorkflowCli {
    * on the rung the operator declared. Without an explicit `--cli` there is
    * nothing declared to go back to, so the adopted CLI stays the run's own.
    *
-   * Re-resolves unconditionally once there is something declared to restore, even when
-   * `declared.cli` already equals `adopted.cli`: a fallback descent that happens mid-unit,
-   * inside this same invocation, moves `this.activeAgent` to the handed-off CLI without ever
-   * touching `options.cli` (only a checkpoint adopted from an *earlier* invocation does that),
-   * so comparing the two options objects alone cannot detect that drift.
+   * Both branches re-resolve unconditionally, even when the CLI they land on already equals
+   * `this.activeAgent`: a fallback descent that happens mid-unit, inside this same invocation,
+   * moves `this.activeAgent` to the handed-off CLI without ever touching `options.cli` (only a
+   * checkpoint adopted from an *earlier* invocation does that), so comparing options objects
+   * alone cannot detect that drift, declared or not. Skipping the resolve on the `!hasCli`
+   * branch reasoned that "nothing declared" meant nothing to reconcile — but the run's own CLI
+   * (`adopted.cli`) is exactly as declared as an explicit `--cli` is, and leaving it unresolved
+   * let a mid-unit handoff poison the next unit: `this.activeAgent` stayed on the handed-off
+   * CLI while every checkpoint and report kept naming `adopted.cli`.
    */
   private restoreDeclaredCli(declared: CliOptions, adopted: CliOptions): CliOptions {
-    if (!declared.hasCli) return adopted;
+    if (!declared.hasCli) {
+      this.resolveAgent(adopted.cli);
+      return adopted;
+    }
     this.resolveAgent(declared.cli);
     return declared;
   }
