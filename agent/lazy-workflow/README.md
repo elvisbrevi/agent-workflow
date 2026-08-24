@@ -219,6 +219,12 @@ is still alive to fix it; evidence written before the shape existed still
 publishes, as plain JSON, so a manifest already on disk never becomes
 unpublishable.
 
+Both documents end by naming the evidence files they were rendered from, with the
+first twelve characters of each file's SHA-256. That is how a rerun recognises
+evidence it published itself: the same proof renders differently depending on how
+much of it the publishing path could see, so the digests answer where the text
+cannot.
+
 A GitHub delivery keeps its evidence in the repository and `github-manifest-set`
 requires every evidence file to be in the commit it names, because the published
 document shows each screenshot from that commit and a file nobody committed

@@ -2792,6 +2792,9 @@ export class LazyWorkflowCli {
             return 1;
           }
           const { manifest } = outcome;
+          // La reconciliación reescribe el manifest de este repositorio, y el cierre publica su
+          // evidencia: dejar el anterior en el mapa publicaba archivos que el commit ya no lleva.
+          manifests.set(currentUnit.path, manifest);
           const { push: _push, merge: _merge, ...unitReceipts } = currentUnit.receipts;
           currentUnit = { ...currentUnit, commit: manifest.commit, phase: "implementation-ready", receipts: { ...unitReceipts, manifest: { verifiedAt: new Date().toISOString() } } };
           const reconciledCommit = manifest.commit;

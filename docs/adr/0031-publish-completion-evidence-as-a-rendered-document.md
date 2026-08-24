@@ -107,9 +107,16 @@ ties a pull request to its issue all added around the cut, so no truncation can
 drop any of them and no session's summary can push the body past what GitHub
 accepts. For the same reason a ticket
 completed before the field carried a document is recognised by the raw bytes it
-still holds, and not reported as a conflict against evidence it already has. The
-operator's repair tool runs without a manifest and so can only ever render the
-one file it was handed; against a field that already carries the coordinator's
-whole document it asks the weaker question it can actually answer — whether that
-file is in there — because a repair tool that cannot be rerun is not a repair
-tool.
+still holds, and not reported as a conflict against evidence it already has.
+
+That recognition is why the document ends by naming the files it was rendered
+from, each with the first twelve characters of its SHA-256. The same proof
+renders differently depending on how much of it the publishing path could see: a
+transversal delivery reads every repository's manifest and the repair command
+that follows reads one, and rendering itself transforms what it is given — a
+capture becomes tables, colour is stripped, a long block is clamped. Comparing
+the results as text can therefore only ever say they differ, and a delivery
+would report a conflict against its own evidence at a gate reached with the pull
+requests already merged. Digests survive rendering, so the question asked of a
+field that already holds a document is whether it names these ones. A repair
+command that cannot be rerun is not a repair command.

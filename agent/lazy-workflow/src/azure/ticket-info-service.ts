@@ -14,7 +14,7 @@ import {
   type CompletionManifestInput,
   type EvidenceKind,
 } from "./completion-manifest.ts";
-import { renderEvidenceHtml, type EvidenceFile } from "../evidence/evidence-report.ts";
+import { renderEvidenceHtml, shortDigest, type EvidenceFile } from "../evidence/evidence-report.ts";
 import { assertEvidenceIsPublishable } from "../evidence/evidence-safety.ts";
 import { parseHttpCaptures, readHttpCaptures } from "../evidence/http-capture.ts";
 
@@ -305,33 +305,24 @@ function publishedAlready(existing: string, ...candidates: string[]): boolean {
 }
 
 /**
- * Whether a document already published carries this file's own text.
+ * Whether a document already published was made from this evidence.
  *
- * `ticket-evidence-set` runs without a manifest, so all it can render is the file it was handed --
- * never the document the coordinator assembled from the whole delivery. Judging the two as equals
- * turned the operator's repair tool into a hard conflict on a ticket that already carries exactly
- * this evidence, which is the one thing that tool exists to be safe to rerun. So it asks the
- * weaker question it can actually answer: is this file already in there.
+ * Equality answers for a field this same path published, and for nothing else. A transversal
+ * delivery publishes every repository's evidence at once while the repair command that follows it
+ * reads a single manifest, so the two render different documents over the same proof; comparing
+ * their text -- which the rendering transforms, into tables, into stripped colour, into clamped
+ * blocks -- can only say they differ. Asked as equals, the second reports a conflict against
+ * evidence that is already there, at a gate reached with the pull requests merged. So the question
+ * is put to the one thing rendering does not touch: the digests the document names.
  */
-const MIN_EVIDENCE_MATCH = 20;
-
-function carriesEvidence(existing: string, content: string): boolean {
-  const text = evidenceTextContent(content);
-  return text.length >= MIN_EVIDENCE_MATCH && evidenceTextContent(existing).includes(text);
+function namesEveryDigest(existing: string, digests: readonly string[]): boolean {
+  if (digests.length === 0) return false;
+  const text = evidenceTextContent(existing).toLowerCase();
+  return digests.every((digest) => text.includes(shortDigest(digest)));
 }
 
-/**
- * Whether the field already carries this delivery's evidence, in any form it may take.
- *
- * Equality answers for a field this same path published. It cannot answer for the others: a
- * transversal delivery publishes every repository's evidence at once, and the repair command that
- * follows it reads a single manifest, so the two render different documents over the same proof.
- * Asked only as equals, the second one reports a conflict against evidence that is already there,
- * at a gate reached with the pull requests merged. So when equality fails the weaker question is
- * asked, and it is the honest one: is this file's evidence already published.
- */
-const alreadyPublished = (existing: string, rendered: string, content: string): boolean =>
-  publishedAlready(existing, rendered, content) || carriesEvidence(existing, content);
+const alreadyPublished = (existing: string, rendered: string, content: string, digests: readonly string[]): boolean =>
+  publishedAlready(existing, rendered, content) || namesEveryDigest(existing, digests);
 
 function hasEvidenceCapture(item: WorkItem): boolean {
   return (item.relations ?? []).some(({ rel, url, attributes }) =>
@@ -1567,7 +1558,7 @@ export class AzureTicketInfoService {
     await this.readDirectParent(ticket, item);
     const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && !alreadyPublished(existing, rendered, content)) {
+    if (existing && !alreadyPublished(existing, rendered, content, await this.evidenceDigests(content, report))) {
       throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
     }
   }
@@ -1587,7 +1578,7 @@ export class AzureTicketInfoService {
     const fieldName = await this.resolveCompletionField(item);
     const existing = text(item, fieldName);
     const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && alreadyPublished(existing, rendered, content)) {
+    if (existing && alreadyPublished(existing, rendered, content, await this.evidenceDigests(content, report))) {
       return { ticket, completionEvidence: existing };
     }
     if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
@@ -1597,6 +1588,17 @@ export class AzureTicketInfoService {
     const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
+  }
+
+  /**
+   * The digests this call is about: the manifest's, or the one file it was handed.
+   *
+   * `ticket-evidence-set` runs without a manifest, so all it knows is the file, and the file's own
+   * digest is exactly what a document rendered from it would have named.
+   */
+  private async evidenceDigests(content: string, report?: CompletionEvidenceReport): Promise<string[]> {
+    if (report) return report.evidence.map(({ sha256: digest }) => digest);
+    return [await sha256(new TextEncoder().encode(content))];
   }
 
   /**
@@ -1623,13 +1625,13 @@ export class AzureTicketInfoService {
     for (const entry of report.evidence) {
       const name = fileName(entry.path);
       if (entry.kind === "screen") {
-        files.push({ name, path: entry.path, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
+        files.push({ name, path: entry.path, digest: entry.sha256, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
         continue;
       }
       // A file the manifest names but this run cannot read must not cost the delivery its evidence:
       // the entry the caller already read is always available, and the rest is best effort.
       const decoded = resolve(entry.path) === resolve(filePath) ? content : await readUtf8File(entry.path).catch(() => "");
-      if (decoded.trim()) files.push({ name, path: entry.path, kind: entry.kind, content: decoded });
+      if (decoded.trim()) files.push({ name, path: entry.path, digest: entry.sha256, kind: entry.kind, content: decoded });
     }
     return renderEvidenceHtml({
       subject: `Ticket ${ticket}`,

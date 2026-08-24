@@ -41,10 +41,27 @@ function looksLikeCredential(value: string): boolean {
   return candidate.length >= MIN_CREDENTIAL_LENGTH;
 }
 
+/**
+ * A scheme in prose is a sentence, not a leak.
+ *
+ * `Bearer <token>` names its secret positionally, with nothing but a space to say so, and English
+ * puts words in that position too: "el endpoint exige Basic authentication" was refused as a
+ * credential. A token is not a word — it carries digits, punctuation or case — so an all-lowercase
+ * run of letters after the scheme is prose. The rule is the scheme arm's alone: on the other side
+ * of a `"password":` an all-lowercase word is exactly what a leaked password looks like.
+ */
+function looksLikeSchemeCredential(value: string): boolean {
+  return looksLikeCredential(value) && !/^[a-z]+$/.test(value.trim().replace(/^["']|["']$/g, ""));
+}
+
 function containsCredential(content: string): boolean {
   const probe = content.replace(PLACEHOLDER, "[REDACTED]");
-  return [SECRET_ASSIGNMENT, SECRET_FLAG, SECRET_SCHEME].some((pattern) =>
-    [...probe.matchAll(pattern)].some((match) => looksLikeCredential(match[1] ?? ""))
+  return ([
+    [SECRET_ASSIGNMENT, looksLikeCredential],
+    [SECRET_FLAG, looksLikeCredential],
+    [SECRET_SCHEME, looksLikeSchemeCredential],
+  ] as const).some(([pattern, judge]) =>
+    [...probe.matchAll(pattern)].some((match) => judge(match[1] ?? ""))
   );
 }
 

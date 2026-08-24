@@ -623,7 +623,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
         // Resolved in here, under the same fallback: a lookup that failed outside it published a
         // comment whose every image pointed at `https://github.com//blob/...` and stayed broken.
         const { name: repository } = await this.repository(directory);
-        for (const { path } of manifest.evidence ?? []) {
+        for (const { path, sha256: digest } of manifest.evidence ?? []) {
           const kind = githubEvidenceKind(path);
           // Two repositories of one delivery hold the same relative path, so what pairs a capture
           // with its screenshot is where the file really is; what a reader sees names its
@@ -631,7 +631,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
           const name = delivered.length > 1 ? `${repository}/${path}` : path;
           const located = `${directory}/${path}`;
           if (kind === "screen") {
-            files.push({ name, path: located, kind, imageUrl: blobUrl(repository, commit, path) });
+            files.push({ name, path: located, digest, kind, imageUrl: blobUrl(repository, commit, path) });
             continue;
           }
           // A file that cannot be read is worth less than the rest of the document is worth losing,
@@ -640,7 +640,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
           const content = await Bun.file(resolve(directory, path)).text().catch(() => "");
           if (!content.trim() || !readsAsText(content)) continue;
           assertEvidenceIsPublishable(content);
-          files.push({ name, path: located, kind, content });
+          files.push({ name, path: located, digest, kind, content });
         }
         for (const entry of manifest.validation) {
           if (!validation.some(({ command, result }) => command === entry.command && result === entry.result)) {

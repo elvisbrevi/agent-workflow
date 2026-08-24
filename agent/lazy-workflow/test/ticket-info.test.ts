@@ -2011,7 +2011,9 @@ test("ticket-evidence-set sigue siendo repetible sobre un ticket que ya publicó
   const patches: Array<Array<{ path: string; value?: unknown }>> = [];
   try {
     const salida = join(root, "bun-test.txt");
-    await Bun.write(salida, "bun test\n198 pass, 0 fail\n");
+    // Con color y larga: el documento le quita los escapes y recorta el bloque, así que su texto
+    // crudo tampoco está ahí -- lo que queda para reconocerla es el digest que el documento nombra.
+    await Bun.write(salida, `\u001b[32mbun test\u001b[0m\n${"detalle de la corrida\n".repeat(600)}198 pass, 0 fail\n`);
     const digest = async (path: string): Promise<string> =>
       [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
         .map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -2059,9 +2061,11 @@ test("la reparación de un ticket transversal no lee como conflicto lo que ella 
     const digest = async (path: string): Promise<string> =>
       [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
         .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const api = join(root, "api.txt");
+    // Una captura, no una salida suelta: el renderizado la vuelve tablas y cuerpos, así que su
+    // texto crudo no aparece en el documento y solo el digest puede reconocerla.
+    const api = join(root, "pago-endpoint.json");
     const web = join(root, "web.txt");
-    await Bun.write(api, "api: 120 pass, 0 fail\n");
+    await Bun.write(api, HTTP_CAPTURE_BODY);
     await Bun.write(web, "web: 78 pass, 0 fail\n");
 
     const transversal = completionEvidenceService({
@@ -2072,7 +2076,7 @@ test("la reparación de un ticket transversal no lee como conflicto lo que ella 
       ticketBranch: "refs/heads/ticket/51",
       validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
       evidence: [
-        { path: api, kind: "command-output", sha256: await digest(api) },
+        { path: api, kind: "http-json", sha256: await digest(api) },
         { path: web, kind: "command-output", sha256: await digest(web) },
       ],
     });
@@ -2086,7 +2090,7 @@ test("la reparación de un ticket transversal no lee como conflicto lo que ella 
     const unSoloManifest = {
       ticketBranch: "refs/heads/ticket/51",
       validation: [{ command: "bun test", result: "120 pass" }],
-      evidence: [{ path: api, kind: "command-output" as const, sha256: await digest(api) }],
+      evidence: [{ path: api, kind: "http-json" as const, sha256: await digest(api) }],
     };
 
     await expect(reparacion.validateEvidence(51, api, unSoloManifest)).resolves.toBeUndefined();
@@ -2218,6 +2222,10 @@ test("la evidencia que redacta un secreto pasa; la que lo publica no", async () 
     await accepts('"token": "<TOKEN>"');
     await accepts('"password": "***"');
     await accepts('"cookie": "[REDACTED]"');
+    // Prosa, no filtración: un esquema nombra su secreto por posición y el español pone palabras
+    // en esa posición. Rechazarla volvía irrechazable cualquier evidencia que explicara el endpoint.
+    await accepts("El endpoint exige Basic authentication para responder.");
+    await accepts("Se envía Bearer token obtenido del flujo de login.");
 
     await rejects('"authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"');
     await rejects("Authorization: Basic dXNlcjpwYXNzd29yZA==");

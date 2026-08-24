@@ -31,12 +31,30 @@ export interface EvidenceFile {
    * matching on the name alone would show one repository's browser beside the other's request.
    */
   path?: string;
+  /** The file's SHA-256, so the document can name what it was rendered from. */
+  digest?: string;
   kind: EvidenceKind;
   /** The decoded text of a `http-json` or `command-output` file. */
   content?: string;
   /** Where a `screen` file can be displayed from, when it has been published. */
   imageUrl?: string | null;
 }
+
+/**
+ * How much of a digest the document prints, and the reason it prints any.
+ *
+ * A tracker field can only be asked one useful question about evidence it already holds: is this
+ * the same delivery's. Asking it of the rendered text cannot work — the same proof renders
+ * differently depending on how much of it the publishing path could see, and a repair command that
+ * reads one manifest renders less than the transversal delivery that read them all. So the document
+ * says what it was made from. Digests survive rendering; text does not.
+ */
+export const EVIDENCE_DIGEST_LENGTH = 12;
+
+export const shortDigest = (digest: string): string => digest.slice(0, EVIDENCE_DIGEST_LENGTH).toLowerCase();
+
+const fingerprint = (files: readonly EvidenceFile[]): Array<[string, string]> =>
+  files.flatMap((file) => (file.digest ? [[file.name, shortDigest(file.digest)] as [string, string]] : []));
 
 const located = (file: EvidenceFile): string => file.path ?? file.name;
 
@@ -306,6 +324,12 @@ export function renderEvidenceHtml(input: EvidenceDocumentInput): string {
     kept.push(section);
     size += section.length;
   }
+  // Outside the budget on purpose: a document that lost its fingerprint could no longer be
+  // recognised as this delivery's, and would be read as somebody else's evidence on every rerun.
+  const files = fingerprint(input.files);
+  if (files.length > 0) {
+    kept.push(heading("Archivos de evidencia"), table(["Archivo", "sha256"], files));
+  }
   kept.push("</div>");
   return kept.join("\n");
 }
@@ -381,6 +405,10 @@ export function renderEvidenceMarkdown(input: EvidenceDocumentInput): string {
   if (document.screens.length > 0) {
     lines.push("### Capturas de pantalla", "");
     for (const screen of document.screens) lines.push(...markdownImage(screen, screen.name));
+  }
+  const files = fingerprint(input.files);
+  if (files.length > 0) {
+    lines.push("### Archivos de evidencia", "", ...markdownTable(["Archivo", "sha256"], files));
   }
   // Collapsing blank runs over the joined text would rewrite the inside of a fenced block, and a
   // command output that no longer matches its own digest is not the evidence the manifest pinned.
