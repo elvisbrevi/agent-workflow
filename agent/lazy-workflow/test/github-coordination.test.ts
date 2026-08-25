@@ -341,6 +341,61 @@ test("la recuperación no usa queue ni OpenCode si falta la rama fijada", async 
   expect(state.current).toEqual(initial);
 });
 
+test("la recuperación fija la rama cuando el checkpoint quedó antes de prepararla", async () => {
+  const state = boundaries({
+    ...checkpoint(null),
+    phase: "started",
+    receipts: { "issue-claim": { verifiedAt: "2026-08-24T23:03:09.872Z" } },
+  });
+  const { azure, openCode } = services();
+  const events: string[] = [];
+  let runs = 0;
+  const queue = {
+    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
+    reconcileClaimedIssue: async (issueNumber: number) => {
+      events.push("read-issue");
+      if (issueNumber !== 178) throw new Error("wrong issue");
+      return fakeSelectedIssue(178);
+    },
+  };
+  const delivery = failingDelivery({
+    prepareBranch: async (issue: number) => {
+      events.push(`prepare-branch:${issue}`);
+      return { branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath: "/missing-manifest.json" };
+    },
+    verifyRepository: async () => { events.push("verify-repository"); },
+    checkoutBranch: async () => { events.push("checkout-branch"); },
+    verifyBranch: async () => { events.push("verify-branch"); },
+  });
+
+  const code = await new LazyWorkflowCli(
+    azure,
+    { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    queue,
+    state.store,
+    state.lock,
+    delivery,
+  ).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(runs).toBe(1);
+  expect(events).toEqual(["prepare-branch:178", "verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
+  expect(state.current?.branch).toBe("refs/heads/issue/178");
+  expect(state.current?.baseBranch).toBe("refs/heads/main");
+  expect(state.current?.manifestPath).toBe("/missing-manifest.json");
+});
+
 test("la recuperación sessionless cambia a la rama fijada antes de continuar", async () => {
   const state = boundaries({
     ...checkpoint(null),

@@ -3639,6 +3639,26 @@ export class LazyWorkflowCli {
         return 1;
       }
       if (this.githubDelivery && recoveryCheckpoint.phase !== "conflict-resolving") {
+        // Una preparación fallida deja la unidad reclamada sin rama fijada. Ese
+        // checkpoint es reconciliable, no un callejón sin salida: la preparación
+        // es idempotente, así que se vuelve a fijar la rama y se persiste antes
+        // de continuar. Solo aplica antes de que exista sesión: con una sesión
+        // viva la rama ya se fijó y su ausencia sí exige reconciliación manual.
+        const branchWasNeverFixed = !recoveryCheckpoint.branch
+          && recoveryCheckpoint.sessionId === null
+          && (recoveryCheckpoint.phase === "selected" || recoveryCheckpoint.phase === "started");
+        if (branchWasNeverFixed) {
+          const prepared = await this.githubDelivery.prepareBranch(recoveryCheckpoint.issue, options.workingDirectory);
+          recoveryCheckpoint = {
+            ...recoveryCheckpoint,
+            phase: "started",
+            branch: prepared.branch,
+            baseBranch: prepared.baseBranch,
+            manifestPath: prepared.manifestPath,
+          };
+          await store.write(recoveryCheckpoint, options.workingDirectory);
+          checkpoint = recoveryCheckpoint;
+        }
         if (!recoveryCheckpoint.branch || !recoveryCheckpoint.baseBranch) {
           throw new Error("el checkpoint GitHub no contiene la rama fijada");
         }
