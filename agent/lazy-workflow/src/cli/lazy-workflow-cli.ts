@@ -215,6 +215,36 @@ function reportAzureFailure(
   }, message, undefined, checkpoint);
 }
 
+/**
+ * Una validación de argumentos rechaza el run: publica el fallo y devuelve el
+ * código de salida en la misma llamada, para que un sitio no pueda publicar sin
+ * rechazar ni rechazar sin publicar. El contexto es el de un comando que abre
+ * sesión, que identifica el trabajo por su Issue.
+ */
+function argumentError(
+  options: Pick<CliOptions, "hu" | "issue" | "workingDirectory">,
+  message: string,
+): number {
+  reportFailure("argument-error", "validating", {
+    hu: options.hu,
+    issue: options.issue,
+    repository: options.workingDirectory,
+  }, message);
+  return 1;
+}
+
+/**
+ * La misma decisión en un comando de tool de Azure, que identifica el trabajo
+ * por su ticket y su rama en vez de por un Issue.
+ */
+function azureArgumentError(
+  options: Pick<CliOptions, "hu" | "ticket" | "workingDirectory" | "session" | "branch">,
+  message: string,
+): number {
+  reportAzureFailure("argument-error", "validating", options, message);
+  return 1;
+}
+
 /** `completeGitHubDelivery` uses one explicit error type for manifest verification failures. */
 class GitHubCoordinatedFailureError extends Error {
   constructor(readonly failureKind: FailureKind, message: string, options?: ErrorOptions) {
@@ -909,21 +939,18 @@ export class LazyWorkflowCli {
     const command = options.command;
 
     if (options.verbose && options.quiet) {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--verbose y --quiet son mutuamente excluyentes");
-      return 1;
+      return argumentError(options, "--verbose y --quiet son mutuamente excluyentes");
     }
 
     if (options.interview.channel !== "off") {
       if (command !== "plan") {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--interview solo se permite con plan");
-        return 1;
+        return argumentError(options, "--interview solo se permite con plan");
       }
       // Every channel announces itself through the Reporter — the URL, the tty
       // prompt, the exchange directory — and `--quiet` silences info. A silent
       // interactive run is a run the operator cannot answer.
       if (options.quiet) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--interview y --quiet son mutuamente excluyentes: el canal no podría anunciarse");
-        return 1;
+        return argumentError(options, "--interview y --quiet son mutuamente excluyentes: el canal no podría anunciarse");
       }
     }
 
@@ -932,8 +959,7 @@ export class LazyWorkflowCli {
 
     if (options.workingDirectory.includes(",")) {
       if (command !== "plan" && command !== "code") {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--working-directory CSV solo se permite con plan o code");
-        return 1;
+        return argumentError(options, "--working-directory CSV solo se permite con plan o code");
       }
       // `plan` never mutates branches or tracker state, in either provider.
       if (command === "plan") return this.runWorkspacePlan(options);
@@ -942,8 +968,7 @@ export class LazyWorkflowCli {
     }
 
     if (options.normasSag && command !== "plan" && command !== "code") {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--normas-sag solo se permite con plan o code");
-      return 1;
+      return argumentError(options, "--normas-sag solo se permite con plan o code");
     }
 
     // A deterministic tool is the workflow's own step run on its own, so it is
@@ -958,32 +983,26 @@ export class LazyWorkflowCli {
     }
 
     if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "infra-sag") {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
-      return 1;
+      return argumentError(options, "--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
     }
 
     if (options.environment !== null && command !== "deploy-sag") {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--environment solo se permite con deploy-sag");
-      return 1;
+      return argumentError(options, "--environment solo se permite con deploy-sag");
     }
 
     if (command === "deploy-sag" && options.environment !== null && !options.environment?.trim()) {
-       reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
-      return 1;
+      return argumentError(options, "deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
     }
 
     if (command === "architecture-review-sag") {
       if (options.hu !== null && options.issue !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag no permite combinar --hu y --issue");
-        return 1;
+        return argumentError(options, "architecture-review-sag no permite combinar --hu y --issue");
       }
       if (options.hu === null && options.issue === null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag requiere --hu <id> o --issue <id>");
-        return 1;
+        return argumentError(options, "architecture-review-sag requiere --hu <id> o --issue <id>");
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "architecture-review-sag no permite --session, --branch ni --base-branch");
-        return 1;
+        return argumentError(options, "architecture-review-sag no permite --session, --branch ni --base-branch");
       }
       return this.runArchitectureReview(options);
     }
@@ -993,45 +1012,36 @@ export class LazyWorkflowCli {
         .map((arg) => arg?.split("=", 1)[0])
         .find((arg): arg is string => typeof arg === "string" && arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
       if (unsupportedFlag) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, `infra-sag no permite ${unsupportedFlag}`);
-        return 1;
+        return argumentError(options, `infra-sag no permite ${unsupportedFlag}`);
       }
       if (options.hu !== null && options.issue !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag no permite combinar --hu y --issue");
-        return 1;
+        return argumentError(options, "infra-sag no permite combinar --hu y --issue");
       }
       if (options.hu === null && options.issue === null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag requiere --hu <id> o --issue <id>");
-        return 1;
+        return argumentError(options, "infra-sag requiere --hu <id> o --issue <id>");
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "infra-sag no permite --session, --branch ni --base-branch");
-        return 1;
+        return argumentError(options, "infra-sag no permite --session, --branch ni --base-branch");
       }
       return this.runInfrastructure(options);
     }
 
     if (command === "deploy-sag") {
       if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite repetir --environment");
-        return 1;
+        return argumentError(options, "deploy-sag no permite repetir --environment");
       }
       if (options.hu !== null && options.issue !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite combinar --hu y --issue");
-        return 1;
+        return argumentError(options, "deploy-sag no permite combinar --hu y --issue");
       }
       if (options.hu === null && options.issue === null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag requiere --hu <id> o --issue <id>");
-        return 1;
+        return argumentError(options, "deploy-sag requiere --hu <id> o --issue <id>");
       }
       const environment = options.environment?.trim().toLowerCase() ?? "dev";
       if (environment !== "dev" && environment !== "test" && environment !== "qa") {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
-        return 1;
+        return argumentError(options, "deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
       }
       if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "deploy-sag no permite --session, --branch ni --base-branch");
-        return 1;
+        return argumentError(options, "deploy-sag no permite --session, --branch ni --base-branch");
       }
       return this.runDeployment(options, environment);
     }
@@ -1040,20 +1050,16 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-completion-apply") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "ticket-completion-apply requiere --hu <id>");
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --ticket <id> con un entero positivo");
-        return 1;
+        return azureArgumentError(options, "ticket-completion-apply requiere --ticket <id> con un entero positivo");
       }
       if (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --pr <id> con un entero positivo");
-        return 1;
+        return azureArgumentError(options, "ticket-completion-apply requiere --pr <id> con un entero positivo");
       }
       if (!options.manifest?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-completion-apply requiere --manifest <path>");
-        return 1;
+        return azureArgumentError(options, "ticket-completion-apply requiere --manifest <path>");
       }
       try {
         console.log(JSON.stringify(await this.applyTicketCompletion(options), null, 2));
@@ -1066,20 +1072,16 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-create") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "ticket-create requiere --hu <id>");
       }
       if (options.type !== "Task" && options.type !== "Bug") {
-        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --type Task o --type Bug");
-        return 1;
+        return azureArgumentError(options, "ticket-create requiere --type Task o --type Bug");
       }
       if (!options.title?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --title <titulo>");
-        return 1;
+        return azureArgumentError(options, "ticket-create requiere --title <titulo>");
       }
       if (!options.descriptionFile?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-create requiere --description-file <path>");
-        return 1;
+        return azureArgumentError(options, "ticket-create requiere --description-file <path>");
       }
       try {
         const result = await this.huInfoService.createTicket({
@@ -1105,8 +1107,7 @@ export class LazyWorkflowCli {
         : [options.blocker, options.blocked];
       const flags = command === "ticket-link-parent" ? "--parent <id> y --child <id>" : "--blocker <id> y --blocked <id>";
       if (first === null || second === null) {
-        reportAzureFailure("argument-error", "validating", options, `${command} requiere ${flags} con enteros positivos`);
-        return 1;
+        return azureArgumentError(options, `${command} requiere ${flags} con enteros positivos`);
       }
       try {
         const service = this.huInfoService;
@@ -1123,16 +1124,13 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-description-set" || command === "ticket-state-set" || command === "ticket-effort-set") {
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
-        return 1;
+        return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
       }
       if (command === "ticket-description-set" && !options.descriptionFile?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-description-set requiere --description-file <path>");
-        return 1;
+        return azureArgumentError(options, "ticket-description-set requiere --description-file <path>");
       }
       if (command === "ticket-state-set" && (!options.state?.trim() || !options.expectedState?.trim())) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-state-set requiere --state <state> y --expected-state <state>");
-        return 1;
+        return azureArgumentError(options, "ticket-state-set requiere --state <state> y --expected-state <state>");
       }
       if (command === "ticket-effort-set" && (
         !options.hasRealEffort || !options.hasRealEffortHours || !options.hasExpectedRevision
@@ -1141,8 +1139,7 @@ export class LazyWorkflowCli {
         || !Number.isFinite(options.realEffortHours) || options.realEffortHours < 0
         || !Number.isInteger(options.expectedRevision) || options.expectedRevision <= 0
       )) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-effort-set requiere --real-effort <hours>, --real-effort-hh <hours> y --expected-rev <rev> válidos");
-        return 1;
+        return azureArgumentError(options, "ticket-effort-set requiere --real-effort <hours>, --real-effort-hh <hours> y --expected-rev <rev> válidos");
       }
       try {
         let result: unknown;
@@ -1166,25 +1163,20 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
       if (command === "ticket-pr-link" && !isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-pr-link requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "ticket-pr-link requiere --hu <id>");
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
-        return 1;
+        return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
       }
       if ((command === "ticket-pr-link" || command === "ticket-commit-link")
         && (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0)) {
-        reportAzureFailure("argument-error", "validating", options, `${command} requiere --pr <id> con un entero positivo`);
-        return 1;
+        return azureArgumentError(options, `${command} requiere --pr <id> con un entero positivo`);
       }
       if ((command === "ticket-attachment-add" || command === "ticket-evidence-set") && !options.file?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, `${command} requiere --file <path>`);
-        return 1;
+        return azureArgumentError(options, `${command} requiere --file <path>`);
       }
       if (command === "ticket-attachment-add" && !options.evidenceKind) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-attachment-add requiere --kind <http-json|screen|command-output>");
-        return 1;
+        return azureArgumentError(options, "ticket-attachment-add requiere --kind <http-json|screen|command-output>");
       }
       try {
         let result: unknown;
@@ -1211,25 +1203,20 @@ export class LazyWorkflowCli {
 
     if (command === "ticket-branch-set") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "ticket-branch-set requiere --hu <id>");
       }
       if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --ticket <id> con un entero positivo");
-        return 1;
+        return azureArgumentError(options, "ticket-branch-set requiere --ticket <id> con un entero positivo");
       }
       if (!options.branch?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --branch <name>");
-        return 1;
+        return azureArgumentError(options, "ticket-branch-set requiere --branch <name>");
       }
       if (options.workingDirectory === process.cwd() && !args.some((arg) => arg === "--working-directory" || arg.startsWith("--working-directory="))) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --working-directory <path>");
-        return 1;
+        return azureArgumentError(options, "ticket-branch-set requiere --working-directory <path>");
       }
       const workingDirectory = options.workingDirectory;
       if (!workingDirectory?.trim() || workingDirectory.startsWith("--")) {
-        reportAzureFailure("argument-error", "validating", options, "ticket-branch-set requiere --working-directory <path>");
-        return 1;
+        return azureArgumentError(options, "ticket-branch-set requiere --working-directory <path>");
       }
       if (!this.huInfoService.setTicketBranch) {
         reportAzureFailure("branch-preparation-failure", "preparing", options, "El servicio Azure no soporta ticket-branch-set");
@@ -1250,8 +1237,7 @@ export class LazyWorkflowCli {
 
     if (command === "hu-info") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "hu-info requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "hu-info requiere --hu <id>");
       }
      let huInfo: HuInfo;
      try {
@@ -1266,8 +1252,7 @@ export class LazyWorkflowCli {
 
     if (command === "hu-branch-info") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "hu-branch-info requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "hu-branch-info requiere --hu <id>");
       }
       if (!this.huInfoService.getIntegrationBranchInfo) {
         reportAzureFailure("tracker-read-failure", "reading", options, "El servicio Azure no soporta hu-branch-info");
@@ -1284,12 +1269,10 @@ export class LazyWorkflowCli {
 
     if (command === "hu-branch-set") {
       if (!isValidHu(options.hu)) {
-        reportAzureFailure("argument-error", "validating", options, "hu-branch-set requiere --hu <id>");
-        return 1;
+        return azureArgumentError(options, "hu-branch-set requiere --hu <id>");
       }
       if (!options.branch?.trim()) {
-        reportAzureFailure("argument-error", "validating", options, "hu-branch-set requiere --branch <name>");
-        return 1;
+        return azureArgumentError(options, "hu-branch-set requiere --branch <name>");
       }
       if (!this.huInfoService.setIntegrationBranch) {
         reportAzureFailure("branch-preparation-failure", "preparing", options, "El servicio Azure no soporta hu-branch-set");
@@ -1337,8 +1320,7 @@ export class LazyWorkflowCli {
     // this instead of reinspecting --hu or recovery state again.
     const isAzureHuRun = recoveringAzureCode || options.hu !== null;
     if (!isAzureHuRun && (options.branch !== null || options.baseBranch !== null)) {
-      reportFailure("argument-error", "validating", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "--branch y --base-branch solo se permiten en flujos Azure");
-      return 1;
+      return argumentError(options, "--branch y --base-branch solo se permiten en flujos Azure");
     }
 
     if (command === "code") {
@@ -4431,15 +4413,13 @@ export class LazyWorkflowCli {
 
   private async runTicketRead(command: string, options: CliOptions): Promise<number> {
     if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
-      reportAzureFailure("argument-error", "validating", options, `${command} requiere --ticket <id> con un entero positivo`);
-      return 1;
+      return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
     }
     const ticket = options.ticket;
     const needsHu = command === "ticket-info" || command === "ticket-branch-info"
       || command === "ticket-pr-info" || command === "ticket-completion-info";
     if (needsHu && !isValidHu(options.hu)) {
-      reportAzureFailure("argument-error", "validating", options, `${command} requiere --hu <id>`);
-      return 1;
+      return azureArgumentError(options, `${command} requiere --hu <id>`);
     }
     try {
       let result: unknown;
