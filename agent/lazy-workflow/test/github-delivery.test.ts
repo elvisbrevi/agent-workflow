@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import {
   GitHubDeliveryService,
   GitHubPullRequestConflictError,
@@ -182,15 +182,14 @@ test("el prompt de entrega GitHub manda crear el manifest con la herramienta, no
     cleanupBranch: async () => undefined,
   };
 
-  await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async (options) => { prompt = options.prompt; throw new Error("stop after capturing prompt"); }, resume: async () => execution().result },
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    queue,
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+  await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async (options) => { prompt = options.prompt; throw new Error("stop after capturing prompt"); }, resume: async () => execution().result },
+    githubManagedQueue: queue,
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   // La sesión recibe el comando exacto con las identidades ya puestas, y la
   // prohibición de escribir el archivo: describir la forma del JSON es lo que
@@ -241,21 +240,10 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
     cleanupBranch: async () => { calls.push("cleanup"); },
   };
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => execution(), resume: async () => execution().result },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => execution(), resume: async () => execution().result },
+    githubManagedQueue: {
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
       selectEligibleIssue: async () => {
         selections += 1;
@@ -264,10 +252,10 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
       },
       claimSelectedIssue: async () => fakeSelectedIssue(179),
     },
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(selections).toBe(2);
@@ -305,21 +293,10 @@ test("la entrega completada elimina el manifest para que no contamine el siguien
   };
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => execution(), resume: async () => execution().result },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => execution(), resume: async () => execution().result },
+      githubManagedQueue: {
         selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
         selectEligibleIssue: async () => {
           selections += 1;
@@ -328,10 +305,10 @@ test("la entrega completada elimina el manifest para que no contamine el siguien
         },
         claimSelectedIssue: async () => fakeSelectedIssue(179),
       },
-      store,
-      { acquire: async () => async () => undefined },
-      delivery,
-    ).run(["code", "--working-directory", "/repo"]);
+      githubCheckpointStore: store,
+      githubRepositoryLock: { acquire: async () => async () => undefined },
+      githubDelivery: delivery,
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
     expect(current).toBeNull();
@@ -397,15 +374,14 @@ test("un run que recupera un checkpoint sessionless drena la cola con el siguien
     clear: async () => { current = null; },
   };
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => execution(), resume: async () => execution().result },
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    drainQueue(180),
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => execution(), resume: async () => execution().result },
+    githubManagedQueue: drainQueue(180),
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(closed).toEqual([179, 180]);
@@ -436,15 +412,14 @@ test("un run --session que recupera una sesión drena la cola con el siguiente i
     clear: async () => { current = null; },
   };
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => execution(), resume: async () => execution().result },
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    drainQueue(180),
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--session", "ses_179", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => execution(), resume: async () => execution().result },
+    githubManagedQueue: drainQueue(180),
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--session", "ses_179", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(closed).toEqual([179, 180]);
@@ -480,25 +455,14 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
       : { kind: "empty" as const },
     claimSelectedIssue: async () => fakeSelectedIssue(179),
   };
-  const makeCli = (run: boolean) => new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => { openCodeRuns += 1; return execution(); }, resume: async () => execution().result },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  );
+  const makeCli = (run: boolean) => createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { openCodeRuns += 1; return execution(); }, resume: async () => execution().result },
+    githubManagedQueue: queue,
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  });
 
   expect(await makeCli(true).run(["code", "--working-directory", "/repo"])).toBe(1);
   expect(phaseOf(current)).toBe("integrating");
@@ -573,9 +537,9 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   };
   let selections = 0;
   let prompt = "";
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async (options) => {
         prompt = options.prompt;
         reconciled = true;
@@ -583,22 +547,11 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; }, reconcileClaimedIssue: async () => fakeSelectedIssue(179) },
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; }, reconcileClaimedIssue: async () => fakeSelectedIssue(179) },
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(selections).toBe(1);
@@ -663,9 +616,9 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
     closeIssue: async () => { events.push("close"); },
     cleanupBranch: async () => { events.push("cleanup"); },
   };
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async () => { runs += 1; throw new Error("must resume"); },
       resume: async (session, prompt) => {
         resumes += 1;
@@ -676,22 +629,11 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
         return execution().result;
       },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; }, reconcileClaimedIssue: async () => fakeSelectedIssue(179) },
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; }, reconcileClaimedIssue: async () => fakeSelectedIssue(179) },
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect({ selections, runs, resumes }).toEqual({ selections: 1, runs: 0, resumes: 1 });
@@ -721,29 +663,18 @@ test("los marcadores de entrega heredados no avanzan una entrega GitHub", async 
     closeIssue: async () => undefined,
     cleanupBranch: async () => undefined,
   };
-  const cli = new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => execution().result },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+  const cli = createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => execution().result },
+    githubManagedQueue: {
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
       selectEligibleIssue: async () => ({ kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } }),
       claimSelectedIssue: async () => fakeSelectedIssue(179),
     },
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-  );
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  });
 
   expect(await cli.run(["code", "--working-directory", "/repo"])).toBe(1);
   expect(deliveryCalls).toBe(0);
@@ -780,26 +711,15 @@ test("reconciliación de padres ocurre después de la limpieza y antes de borrar
     selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => execution(), resume: async () => execution().result },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    store,
-    { acquire: async () => async () => undefined },
-    delivery,
-    parents,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => execution(), resume: async () => execution().result },
+    githubManagedQueue: queue,
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+    githubParentReconciliation: parents,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(events.indexOf("parents")).toBeGreaterThan(events.indexOf("cleanup"));
@@ -824,26 +744,14 @@ test("reconcilia padres pendientes al iniciar sin lanzar OpenCode", async () => 
     clear: async () => undefined,
   };
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => { openCodeRuns += 1; return execution(); }, resume: async () => execution().result },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    store,
-    { acquire: async () => async () => undefined },
-    undefined,
-    parents,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { openCodeRuns += 1; return execution(); }, resume: async () => execution().result },
+    githubManagedQueue: queue,
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubParentReconciliation: parents,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(reconciled).toBe(1);

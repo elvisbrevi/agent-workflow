@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpath } from "node:fs/promises";
-import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
 import { AgentExhaustionError, type CodingAgent } from "../src/coding-agent/coding-agent.ts";
@@ -163,9 +164,9 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     if (args[0] === "status") return "";
     return "";
   };
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => {
         await Bun.write(join(realpathA, "lazy-workflow/completion-manifest.json"), "{}");
         await Bun.write(join(realpathB, "lazy-workflow/completion-manifest.json"), "{}");
@@ -177,13 +178,8 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     git,
-  );
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `51`, "--base-branch", "main", "--working-directory", `${pathA}, ${pathB}`]);
@@ -338,10 +334,7 @@ test("un agotamiento con respaldo de otro CLI continúa el workspace en una sesi
     },
     resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true),
-  );
+  const cli = createCli({ huInfoService: azureBoundary, agentSource: agentSource, git: git, cliParser: buildCli(() => true) });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high", "--working-directory", `${pathA}, ${pathB}`]);
@@ -511,10 +504,7 @@ test("un agotamiento a mitad del drenaje no contamina el CLI del siguiente ticke
     },
     resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true),
-  );
+  const cli = createCli({ huInfoService: azureBoundary, agentSource: agentSource, git: git, cliParser: buildCli(() => true) });
 
   try {
     const exit = await cli.run([
@@ -551,10 +541,7 @@ test("un agotamiento con respaldo del mismo CLI reanuda la sesión con el modelo
       return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
     },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true),
-  );
+  const cli = createCli({ huInfoService: azureBoundary, agentSource: agentSource, git: git, cliParser: buildCli(() => true) });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
@@ -580,10 +567,13 @@ test("un agotamiento sin --fallback declarado sigue fallando cerrado, igual que 
     }),
     resume: async () => { throw new Error("must not resume: nothing to descend to"); },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true), reporterFn,
-  );
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource,
+    git,
+    cliParser: buildCli(() => true),
+    createReporterFn: reporterFn,
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--working-directory", `${pathA}, ${pathB}`]);
@@ -639,10 +629,13 @@ test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende a
       throw new AgentExhaustionError({ cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" }, { text: "You've hit your session limit", sessionId, failed: true } as never);
     },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
-  );
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource,
+    git,
+    cliParser: buildCli(() => true),
+    azureWorkspaceCheckpoint: checkpointStore,
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "claudecode", "--model", "claude-sonnet-5", "--fallback", "opencode:github-copilot/gpt-5.5:high", "--working-directory", `${pathA}, ${pathB}`]);
@@ -672,10 +665,13 @@ test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende a
       return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
     },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
-  );
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource,
+    git,
+    cliParser: buildCli(() => true),
+    azureWorkspaceCheckpoint: checkpointStore,
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--model", "opencode-go/deepseek-v4-pro", "--fallback", "opencode:opencode-go/deepseek-v4-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
@@ -701,10 +697,14 @@ test("un agotamiento al reanudar sin --fallback declarado falla cerrado con un m
       throw new AgentExhaustionError({ cli: "Claude Code", model: "claude-sonnet-5", cause: "session_limit" }, { text: "You've hit your session limit", sessionId, failed: true } as never);
     },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true), reporterFn, undefined, undefined, undefined, undefined, undefined, checkpointStore,
-  );
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource,
+    git,
+    cliParser: buildCli(() => true),
+    createReporterFn: reporterFn,
+    azureWorkspaceCheckpoint: checkpointStore,
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "claudecode", "--model", "claude-sonnet-5", "--working-directory", `${pathA}, ${pathB}`]);
@@ -729,10 +729,13 @@ test("un ticket ya descendido a otro modelo reanuda con el modelo del checkpoint
       return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
     },
   });
-  const cli = new LazyWorkflowCli(
-    azureBoundary, agentSource, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true), undefined, undefined, undefined, undefined, undefined, undefined, checkpointStore,
-  );
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource,
+    git,
+    cliParser: buildCli(() => true),
+    azureWorkspaceCheckpoint: checkpointStore,
+  });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--working-directory", `${pathA}, ${pathB}`]);
@@ -763,16 +766,7 @@ test("CLI single-repo conserva el rechazo cuando se omite --working-directory", 
     if (args[0] === "status") return "";
     return "";
   };
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    git,
-  );
+  const cli = createCli({ huInfoService: azureBoundary, git: git });
 
   try {
     const exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", pathA]);
@@ -811,22 +805,17 @@ test("plan multi-repositorio con --hu inspecciona el alcance Azure sin mutar ram
     return "";
   };
   const sessions: Array<{ workingDirectory: string; prompt: string }> = [];
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async (options) => {
         sessions.push({ workingDirectory: options.workingDirectory, prompt: options.prompt });
         return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     git,
-  );
+  });
 
   try {
     const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
@@ -860,22 +849,17 @@ test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el l
     return "";
   };
   const resumed: Array<{ sessionId: string; workingDirectory: string; agentProfile: string | undefined }> = [];
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => ({ result: { text: "", sessionId: "ses_login", failed: false } as never, azureLoginRequired: true, failed: false }),
       resume: async (sessionId: string, _prompt: string, workingDirectory: string, _terminalMarker?: string, overrides?: { agent?: { profile: string } }) => {
         resumed.push({ sessionId, workingDirectory, agentProfile: overrides?.agent?.profile });
         return { text: "plan", sessionId, failed: false } as never;
       },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     git,
-  );
+  });
 
   try {
     const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
@@ -911,27 +895,23 @@ test("plan multi-repositorio fija la frontera de autorización y resuelve las no
   };
   const planningDirectories: string[] = [];
   let prompt = "";
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async (options) => {
         prompt = options.prompt;
         return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+    sagNormsService: {
       loadPlanning: async (workingDirectory: string) => {
         planningDirectories.push(workingDirectory);
         return { norms: [] } as never;
       },
     } as never,
     git,
-  );
+  });
 
   try {
     const exit = await cli.run(["plan", "--hu", `${hu}`, "--normas-sag", "--working-directory", `${pathA}, ${pathB}`]);
@@ -960,17 +940,15 @@ test("plan multi-repositorio nombra el tracker, no el workspace, cuando falla la
     return "";
   };
   const { reporterFn, messages } = captureReporter();
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => { throw new Error("plan must not start an OpenCode session when the HU read fails"); },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined, undefined, undefined, undefined, undefined,
     git,
-    undefined, undefined, undefined, undefined,
-    reporterFn,
-  );
+    createReporterFn: reporterFn,
+  });
 
   try {
     const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
@@ -1001,17 +979,15 @@ test("plan multi-repositorio acepta un remote Azure DevOps con usuario embebido"
     return "";
   };
   const { reporterFn, messages } = captureReporter();
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => { throw new Error("plan must not start an OpenCode session in this test"); },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined, undefined, undefined, undefined, undefined,
     git,
-    undefined, undefined, undefined, undefined,
-    reporterFn,
-  );
+    createReporterFn: reporterFn,
+  });
 
   try {
     await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
@@ -1042,17 +1018,15 @@ test("plan multi-repositorio conserva el mensaje de alcance cuando un repositori
     return "";
   };
   const { reporterFn, messages } = captureReporter();
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => { throw new Error("plan must not start an OpenCode session when the scope is rejected"); },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined, undefined, undefined, undefined, undefined,
     git,
-    undefined, undefined, undefined, undefined,
-    reporterFn,
-  );
+    createReporterFn: reporterFn,
+  });
 
   try {
     const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
@@ -1080,10 +1054,7 @@ test("el segundo ticket del drenaje recibe su propia identidad y contenido, no n
     },
     resume: async () => { throw new Error("must not resume: every drain ticket opens a fresh session"); },
   };
-  const cli = new LazyWorkflowCli(
-    azureBoundary, () => agent, undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true),
-  );
+  const cli = createCli({ huInfoService: azureBoundary, agentSource: () => agent, git: git, cliParser: buildCli(() => true) });
 
   try {
     const exit = await cli.run([
@@ -1115,11 +1086,12 @@ test("un ticket sin contexto de entrega detiene la corrida en vez de abrir una s
     },
     resume: async () => { throw new Error("must not resume"); },
   };
-  const cli = new LazyWorkflowCli(
-    { ...azureBoundary, getAutocodeContextForTicket: async () => null }, () => agent,
-    undefined, undefined, undefined, undefined, undefined, git, undefined, undefined, undefined,
-    buildCli(() => true),
-  );
+  const cli = createCli({
+    huInfoService: { ...azureBoundary, getAutocodeContextForTicket: async () => null },
+    agentSource: () => agent,
+    git,
+    cliParser: buildCli(() => true),
+  });
 
   try {
     const exit = await cli.run([

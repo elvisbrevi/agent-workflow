@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { AgentExhaustionError, type AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
@@ -82,14 +83,12 @@ function planCli(
   factory: QuestionChannelFactory,
   reporterFn: ReturnType<typeof captureReporter>["reporterFn"],
 ): LazyWorkflowCli {
-  return new LazyWorkflowCli(
+  return createCli({
     huInfoService,
-    agent,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    reporterFn,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    factory,
-  );
+    agentSource: agent,
+    createReporterFn: reporterFn,
+    createQuestionChannelFn: factory,
+  });
 }
 
 async function withCapturedStdout<T>(action: () => Promise<T>): Promise<{ value: T; output: string[] }> {
@@ -258,14 +257,12 @@ test("la entrevista de una HU publica el plan que cierra la última ronda", asyn
     },
     linkPredecessor: async (blocker: number, blocked: number) => ({ blocker, blocked, linked: true }),
   };
-  const cli = new LazyWorkflowCli(
-    azure as never,
-    agent,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    reporterFn,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    () => channel,
-  );
+  const cli = createCli({
+    huInfoService: azure as never,
+    agentSource: agent,
+    createReporterFn: reporterFn,
+    createQuestionChannelFn: () => channel,
+  });
 
   const { value } = await withCapturedStdout(() =>
     cli.run(["plan", "--hu", "12345", "--interview", "http", "--working-directory", "/repo"]));

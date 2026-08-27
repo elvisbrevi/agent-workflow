@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { createReporter, type ReporterOptions, type ReporterStream } from "../src/output/reporter.ts";
 import { fakeGitHubCheckpointStore, fakeGitHubDelivery, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
@@ -47,9 +47,9 @@ describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
           summary: "entrega completada",
         }),
       });
-      const cli = new LazyWorkflowCli(
-        { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-        {
+      const cli = createCli({
+        huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+        agentSource: {
           run: async () => ({
             result: AgentResult.fromJsonLines(JSON.stringify({
               type: "text", sessionID: "ses_178", part: { type: "text", text: "IMPLEMENTATION_READY" },
@@ -58,22 +58,12 @@ describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
           }),
           resume: async () => { throw new Error("must not resume"); },
         },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        reporterFn,
-        queueAdapter([fakeSelectedOutcome(178)]),
-        fakeGitHubCheckpointStore(),
-        fakeGitHubRepositoryLock(),
-        delivery,
-      );
+        createReporterFn: reporterFn,
+        githubManagedQueue: queueAdapter([fakeSelectedOutcome(178)]),
+        githubCheckpointStore: fakeGitHubCheckpointStore(),
+        githubRepositoryLock: fakeGitHubRepositoryLock(),
+        githubDelivery: delivery,
+      });
 
        const exit = await cli.run(["code", "--quiet", "--working-directory", "/repo", "--log-file", logFile]);
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import {
   InfrastructureAuthenticationRequiredError,
@@ -124,16 +124,11 @@ test("infra-sag publishes one corrective ticket for each missing prerequisite", 
     };
     let publishedIssue = 0;
     let publishedCount = 0;
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
-      undefined,
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
+      githubTracker: {
         readIssue: async (issue) => ({ number: issue, title: scope.title, body: "scope", comments: [], state: "OPEN", labels: [] }),
         publishFindings: async (issue, _specification, tickets) => {
           publishedIssue = issue;
@@ -141,9 +136,8 @@ test("infra-sag publishes one corrective ticket for each missing prerequisite", 
           return { specification: 200, tickets: tickets.map((_, index) => 201 + index) };
         },
       },
-      undefined,
-      new SagInfrastructureService({ verify: async () => missing }),
-    ).run(["infra-sag", "--issue", "155", "--working-directory", directory]);
+      infrastructureService: new SagInfrastructureService({ verify: async () => missing }),
+    }).run(["infra-sag", "--issue", "155", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(publishedIssue).toBe(155);
@@ -163,23 +157,16 @@ test("infra-sag retries Azure authentication once without exposing credentials",
   let attempts = 0;
   let waits = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => ({ id: 23438, title: "HU" }), waitForAccess: async () => { waits += 1; } },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
-      undefined,
-      undefined,
-      undefined,
-      { verify: async () => {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => ({ id: 23438, title: "HU" }), waitForAccess: async () => { waits += 1; } },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
+      infrastructureService: { verify: async () => {
         attempts += 1;
         if (attempts === 1) throw new InfrastructureAuthenticationRequiredError();
         return { status: "ready" as const, observations: observation, findings: [] };
       } },
-    ).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
+    }).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(attempts).toBe(2);
@@ -220,8 +207,8 @@ test("infra-sag publishes Azure findings with the complete sanitized HU scope", 
   const directory = await config();
   let published = false;
   try {
-    const code = await new LazyWorkflowCli(
-      {
+    const code = await createCli({
+      huInfoService: {
         getHuInfo: async () => ({ id: 23438, title: "HU", description: "token: fixture-secret", criterioDeAceptacion: "acceptance", state: "Active", project: "project" }),
         waitForAccess: async () => undefined,
         publishInfrastructureFindings: async (hu, _specification, tickets) => {
@@ -229,20 +216,13 @@ test("infra-sag publishes Azure findings with the complete sanitized HU scope", 
           return { specification: 300, tickets: [301] };
         },
       },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
-      undefined,
-      undefined,
-      undefined,
-      { verify: async (scope) => {
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => context },
+      infrastructureService: { verify: async (scope) => {
         expect(scope.source?.description).toBe("token: [REDACTED]");
         return { status: "findings", observations: observation, findings: [{ category: "consul", title: "Consul missing", body: "fix" }] };
       } },
-    ).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
+    }).run(["infra-sag", "--hu", "23438", "--working-directory", directory]);
     expect(code).toBe(0);
     expect(published).toBeTrue();
   } finally {
@@ -254,19 +234,13 @@ test("infra-sag stops before verification when canonical SAG context is unavaila
   const directory = await config();
   let verificationCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => { throw new Error("source unavailable"); } },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      undefined,
-      { verify: async () => { verificationCalls += 1; return { status: "ready", observations: observation, findings: [] }; } },
-    ).run(["infra-sag", "--issue", "155", "--working-directory", directory]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => { throw new Error("source unavailable"); } },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      infrastructureService: { verify: async () => { verificationCalls += 1; return { status: "ready", observations: observation, findings: [] }; } },
+    }).run(["infra-sag", "--issue", "155", "--working-directory", directory]);
     expect(code).toBe(1);
     expect(verificationCalls).toBe(0);
   } finally {
@@ -277,19 +251,13 @@ test("infra-sag stops before verification when canonical SAG context is unavaila
 test("infra-sag rejects missing or conflicting scope before external services", async () => {
   let calls = 0;
   for (const args of [["infra-sag"], ["infra-sag", "--hu", "1", "--issue", "2"], ["infra-sag", "--issue", "bad"], ["infra-sag", "--issue", "155", "--ticket", "1"]]) {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadInfrastructure: async () => { calls += 1; throw new Error("must not load"); } },
-      undefined,
-      { readIssue: async () => { calls += 1; throw new Error("must not read issue"); }, publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      undefined,
-      new SagInfrastructureService({ verify: async () => { calls += 1; throw new Error("must not verify"); } }),
-    ).run([...args, "--working-directory", root]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadInfrastructure: async () => { calls += 1; throw new Error("must not load"); } },
+      githubTracker: { readIssue: async () => { calls += 1; throw new Error("must not read issue"); }, publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      infrastructureService: new SagInfrastructureService({ verify: async () => { calls += 1; throw new Error("must not verify"); } }),
+    }).run([...args, "--working-directory", root]);
     expect(code).toBe(1);
   }
   expect(calls).toBe(0);

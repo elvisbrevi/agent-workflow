@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import type { InterruptionProcess } from "../src/output/run-interruption.ts";
 import type { DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
 
@@ -81,14 +82,7 @@ describe("LazyWorkflowCli interruption handling", () => {
         branches: { deleteTicketBranch: async () => { throw new Error("not used"); } },
       };
 
-      const cli = new LazyWorkflowCli(
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined,
-        deterministicToolServices,
-        undefined,
-        proc,
-      );
+      const cli = createCli({ deterministicToolServices: deterministicToolServices, processSignals: proc });
 
       void cli.run(["github-issue-list", "--working-directory", "/tmp", "--log-file", logFile]);
       await reached;
@@ -140,14 +134,7 @@ describe("LazyWorkflowCli interruption handling", () => {
         branches: { deleteTicketBranch: async () => { throw new Error("not used"); } },
       };
 
-      const cli = new LazyWorkflowCli(
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined,
-        deterministicToolServices,
-        undefined,
-        proc,
-      );
+      const cli = createCli({ deterministicToolServices: deterministicToolServices, processSignals: proc });
 
       void cli.run(["github-issue-list", "--working-directory", "/tmp", "--log-file", logFile]);
       await reached;

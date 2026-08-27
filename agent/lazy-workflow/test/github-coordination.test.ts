@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
@@ -83,24 +83,13 @@ test("checkpoint GitHub bloquea la selección de un issue sustituto", async () =
   const state = boundaries(checkpoint(null));
   const { azure, openCode } = services();
   let selections = 0;
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, run: async () => { throw new Error("must not run"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); } },
-    state.store,
-    state.lock,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { throw new Error("must not run"); } },
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); } },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(selections).toBe(0);
@@ -131,25 +120,14 @@ test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado c
       return fakeSelectedIssue(178);
     },
   };
-  const code = await new LazyWorkflowCli(
-    azure,
-    openCode,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    store,
-    state.lock,
-    fakeGitHubDelivery(),
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: openCode,
+    githubManagedQueue: queue,
+    githubCheckpointStore: store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: fakeGitHubDelivery(),
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(distinctPhaseSequence(state.phases)).toEqual([
@@ -186,16 +164,14 @@ test("el coordinador continúa con la siguiente issue elegible hasta vaciar la c
   console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
   let code: number;
   try {
-    code = await new LazyWorkflowCli(
-      azure,
-      { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
-      undefined, undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      queue,
-      state.store,
-      state.lock,
-      fakeGitHubDelivery(),
-    ).run(["code", "--working-directory", "/repo"]);
+    code = await createCli({
+      huInfoService: azure,
+      agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+      githubManagedQueue: queue,
+      githubCheckpointStore: state.store,
+      githubRepositoryLock: state.lock,
+      githubDelivery: fakeGitHubDelivery(),
+    }).run(["code", "--working-directory", "/repo"]);
   } finally {
     console.log = original;
   }
@@ -225,28 +201,17 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
       return this.issue;
     },
   };
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
       resumes += 1;
       resumeOverrides = overrides;
       return openCode.resume();
     } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    state.store,
-    state.lock,
-  ).run([
+    githubManagedQueue: queue,
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+  }).run([
     "code", "--working-directory", "/repo",
     "--model", "openai/gpt-5.6-luna", "--variant", "high",
   ]);
@@ -277,25 +242,14 @@ test("la recuperación conserva el checkpoint si el checkout seguro falla", asyn
     reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
   };
 
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    state.store,
-    state.lock,
-    delivery,
-  ).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    githubManagedQueue: queue,
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: delivery,
+  }).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(reconciliations).toBe(0);
@@ -312,28 +266,17 @@ test("la recuperación no usa queue ni OpenCode si falta la rama fijada", async 
   let reconciliations = 0;
   let resumes = 0;
 
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    githubManagedQueue: {
       selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
       reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
     },
-    state.store,
-    state.lock,
-    failingDelivery(),
-  ).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: failingDelivery(),
+  }).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(reconciliations).toBe(0);
@@ -368,25 +311,14 @@ test("la recuperación fija la rama cuando el checkpoint quedó antes de prepara
     verifyBranch: async () => { events.push("verify-branch"); },
   });
 
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    state.store,
-    state.lock,
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
+    githubManagedQueue: queue,
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(runs).toBe(1);
@@ -424,25 +356,14 @@ test("la recuperación sessionless cambia a la rama fijada antes de continuar", 
     verifyBranch: async () => { events.push("verify-branch"); },
   });
 
-  const code = await new LazyWorkflowCli(
-    azure,
-    { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queue,
-    state.store,
-    state.lock,
-    delivery,
-  ).run(["code", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
+    githubManagedQueue: queue,
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(reconciliations).toBe(1);
@@ -477,25 +398,14 @@ test("la recuperación sessionless ignora un manifest ajeno de un issue previo",
   });
 
   try {
-    const code = await new LazyWorkflowCli(
-      azure,
-      { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      queue,
-      state.store,
-      state.lock,
-      delivery,
-    ).run(["code", "--working-directory", "/repo"]);
+    const code = await createCli({
+      huInfoService: azure,
+      agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
+      githubManagedQueue: queue,
+      githubCheckpointStore: state.store,
+      githubRepositoryLock: state.lock,
+      githubDelivery: delivery,
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(1);
     expect(runs).toBe(1);
@@ -512,27 +422,16 @@ for (const phase of GITHUB_DELIVERY_PHASES) {
     const state = boundaries({ ...checkpoint("ses_178"), phase });
     const { azure, openCode } = services();
     let selections = 0;
-    const code = await new LazyWorkflowCli(
-      azure,
-      openCode,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
+    const code = await createCli({
+      huInfoService: azure,
+      agentSource: openCode,
+      githubManagedQueue: {
         selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
         reconcileClaimedIssue: async () => fakeSelectedIssue(178),
       },
-      state.store,
-      state.lock,
-    ).run(["code", "--working-directory", "/repo"]);
+      githubCheckpointStore: state.store,
+      githubRepositoryLock: state.lock,
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(1);
     expect(selections).toBe(0);

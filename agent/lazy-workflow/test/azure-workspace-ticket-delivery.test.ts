@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { basename } from "node:path";
 import { parseCompletionManifest, type EvidenceKind } from "../src/azure/completion-manifest.ts";
-import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { createReporter, type ReporterOptions, type ReporterStream } from "../src/output/reporter.ts";
 import {
   createAzureWorkspaceHarness as createHarness,
@@ -439,9 +440,9 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
       throw new Error("must not be called in single-repo");
     },
   };
-  const cli = new LazyWorkflowCli(
-    azureBoundary,
-    {
+  const cli = createCli({
+    huInfoService: azureBoundary,
+    agentSource: {
       run: async () => {
         events.push("opencode:run");
         await Bun.write(join(pathA, "lazy-workflow/completion-manifest.json"), "{}");
@@ -453,13 +454,8 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    staticGit(),
-  );
+    git: staticGit(),
+  });
 
   let exit = -1;
   try {

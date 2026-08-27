@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 
 /** El único run record de severidad `event` que dejó la invocación. */
 function failureRecord(logFile: string): Record<string, unknown> {
@@ -26,7 +26,7 @@ async function runWithLog(args: string[]): Promise<{ exit: number; record: Recor
   const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-argument-error-"));
   const logFile = join(dir, "runs.jsonl");
   try {
-    const exit = await new LazyWorkflowCli().run([...args, "--log-file", logFile]);
+    const exit = await createCli().run([...args, "--log-file", logFile]);
     return { exit, record: failureRecord(logFile) };
   } finally {
     rmSync(dir, { recursive: true, force: true });

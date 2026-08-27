@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import chalk from "chalk";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { createReporter, type Reporter, type ReporterStream } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
@@ -91,23 +91,12 @@ const runCodeWith = (events: string[], verbose = false, quiet = false, verboseOu
     kill: () => undefined,
   });
   const service = new OpenCodeService(() => spawnWithEvents(events)(), capture.reporter, 100);
-  const cli = new LazyWorkflowCli(
-    noAzureBoundary,
-    { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+  const cli = createCli({
+    huInfoService: noAzureBoundary,
+    agentSource: { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
     ...fakeCoordinatedGitHubDeps(),
-  );
+  });
   return cli
     .run([
       "code",
@@ -246,23 +235,12 @@ describe("smoke: GitHub code run verbosity modes (end-to-end via CLI)", () => {
       const capture = buildReporter(verbose, quiet);
       setDefaultReporter(capture.reporter);
       const service = new OpenCodeService(() => spawnWithEvents(events)(), capture.reporter, 100);
-      const cli = new LazyWorkflowCli(
-        trackingBoundary,
-        { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+      const cli = createCli({
+        huInfoService: trackingBoundary,
+        agentSource: { run: (options) => service.run(options), resume: (sessionId, prompt, directory) => service.resume(sessionId, prompt, directory) },
+        githubManagedQueue: queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
         ...fakeCoordinatedGitHubDeps(),
-      );
+      });
       const code = await cli.run([
         "code",
         ...(verbose ? ["--verbose"] : []),

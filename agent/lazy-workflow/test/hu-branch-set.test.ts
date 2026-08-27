@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { runGit } from "../src/git/git-ticket-branch-cleaner.ts";
 
 const hu = 125;
@@ -672,10 +672,12 @@ test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const result = await new LazyWorkflowCli({
-      getHuInfo: async () => { throw new Error("no debe consultarse por separado"); },
-      waitForAccess: async () => undefined,
-      setIntegrationBranch: async (requestedHu) => ({ hu: requestedHu, branch }),
+    const result = await createCli({
+      huInfoService: {
+        getHuInfo: async () => { throw new Error("no debe consultarse por separado"); },
+        waitForAccess: async () => undefined,
+        setIntegrationBranch: async (requestedHu) => ({ hu: requestedHu, branch }),
+      },
     }).run(["hu-branch-set", "--hu", `${hu}`, "--branch", "feature/hu-125", "--working-directory", "/repo"]);
     expect(result).toBe(0);
   } finally {
@@ -687,12 +689,14 @@ test("el CLI hu-branch-set imprime un resultado normalizado sin invocar OpenCode
 
 test("el CLI hu-branch-set reenvía la base explícita al servicio", async () => {
   let receivedBase: string | null | undefined;
-  const result = await new LazyWorkflowCli({
-    getHuInfo: async () => { throw new Error("no debe consultarse"); },
-    waitForAccess: async () => undefined,
-    setIntegrationBranch: async (_requestedHu, _branch, _workingDirectory, baseBranch) => {
-      receivedBase = baseBranch;
-      return { hu, branch };
+  const result = await createCli({
+    huInfoService: {
+      getHuInfo: async () => { throw new Error("no debe consultarse"); },
+      waitForAccess: async () => undefined,
+      setIntegrationBranch: async (_requestedHu, _branch, _workingDirectory, baseBranch) => {
+        receivedBase = baseBranch;
+        return { hu, branch };
+      },
     },
   }).run([
     "hu-branch-set",
@@ -713,12 +717,14 @@ test("el CLI ticket-branch-set reenvía la identidad y el worktree al servicio",
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const result = await new LazyWorkflowCli({
-      getHuInfo: async () => { throw new Error("no debe consultarse"); },
-      waitForAccess: async () => undefined,
-      setTicketBranch: async (...args) => {
-        received = args;
-        return { hu, ticket: 126, branch: "refs/heads/feature/ticket-126" };
+    const result = await createCli({
+      huInfoService: {
+        getHuInfo: async () => { throw new Error("no debe consultarse"); },
+        waitForAccess: async () => undefined,
+        setTicketBranch: async (...args) => {
+          received = args;
+          return { hu, ticket: 126, branch: "refs/heads/feature/ticket-126" };
+        },
       },
     }).run([
       "ticket-branch-set",
@@ -745,10 +751,10 @@ test("el CLI ticket-branch-set rechaza un worktree omitido o vacío", async () =
     setTicketBranch: async () => { calls += 1; return { hu, ticket: 126, branch: "refs/heads/feature/ticket-126" }; },
   };
 
-  await expect(new LazyWorkflowCli(service).run([
+  await expect(createCli({ huInfoService: service }).run([
     "ticket-branch-set", "--hu", `${hu}`, "--ticket", "126", "--branch", "feature/ticket-126",
   ])).resolves.toBe(1);
-  await expect(new LazyWorkflowCli(service).run([
+  await expect(createCli({ huInfoService: service }).run([
     "ticket-branch-set", "--hu", `${hu}`, "--ticket", "126", "--branch", "feature/ticket-126",
     "--working-directory",
   ])).resolves.toBe(1);
@@ -757,10 +763,12 @@ test("el CLI ticket-branch-set rechaza un worktree omitido o vacío", async () =
 
 test("el CLI hu-branch-set rechaza entrada inválida sin tocar Azure", async () => {
   let calls = 0;
-  const result = await new LazyWorkflowCli({
-    getHuInfo: async () => { throw new Error("no debe consultarse"); },
-    waitForAccess: async () => undefined,
-    setIntegrationBranch: async () => { calls += 1; return { hu, branch }; },
+  const result = await createCli({
+    huInfoService: {
+      getHuInfo: async () => { throw new Error("no debe consultarse"); },
+      waitForAccess: async () => undefined,
+      setIntegrationBranch: async () => { calls += 1; return { hu, branch }; },
+    },
   }).run(["hu-branch-set", "--hu", "abc", "--branch", "feature/hu-125", "--working-directory", "/repo"]);
 
   expect(result).toBe(1);

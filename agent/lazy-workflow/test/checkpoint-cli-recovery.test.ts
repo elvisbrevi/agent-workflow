@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
 import type { AgentResumeOverrides, CodingAgent } from "../src/coding-agent/coding-agent.ts";
@@ -94,21 +94,12 @@ function githubDeliveryCli(
   const lock: GitHubRepositoryLockBoundary = { acquire: async () => async () => undefined };
   const { reporterFn, messages: reported } = captureReporter();
   const released: Array<{ issue: number; login: string }> = [];
-  const cli = new LazyWorkflowCli(
-    azure,
-    agents.source,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-    reporterFn,
-    {
+  const cli = createCli({
+    huInfoService: azure,
+    agentSource: agents.source,
+    cliParser: buildCli(() => true),
+    createReporterFn: reporterFn,
+    githubManagedQueue: {
       reconcileClaimedIssue: async () => fakeSelectedIssue(178),
       readIssueDetail: options.readIssueDetail ?? (async (issue: number) => fakeSelectedIssue(issue)),
       selectEligibleIssue: async () => {
@@ -122,10 +113,10 @@ function githubDeliveryCli(
       verifyAuthentication: options.verifyAuthentication ?? (async () => ({ login: "elvis" })),
       releaseOwnClaim: async (issue: number, login: string) => { released.push({ issue, login }); },
     },
-    store,
-    lock,
-    options.githubDelivery,
-  );
+    githubCheckpointStore: store,
+    githubRepositoryLock: lock,
+    githubDelivery: options.githubDelivery,
+  });
   return { cli, store, reported, released, get current() { return current; } };
 }
 
@@ -692,8 +683,8 @@ function autocodeCli(checkpoint: VersionedAutocodeCheckpoint, agents: ReturnType
     write: async (value) => { writes.push(value as VersionedAutocodeCheckpoint); },
     clear: async () => undefined,
   };
-  const cli = new LazyWorkflowCli(
-    {
+  const cli = createCli({
+    huInfoService: {
       ...azure,
       getHuInfo: async () => ({ id: 23438 }),
       ensureIntegrationBranch: async () => checkpoint.integrationBranch!,
@@ -703,18 +694,12 @@ function autocodeCli(checkpoint: VersionedAutocodeCheckpoint, agents: ReturnType
       getBranch: async () => ({ hu: 23438, ticket: 51, branch: checkpoint.ticketBranch!, integrationBranch: checkpoint.integrationBranch! }),
       setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: checkpoint.ticketBranch! }),
     },
-    agents.source,
-    store,
-    { wait: async () => undefined },
-    { deleteTicketBranch: async () => undefined },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-  );
+    agentSource: agents.source,
+    checkpointStore: store,
+    retryTimer: { wait: async () => undefined },
+    ticketBranchCleaner: { deleteTicketBranch: async () => undefined },
+    cliParser: buildCli(() => true),
+  });
   return { cli, writes };
 }
 
@@ -851,22 +836,13 @@ async function githubWorkspace(cli: AgentCli, agents: ReturnType<typeof spyingAg
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
   };
-  const workflow = new LazyWorkflowCli(
-    azure,
-    agents.source,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+  const workflow = createCli({
+    huInfoService: azure,
+    agentSource: agents.source,
     git,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-    undefined,
-    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }) },
-  );
+    cliParser: buildCli(() => true),
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }) },
+  });
   return {
     workflow,
     paths,

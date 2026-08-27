@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { GitHubCheckpointStore } from "../src/github/github-delivery-checkpoint.ts";
 import { GitHubPullRequestConflictError, type GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
@@ -78,9 +78,9 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
     selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
   const checkpointStore: GitHubCheckpointStore = { read: async () => null, write: async () => undefined, clear: async () => undefined };
-  const cli = new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const cli = createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async () => {
         runs += 1;
         if (runs === 1) {
@@ -95,13 +95,12 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined, undefined, undefined, undefined, undefined, git,
-    undefined, undefined, undefined, undefined, undefined,
-    queue,
-    checkpointStore,
-    { acquire: async () => async () => undefined },
-    delivery,
-  );
+    git,
+    githubManagedQueue: queue,
+    githubCheckpointStore: checkpointStore,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  });
   try {
     expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(0);
     expect(runs).toBe(2);

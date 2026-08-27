@@ -17,6 +17,7 @@ inside that directory rather than a skill directory.
 | Add or change a workflow used by an AI session | The relevant `<category>/<skill>/SKILL.md` and adjacent references |
 | Add a new skill | A category directory, `SKILL.md`, optional `agents/openai.yaml`, and README catalog entries |
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
+| Add or remove a boundary the CLI receives by constructor | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` and `agent/lazy-workflow/test/_helpers/create-cli.ts` (the only place that knows their order) |
 | Add or change a deterministic tool exposed as its own command | `agent/lazy-workflow/src/cli/tool-commands.ts` (the names) and `agent/lazy-workflow/src/cli/deterministic-tools.ts` (the dispatch) |
 | Change what the operator sees — the stamped line format, the levels, or the run panel | `agent/lazy-workflow/src/output/reporter.ts` |
 | Change the run log's record contract, its path resolution, or its rotation | `agent/lazy-workflow/src/output/run-log.ts` |
