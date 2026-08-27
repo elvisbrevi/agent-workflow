@@ -1853,7 +1853,7 @@ test("un PR activo no reporta el commit fuente como si hubiera entregado algo", 
     throw new Error(`unexpected command: ${args.join(" ")}`);
   });
 
-  const [pullRequest] = await service.readPullRequests(51, "project-id", "refs/heads/hu/23438");
+  const [pullRequest] = await service.readPullRequests(51, "project-id");
   expect(pullRequest!.status).toBe("active");
   expect(pullRequest!.mergeCommit).toBeUndefined();
   expect(pullRequest!.lastMergeSourceCommit).toBe("d".repeat(40));

@@ -37,8 +37,9 @@ test("cada comando SAG exige un alcance con su propio nombre", async () => {
 });
 
 /**
- * `infra-sag` queda fuera: su lista de flags admitidas rechaza `--branch` antes,
- * de modo que su propia regla de sesión no es alcanzable por línea de comandos.
+ * `infra-sag` queda fuera: su lista de flags admitidas rechaza `--branch` antes
+ * de que una regla de alcance pueda verlo, así que no tiene —ni necesita— la
+ * suya. El test siguiente fija ese reparto.
  */
 test("los comandos SAG que admiten flags de sesión las rechazan con su propio nombre", async () => {
   for (const command of ["architecture-review-sag", "deploy-sag"] as const) {

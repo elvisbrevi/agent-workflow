@@ -239,7 +239,9 @@ export class ProcessDeploymentSystems implements DeploymentSystems {
     });
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
-    const [exitCode, stdout, stderr] = await Promise.all([
+    // stderr se sigue drenando aunque no se lea: un adaptador hablador llenaría
+    // el pipe y se bloquearía si nadie lo consume.
+    const [exitCode, stdout] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),

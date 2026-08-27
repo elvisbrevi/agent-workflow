@@ -103,7 +103,7 @@ function graphQlArgs(query: string, repository: { owner: string; name: string },
   return args;
 }
 
-function pageInfo(page: GraphQlPage, connection: PageInfo | undefined): PageInfo {
+function pageInfo(connection: PageInfo | undefined): PageInfo {
   if (!connection || typeof connection.hasNextPage !== "boolean") {
     throw new Error("la respuesta GitHub no incluye paginación verificable");
   }
@@ -124,7 +124,7 @@ function issueFromPages(pages: GraphQlPage[], issue: number): GitHubNativeIssueR
   for (const page of pages) {
     const current = page.data?.repository?.issue;
     if (!current || current.number !== issue || !current.subIssues) throw new Error(`GitHub devolvio una relación incompleta para el Issue #${issue}`);
-    lastPage = pageInfo(page, current.subIssues.pageInfo);
+    lastPage = pageInfo(current.subIssues.pageInfo);
     if (!Array.isArray(current.subIssues.nodes)) throw new Error(`GitHub devolvio sub-issues incompletos para el Issue #${issue}`);
     subIssues.push(...current.subIssues.nodes);
   }
@@ -145,7 +145,7 @@ function blockersFromPages(pages: GraphQlPage[], issue: number): Array<{ number:
   for (const page of pages) {
     const connection = page.data?.repository?.issue?.blockedBy;
     if (!connection) throw new Error(`GitHub devolvio dependencias incompletas para el Issue #${issue}`);
-    lastPage = pageInfo(page, connection.pageInfo);
+    lastPage = pageInfo(connection.pageInfo);
     if (!Array.isArray(connection.nodes)) throw new Error(`GitHub devolvio dependencias incompletas para el Issue #${issue}`);
     blockers.push(...connection.nodes);
   }
@@ -159,7 +159,7 @@ function issueNumbersFromPages(pages: GraphQlPage[]): number[] {
   for (const page of pages) {
     const connection = page.data?.repository?.issues;
     if (!connection) throw new Error("GitHub devolvio una cola de issues incompleta");
-    lastPage = pageInfo(page, connection.pageInfo);
+    lastPage = pageInfo(connection.pageInfo);
     if (!Array.isArray(connection.nodes)) throw new Error("GitHub devolvio una cola de issues incompleta");
     for (const node of connection.nodes) {
       if (!Number.isInteger(node.number) || (node.number ?? 0) <= 0) throw new Error("GitHub devolvio un issue inválido");
@@ -199,7 +199,7 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     for (const page of pages) {
       const connection = page.data?.repository?.issue?.comments as { nodes?: Array<{ body?: string }>; pageInfo?: PageInfo } | undefined;
       if (!connection) throw new Error(`GitHub devolvio comentarios incompletos para el Issue #${issue}`);
-      lastPage = pageInfo(page, connection.pageInfo);
+      lastPage = pageInfo(connection.pageInfo);
       if (!Array.isArray(connection.nodes)) throw new Error(`GitHub devolvio comentarios incompletos para el Issue #${issue}`);
       comments.push(...connection.nodes.map(({ body }) => body ?? ""));
     }

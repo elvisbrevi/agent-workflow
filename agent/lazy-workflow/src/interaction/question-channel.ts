@@ -21,10 +21,6 @@ export const INTERVIEW_CHANNELS = ["off", "http", "terminal", "file"] as const;
 
 export type InterviewChannelKind = (typeof INTERVIEW_CHANNELS)[number];
 
-export function isInterviewChannel(value: string): value is InterviewChannelKind {
-  return (INTERVIEW_CHANNELS as readonly string[]).includes(value);
-}
-
 /** Everything a run fixes about its interview before the first question exists. */
 export interface InterviewSettings {
   channel: InterviewChannelKind;

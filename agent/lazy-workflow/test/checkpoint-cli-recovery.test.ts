@@ -16,7 +16,7 @@ import type { GitHubRepositoryLockBoundary } from "../src/github/github-reposito
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 import { captureReporter } from "./_helpers/reporter-capture.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
-import { createAzureWorkspaceHarness, hu, integrationBranch, remoteUrlA, remoteUrlB, repoA, repoB, ticket, ticketBranch } from "./_helpers/azure-workspace-fixtures.ts";
+import { createAzureWorkspaceHarness, hu, integrationBranch, remoteUrlA, remoteUrlB, ticket, ticketBranch } from "./_helpers/azure-workspace-fixtures.ts";
 
 /** Records which CLI the run resolved and never lets a session actually open. */
 function spyingAgents(): {
