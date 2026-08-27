@@ -1064,7 +1064,7 @@ export class AzureTicketInfoService {
    * Idempotent by (HU, type, exact title): a matching direct child is reused rather
    * than duplicated, and two children sharing that identity are a conflict. Field
    * reference names are never inferred from display labels — anything beyond the
-   * system fields must be named explicitly through `fields` (ADR-0006).
+   * system fields must be named explicitly through `fields` (ADR-0032).
    */
   async createTicket(input: {
     hu: number;

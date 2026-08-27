@@ -61,7 +61,7 @@ export interface CliOptions {
   title: string | null;
   estimate: number | null;
   assignee: string | null;
-  /** Explicit Azure reference names; display labels are never inferred (ADR-0006). */
+  /** Explicit Azure reference names; display labels are never inferred (ADR-0032). */
   fields: Array<{ referenceName: string; value: string }>;
   parent: number | null;
   child: number | null;

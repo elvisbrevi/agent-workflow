@@ -115,7 +115,7 @@ Five rules govern these:
   "should be done" is a `ticket-completion-info` question, not a state write.
 - **Reference names, never labels.** `--field <referenceName>=<value>` is
   repeatable and takes Azure reference names; display labels are never inferred
-  (ADR-0006).
+  (ADR-0032).
 - **The manifest is never hand-written.** `ticket-manifest-set` is the only way a
   completion manifest is created: it takes the identities and what you ran, then
   resolves the commit from HEAD, computes every SHA-256 digest from the evidence
