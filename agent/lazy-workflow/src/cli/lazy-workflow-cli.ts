@@ -234,6 +234,38 @@ function argumentError(
 }
 
 /**
+ * El alcance que los tres comandos SAG declaran igual: un HU o un Issue, nunca
+ * ambos y nunca ninguno. Devuelve el código de salida cuando el alcance no
+ * sirve —ya reportado— y `null` cuando el comando puede seguir.
+ */
+function sagScopeError(
+  command: string,
+  options: Pick<CliOptions, "hu" | "issue" | "workingDirectory">,
+): number | null {
+  if (options.hu !== null && options.issue !== null) {
+    return argumentError(options, `${command} no permite combinar --hu y --issue`);
+  }
+  if (options.hu === null && options.issue === null) {
+    return argumentError(options, `${command} requiere --hu <id> o --issue <id>`);
+  }
+  return null;
+}
+
+/**
+ * Ningún comando SAG reanuda una sesión ni recibe sus ramas: las decide el run
+ * a partir del alcance.
+ */
+function sagSessionFlagsError(
+  command: string,
+  options: Pick<CliOptions, "hu" | "issue" | "workingDirectory" | "session" | "branch" | "baseBranch">,
+): number | null {
+  if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
+    return argumentError(options, `${command} no permite --session, --branch ni --base-branch`);
+  }
+  return null;
+}
+
+/**
  * La misma decisión en un comando de tool de Azure, que identifica el trabajo
  * por su ticket y su rama en vez de por un Issue.
  */
@@ -520,8 +552,9 @@ const INFRASTRUCTURE_FLAGS = new Set([
   "--verbose", "--quiet", "--no-color",
 ]);
 
-function isValidHu(hu: number | null): hu is number {
-  return hu !== null && Number.isInteger(hu) && hu > 0;
+/** Un identificador que el tracker puede aceptar: un HU, un ticket o un PR. */
+function isPositiveId(value: number | null): value is number {
+  return value !== null && Number.isInteger(value) && value > 0;
 }
 
 function isAzureRemote(origin: string): boolean {
@@ -995,15 +1028,8 @@ export class LazyWorkflowCli {
     }
 
     if (command === "architecture-review-sag") {
-      if (options.hu !== null && options.issue !== null) {
-        return argumentError(options, "architecture-review-sag no permite combinar --hu y --issue");
-      }
-      if (options.hu === null && options.issue === null) {
-        return argumentError(options, "architecture-review-sag requiere --hu <id> o --issue <id>");
-      }
-      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        return argumentError(options, "architecture-review-sag no permite --session, --branch ni --base-branch");
-      }
+      const rejected = sagScopeError(command, options) ?? sagSessionFlagsError(command, options);
+      if (rejected !== null) return rejected;
       return this.runArchitectureReview(options);
     }
 
@@ -1014,15 +1040,8 @@ export class LazyWorkflowCli {
       if (unsupportedFlag) {
         return argumentError(options, `infra-sag no permite ${unsupportedFlag}`);
       }
-      if (options.hu !== null && options.issue !== null) {
-        return argumentError(options, "infra-sag no permite combinar --hu y --issue");
-      }
-      if (options.hu === null && options.issue === null) {
-        return argumentError(options, "infra-sag requiere --hu <id> o --issue <id>");
-      }
-      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        return argumentError(options, "infra-sag no permite --session, --branch ni --base-branch");
-      }
+      const rejected = sagScopeError(command, options) ?? sagSessionFlagsError(command, options);
+      if (rejected !== null) return rejected;
       return this.runInfrastructure(options);
     }
 
@@ -1030,32 +1049,27 @@ export class LazyWorkflowCli {
       if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
         return argumentError(options, "deploy-sag no permite repetir --environment");
       }
-      if (options.hu !== null && options.issue !== null) {
-        return argumentError(options, "deploy-sag no permite combinar --hu y --issue");
-      }
-      if (options.hu === null && options.issue === null) {
-        return argumentError(options, "deploy-sag requiere --hu <id> o --issue <id>");
-      }
+      const scope = sagScopeError(command, options);
+      if (scope !== null) return scope;
       const environment = options.environment?.trim().toLowerCase() ?? "dev";
       if (environment !== "dev" && environment !== "test" && environment !== "qa") {
         return argumentError(options, "deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
       }
-      if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-        return argumentError(options, "deploy-sag no permite --session, --branch ni --base-branch");
-      }
+      const rejected = sagSessionFlagsError(command, options);
+      if (rejected !== null) return rejected;
       return this.runDeployment(options, environment);
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
 
     if (command === "ticket-completion-apply") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "ticket-completion-apply requiere --hu <id>");
       }
-      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      if (!isPositiveId(options.ticket)) {
         return azureArgumentError(options, "ticket-completion-apply requiere --ticket <id> con un entero positivo");
       }
-      if (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0) {
+      if (!isPositiveId(options.pullRequest)) {
         return azureArgumentError(options, "ticket-completion-apply requiere --pr <id> con un entero positivo");
       }
       if (!options.manifest?.trim()) {
@@ -1071,7 +1085,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "ticket-create") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "ticket-create requiere --hu <id>");
       }
       if (options.type !== "Task" && options.type !== "Bug") {
@@ -1123,7 +1137,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "ticket-description-set" || command === "ticket-state-set" || command === "ticket-effort-set") {
-      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      if (!isPositiveId(options.ticket)) {
         return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
       }
       if (command === "ticket-description-set" && !options.descriptionFile?.trim()) {
@@ -1162,14 +1176,14 @@ export class LazyWorkflowCli {
     }
 
     if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
-      if (command === "ticket-pr-link" && !isValidHu(options.hu)) {
+      if (command === "ticket-pr-link" && !isPositiveId(options.hu)) {
         return azureArgumentError(options, "ticket-pr-link requiere --hu <id>");
       }
-      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      if (!isPositiveId(options.ticket)) {
         return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
       }
       if ((command === "ticket-pr-link" || command === "ticket-commit-link")
-        && (options.pullRequest === null || !Number.isInteger(options.pullRequest) || options.pullRequest <= 0)) {
+        && !isPositiveId(options.pullRequest)) {
         return azureArgumentError(options, `${command} requiere --pr <id> con un entero positivo`);
       }
       if ((command === "ticket-attachment-add" || command === "ticket-evidence-set") && !options.file?.trim()) {
@@ -1202,10 +1216,10 @@ export class LazyWorkflowCli {
     }
 
     if (command === "ticket-branch-set") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "ticket-branch-set requiere --hu <id>");
       }
-      if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+      if (!isPositiveId(options.ticket)) {
         return azureArgumentError(options, "ticket-branch-set requiere --ticket <id> con un entero positivo");
       }
       if (!options.branch?.trim()) {
@@ -1236,7 +1250,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "hu-info") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "hu-info requiere --hu <id>");
       }
      let huInfo: HuInfo;
@@ -1251,7 +1265,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "hu-branch-info") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "hu-branch-info requiere --hu <id>");
       }
       if (!this.huInfoService.getIntegrationBranchInfo) {
@@ -1268,7 +1282,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "hu-branch-set") {
-      if (!isValidHu(options.hu)) {
+      if (!isPositiveId(options.hu)) {
         return azureArgumentError(options, "hu-branch-set requiere --hu <id>");
       }
       if (!options.branch?.trim()) {
@@ -1668,7 +1682,7 @@ export class LazyWorkflowCli {
       reportAzureFailure("topology-preparation-failure", "preparing", options, "El servicio Azure no expone la preparación workspace de ramas");
       return 1;
     }
-    if (!isValidHu(options.hu)) {
+    if (!isPositiveId(options.hu)) {
       reportAzureFailure("argument-error", "preparing", options, "runAzureWorkspaceCode requiere --hu");
       return 1;
     }
@@ -4412,13 +4426,13 @@ export class LazyWorkflowCli {
   }
 
   private async runTicketRead(command: string, options: CliOptions): Promise<number> {
-    if (options.ticket === null || !Number.isInteger(options.ticket) || options.ticket <= 0) {
+    if (!isPositiveId(options.ticket)) {
       return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
     }
     const ticket = options.ticket;
     const needsHu = command === "ticket-info" || command === "ticket-branch-info"
       || command === "ticket-pr-info" || command === "ticket-completion-info";
-    if (needsHu && !isValidHu(options.hu)) {
+    if (needsHu && !isPositiveId(options.hu)) {
       return azureArgumentError(options, `${command} requiere --hu <id>`);
     }
     try {
