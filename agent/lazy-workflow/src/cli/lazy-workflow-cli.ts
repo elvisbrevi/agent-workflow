@@ -1724,6 +1724,8 @@ export class LazyWorkflowCli {
       reportAzureFailure("workspace-scope-failure", "preparing", options, `lazy-workflow: no se pudo leer el alcance workspace Azure (${errorMessage(error)}); ejecución detenida.`);
       return 1;
     }
+    // El mismo persistir que usan los demás caminos, para que este no escriba a mano.
+    const save = async (): Promise<void> => { await this.azureWorkspaceCheckpoint.write(checkpoint!, scope.stateDirectory); };
     if (checkpoint) {
       const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom);
       if (!adopted) return 1;
@@ -1785,7 +1787,7 @@ export class LazyWorkflowCli {
       if (!checkpoint) {
         // Write the intent before the first external effect so a crashed session is recoverable.
         checkpoint = this.createAzureWorkspaceCheckpoint(hu, ticket, scope, topology, ticketTopology, options.cli);
-        await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        await save();
       }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
         // Branch effects belong to the coordinator, so the session has to find every participant
@@ -1813,7 +1815,7 @@ export class LazyWorkflowCli {
         const onDescent = async (rung: FallbackRung, sessionId: string) => {
           activeCli = rung.cli;
           checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
-          await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+          await save();
         };
         const handOff = async (rung: FallbackRung) => {
           const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
@@ -1841,7 +1843,7 @@ export class LazyWorkflowCli {
             variant: rung.variant,
             sessionId: handedOff.result.sessionId,
           };
-          await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+          await save();
           return handedOff;
         };
         if (resuming) {
@@ -1877,7 +1879,7 @@ export class LazyWorkflowCli {
           // effort, so they come back out of the accrued window (issue #292).
           activeDurationMs: checkpoint.activeDurationMs + Math.max(0, accrue() - (execution.idleMs ?? 0)),
         };
-        await this.azureWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        await save();
         if (execution.failed) {
           reportAzureFailure("session-failure", "reconciling", options, `lazy-workflow: ${activeCli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`, { sessionId: execution.result.sessionId }, "preserved");
           return 1;
@@ -2532,6 +2534,7 @@ export class LazyWorkflowCli {
   }
 
   private async resumeWorkspaceCode(options: CliOptions, scope: WorkspaceScope, checkpoint: GitHubWorkspaceCheckpoint): Promise<number> {
+    const save = async (): Promise<void> => { await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory); };
     const expected = scope.repositories.map(({ path, remote, providerIdentity }) => ({ path, remote, repository: providerIdentity }));
     if (JSON.stringify(expected) !== JSON.stringify(checkpoint.repositories)
       || checkpoint.units.some((unit, index) => unit.path !== expected[index]?.path || unit.repository !== expected[index]?.repository)) {
@@ -2582,7 +2585,7 @@ export class LazyWorkflowCli {
           receipts: workspaceReceipts,
           units: checkpoint.units.map((candidate) => candidate.path === unit.path ? reconciledUnit : candidate),
         };
-        await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        await save();
       } catch (error) {
         reportFailure("delivery-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory }, `lazy-workflow: no se pudo reanudar la reconciliación workspace (${errorMessage(error)})`);
         return 1;
@@ -2594,7 +2597,7 @@ export class LazyWorkflowCli {
         reportOperator(JSON.stringify(result, null, 2));
         if (!containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) return 1;
         checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
-        await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        await save();
       } catch (error) {
         reportFailure("session-failure", "reconciling", { issue: checkpoint.issue, repository: options.workingDirectory, sessionId: checkpoint.sessionId }, `lazy-workflow: no se pudo reanudar el workspace (${errorMessage(error)})`);
         return 1;
@@ -2639,11 +2642,12 @@ export class LazyWorkflowCli {
     if (!anchor?.providerIdentity) throw new Error("el primer repositorio no tiene identidad GitHub");
     let checkpoint = existing;
     let units = checkpoint?.units ?? [];
+    const save = async (): Promise<void> => { await this.githubWorkspaceCheckpoint.write(checkpoint!, scope.stateDirectory); };
     const issueNumber = issue?.number ?? checkpoint?.issue;
     if (!issueNumber) throw new Error("falta el Issue fijado para el workspace");
     if (!checkpoint) {
       checkpoint = this.createWorkspaceCheckpoint(scope, issueNumber, options.cli);
-      await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+      await save();
     }
     if (checkpoint.units.length < scope.repositories.length) {
       units = checkpoint.units;
@@ -2652,15 +2656,14 @@ export class LazyWorkflowCli {
         if (!prepared) throw new Error("el coordinador GitHub no expone preparación de ramas");
         units = [...units, { path: repository.path, remote: repository.remote, repository: repository.providerIdentity!, branch: prepared.branch, baseBranch: prepared.baseBranch, manifestPath: prepared.manifestPath, changed: null, startingCommit: (await this.git(["rev-parse", "HEAD^{commit}"], repository.path)).trim(), commit: null, evidence: [], pullRequest: null, mergeCommit: null, phase: "started", receipts: {} }];
         checkpoint = { ...checkpoint, phase: "started", units };
-        await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+        await save();
       }
       checkpoint = { ...checkpoint, phase: "started", branch: units[0]!.branch, units };
     }
     if (checkpoint.phase === "selected") {
       checkpoint = { ...checkpoint, phase: "started" };
-      await this.githubWorkspaceCheckpoint.write(checkpoint, scope.stateDirectory);
+      await save();
     }
-    const save = async (): Promise<void> => { await this.githubWorkspaceCheckpoint.write(checkpoint!, scope.stateDirectory); };
     if (checkpoint.phase === "implementing" && !checkpoint.sessionId) {
       throw new Error("el checkpoint workspace no conserva una sesión reanudable");
     }
