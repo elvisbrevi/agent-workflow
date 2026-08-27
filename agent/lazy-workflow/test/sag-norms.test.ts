@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { createCli } from "./_helpers/create-cli.ts";
+import { planTriageQueue } from "./_helpers/plan-triage-queue.ts";
 import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 import { GitHubArchitectureReviewService } from "../src/github/architecture-review-service.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
@@ -316,6 +317,7 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
   });
   try {
     const code = await createCli({
+    githubManagedQueue: planTriageQueue(),
       huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
       agentSource: {
         run: async (options) => { received = options; return { result, azureLoginRequired: false }; },

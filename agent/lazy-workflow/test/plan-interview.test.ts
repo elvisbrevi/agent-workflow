@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { createCli } from "./_helpers/create-cli.ts";
+import { planTriageQueue } from "./_helpers/plan-triage-queue.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { AgentExhaustionError, type AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
@@ -84,6 +85,7 @@ function planCli(
   reporterFn: ReturnType<typeof captureReporter>["reporterFn"],
 ): LazyWorkflowCli {
   return createCli({
+    githubManagedQueue: planTriageQueue(),
     huInfoService,
     agentSource: agent,
     createReporterFn: reporterFn,
@@ -258,6 +260,7 @@ test("la entrevista de una HU publica el plan que cierra la última ronda", asyn
     linkPredecessor: async (blocker: number, blocked: number) => ({ blocker, blocked, linked: true }),
   };
   const cli = createCli({
+    githubManagedQueue: planTriageQueue(),
     huInfoService: azure as never,
     agentSource: agent,
     createReporterFn: reporterFn,

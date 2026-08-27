@@ -49,6 +49,7 @@ import {
   type GitHubRepositoryContext,
   type SelectedManagedIssue,
   type ManagedQueueOutcome,
+  type ManagedQueueWatermark,
 } from "../github/managed-queue-service.ts";
 import {
   GitHubDeliveryCheckpointStore,
@@ -1627,6 +1628,10 @@ export class LazyWorkflowCli {
     if (command === "plan") {
       const norms = await this.loadSagNorms(options, "planning");
       if (options.normasSag && norms === null) return 1;
+      // Leida antes de abrir la sesion: fija el corte de numeracion desde el que
+      // los Issues publicados por esta corrida reciben el rol de triage.
+      const watermark = await this.readTriageWatermark(options.workingDirectory);
+      if (watermark === undefined) return 1;
       const { result, failed } = await this.runPlanningSession(
         { kind: "github-plan" },
         // A GitHub planning run has never resumed a session of its own; the
@@ -1637,7 +1642,8 @@ export class LazyWorkflowCli {
         options.workingDirectory,
       );
       console.log(JSON.stringify(result, null, 2));
-      return failed ? 1 : 0;
+      if (failed) return 1;
+      return await this.applyTriageRole(watermark, options.workingDirectory) ? 0 : 1;
     }
 
     return this.runDefaultCodeWorkflow(options);
@@ -2459,6 +2465,16 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
+      // Un plan workspace GitHub publica en cualquiera de sus repositorios, asi
+      // que cada uno lleva su propia marca y su propia reconciliacion de rol.
+      const watermarks = new Map<string, ManagedQueueWatermark | null>();
+      if (provider.kind === "github-repository-run") {
+        for (const repository of scope.repositories) {
+          const watermark = await this.readTriageWatermark(repository.path);
+          if (watermark === undefined) return 1;
+          watermarks.set(repository.path, watermark);
+        }
+      }
       const { result, failed } = await this.runPlanningSession(
         { kind: "workspace-plan", scope, run: provider, huInfo },
         { ...options, session: null },
@@ -2467,7 +2483,11 @@ export class LazyWorkflowCli {
         scope.parentDirectory,
       );
       reportOperator(JSON.stringify(result, null, 2));
-      return failed ? 1 : 0;
+      if (failed) return 1;
+      for (const [path, watermark] of watermarks) {
+        if (!await this.applyTriageRole(watermark, path)) return 1;
+      }
+      return 0;
     } catch (error) {
       reportFailure(
         resolveWorkflowRun(options.hu).kind === "azure-hu-run" ? "workspace-scope-failure" : "delivery-failure",
@@ -4055,6 +4075,61 @@ export class LazyWorkflowCli {
    * session's paused turns are carried to the operator and back until the plan
    * is final (ADR-0027).
    */
+  /**
+   * El corte de numeracion previo a una sesion de planificacion GitHub.
+   *
+   * `null` cuando la frontera de cola no ofrece la marca — no hay coordinacion
+   * GitHub inyectada y no hay rol que aplicar. `undefined` cuando la lectura
+   * fallo: la corrida se detiene antes de gastar sesion.
+   */
+  private async readTriageWatermark(workingDirectory: string): Promise<ManagedQueueWatermark | null | undefined> {
+    const read = this.githubManagedQueue.readQueueWatermark?.bind(this.githubManagedQueue);
+    if (!read) return null;
+    try {
+      return await read(workingDirectory);
+    } catch (error) {
+      reportFailure(
+        "tracker-read-failure",
+        "planning",
+        { repository: workingDirectory },
+        `lazy-workflow: no se pudo leer la numeracion de Issues GitHub (${errorMessage(error)}); ejecucion detenida.`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * El rol `ready-for-agent` lo escribe el coordinador, nunca la sesion.
+   *
+   * Una sesion de planificacion publica los Issues; el rol de triage que los
+   * hace elegibles para `code` se aplica y se verifica aqui, de modo que el
+   * nombre de la etiqueta no dependa de lo que el prompt haya interpretado.
+   */
+  private async applyTriageRole(
+    watermark: ManagedQueueWatermark | null,
+    workingDirectory: string,
+  ): Promise<boolean> {
+    const apply = this.githubManagedQueue.applyReadyForAgentRole?.bind(this.githubManagedQueue);
+    if (!watermark || !apply) return true;
+    try {
+      const labeled = await apply(watermark, workingDirectory);
+      if (labeled.length > 0) {
+        reportOperator(
+          `lazy-workflow: rol ready-for-agent aplicado a ${labeled.map((number) => `#${number}`).join(", ")}.`,
+        );
+      }
+      return true;
+    } catch (error) {
+      reportFailure(
+        "delivery-failure",
+        "planning",
+        { repository: workingDirectory },
+        `lazy-workflow: no se pudo aplicar el rol ready-for-agent a los Issues publicados (${errorMessage(error)}); ejecucion detenida.`,
+      );
+      return false;
+    }
+  }
+
   private async runPlanningSession(
     spec: WorkflowPromptSpec,
     options: CliOptions,

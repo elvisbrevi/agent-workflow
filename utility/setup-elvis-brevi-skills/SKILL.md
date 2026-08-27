@@ -68,6 +68,8 @@ If it is installed, ask exactly one question:
 
 The defaults are the five canonical roles, each tracker value equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. On **yes**, write them as-is using the representation selected in Section A. Only if the user says no — usually because their tracker already uses other names (e.g. `bug:triage` for `needs-triage`) — collect the overrides so `triage` applies existing values instead of creating duplicates.
 
+On GitHub, `ready-for-agent` is not overridable: lazy-workflow reads and writes that literal label to decide what an agent may take, so a different value would leave its queue empty with the backlog full. Accept overrides for the other four roles and keep this one as it is.
+
 **Section C — Domain docs.** Default to **single-context** — one `CONTEXT.md` + `docs/adr/` at the repo root. This fits almost every repo; write it without asking.
 
 Offer **multi-context** — a root `CONTEXT-MAP.md` pointing to per-context `CONTEXT.md` files — only when exploration found monorepo signals. Then confirm which layout they want.

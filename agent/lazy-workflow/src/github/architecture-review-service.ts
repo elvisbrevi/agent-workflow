@@ -1,3 +1,4 @@
+import { READY_FOR_AGENT_LABEL } from "./managed-queue-service.ts";
 export interface GitHubIssueScope {
   number: number;
   title: string;
@@ -127,7 +128,7 @@ export class GitHubArchitectureReviewService implements ArchitectureReviewTracke
       "--body",
       body,
       "--label",
-      "ready-for-agent",
+      READY_FOR_AGENT_LABEL,
     ], workingDirectory));
   }
 }

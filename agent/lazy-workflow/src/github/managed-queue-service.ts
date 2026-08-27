@@ -52,7 +52,14 @@ export interface GitHubAuthenticatedIdentity {
   login: string;
 }
 
-const READY_FOR_AGENT_LABEL = "ready-for-agent";
+/** El corte de numeracion desde el que una sesion de planificacion publica. */
+export interface ManagedQueueWatermark {
+  latestIssue: number;
+}
+
+export const READY_FOR_AGENT_LABEL = "ready-for-agent";
+const READY_FOR_AGENT_LABEL_COLOR = "0E8A16";
+const READY_FOR_AGENT_LABEL_DESCRIPTION = "Issue ready for agent execution";
 const EPIC_TITLE_PREFIXES = ["[Epic]", "[Spec]"];
 const ADD_ASSIGNEE_FLAG = "--add-assignee";
 const REMOVE_ASSIGNEE_FLAG = "--remove-assignee";
@@ -131,6 +138,8 @@ export interface GitHubManagedQueueAdapter {
   claimSelectedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
+  readQueueWatermark?(workingDirectory: string): Promise<ManagedQueueWatermark>;
+  applyReadyForAgentRole?(watermark: ManagedQueueWatermark, workingDirectory: string): Promise<number[]>;
   releaseOwnClaim?(issueNumber: number, login: string, workingDirectory: string): Promise<void>;
 }
 
@@ -203,6 +212,94 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       body: parsed.body ?? "",
       comments: (parsed.comments ?? []).map(({ body }) => body ?? ""),
     };
+  }
+
+  /**
+   * El numero de Issue mas alto que el repositorio ya publico.
+   *
+   * Marca el corte desde el que una sesion de planificacion publica: todo Issue
+   * por encima de esta marca nacio dentro de la corrida, y el coordinador le
+   * aplica el rol `ready-for-agent` sin consultar a la sesion.
+   */
+  async readQueueWatermark(workingDirectory: string): Promise<ManagedQueueWatermark> {
+    const output = await this.gh([
+      "issue",
+      "list",
+      "--state",
+      "all",
+      "--limit",
+      "1",
+      "--json",
+      "number",
+    ], workingDirectory);
+    const parsed = JSON.parse(output) as Array<{ number?: number }>;
+    const latest = Array.isArray(parsed) ? parsed[0]?.number : undefined;
+    return { latestIssue: typeof latest === "number" ? latest : 0 };
+  }
+
+  /**
+   * Aplica el rol `ready-for-agent` a cada Issue publicado tras la marca.
+   *
+   * El coordinador es dueno del rol de triage, no la sesion: escribir la
+   * etiqueta aqui deja la cola gestionada bien formada aunque el prompt la
+   * hubiera nombrado de otra manera o la hubiera omitido. Epics y specs quedan
+   * fuera por la misma regla que los excluye de la cola.
+   */
+  async applyReadyForAgentRole(watermark: ManagedQueueWatermark, workingDirectory: string): Promise<number[]> {
+    const published = (await this.listIssuesAfter(watermark.latestIssue, workingDirectory))
+      .filter((issue) => titlePrefix(issue.title) === null && !labelNames(issue).includes("epic"))
+      .sort((left, right) => left.number - right.number);
+    const pending = published.filter((issue) => !labelNames(issue).includes(READY_FOR_AGENT_LABEL));
+    if (pending.length === 0) return [];
+    await this.ensureReadyForAgentLabel(workingDirectory);
+    const labeled: number[] = [];
+    for (const { number } of pending) {
+      await this.gh(["issue", "edit", `${number}`, "--add-label", READY_FOR_AGENT_LABEL], workingDirectory);
+      const verified = await this.readIssueDetail(number, workingDirectory);
+      if (!labelNames(verified).includes(READY_FOR_AGENT_LABEL)) {
+        throw new Error(`el Issue #${number} no conserva el rol ${READY_FOR_AGENT_LABEL} verificable`);
+      }
+      labeled.push(number);
+    }
+    return labeled;
+  }
+
+  private async listIssuesAfter(
+    watermark: number,
+    workingDirectory: string,
+  ): Promise<Array<Pick<ManagedIssue, "number" | "title" | "labels">>> {
+    const output = await this.gh([
+      "issue",
+      "list",
+      "--state",
+      "all",
+      "--limit",
+      "100",
+      "--json",
+      "number,title,labels",
+    ], workingDirectory);
+    const parsed = JSON.parse(output) as Array<{ number?: number; title?: string; labels?: Array<{ name?: string }> }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(({ number }) => typeof number === "number" && number > watermark)
+      .map(({ number, title, labels }) => ({ number: number!, title: title ?? "", labels: labels ?? [] }));
+  }
+
+  /** La etiqueta debe existir antes del primer `--add-label`; crearla es idempotente. */
+  private async ensureReadyForAgentLabel(workingDirectory: string): Promise<void> {
+    const output = await this.gh(["label", "list", "--limit", "100", "--json", "name"], workingDirectory);
+    const parsed = JSON.parse(output) as Array<{ name?: string }>;
+    const existing = Array.isArray(parsed) ? parsed.map(({ name }) => name) : [];
+    if (existing.includes(READY_FOR_AGENT_LABEL)) return;
+    await this.gh([
+      "label",
+      "create",
+      READY_FOR_AGENT_LABEL,
+      "--color",
+      READY_FOR_AGENT_LABEL_COLOR,
+      "--description",
+      READY_FOR_AGENT_LABEL_DESCRIPTION,
+    ], workingDirectory);
   }
 
   async reconcileClaimedIssue(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue> {

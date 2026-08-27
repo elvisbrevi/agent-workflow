@@ -112,6 +112,13 @@ role. An issue may belong to the queue while blocked; eligibility additionally
 requires an unclaimed issue whose native dependencies are closed.
 _Avoid_: every open issue, prompt-selected work
 
+**GitHub triage-role reconciliation**:
+The verified application of the literal `ready-for-agent` label to every issue
+a planning run publishes above the numbering mark read before its session. The
+coordinator owns the role; the planning session never names it, and epics and
+specifications are excluded by the same rule that keeps them out of the queue.
+_Avoid_: prompt-named label, configurable triage role
+
 **GitHub coordinated delivery**:
 The `code` lifecycle in which lazy workflow selects and claims one issue,
 fixes its identity for OpenCode, verifies every Git and GitHub effect, and
