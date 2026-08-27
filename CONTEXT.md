@@ -14,7 +14,8 @@ _Avoid_: issue runner, queue supervisor
 The typed severity-aware output abstraction used by `agent/lazy-workflow/`.
 Every workflow constructs a single `Reporter` via `createReporter()` and
 funnels all operator messages through its `info`, `warn`, `error`, `debug`,
-`trace`, `heading`, `start`, and `stop` methods. The Reporter decides whether
+`trace`, `heading`, `start`, and `stop` methods, and its `event` method is
+what writes a run record beside the operator line (ADR-0029). The Reporter decides whether
 each message reaches the operator based on four global flags (`--verbose`,
 `--verbose-output`, `--quiet`, `--no-color`) and respects the `NO_COLOR=1`
 environment variable.
@@ -84,9 +85,9 @@ _Avoid_: reimplemented tool commands, session-opening tools
 
 **operator-output**:
 The name of the file module (`src/output/operator-output.ts`) that hosts
-the compat shim `reportOperator(message)`. The shim routes the existing
-~100 call sites to the Reporter's `info` method and keeps a swappable
-default Reporter. The Reporter is the abstraction; `operator-output` is
+the compat shim `reportOperator(message)`. The shim routes the call sites
+that have not moved yet to the Reporter's `info` method and keeps a
+swappable default Reporter. They are a shrinking set, not a fixed one. The Reporter is the abstraction; `operator-output` is
 the seam name and the legacy entry point.
 _Avoid_: new direct `console.log` calls, new top-level log helpers
 
