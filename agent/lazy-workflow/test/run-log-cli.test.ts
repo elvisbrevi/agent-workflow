@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
 import { createCli } from "./_helpers/create-cli.ts";
 
 const readLines = (path: string): Array<Record<string, unknown>> =>

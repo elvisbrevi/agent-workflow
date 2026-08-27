@@ -32,7 +32,7 @@ import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
 import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
-import { createReporter, type Reporter, type ReporterRunLogSink } from "../output/reporter.ts";
+import { createReporter, type ReporterRunLogSink } from "../output/reporter.ts";
 import { reportFailure, type FailureKind } from "../output/failure-kind.ts";
 import { reportSessionEvent } from "../output/session-event.ts";
 import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../output/run-log.ts";
@@ -531,20 +531,6 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-evidence-info",
   "ticket-completion-info",
 ]);
-const TICKET_MUTATION_COMMANDS = new Set([
-  "ticket-description-set",
-  "ticket-state-set",
-  "ticket-effort-set",
-  "ticket-branch-set",
-  "ticket-pr-link",
-  "ticket-commit-link",
-  "ticket-attachment-add",
-  "ticket-evidence-set",
-  "ticket-completion-apply",
-  "ticket-create",
-  "ticket-link-parent",
-  "ticket-link-predecessor",
-]);
 const INFRASTRUCTURE_FLAGS = new Set([
   "--hu", "--issue",
   "--cli", "--model", "--variant", "--prompt",
@@ -1040,7 +1026,9 @@ export class LazyWorkflowCli {
       if (unsupportedFlag) {
         return argumentError(options, `infra-sag no permite ${unsupportedFlag}`);
       }
-      const rejected = sagScopeError(command, options) ?? sagSessionFlagsError(command, options);
+      // Sin regla de flags de sesión: la lista de flags admitidas de arriba ya
+      // rechaza --session, --branch y --base-branch, que no están en ella.
+      const rejected = sagScopeError(command, options);
       if (rejected !== null) return rejected;
       return this.runInfrastructure(options);
     }

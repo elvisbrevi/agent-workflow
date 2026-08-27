@@ -455,7 +455,7 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
       : { kind: "empty" as const },
     claimSelectedIssue: async () => fakeSelectedIssue(179),
   };
-  const makeCli = (run: boolean) => createCli({
+  const makeCli = () => createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
     agentSource: { run: async () => { openCodeRuns += 1; return execution(); }, resume: async () => execution().result },
     githubManagedQueue: queue,
@@ -464,10 +464,10 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
     githubDelivery: delivery,
   });
 
-  expect(await makeCli(true).run(["code", "--working-directory", "/repo"])).toBe(1);
+  expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(1);
   expect(phaseOf(current)).toBe("integrating");
   failMerge = false;
-  expect(await makeCli(false).run(["code", "--working-directory", "/repo"])).toBe(0);
+  expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(0);
   expect(openCodeRuns).toBe(1);
   expect(current).toBeNull();
 });

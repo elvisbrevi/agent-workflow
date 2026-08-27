@@ -201,14 +201,14 @@ const evidenceKindCoerce = (value: unknown): EvidenceKind | null => {
   return EVIDENCE_KINDS.has(text as EvidenceKind) ? (text as EvidenceKind) : null;
 };
 
-const stringOption = (name: string, flag: string, describe: string) => ({
+const stringOption = (flag: string, describe: string) => ({
   type: "string" as const,
   requiresArg: true,
   describe,
   coerce: stringCoerce(flag),
 });
 
-const positiveIntegerOption = (name: string, flag: string, describe: string, defaultValue?: number) => ({
+const positiveIntegerOption = (flag: string, describe: string, defaultValue?: number) => ({
   type: "string" as const,
   requiresArg: true,
   ...(defaultValue !== undefined ? { default: `${defaultValue}` } : {}),
@@ -216,7 +216,7 @@ const positiveIntegerOption = (name: string, flag: string, describe: string, def
   coerce: positiveIntegerCoerce(flag),
 });
 
-const nonNegativeNumberOption = (name: string, flag: string, describe: string) => ({
+const nonNegativeNumberOption = (flag: string, describe: string) => ({
   type: "string" as const,
   requiresArg: true,
   describe,
@@ -224,7 +224,7 @@ const nonNegativeNumberOption = (name: string, flag: string, describe: string) =
 });
 
 /** `0` is a legitimate port: it asks the OS for a free one. */
-const nonNegativeIntegerOption = (name: string, flag: string, describe: string, defaultValue: number) => ({
+const nonNegativeIntegerOption = (flag: string, describe: string, defaultValue: number) => ({
   type: "string" as const,
   requiresArg: true,
   default: `${defaultValue}`,
@@ -337,8 +337,8 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .group(["normas-sag", "working-directory"], "Contexto:")
     .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
     .group(["off", "off-delay"], "Apagado del equipo:")
-    .option("hu", positiveIntegerOption("hu", "--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
-    .option("issue", positiveIntegerOption("issue", "--issue", "Issue explicito para workflows SAG."))
+    .option("hu", positiveIntegerOption("--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
+    .option("issue", positiveIntegerOption("--issue", "Issue explicito para workflows SAG."))
     .option("cli", {
       type: "string",
       requiresArg: true,
@@ -346,7 +346,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       choices: AGENT_CLIS,
       describe: "Agente CLI que ejecuta la sesion.",
     })
-    .option("session", stringOption("session", "--session", "Sesion de agente opaca para reanudar."))
+    .option("session", stringOption("--session", "Sesion de agente opaca para reanudar."))
     .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo del agente CLI seleccionado.", coerce: stringCoerce("--model") })
     .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; con claudecode es el esfuerzo (${CLAUDE_CODE_EFFORTS.join("|")}).`, coerce: stringCoerce("--variant") })
     .option("fallback", {
@@ -354,15 +354,15 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       requiresArg: true,
       describe: "Escalon de respaldo <cli>:<modelo>:<variante>; repetible, el orden de declaracion es la prioridad de descenso.",
     })
-    .option("fallback-wait", positiveIntegerOption("fallback-wait", "--fallback-wait", "Segundos entre reintentos del escalon primario con la cadena agotada.", DEFAULT_FALLBACK_WAIT_SECONDS))
-    .option("fallback-wait-max", positiveIntegerOption("fallback-wait-max", "--fallback-wait-max", "Tope total en segundos del ciclo de espera y reintento; alcanzado, el run falla cerrado.", DEFAULT_FALLBACK_WAIT_MAX_SECONDS))
+    .option("fallback-wait", positiveIntegerOption("--fallback-wait", "Segundos entre reintentos del escalon primario con la cadena agotada.", DEFAULT_FALLBACK_WAIT_SECONDS))
+    .option("fallback-wait-max", positiveIntegerOption("--fallback-wait-max", "Tope total en segundos del ciclo de espera y reintento; alcanzado, el run falla cerrado.", DEFAULT_FALLBACK_WAIT_MAX_SECONDS))
     .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
-    .option("branch", stringOption("branch", "--branch", "Rama del repositorio (solo Azure)."))
-    .option("base-branch", stringOption("base-branch", "--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
-    .option("ticket", positiveIntegerOption("ticket", "--ticket", "Identificador del ticket Azure."))
-    .option("pr", positiveIntegerOption("pr", "--pr", "Identificador del pull request."))
+    .option("branch", stringOption("--branch", "Rama del repositorio (solo Azure)."))
+    .option("base-branch", stringOption("--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
+    .option("ticket", positiveIntegerOption("--ticket", "Identificador del ticket Azure."))
+    .option("pr", positiveIntegerOption("--pr", "Identificador del pull request."))
     .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
-    .option("manifest", stringOption("manifest", "--manifest", "Ruta al manifest de completion."))
+    .option("manifest", stringOption("--manifest", "Ruta al manifest de completion."))
     .option("validation", {
       type: "array",
       requiresArg: true,
@@ -378,19 +378,19 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       requiresArg: true,
       describe: "Evidencia del manifest; repetible. Azure: <kind>:<ruta>. GitHub: ruta dentro del repositorio.",
     })
-    .option("summary", stringOption("summary", "--summary", "Resumen de la entrega para el manifest GitHub."))
+    .option("summary", stringOption("--summary", "Resumen de la entrega para el manifest GitHub."))
     .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
     .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
-    .option("description-file", stringOption("description-file", "--description-file", "Archivo con la descripcion del ticket."))
-    .option("state", stringOption("state", "--state", "Estado destino del ticket."))
-    .option("expected-state", stringOption("expected-state", "--expected-state", "Estado actual esperado antes de la transicion."))
-    .option("environment", stringOption("environment", "--environment", "Entorno destino de deploy-sag (dev|test|qa)."))
-    .option("real-effort", nonNegativeNumberOption("real-effort", "--real-effort", "Real Effort en horas."))
-    .option("real-effort-hh", nonNegativeNumberOption("real-effort-hh", "--real-effort-hh", "Real Effort HH."))
-    .option("expected-rev", positiveIntegerOption("expected-rev", "--expected-rev", "Revision esperada del ticket."))
+    .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket."))
+    .option("state", stringOption("--state", "Estado destino del ticket."))
+    .option("expected-state", stringOption("--expected-state", "Estado actual esperado antes de la transicion."))
+    .option("environment", stringOption("--environment", "Entorno destino de deploy-sag (dev|test|qa)."))
+    .option("real-effort", nonNegativeNumberOption("--real-effort", "Real Effort en horas."))
+    .option("real-effort-hh", nonNegativeNumberOption("--real-effort-hh", "Real Effort HH."))
+    .option("expected-rev", positiveIntegerOption("--expected-rev", "Revision esperada del ticket."))
     .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
     .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
-    .option("number-of-questions", positiveIntegerOption("number-of-questions", "--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
+    .option("number-of-questions", positiveIntegerOption("--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
     .option("interview", {
       type: "string",
       requiresArg: true,
@@ -398,34 +398,34 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       choices: INTERVIEW_CHANNELS,
       describe: "Canal por el que el operador responde las preguntas del modo plan; off no pregunta nada.",
     })
-    .option("interview-timeout", positiveIntegerOption("interview-timeout", "--interview-timeout", "Segundos de espera por ronda antes de aceptar las respuestas recomendadas.", DEFAULT_INTERVIEW_TIMEOUT_SECONDS))
-    .option("interview-rounds", positiveIntegerOption("interview-rounds", "--interview-rounds", "Maximo de rondas de preguntas antes de exigir el plan final.", DEFAULT_INTERVIEW_ROUNDS))
+    .option("interview-timeout", positiveIntegerOption("--interview-timeout", "Segundos de espera por ronda antes de aceptar las respuestas recomendadas.", DEFAULT_INTERVIEW_TIMEOUT_SECONDS))
+    .option("interview-rounds", positiveIntegerOption("--interview-rounds", "Maximo de rondas de preguntas antes de exigir el plan final.", DEFAULT_INTERVIEW_ROUNDS))
     .option("interview-host", { type: "string", requiresArg: true, default: DEFAULT_INTERVIEW_HOST, describe: "Host del canal http de preguntas; fuera de loopback la URL con su token es la unica credencial.", coerce: stringCoerce("--interview-host") })
-    .option("interview-port", nonNegativeIntegerOption("interview-port", "--interview-port", "Puerto del canal http de preguntas; 0 pide uno libre al sistema.", DEFAULT_INTERVIEW_PORT))
-    .option("interview-dir", stringOption("interview-dir", "--interview-dir", "Directorio donde el canal file escribe las rondas y lee las respuestas."))
-    .option("type", stringOption("type", "--type", "Tipo de work item de entrega (Task o Bug)."))
-    .option("title", stringOption("title", "--title", "Titulo exacto del ticket."))
-    .option("estimate", nonNegativeNumberOption("estimate", "--estimate", "Estimacion original en horas."))
-    .option("assignee", stringOption("assignee", "--assignee", "Identidad Azure asignada al ticket."))
+    .option("interview-port", nonNegativeIntegerOption("--interview-port", "Puerto del canal http de preguntas; 0 pide uno libre al sistema.", DEFAULT_INTERVIEW_PORT))
+    .option("interview-dir", stringOption("--interview-dir", "Directorio donde el canal file escribe las rondas y lee las respuestas."))
+    .option("type", stringOption("--type", "Tipo de work item de entrega (Task o Bug)."))
+    .option("title", stringOption("--title", "Titulo exacto del ticket."))
+    .option("estimate", nonNegativeNumberOption("--estimate", "Estimacion original en horas."))
+    .option("assignee", stringOption("--assignee", "Identidad Azure asignada al ticket."))
     .option("field", { type: "array", requiresArg: true, describe: "Campo Azure explicito como <referenceName>=<valor>; repetible." })
-    .option("parent", positiveIntegerOption("parent", "--parent", "Work item padre."))
-    .option("child", positiveIntegerOption("child", "--child", "Work item hijo."))
-    .option("blocker", positiveIntegerOption("blocker", "--blocker", "Work item que bloquea."))
-    .option("blocked", positiveIntegerOption("blocked", "--blocked", "Work item bloqueado."))
+    .option("parent", positiveIntegerOption("--parent", "Work item padre."))
+    .option("child", positiveIntegerOption("--child", "Work item hijo."))
+    .option("blocker", positiveIntegerOption("--blocker", "Work item que bloquea."))
+    .option("blocked", positiveIntegerOption("--blocked", "Work item bloqueado."))
     .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
     .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
     .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
     .option("verbose-output", { type: "boolean", default: false, describe: "Emite todo lo que entregan los agentes, incluidas las entradas y salidas completas de cada herramienta y el evento crudo; implica --verbose." })
     .option("quiet", { type: "boolean", default: false, describe: "Solo emite errores." })
     .option("color", { type: "boolean", default: true, describe: "Habilita codigos ANSI en la salida.", hidden: true })
-    .option("log-file", stringOption("log-file", "--log-file", "Ruta del run log JSON Lines; tiene precedencia sobre LAZY_WORKFLOW_LOG_FILE y el default. --no-log-file lo deshabilita (no se declara aqui: ver Notas)."))
+    .option("log-file", stringOption("--log-file", "Ruta del run log JSON Lines; tiene precedencia sobre LAZY_WORKFLOW_LOG_FILE y el default. --no-log-file lo deshabilita (no se declara aqui: ver Notas)."))
     // No `requiresArg`: a bare `--off` is the form that takes its password from
     // LAZY_WORKFLOW_OFF_PASSWORD, or none at all when sudo does not need one.
     .option("off", {
       type: "string",
       describe: `Apaga el equipo al terminar el run; el valor es la contrasena de sudo. Sin valor toma ${OFF_PASSWORD_ENV} o un sudo sin contrasena. Tambien se acepta -off <contrasena>.`,
     })
-    .option("off-delay", nonNegativeIntegerOption("off-delay", "--off-delay", "Segundos de gracia antes del apagado; 0 apaga de inmediato.", DEFAULT_OFF_DELAY_SECONDS))
+    .option("off-delay", nonNegativeIntegerOption("--off-delay", "Segundos de gracia antes del apagado; 0 apaga de inmediato.", DEFAULT_OFF_DELAY_SECONDS))
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
 }
 

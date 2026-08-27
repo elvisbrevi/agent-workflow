@@ -710,7 +710,6 @@ export class AzureTicketInfoService {
     const active = await this.readPullRequests(
       ticket,
       integration.project,
-      integration.ref,
       integration.project,
       integration.repository,
       ticketBranch.ref,
@@ -745,7 +744,7 @@ export class AzureTicketInfoService {
     const { project, repository, source, target } = participant;
     const exact = (candidates: TicketPullRequest[]): TicketPullRequest[] =>
       candidates.filter((pr) => pr.source === source && pr.target === target);
-    const completed = exact(await this.readPullRequests(ticket, project, target, project, repository, source))
+    const completed = exact(await this.readPullRequests(ticket, project, project, repository, source))
       .filter((pr) => pr.status === "completed" && pr.mergeStatus === "succeeded");
     if (completed.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR completados en ${repository}`);
     if (completed.length === 1) {
@@ -753,7 +752,7 @@ export class AzureTicketInfoService {
       if (!pr.mergeCommit) throw new Error(`El PR ${pr.id} no tiene commit de merge verificable`);
       return { pullRequest: pr.id, mergeCommit: pr.mergeCommit };
     }
-    const active = exact(await this.readPullRequests(ticket, project, target, project, repository, source, "active"));
+    const active = exact(await this.readPullRequests(ticket, project, project, repository, source, "active"));
     if (active.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos en ${repository}`);
     const pullRequest = active[0] ?? await this.createPullRequest(project, repository, source, target, ticket, hu);
     await this.completePullRequest(pullRequest.id, project, repository);
@@ -803,7 +802,6 @@ export class AzureTicketInfoService {
     const pullRequests = await this.readPullRequests(
       ticket,
       deliveryProject ?? text(parent, "System.TeamProject"),
-      integrationBranch.ref,
       deliveryProject,
       deliveryRepository,
       ticketBranch.ref,
@@ -826,7 +824,6 @@ export class AzureTicketInfoService {
       pullRequests,
       canonical,
       completionEvidence,
-      mergeCommit,
       linkedCommit,
       ticketBranch.ref,
     );
@@ -1396,7 +1393,7 @@ export class AzureTicketInfoService {
 
     const pullRequest = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
-    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository, ticketBranch.ref);
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.project, integration.repository, ticketBranch.ref);
     const validCandidates = candidates.filter((candidate) =>
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
@@ -1435,7 +1432,7 @@ export class AzureTicketInfoService {
     }
     const pullRequest = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
     this.validatePullRequest(pullRequest, ticket, integration, ticketBranch);
-    const candidates = await this.readPullRequests(ticket, integration.project, integration.ref, integration.project, integration.repository, ticketBranch.ref);
+    const candidates = await this.readPullRequests(ticket, integration.project, integration.project, integration.repository, ticketBranch.ref);
     const validCandidates = candidates.filter((candidate) =>
       candidate.status === "completed" && candidate.mergeStatus === "succeeded" && candidate.target === integration.ref
     );
@@ -1762,7 +1759,7 @@ export class AzureTicketInfoService {
         "--output", "json",
       ])));
     } catch (error) {
-      const existing = (await this.readPullRequests(ticket, project, target, project, repository, source, "active"))
+      const existing = (await this.readPullRequests(ticket, project, project, repository, source, "active"))
         .filter((pr) => pr.source === source && pr.target === target);
       if (existing.length > 1) throw new Error(`El ticket ${ticket} tiene múltiples PR activos para su rama`);
       if (existing.length === 1) return existing[0]!;
@@ -2000,7 +1997,6 @@ export class AzureTicketInfoService {
   private async readPullRequests(
     ticket: number,
     project: string | undefined,
-    integrationBranch: string | null,
     expectedProject?: string,
     repository?: string,
     expectedSource?: string | null,
@@ -2141,7 +2137,6 @@ export class AzureTicketInfoService {
     pullRequests: TicketPullRequest[],
     canonical: number | null,
     evidence: string | null,
-    mergeCommit: string | null,
     artifactCommit: FixedCommitLink | null,
     ticketBranch: string | null,
   ): CompletionGate[] {

@@ -1,7 +1,7 @@
 import {
   spawnAgentProcess,
   type AgentProcess,
-  type AgentSpawnOptions,
+
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
 import { AgentResult, type OpenCodeEventData } from "../coding-agent/agent-result.ts";
@@ -27,7 +27,6 @@ import { reportSessionEvent } from "../output/session-event.ts";
 const CLI_NAME = "opencode";
 
 export type OpenCodeProcess = AgentProcess;
-export type OpenCodeSpawnOptions = AgentSpawnOptions;
 export type OpenCodeSpawner = AgentSpawner;
 
 // OPENCODE_CONFIG merges with the target repository's own configuration rather

@@ -4,7 +4,7 @@ import { createCli } from "./_helpers/create-cli.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { createReporter, type Reporter, type ReporterStream } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
-import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
 import { parseReportedChunk, type ReportedLine } from "./_helpers/reported-lines.ts";
 

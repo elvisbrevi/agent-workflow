@@ -5,7 +5,7 @@ import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext
 import { GitHubArchitectureReviewService } from "../src/github/architecture-review-service.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
-import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps } from "./_helpers/github-delivery-fixtures.ts";
 
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-sag-${crypto.randomUUID()}`;

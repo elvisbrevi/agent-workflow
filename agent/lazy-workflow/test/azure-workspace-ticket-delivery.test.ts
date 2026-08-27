@@ -19,7 +19,6 @@ import {
   seedRepo,
   staticGit,
   projectId,
-  teamProject,
   ticket,
   ticketBranch,
 } from "./_helpers/azure-workspace-fixtures.ts";
@@ -457,9 +456,8 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
     git: staticGit(),
   });
 
-  let exit = -1;
   try {
-    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", pathA]);
+    await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", pathA]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

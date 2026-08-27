@@ -75,7 +75,6 @@ class LineReader {
   private buffer = "";
   private reading: Promise<void> | null = null;
   private ended = false;
-  private closed = false;
 
   constructor(stream: ReadableStream<Uint8Array>) {
     this.reader = stream.getReader() as StreamReader;
@@ -137,7 +136,6 @@ class LineReader {
   }
 
   async close(): Promise<void> {
-    this.closed = true;
     this.ended = true;
     try {
       await this.reader.cancel();

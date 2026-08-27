@@ -22,7 +22,6 @@ const projectId = "project-id";
 const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
 const integrationBranch = `refs/heads/hu/${hu}`;
-const huBranchUri = `vstfs:///Git/Ref/${projectId}%2F${repoAId}%2FGBhu%2F${hu}`;
 
 async function seedRepo(root: string, name: string): Promise<string> {
   const path = join(root, name);

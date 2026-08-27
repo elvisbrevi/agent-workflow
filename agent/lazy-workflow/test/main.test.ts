@@ -19,7 +19,7 @@ import { operatorLine, setDefaultReporter } from "../src/output/operator-output.
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner, checkoutGitBranch } from "../src/git/git-ticket-branch-cleaner.ts";
 import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
-import { fakeSelectedIssue, fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
 import { authorityConfigPath } from "../src/prompts/authority-profile.ts";
 import type { SagArchitectureReviewContext, SagDeploymentContext, SagInfrastructureContext } from "../src/sag/sag-norms-service.ts";

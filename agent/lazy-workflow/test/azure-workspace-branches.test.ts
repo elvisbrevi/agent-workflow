@@ -10,7 +10,6 @@ const repoB = "repo-b";
 const repoC = "repo-c";
 const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
-const remoteUrlC = `https://dev.azure.com/org/${teamProject}/_git/${repoC}`;
 const integrationBranch = `refs/heads/hu/${hu}`;
 const ticketBranch = `refs/heads/ticket/${ticket}`;
 const baseBranch = "refs/heads/main";
