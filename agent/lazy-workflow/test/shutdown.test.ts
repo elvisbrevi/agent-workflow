@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import type { DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
 import type { createReporter, Reporter, ReporterFailureDetail } from "../src/output/reporter.ts";
 import { redactPassword, SudoSystemShutdown, type SystemShutdown } from "../src/system/shutdown-service.ts";
@@ -89,16 +89,13 @@ function harness(options: { queue?: () => Promise<never[]>; shutdownBehavior?: "
   const timer = fakeTimer();
   const { reporterFn, lines } = recordingReporter();
   const services = queueServices(options.queue ?? (async () => []));
-  const cli = new LazyWorkflowCli(
-    undefined, undefined, undefined,
-    timer, // 4: retryTimer, para no dormir la gracia de verdad
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    reporterFn, // 13: createReporterFn
-    undefined, undefined, undefined, undefined, undefined, undefined,
-    services, // 20: deterministicToolServices
-    undefined, undefined,
-    shutdown, // 23: systemShutdown
-  );
+  const cli = createCli({
+    // El timer inyectado no duerme la gracia de verdad.
+    retryTimer: timer,
+    createReporterFn: reporterFn,
+    deterministicToolServices: services,
+    systemShutdown: shutdown,
+  });
   return { run: (args) => cli.run(args), shutdown, timer, lines };
 }
 

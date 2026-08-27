@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 
 const readLines = (path: string): Array<Record<string, unknown>> =>
   readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -12,7 +13,7 @@ describe("LazyWorkflowCli run log integration", () => {
     const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-cli-run-log-"));
     const logFile = join(dir, "runs.jsonl");
     try {
-      const cli = new LazyWorkflowCli();
+      const cli = createCli();
       const exit = await cli.run([
         "code", "--branch", "foo", "--working-directory", "/tmp", "--log-file", logFile,
       ]);
@@ -33,7 +34,7 @@ describe("LazyWorkflowCli run log integration", () => {
     const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-cli-run-log-"));
     const logFile = join(dir, "runs.jsonl");
     try {
-      const cli = new LazyWorkflowCli();
+      const cli = createCli();
       await cli.run(["code", "--branch", "foo", "--working-directory", "/tmp", "--no-log-file"]);
 
       expect(() => readFileSync(logFile, "utf8")).toThrow();

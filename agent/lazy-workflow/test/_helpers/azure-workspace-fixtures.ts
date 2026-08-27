@@ -2,6 +2,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { LazyWorkflowCli, type AzureBoundary } from "../../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./create-cli.ts";
 import type { AzurePullRequestTarget } from "../../src/azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint } from "../../src/azure/azure-workspace-checkpoint.ts";
 import type { AgentCli } from "../../src/coding-agent/agent-cli.ts";
@@ -343,31 +344,19 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           return { text: "IMPLEMENTATION_READY", sessionId: "ses" } as never;
         },
       };
-      const cli = new LazyWorkflowCli(
-        azureBoundary,
-        options.observeCli ? (resolved: AgentCli) => { options.observeCli!(resolved); return agent; } : agent,
-        undefined,
-        undefined,
-        {
+      const cli = createCli({
+        huInfoService: azureBoundary,
+        agentSource: options.observeCli ? (resolved: AgentCli) => { options.observeCli!(resolved); return agent; } : agent,
+        ticketBranchCleaner: {
           deleteTicketBranch: async (branch: string, _integration: string, workingDirectory: string) => {
             deletedTicketBranches.push(`${basename(workingDirectory)}:${branch}`);
           },
         },
         clock,
-        undefined,
-        staticGit(options.remotes, options.unpublishedIn),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        options.reporterFn ?? reporterFn,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        checkpointStore,
-      );
+        git: staticGit(options.remotes, options.unpublishedIn),
+        createReporterFn: options.reporterFn ?? reporterFn,
+        azureWorkspaceCheckpoint: checkpointStore,
+      });
       return { cli, pathA, pathB };
     },
     async cleanup() {

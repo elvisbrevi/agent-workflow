@@ -52,7 +52,18 @@ export function fakeGitHubRepositoryLock(): GitHubRepositoryLockBoundary {
   return { acquire: async () => async () => undefined };
 }
 
-/** The store/lock/delivery trio a coordinated `code` run always needs together. */
-export function fakeCoordinatedGitHubDeps(): [GitHubCheckpointStore, GitHubRepositoryLockBoundary, GitHubDeliveryAdapter] {
-  return [fakeGitHubCheckpointStore(), fakeGitHubRepositoryLock(), fakeGitHubDelivery()];
+/**
+ * The store/lock/delivery trio a coordinated `code` run always needs together,
+ * named as the boundaries they are so a test spreads them into `createCli`.
+ */
+export function fakeCoordinatedGitHubDeps(): {
+  githubCheckpointStore: GitHubCheckpointStore;
+  githubRepositoryLock: GitHubRepositoryLockBoundary;
+  githubDelivery: GitHubDeliveryAdapter;
+} {
+  return {
+    githubCheckpointStore: fakeGitHubCheckpointStore(),
+    githubRepositoryLock: fakeGitHubRepositoryLock(),
+    githubDelivery: fakeGitHubDelivery(),
+  };
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import {
   AzureAutocodeService,
@@ -389,7 +389,7 @@ test("el comando hu-info obtiene y muestra la HU solicitada", async () => {
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    await new LazyWorkflowCli(service).run(["hu-info", "--hu", "12345"]);
+    await createCli({ huInfoService: service }).run(["hu-info", "--hu", "12345"]);
   } finally {
     console.log = originalLog;
   }
@@ -405,17 +405,17 @@ test("el comando hu-branch-info imprime una consulta JSON y no inicia OpenCode",
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const result = await new LazyWorkflowCli(
-      {
+    const result = await createCli({
+      huInfoService: {
         getHuInfo: async () => new HuInfo({ id: 23438 }),
         waitForAccess: async () => undefined,
         getIntegrationBranchInfo: async (hu) => ({ hu, branch: "refs/heads/hu/23438" }),
       },
-      {
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("no debe ejecutarse"); },
         resume: async () => { openCodeCalls += 1; throw new Error("no debe ejecutarse"); },
       },
-    ).run(["hu-branch-info", "--hu", "23438"]);
+    }).run(["hu-branch-info", "--hu", "23438"]);
 
     expect(result).toBe(0);
   } finally {
@@ -428,10 +428,12 @@ test("el comando hu-branch-info imprime una consulta JSON y no inicia OpenCode",
 
 test("hu-branch-info rechaza un HU inválido sin consultar Azure", async () => {
   let calls = 0;
-  const result = await new LazyWorkflowCli({
-    getHuInfo: async () => new HuInfo({ id: 1 }),
-    waitForAccess: async () => undefined,
-    getIntegrationBranchInfo: async () => { calls += 1; return { hu: 1, branch: null }; },
+  const result = await createCli({
+    huInfoService: {
+      getHuInfo: async () => new HuInfo({ id: 1 }),
+      waitForAccess: async () => undefined,
+      getIntegrationBranchInfo: async () => { calls += 1; return { hu: 1, branch: null }; },
+    },
   }).run(["hu-branch-info", "--hu", "abc"]);
 
   expect(result).toBe(1);
@@ -470,7 +472,7 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    await new LazyWorkflowCli(huInfoService, openCodeService).run([
+    await createCli({ huInfoService: huInfoService, agentSource: openCodeService }).run([
       "plan",
       "--hu",
       "12345",
@@ -510,12 +512,12 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
     part: { type: "text", text: "plan" },
   }));
 
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { azureCalls += 1; },
     },
-    {
+    agentSource: {
       run: async (options, detectAzure) => {
         received.options = options;
         received.detectAzureLogin = detectAzure ?? null;
@@ -523,14 +525,13 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    {
+    checkpointStore: {
       read: async () => { checkpointCalls += 1; return null; },
       write: async () => { checkpointCalls += 1; },
       clear: async () => { checkpointCalls += 1; },
     },
-    undefined,
-    { deleteTicketBranch: async () => { cleanupCalls += 1; } },
-  ).run([
+    ticketBranchCleaner: { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+  }).run([
     "plan",
     "--number-of-questions",
     "3",
@@ -569,36 +570,27 @@ test("code sin HU entrega un solo issue por sesion", async () => {
     fakeSelectedOutcome(201),
   ];
 
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { azureCalls += 1; },
     },
-    {
+    agentSource: {
       run: async (options, detectAzure) => {
         calls.push({ options, detectAzure });
         return { result: results.shift() ?? AgentResult.fromJsonLines(""), azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    {
+    checkpointStore: {
       read: async () => { checkpointCalls += 1; return null; },
       write: async () => { checkpointCalls += 1; },
       clear: async () => { checkpointCalls += 1; },
     },
-    undefined,
-    { deleteTicketBranch: async () => { cleanupCalls += 1; } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter(outcomes),
+    ticketBranchCleaner: { deleteTicketBranch: async () => { cleanupCalls += 1; } },
+    githubManagedQueue: queueAdapter(outcomes),
     ...fakeCoordinatedGitHubDeps(),
-  ).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(calls).toHaveLength(1);
@@ -632,25 +624,14 @@ test("code sin HU imprime QUEUE_BLOCKED sin iniciar OpenCode cuando la cola tien
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    queueAdapter(outcomes),
-    ).run(["code", "--working-directory", "/repo"]);
+      githubManagedQueue: queueAdapter(outcomes),
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
   } finally {
@@ -670,25 +651,14 @@ test("code sin HU imprime QUEUE_EMPTY y termina sin iniciar OpenCode", async () 
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    queueAdapter([{ kind: "empty" }]),
-    ).run(["code", "--working-directory", "/repo"]);
+      githubManagedQueue: queueAdapter([{ kind: "empty" }]),
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
   } finally {
@@ -708,32 +678,21 @@ test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async
     sessionID: "ses_incomplete",
     part: { type: "text", text: "TICKET_COMPLETED" },
   }));
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    {
+    agentSource: {
       run: async () => {
         calls += 1;
         return { result, azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201)]),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
     ...fakeCoordinatedGitHubDeps(),
-  ).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(1);
@@ -753,29 +712,18 @@ test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", as
     })),
   ];
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async () => {
         calls.push("run");
         return { result: results.shift()!, azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
     ...fakeCoordinatedGitHubDeps(),
-  ).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(calls).toEqual(["run"]);
@@ -788,29 +736,18 @@ test("code sin HU ignora un marcador conversacional dentro de un solo evento de 
     sessionID: "ses_chat",
     part: { type: "text", text: "He emitido TICKET_COMPLETED al final del trabajo\nWORKFLOW_STEP_FINISHED" },
   }));
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async () => {
         calls += 1;
         return { result, azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201)]),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
     ...fakeCoordinatedGitHubDeps(),
-  ).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(1);
@@ -830,29 +767,18 @@ test("code sin HU ignora los marcadores de entrega heredados", async () => {
     })),
   ];
 
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    {
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
       run: async () => {
         calls.push("run");
         return { result: results.shift()!, azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
     ...fakeCoordinatedGitHubDeps(),
-  ).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(calls).toEqual(["run"]);
@@ -864,27 +790,17 @@ test("code sin HU falla cerrado cuando falta el adaptador de entrega coordinada"
   let openCodeCalls = 0;
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      (() => reporter) as typeof createReporter,
-      queueAdapter([fakeSelectedOutcome(201)]),
-      fakeGitHubCheckpointStore(),
-      fakeGitHubRepositoryLock(),
-    ).run(["code", "--working-directory", "/repo"]);
+      createReporterFn: (() => reporter) as typeof createReporter,
+      githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
+      githubCheckpointStore: fakeGitHubCheckpointStore(),
+      githubRepositoryLock: fakeGitHubRepositoryLock(),
+    }).run(["code", "--working-directory", "/repo"]);
 
     expect(code).toBe(1);
   } finally {
@@ -902,16 +818,16 @@ test.each([
   ["code", "0"],
 ] as const)("%s rechaza --hu %s sin caer al flujo GitHub", async (command, hu) => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { calls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { calls += 1; },
     },
-    {
+    agentSource: {
       run: async () => { calls += 1; throw new Error("must not run"); },
       resume: async () => { calls += 1; throw new Error("must not resume"); },
     },
-  ).run([command, "--hu", hu]);
+  }).run([command, "--hu", hu]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -922,16 +838,16 @@ test.each([
   ["code", "--base-branch"],
 ] as const)("%s sin HU rechaza la opción exclusiva de Azure %s", async (command, option) => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { calls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { calls += 1; },
     },
-    {
+    agentSource: {
       run: async () => { calls += 1; throw new Error("must not run"); },
       resume: async () => { calls += 1; throw new Error("must not resume"); },
     },
-  ).run([command, option, "main"]);
+  }).run([command, option, "main"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -945,10 +861,10 @@ test.each([{ args: [] as string[] }, { args: ["unknown"] as string[] }])("subcom
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      { run: async () => { openCodeCalls += 1; throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
-    ).run(args);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { openCodeCalls += 1; throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    }).run(args);
 
     expect(code).toBe(1);
   } finally {
@@ -1076,7 +992,7 @@ test("plan imprime OpenCode con formato JSON legible", async () => {
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    await new LazyWorkflowCli(service, openCodeService).run([
+    await createCli({ huInfoService: service, agentSource: openCodeService }).run([
       "plan",
       "--hu",
       "12345",
@@ -1126,7 +1042,7 @@ test("espera el login Azure y reanuda la sesion OpenCode exactamente una vez", a
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    await new LazyWorkflowCli(huInfoService, openCodeService).run([
+    await createCli({ huInfoService: huInfoService, agentSource: openCodeService }).run([
       "plan",
       "--hu",
       "12345",
@@ -1425,22 +1341,12 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
     clear: async () => undefined,
   };
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-    { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
-    store,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
-  ).run(["code", "--session", "ses-otro", "--prompt", "continue"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
+    checkpointStore: store,
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
+  }).run(["code", "--session", "ses-otro", "--prompt", "continue"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -1448,22 +1354,12 @@ test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", asyn
 
 test("code --session rechaza una sesión sin checkpoint sin tocar Azure", async () => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-    { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
-    { read: async () => null, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
-  ).run(["code", "--session", "ses-missing", "--prompt", "continue"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { calls += 1; throw new Error("unexpected"); }, resume: async () => { calls += 1; throw new Error("unexpected"); } },
+    checkpointStore: { read: async () => null, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => ({ kind: "empty" }) },
+  }).run(["code", "--session", "ses-missing", "--prompt", "continue"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -1488,8 +1384,8 @@ test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni Op
     receipts: {},
   };
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => { calls += 1; throw new Error("must not prepare Azure"); },
@@ -1497,12 +1393,12 @@ test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni Op
       getAutocodeContextForTicket: async () => { calls += 1; throw new Error("must not recover"); },
       verifyTicketCompletion: async () => { calls += 1; throw new Error("must not verify"); },
     },
-    {
+    agentSource: {
       run: async () => { calls += 1; throw new Error("must not run OpenCode"); },
       resume: async () => { calls += 1; throw new Error("must not resume OpenCode"); },
     },
-    { read: async () => checkpoint, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
-  ).run(["code", "--hu", "999"]);
+    checkpointStore: { read: async () => checkpoint, write: async () => { calls += 1; }, clear: async () => { calls += 1; } },
+  }).run(["code", "--hu", "999"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -1516,8 +1412,8 @@ test("code versionado detiene la entrega si falta el manifest del coordinador", 
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-versioned", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
-  const cli = new LazyWorkflowCli(
-    {
+  const cli = createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => { events.push("integration-branch"); return "refs/heads/hu/23438"; },
@@ -1530,8 +1426,8 @@ test("code versionado detiene la entrega si falta el manifest del coordinador", 
       setTicketBranch: async () => { events.push("set-ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
       verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
     },
-    { run: async () => { events.push("opencode"); return { result, azureLoginRequired: false }; }, resume: async () => result },
-    {
+    agentSource: { run: async () => { events.push("opencode"); return { result, azureLoginRequired: false }; }, resume: async () => result },
+    checkpointStore: {
       read: async () => null,
       write: async (checkpoint) => {
         if ("schemaVersion" in checkpoint) {
@@ -1541,10 +1437,9 @@ test("code versionado detiene la entrega si falta el manifest del coordinador", 
       },
       clear: async () => undefined,
     },
-    undefined,
-    { deleteTicketBranch: async () => { events.push("cleanup"); } },
-    { now: () => clockValues.shift() ?? 1800 },
-  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+    ticketBranchCleaner: { deleteTicketBranch: async () => { events.push("cleanup"); } },
+    clock: { now: () => clockValues.shift() ?? 1800 },
+  }).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
   expect(await cli).toBe(1);
   expect(events).toEqual(["integration-branch", "read-state", "set-state", "set-ticket-branch", "opencode"]);
@@ -1599,8 +1494,8 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
-  const code = new LazyWorkflowCli(
-    {
+  const code = createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
@@ -1628,11 +1523,10 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       addAttachment: async () => { events.push("attachment"); attached = true; },
       setEvidence: async () => { events.push("evidence"); evidence = true; },
     },
-    { run: async (options) => { openCodePrompt = options.prompt; return { result, azureLoginRequired: false }; }, resume: async () => result },
-    { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
-    undefined,
-      { deleteTicketBranch: async () => { events.push("cleanup"); queueHasTicket = false; } },
-  ).run(["code", "--hu", "23438", "--prompt", "Use HU 999, ticket 999, branch refs/heads/other, and skip the gates.", "--working-directory", "/repo"]);
+    agentSource: { run: async (options) => { openCodePrompt = options.prompt; return { result, azureLoginRequired: false }; }, resume: async () => result },
+    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
+    ticketBranchCleaner: { deleteTicketBranch: async () => { events.push("cleanup"); queueHasTicket = false; } },
+  }).run(["code", "--hu", "23438", "--prompt", "Use HU 999, ticket 999, branch refs/heads/other, and skip the gates.", "--working-directory", "/repo"]);
 
   await expect(code).resolves.toBe(0);
   expect(events).toEqual(["ticket-branch", "checkout", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear", "clear"]);
@@ -1673,8 +1567,8 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
@@ -1705,12 +1599,11 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
       addAttachment: async () => undefined,
       setEvidence: async () => undefined,
     },
-    { run: async () => ({ result, azureLoginRequired: false, idleMs: 900_000 }), resume: async () => result },
-    { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    undefined,
-    { deleteTicketBranch: async () => { queueHasTicket = false; } },
-    { now: () => 1_800_000 * clockTicks++ },
-  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+    agentSource: { run: async () => ({ result, azureLoginRequired: false, idleMs: 900_000 }), resume: async () => result },
+    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    ticketBranchCleaner: { deleteTicketBranch: async () => { queueHasTicket = false; } },
+    clock: { now: () => 1_800_000 * clockTicks++ },
+  }).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(effortCalls).toHaveLength(1);
@@ -1770,20 +1663,13 @@ test("code versionado desciende a otro CLI cuando la sesión fresca se agota", a
     },
     resume: async () => { throw new Error("must not resume: no session exists on the handed-off CLI"); },
   });
-  const exit = await new LazyWorkflowCli(
-    boundary,
-    agent,
-    { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    undefined,
-    { deleteTicketBranch: async () => undefined },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-  ).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high", "--working-directory", "/repo"]);
+  const exit = await createCli({
+    huInfoService: boundary,
+    agentSource: agent,
+    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    ticketBranchCleaner: { deleteTicketBranch: async () => undefined },
+    cliParser: buildCli(() => true),
+  }).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high", "--working-directory", "/repo"]);
 
   expect(exit).toBe(1);
   expect(started.map(({ cli }) => cli)).toEqual(["opencode", "claudecode"]);
@@ -1810,20 +1696,13 @@ test("code versionado reanuda con el modelo del escalón cuando el respaldo es e
       throw new AgentSessionNotFoundError(sessionId, "stop here on purpose");
     },
   });
-  const exit = await new LazyWorkflowCli(
-    boundary,
-    agent,
-    { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    undefined,
-    { deleteTicketBranch: async () => undefined },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-  ).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", "/repo"]);
+  const exit = await createCli({
+    huInfoService: boundary,
+    agentSource: agent,
+    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    ticketBranchCleaner: { deleteTicketBranch: async () => undefined },
+    cliParser: buildCli(() => true),
+  }).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", "/repo"]);
 
 
   expect(exit).toBe(1);
@@ -1848,8 +1727,8 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   }));
   const writes: Array<{ schemaVersion?: number; cli?: string; phase?: string; sessionId?: string | null }> = [];
   let verificationCalls = 0;
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => context.integrationBranch,
@@ -1861,7 +1740,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
       setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: ticketBranch }),
       verifyTicketCompletion: async () => { verificationCalls += 1; return { ticketBranch }; },
     },
-    {
+    agentSource: {
       run: async () => { throw new Error("must resume"); },
       resume: async (_session, _prompt, _directory, marker, overrides) => {
         markers.push(marker ?? "");
@@ -1869,10 +1748,9 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
         return result;
       },
     },
-    { read: async () => checkpoint, write: async (value) => { writes.push(value); }, clear: async () => undefined },
-    undefined,
-    { deleteTicketBranch: async () => undefined },
-  ).run([
+    checkpointStore: { read: async () => checkpoint, write: async (value) => { writes.push(value); }, clear: async () => undefined },
+    ticketBranchCleaner: { deleteTicketBranch: async () => undefined },
+  }).run([
     "code", "--session", "ses-51", "--working-directory", "/repo",
     "--model", "openai/gpt-5.6-luna", "--variant", "high",
   ]);
@@ -1895,8 +1773,8 @@ test("code versionado no reintenta OpenCode si falla la limpieza tras el marcado
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text", sessionID: "ses-51", part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
-  const code = await new LazyWorkflowCli(
-    {
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => new HuInfo({ id: 23438 }),
       waitForAccess: async () => undefined,
       ensureIntegrationBranch: async () => "refs/heads/hu/23438",
@@ -1908,11 +1786,11 @@ test("code versionado no reintenta OpenCode si falla la limpieza tras el marcado
       setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
       verifyTicketCompletion: async () => ({ ticketBranch: "refs/heads/ticket/51" }),
     },
-    { run: async () => { runs += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
-    { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    { wait: async () => { waits += 1; } },
-    { deleteTicketBranch: async () => { throw new Error("worktree sucio"); } },
-  ).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+    agentSource: { run: async () => { runs += 1; return { result, azureLoginRequired: false }; }, resume: async () => result },
+    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+    retryTimer: { wait: async () => { waits += 1; } },
+    ticketBranchCleaner: { deleteTicketBranch: async () => { throw new Error("worktree sucio"); } },
+  }).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(runs).toBe(1);
@@ -1950,19 +1828,17 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
   const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => result,
       },
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      ((options: VerbosityOptions) => {
+      createReporterFn: ((options: VerbosityOptions) => {
         captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
-    ).run(["plan", "--verbose", "--working-directory", "/repo"]);
+    }).run(["plan", "--verbose", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
   } finally {
@@ -1983,19 +1859,17 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
   const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => result,
       },
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      ((options: VerbosityOptions) => {
+      createReporterFn: ((options: VerbosityOptions) => {
         captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
-    ).run(["plan", "--quiet", "--working-directory", "/repo"]);
+    }).run(["plan", "--quiet", "--working-directory", "/repo"]);
 
     expect(code).toBe(0);
   } finally {
@@ -2016,19 +1890,17 @@ test("--no-color produce Reportador sin codigos ANSI", async () => {
   const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
-    await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      {
+    await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => result,
       },
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      ((options: VerbosityOptions) => {
+      createReporterFn: ((options: VerbosityOptions) => {
         captured.value = options;
         return createReporter(options);
       }) as typeof createReporter,
-    ).run(["plan", "--no-color", "--working-directory", "/repo"]);
+    }).run(["plan", "--no-color", "--working-directory", "/repo"]);
   } finally {
     setDefaultReporter(previous);
   }
@@ -2040,10 +1912,10 @@ test("--no-color produce Reportador sin codigos ANSI", async () => {
 
 test("--verbose y --quiet son mutuamente excluyentes", async () => {
   let azureCalls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-    { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
-  ).run(["plan", "--verbose", "--quiet", "--working-directory", "/repo"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { azureCalls += 1; throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+  }).run(["plan", "--verbose", "--quiet", "--working-directory", "/repo"]);
 
   expect(code).toBe(1);
   expect(azureCalls).toBe(0);
@@ -2055,10 +1927,10 @@ test("lazy-workflow sin argumentos imprime ayuda y devuelve codigo 1", async () 
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
-    ).run([]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    }).run([]);
 
     expect(code).toBe(1);
   } finally {
@@ -2077,10 +1949,10 @@ test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
-    ).run(["--help"]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("unexpected"); }, resume: async () => { throw new Error("unexpected"); } },
+    }).run(["--help"]);
 
     expect(code).toBe(0);
   } finally {
@@ -2103,29 +1975,20 @@ test("createCodingAgent construye el adaptador de cada CLI soportado", () => {
 test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", async () => {
   const requested: AgentCli[] = [];
   const result = new AgentResult({ sessionId: "ses_cli", text: "plan" });
-  const planWith = (args: string[]) => new LazyWorkflowCli(
-    {
+  const planWith = (args: string[]) => createCli({
+    huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    (cli: AgentCli) => {
+    agentSource: (cli: AgentCli) => {
       requested.push(cli);
       return {
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => { throw new Error("must not resume"); },
       };
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-  ).run(args);
+    cliParser: buildCli(() => true),
+  }).run(args);
 
   const originalLog = console.log;
   console.log = () => undefined;
@@ -2145,17 +2008,15 @@ test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en
   const result = new AgentResult({ sessionId: "ses_fallback", text: "plan" });
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: () => ({
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => { throw new Error("must not resume"); },
       }),
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined,
-      buildCli(() => true),
-      (() => reporter) as typeof createReporter,
-    ).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
+      cliParser: buildCli(() => true),
+      createReporterFn: (() => reporter) as typeof createReporter,
+    }).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
 
     expect(code).toBe(0);
   } finally {
@@ -2176,16 +2037,14 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
   const result = new AgentResult({ sessionId: "ses_no_fallback", text: "plan" });
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: () => ({
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => { throw new Error("must not resume"); },
       }),
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      (() => reporter) as typeof createReporter,
-    ).run(["plan"]);
+      createReporterFn: (() => reporter) as typeof createReporter,
+    }).run(["plan"]);
 
     expect(code).toBe(0);
   } finally {
@@ -2198,29 +2057,20 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
 test("cada run recibe la autoridad de su perfil en el formato de su propio CLI", async () => {
   const authorities: Array<{ profile: string; configPath: string } | undefined> = [];
   const result = new AgentResult({ sessionId: "ses_auth", text: "plan" });
-  const planWith = (args: string[]) => new LazyWorkflowCli(
-    {
+  const planWith = (args: string[]) => createCli({
+    huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    () => ({
+    agentSource: () => ({
       run: async (options: AgentRunOptions) => {
         authorities.push(options.agent);
         return { result, azureLoginRequired: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     }),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-  ).run(args);
+    cliParser: buildCli(() => true),
+  }).run(args);
 
   const originalLog = console.log;
   console.log = () => undefined;
@@ -2244,13 +2094,14 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
 test("code --cli claudecode entrega la cola gestionada y fija el CLI en el checkpoint", async () => {
   const requested: AgentCli[] = [];
   const checkpoints: Array<{ cli: string; phase: string }> = [];
-  const [store, lock, delivery] = fakeCoordinatedGitHubDeps();
-  const code = await new LazyWorkflowCli(
-    {
+  const { githubCheckpointStore: store, githubRepositoryLock: lock, githubDelivery: delivery }
+    = fakeCoordinatedGitHubDeps();
+  const code = await createCli({
+    huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    (cli: AgentCli) => {
+    agentSource: (cli: AgentCli) => {
       requested.push(cli);
       return {
         run: async () => ({
@@ -2262,22 +2113,13 @@ test("code --cli claudecode entrega la cola gestionada y fija el CLI en el check
         resume: async () => { throw new Error("must not resume"); },
       };
     },
-    emptyCheckpointStore(),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    buildCli(() => true),
-    undefined,
-    queueAdapter([fakeSelectedOutcome(201)]),
-    { ...store, write: async (checkpoint) => { checkpoints.push({ cli: checkpoint.cli, phase: checkpoint.phase }); await store.write(checkpoint); } },
-    lock,
-    delivery,
-  ).run(["code", "--cli", "claudecode", "--model", "claude-opus-5", "--working-directory", "/repo"]);
+    checkpointStore: emptyCheckpointStore(),
+    cliParser: buildCli(() => true),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
+    githubCheckpointStore: { ...store, write: async (checkpoint) => { checkpoints.push({ cli: checkpoint.cli, phase: checkpoint.phase }); await store.write(checkpoint); } },
+    githubRepositoryLock: lock,
+    githubDelivery: delivery,
+  }).run(["code", "--cli", "claudecode", "--model", "claude-opus-5", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(requested).toEqual(["claudecode"]);
@@ -2342,29 +2184,23 @@ test("architecture-review-sag --cli claudecode revisa con la autoridad de review
   console.log = () => undefined;
   let code: number;
   try {
-    code = await new LazyWorkflowCli(
-      {
+    code = await createCli({
+      huInfoService: {
         getHuInfo: async () => { throw new Error("must not use Azure"); },
         waitForAccess: async () => undefined,
       },
-      (cli: AgentCli) => {
+      agentSource: (cli: AgentCli) => {
         requested.push(cli);
         return {
           run: async (options: AgentRunOptions) => { received = options; return { result, azureLoginRequired: false }; },
           resume: async () => { throw new Error("must not resume"); },
         };
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => reviewContext },
-      async () => "",
-      { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      undefined,
-      undefined,
-      buildCli(() => true),
-    ).run(["architecture-review-sag", "--issue", "178", "--cli", "claudecode", "--model", "claude-opus-5"]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => reviewContext },
+      git: async () => "",
+      githubTracker: { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      cliParser: buildCli(() => true),
+    }).run(["architecture-review-sag", "--issue", "178", "--cli", "claudecode", "--model", "claude-opus-5"]);
   } finally {
     console.log = originalLog;
   }
@@ -2384,29 +2220,23 @@ test("infra-sag acepta --cli y verifica prerequisitos sin abrir sesion", async (
   console.log = () => undefined;
   let code: number;
   try {
-    code = await new LazyWorkflowCli(
-      {
+    code = await createCli({
+      huInfoService: {
         getHuInfo: async () => { throw new Error("must not use Azure"); },
         waitForAccess: async () => undefined,
       },
-      (cli: AgentCli) => {
+      agentSource: (cli: AgentCli) => {
         requested.push(cli);
         return {
           run: async () => { throw new Error("must not open a session"); },
           resume: async () => { throw new Error("must not resume"); },
         };
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => infrastructureContext },
-      undefined,
-      { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      undefined,
-      { verify: async () => { verifications += 1; return { status: "ready" as const, findings: [], observations: infrastructureObservations }; } },
-      buildCli(() => true),
-    ).run(["infra-sag", "--issue", "178", "--cli", "claudecode"]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadInfrastructure: async () => infrastructureContext },
+      githubTracker: { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      infrastructureService: { verify: async () => { verifications += 1; return { status: "ready" as const, findings: [], observations: infrastructureObservations }; } },
+      cliParser: buildCli(() => true),
+    }).run(["infra-sag", "--issue", "178", "--cli", "claudecode"]);
   } finally {
     console.log = originalLog;
   }
@@ -2419,32 +2249,26 @@ test("infra-sag acepta --cli y verifica prerequisitos sin abrir sesion", async (
 test("deploy-sag --cli claudecode despliega DEV y sigue prohibiendo PROD", async () => {
   const requested: AgentCli[] = [];
   const deployments: string[] = [];
-  const deployWith = (args: string[]) => new LazyWorkflowCli(
-    {
+  const deployWith = (args: string[]) => createCli({
+    huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
       waitForAccess: async () => undefined,
     },
-    (cli: AgentCli) => {
+    agentSource: (cli: AgentCli) => {
       requested.push(cli);
       return {
         run: async () => { throw new Error("must not open a session"); },
         resume: async () => { throw new Error("must not resume"); },
       };
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => deploymentContext },
-    undefined,
-    { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-    { deploy: async (_scope: unknown, _directory: string, environment: DeploymentEnvironment = "dev") => {
+    sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => deploymentContext },
+    githubTracker: { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+    deploymentService: { deploy: async (_scope: unknown, _directory: string, environment: DeploymentEnvironment = "dev") => {
       deployments.push(environment);
       throw new Error("deployment stub");
     } },
-    undefined,
-    buildCli(() => true),
-  ).run(args);
+    cliParser: buildCli(() => true),
+  }).run(args);
 
   const originalLog = console.log;
   console.log = () => undefined;

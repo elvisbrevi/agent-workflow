@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { RemoteSagNormSource, SagNormsService, type SagArchitectureReviewContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 import { GitHubArchitectureReviewService } from "../src/github/architecture-review-service.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
@@ -315,18 +315,14 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
     },
   });
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      sag,
-    ).run(["plan", "--normas-sag", "--working-directory", directory]);
+      sagNormsService: sag,
+    }).run(["plan", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(sourceCalls).toBe(1);
@@ -350,18 +346,14 @@ test("plan Azure agrega normas SAG despues de cargar la HU", async () => {
     part: { type: "text", text: 'plan\nPLAN_READY\n{"tickets":[]}' },
   }));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => ({ id: 23438 }), waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => ({ id: 23438 }), waitForAccess: async () => undefined },
+      agentSource: {
         run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      new SagNormsService(source()),
-    ).run(["plan", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
+      sagNormsService: new SagNormsService(source()),
+    }).run(["plan", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(received).not.toBeNull();
@@ -376,18 +368,14 @@ test("un contexto SAG inaccesible detiene plan antes de iniciar OpenCode", async
   const directory = await config();
   let openCodeCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("source unavailable"); } },
-    ).run(["plan", "--normas-sag", "--working-directory", directory]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("source unavailable"); } },
+    }).run(["plan", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(openCodeCalls).toBe(0);
@@ -398,22 +386,11 @@ test("un contexto SAG inaccesible detiene plan antes de iniciar OpenCode", async
 
 test("--normas-sag code se rechaza antes de servicios si falta el cargador coding", async () => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
-    { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    queueAdapter([{ kind: "empty" }]),
-  ).run(["code", "--normas-sag"]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => undefined },
+    agentSource: { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+    githubManagedQueue: queueAdapter([{ kind: "empty" }]),
+  }).run(["code", "--normas-sag"]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -429,29 +406,19 @@ test("code GitHub agrega normas SAG al prompt solo cuando se solicita", async ()
     part: { type: "text", text },
   })));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async (options) => { received = options; return { result: results.shift()!, azureLoginRequired: false }; },
         resume: async () => results[0]!,
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
+      sagNormsService: {
         loadPlanning: async () => { throw new Error("must not plan"); },
         loadCoding: async () => { sourceCalls += 1; return new SagNormsService(codingSource()).loadCoding(directory); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      queueAdapter([fakeSelectedOutcome(201)]),
+      githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
       ...fakeCoordinatedGitHubDeps(),
-    ).run(["code", "--normas-sag", "--working-directory", directory]);
+    }).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(received?.prompt).toContain('"phase": "coding"');
@@ -467,25 +434,15 @@ test("un contexto SAG de coding inaccesible detiene code antes de iniciar OpenCo
   const directory = await config();
   let openCodeCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-{ getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => { throw new Error("source unavailable"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      queueAdapter([fakeSelectedOutcome(201)]),
-    ).run(["code", "--normas-sag", "--working-directory", directory]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => { throw new Error("source unavailable"); } },
+      githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
+    }).run(["code", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(openCodeCalls).toBe(0);
@@ -503,8 +460,8 @@ test("code Azure agrega normas SAG al prompt despues de fijar el ticket", async 
     part: { type: "text", text: "IMPLEMENTATION_READY" },
   }));
   try {
-    const code = await new LazyWorkflowCli(
-      {
+    const code = await createCli({
+      huInfoService: {
         getHuInfo: async () => ({ id: 23438 }),
         waitForAccess: async () => undefined,
         ensureIntegrationBranch: async () => "refs/heads/hu/23438",
@@ -518,16 +475,13 @@ test("code Azure agrega normas SAG al prompt despues de fijar el ticket", async 
         getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
         setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
       },
-      {
+      agentSource: {
         run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
-      { read: async () => null, write: async () => undefined, clear: async () => undefined },
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => new SagNormsService(codingSource()).loadCoding(directory) },
-    ).run(["code", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
+      checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadCoding: async () => new SagNormsService(codingSource()).loadCoding(directory) },
+    }).run(["code", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(received?.prompt).toContain('"phase": "coding"');
@@ -626,20 +580,16 @@ test("architecture-review rechaza source SAG inaccesible antes de OpenCode", asy
   const directory = await config();
   let openCodeCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: {
         run: async () => { openCodeCalls += 1; throw new Error("must not run"); },
         resume: async () => { openCodeCalls += 1; throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not use planning"); }, loadArchitectureReview: async () => { throw new Error("source unavailable"); } },
-      async () => "",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not use planning"); }, loadArchitectureReview: async () => { throw new Error("source unavailable"); } },
+      git: async () => "",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(openCodeCalls).toBe(0);
@@ -670,20 +620,16 @@ test("architecture-review GitHub usa un Issue explicito y no toca Azure", async 
     needsDecision: ["boundaries: requiere decidir aplicabilidad por hechos de alcance"],
   };
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); }, waitForAccess: async () => { azureCalls += 1; } },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); }, waitForAccess: async () => { azureCalls += 1; } },
+      agentSource: {
         run: async (options) => { received = options; return { result, azureLoginRequired: false }; },
         resume: async () => { throw new Error("must not resume"); },
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => context },
-      async () => "",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory, "--prompt", "review this Issue"]);
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => context },
+      git: async () => "",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory, "--prompt", "review this Issue"]);
 
     expect(code).toBe(0);
     expect(azureCalls).toBe(0);
@@ -708,17 +654,13 @@ test("architecture-review Azure usa la HU completa y conserva la ruta del tracke
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"clean"}' },
   }));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => ({ id: 23438, title: "HU architecture" }), waitForAccess: async () => undefined },
-      {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => ({ id: 23438, title: "HU architecture" }), waitForAccess: async () => undefined },
+      agentSource: {
         run: async (options, azure) => { received = options; detectsAzure = azure; return { result, azureLoginRequired: false }; },
         resume: async () => result,
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
         phase: "architecture-review",
         sourceRepository: "https://example.test/sag",
         branch: "master",
@@ -730,9 +672,9 @@ test("architecture-review Azure usa la HU completa y conserva la ruta del tracke
         guidance: [],
         needsDecision: [],
       }) },
-      async () => "",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
+      git: async () => "",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(detectsAzure).toBeTrue();
@@ -751,14 +693,10 @@ test("architecture-review Azure rechaza findings sin publication verificable", a
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"findings","summary":"finding","specification":{"title":"Fix","body":"body"},"tickets":[]}' },
   }));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => ({ id: 23438 }), waitForAccess: async () => undefined },
-      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => ({ id: 23438 }), waitForAccess: async () => undefined },
+      agentSource: { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
         phase: "architecture-review",
         sourceRepository: "https://example.test/sag",
         branch: "master",
@@ -770,9 +708,9 @@ test("architecture-review Azure rechaza findings sin publication verificable", a
         guidance: [],
         needsDecision: [],
       }) },
-      async () => "",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
+      git: async () => "",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--hu", "23438", "--working-directory", directory]);
 
     expect(code).toBe(1);
   } finally {
@@ -796,14 +734,10 @@ test("architecture-review GitHub publica findings through the tracker boundary",
         return { specification: 202, tickets: [203] };
       },
     };
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
         phase: "architecture-review",
         sourceRepository: "https://example.test/sag",
         branch: "master",
@@ -815,9 +749,9 @@ test("architecture-review GitHub publica findings through the tracker boundary",
         guidance: [],
         needsDecision: [],
       }) },
-      async () => "",
-      tracker,
-    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+      git: async () => "",
+      githubTracker: tracker,
+    }).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(published).toBeTrue();
@@ -834,14 +768,10 @@ test("architecture-review rechaza una ejecucion OpenCode fallida", async () => {
     part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"failed"}' },
   }));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => ({ result, azureLoginRequired: false, failed: true }), resume: async () => result },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => ({ result, azureLoginRequired: false, failed: true }), resume: async () => result },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
         phase: "architecture-review",
         sourceRepository: "https://example.test/sag",
         branch: "master",
@@ -853,9 +783,9 @@ test("architecture-review rechaza una ejecucion OpenCode fallida", async () => {
         guidance: [],
         needsDecision: [],
       }) },
-      async () => "",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+      git: async () => "",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
 
     expect(code).toBe(1);
   } finally {
@@ -872,14 +802,10 @@ test("architecture-review detiene la revision si OpenCode modifica el arbol", as
   }));
   let statusCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => ({
         phase: "architecture-review",
         sourceRepository: "https://example.test/sag",
         branch: "master",
@@ -891,9 +817,9 @@ test("architecture-review detiene la revision si OpenCode modifica el arbol", as
         guidance: [],
         needsDecision: [],
       }) },
-      async () => statusCalls++ === 0 ? "" : " M reviewed.ts\n",
-      reviewTracker,
-    ).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
+      git: async () => statusCalls++ === 0 ? "" : " M reviewed.ts\n",
+      githubTracker: reviewTracker,
+    }).run(["architecture-review-sag", "--issue", "154", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(statusCalls).toBe(2);
@@ -908,15 +834,11 @@ test.each([
   ["invalid Issue", ["architecture-review-sag", "--issue", "abc"]],
 ] as const)("architecture-review rejects %s before services", async (_name, args) => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => { calls += 1; } },
-    { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadArchitectureReview: async () => { calls += 1; throw new Error("must not load"); } },
-  ).run([...args, "--working-directory", root]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => { calls += 1; } },
+    agentSource: { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+    sagNormsService: { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadArchitectureReview: async () => { calls += 1; throw new Error("must not load"); } },
+  }).run([...args, "--working-directory", root]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);

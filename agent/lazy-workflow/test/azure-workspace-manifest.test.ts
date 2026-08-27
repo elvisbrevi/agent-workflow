@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli, type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { COMPLETION_GATE, type CompletionGate } from "../src/azure/autocode-service.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
@@ -127,8 +128,8 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
     const result = AgentResult.fromJsonLines(JSON.stringify({
       type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
     }));
-    const cli = new LazyWorkflowCli(
-      {
+    const cli = createCli({
+      huInfoService: {
         getHuInfo: async () => new HuInfo({ id: hu }),
         waitForAccess: async () => undefined,
         ensureIntegrationBranch: async () => integrationBranch,
@@ -156,14 +157,11 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
         addAttachment: async () => { attached = true; },
         setEvidence: async () => { evidence = true; },
       } as unknown as AzureBoundary,
-      { run: async () => ({ result, azureLoginRequired: false }) as never, resume: async () => result as never },
-      { read: async () => null, write: async () => undefined, clear: async () => undefined },
-      undefined,
-      { deleteTicketBranch: async () => { queueHasTicket = false; } },
-      undefined,
-      undefined,
-      staticGit(),
-    );
+      agentSource: { run: async () => ({ result, azureLoginRequired: false }) as never, resume: async () => result as never },
+      checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
+      ticketBranchCleaner: { deleteTicketBranch: async () => { queueHasTicket = false; } },
+      git: staticGit(),
+    });
 
     const exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", pathA]);
     expect(exit).toBe(0);

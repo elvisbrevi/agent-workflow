@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
@@ -104,22 +104,19 @@ async function runDelivery(
   const originalLog = console.log;
   console.log = () => undefined;
   try {
-    return await new LazyWorkflowCli(
-      azure,
-      agents.source,
-      undefined, undefined, undefined, undefined, undefined,
+    return await createCli({
+      huInfoService: azure,
+      agentSource: agents.source,
       git,
-      undefined, undefined, undefined,
-      buildCli(() => true),
-      undefined,
-      {
+      cliParser: buildCli(() => true),
+      githubManagedQueue: {
         ...queueAdapter(issues.map((issue) => fakeSelectedOutcome(issue))),
         reconcileClaimedIssue: async (issue: number) => fakeSelectedIssue(issue),
       },
-      store,
-      fakeGitHubRepositoryLock(),
-      delivery,
-    ).run(["code", "--working-directory", "/repo", ...args]);
+      githubCheckpointStore: store,
+      githubRepositoryLock: fakeGitHubRepositoryLock(),
+      githubDelivery: delivery,
+    }).run(["code", "--working-directory", "/repo", ...args]);
   } finally {
     console.log = originalLog;
   }

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { DeploymentAuthenticationRequiredError, SagDeploymentService, type DeploymentEnvironment, type DeploymentRoute, type DeploymentSystems } from "../src/sag/deployment-service.ts";
 import { SagNormsService, type SagDeploymentContext, type SagNormSource } from "../src/sag/sag-norms-service.ts";
 
@@ -345,17 +345,12 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
   console.log = (...values: unknown[]) => output.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { openCodeCalls += 1; throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      { deploy: async (receivedScope, receivedDirectory, environment) => {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { openCodeCalls += 1; throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      deploymentService: { deploy: async (receivedScope, receivedDirectory, environment) => {
         deploymentCalls += 1;
         expect(receivedScope.id).toBe(scope.id);
         expect(receivedScope.title).toBe("scope");
@@ -364,7 +359,7 @@ test("deploy-sag GitHub usa un Issue explicito, carga normas y no inicia OpenCod
         expect(environment).toBe("dev");
         return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
       } },
-    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+    }).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(azureCalls).toBe(0);
@@ -381,21 +376,16 @@ test.each(["test", "qa"] as const)("deploy-sag CLI selecciona %s", async (enviro
   const directory = await config(environment);
   let receivedEnvironment: DeploymentEnvironment | null = null;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      { deploy: async (_scope, _directory, received = "dev") => {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      deploymentService: { deploy: async (_scope, _directory, received = "dev") => {
         receivedEnvironment = received;
         return { status: "verified", environment, idempotencyKey: "key", route: { ...route, target: { ...route.target, id: `openshift-${environment}`, environment } }, deployment: { id: "deployment-1", status: "succeeded", environment, target: `openshift-${environment}`, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: false };
       } },
-    ).run(["deploy-sag", "--issue", "157", "--environment", environment, "--working-directory", directory]);
+    }).run(["deploy-sag", "--issue", "157", "--environment", environment, "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(receivedEnvironment as DeploymentEnvironment | null).toBe(environment);
@@ -416,18 +406,13 @@ test.each(["ambiguous", "unverified"] as const)("deploy-sag CLI falla cerrado an
   console.error = (...values: unknown[]) => errors.push(values.join(" "));
 
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      new SagDeploymentService(systems),
-    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      deploymentService: new SagDeploymentService(systems),
+    }).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(errors.join("\n")).toContain(failure === "ambiguous" ? "ruta unica" : "estado DEV verificado");
@@ -442,22 +427,16 @@ test("deploy-sag reanuda una HU una vez cuando el adaptador requiere autenticaci
   let attempts = 0;
   let waits = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => ({ id: 23438, title: "HU deployment" }), waitForAccess: async () => { waits += 1; } },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
-      undefined,
-      undefined,
-      { deploy: async () => {
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => ({ id: 23438, title: "HU deployment" }), waitForAccess: async () => { waits += 1; } },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      deploymentService: { deploy: async () => {
         attempts += 1;
         if (attempts === 1) throw new DeploymentAuthenticationRequiredError();
         return { status: "verified", environment: "dev", idempotencyKey: "key", route, deployment: { id: "deployment-1", status: "succeeded", environment: "dev", target: route.target.id, routeId: route.id, evidence: { openShift: "verified", consul: "verified", target: "verified" } }, reconciled: true };
       } },
-    ).run(["deploy-sag", "--hu", "23438", "--working-directory", directory]);
+    }).run(["deploy-sag", "--hu", "23438", "--working-directory", directory]);
 
     expect(code).toBe(0);
     expect(attempts).toBe(2);
@@ -473,18 +452,13 @@ test.each(["adapter unavailable", "ambiguous route", "trigger failed", "verifica
   const originalError = console.error;
   console.error = (...values: unknown[]) => errors.push(values.join(" "));
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      { deploy: async () => { throw new Error(`${failure}; token: fixture-secret`); } },
-    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run OpenCode"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => context },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      deploymentService: { deploy: async () => { throw new Error(`${failure}; token: fixture-secret`); } },
+    }).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(errors.join("\n")).toContain(failure);
@@ -506,18 +480,13 @@ test.each([
   ["unsupported environment", ["deploy-sag", "--issue", "157", "--environment", "staging"]],
 ] as const)("deploy-sag rechaza %s antes de servicios", async (_name, args) => {
   let calls = 0;
-  const code = await new LazyWorkflowCli(
-    { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => { calls += 1; } },
-    { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadDeployment: async () => { calls += 1; throw new Error("must not load"); } },
-    undefined,
-    { readIssue: async () => { calls += 1; throw new Error("must not read issue"); }, publishFindings: async () => ({ specification: 1, tickets: [] }) },
-    { deploy: async () => { calls += 1; throw new Error("must not deploy"); } },
-  ).run([...args, "--working-directory", root]);
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { calls += 1; throw new Error("must not call Azure"); }, waitForAccess: async () => { calls += 1; } },
+    agentSource: { run: async () => { calls += 1; throw new Error("must not run"); }, resume: async () => { calls += 1; throw new Error("must not resume"); } },
+    sagNormsService: { loadPlanning: async () => { calls += 1; throw new Error("must not load"); }, loadDeployment: async () => { calls += 1; throw new Error("must not load"); } },
+    githubTracker: { readIssue: async () => { calls += 1; throw new Error("must not read issue"); }, publishFindings: async () => ({ specification: 1, tickets: [] }) },
+    deploymentService: { deploy: async () => { calls += 1; throw new Error("must not deploy"); } },
+  }).run([...args, "--working-directory", root]);
 
   expect(code).toBe(1);
   expect(calls).toBe(0);
@@ -527,18 +496,13 @@ test("deploy-sag detiene la ejecucion si la fuente SAG no esta disponible", asyn
   const directory = await config();
   let deploymentCalls = 0;
   try {
-    const code = await new LazyWorkflowCli(
-      { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      { run: async () => { throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => { throw new Error("source unavailable"); } },
-      undefined,
-      { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
-      { deploy: async () => { deploymentCalls += 1; throw new Error("must not deploy"); } },
-    ).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
+    const code = await createCli({
+      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+      agentSource: { run: async () => { throw new Error("must not run"); }, resume: async () => { throw new Error("must not resume"); } },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadDeployment: async () => { throw new Error("source unavailable"); } },
+      githubTracker: { readIssue: async (issue) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      deploymentService: { deploy: async () => { deploymentCalls += 1; throw new Error("must not deploy"); } },
+    }).run(["deploy-sag", "--issue", "157", "--working-directory", directory]);
 
     expect(code).toBe(1);
     expect(deploymentCalls).toBe(0);

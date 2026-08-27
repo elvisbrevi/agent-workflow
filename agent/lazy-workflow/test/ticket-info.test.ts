@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
 import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import { HTTP_CAPTURE_BODY, SCREENSHOT_BYTES, SCREENSHOT_NAME } from "./_helpers/evidence-fixtures.ts";
 
 const branch = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438";
@@ -712,7 +712,7 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
       ["ticket-evidence-info", "--ticket", "51"],
       ["ticket-completion-info", "--hu", "23438", "--ticket", "51"],
     ]) {
-      expect(await new LazyWorkflowCli(service).run(args)).toBe(0);
+      expect(await createCli({ huInfoService: service }).run(args)).toBe(0);
     }
   } finally {
     console.log = originalLog;
@@ -738,10 +738,10 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
 
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    expect(await new LazyWorkflowCli(service).run(["ticket-pr-link", "--hu", "23438", "--ticket", "51", "--pr", "99"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-commit-link", "--ticket", "51", "--pr", "99"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-attachment-add", "--ticket", "51", "--file", "/tmp/evidence.json", "--kind", "http-json"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-evidence-set", "--ticket", "51", "--evidence-file", "/tmp/evidence.html"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-pr-link", "--hu", "23438", "--ticket", "51", "--pr", "99"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-commit-link", "--ticket", "51", "--pr", "99"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-attachment-add", "--ticket", "51", "--file", "/tmp/evidence.json", "--kind", "http-json"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-evidence-set", "--ticket", "51", "--evidence-file", "/tmp/evidence.html"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
@@ -778,11 +778,11 @@ test("ticket publication commands reach the required Azure boundary operations",
 
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-create", "--hu", "23438", "--type", "Task", "--title", "Slice", "--description-file", "/tmp/slice.html",
     ])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-link-parent", "--parent", "23438", "--child", "52"])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run(["ticket-link-predecessor", "--blocker", "52", "--blocked", "53"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-link-parent", "--parent", "23438", "--child", "52"])).toBe(0);
+    expect(await createCli({ huInfoService: service }).run(["ticket-link-predecessor", "--blocker", "52", "--blocked", "53"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
@@ -1257,16 +1257,16 @@ test("ticket field mutation commands validate their explicit contracts", async (
   const originalLog = console.log;
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-description-set", "--ticket", "51", "--description-file", "/tmp/description.html",
     ])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-state-set", "--ticket", "51", "--state", "En progreso", "--expected-state", "Active",
     ])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-effort-set", "--ticket", "51", "--real-effort", "2.25", "--real-effort-hh", "2.5", "--expected-rev", "7",
     ])).toBe(0);
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-effort-set", "--ticket", "51", "--real-effort-hh", "2.5", "--expected-rev", "7",
     ])).toBe(1);
   } finally {
@@ -1322,7 +1322,7 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
 
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    expect(await new LazyWorkflowCli(service).run([
+    expect(await createCli({ huInfoService: service }).run([
       "ticket-completion-apply",
       "--hu", "23438",
       "--ticket", "51",
@@ -1475,7 +1475,7 @@ test("completion apply reconciles missing effects before moving the ticket to Do
       setState: base.setState.bind(base),
     };
 
-    await expect(new LazyWorkflowCli(service).run([
+    await expect(createCli({ huInfoService: service }).run([
       "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
       "--manifest", manifestPath, "--working-directory", process.cwd(),
     ])).resolves.toBe(0);

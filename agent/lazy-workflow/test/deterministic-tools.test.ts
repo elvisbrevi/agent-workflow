@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { LazyWorkflowCli } from "../src/cli/lazy-workflow-cli.ts";
+import { createCli } from "./_helpers/create-cli.ts";
 import {
   createDeterministicToolServices,
   deterministicFailureKind,
@@ -547,14 +547,11 @@ describe("herramientas deterministas como comandos", () => {
         run: async () => { throw new Error("una herramienta determinista no abre sesion"); },
         resume: async () => { throw new Error("una herramienta determinista no abre sesion"); },
       };
-      const cli = new LazyWorkflowCli(
-        { getHuInfo: async () => { throw new Error("sin Azure"); }, waitForAccess: async () => undefined },
-        agent,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined,
-        services,
-      );
+      const cli = createCli({
+        huInfoService: { getHuInfo: async () => { throw new Error("sin Azure"); }, waitForAccess: async () => undefined },
+        agentSource: agent,
+        deterministicToolServices: services,
+      });
 
       const code = await cli.run(["github-auth-info", "--working-directory", "/repo"]);
 
@@ -578,7 +575,7 @@ describe("herramientas deterministas como comandos", () => {
         run: async () => { throw new Error("una herramienta determinista no abre sesion"); },
         resume: async () => { throw new Error("una herramienta determinista no abre sesion"); },
       };
-      const cli = new LazyWorkflowCli(new AzureServiceLikeProduction(), agent);
+      const cli = createCli({ huInfoService: new AzureServiceLikeProduction(), agentSource: agent });
 
       // The CLI prints the tool result itself, and the payload is what proves the
       // receiver survived: `children` only exists behind `this`.
