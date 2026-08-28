@@ -91,6 +91,7 @@ import {
 import {
   buildInterviewAnswersPrompt,
   buildResumePrompt,
+  buildRoundRepairPrompt,
   buildWorkflowPrompt,
   resolveWorkflowRun,
   type HandoffProgress,
@@ -4165,6 +4166,66 @@ export class LazyWorkflowCli {
   }
 
   /**
+   * Read the finished turn, giving a session that closed its round with broken
+   * JSON exactly one chance to restate it.
+   *
+   * The round is the session's own work — the questions were written, the
+   * repository was explored, the turn was paid for — and an unbalanced bracket
+   * is the one failure that throws all of it away while nothing is actually
+   * wrong with what was asked. So the coordinator asks for the payload again
+   * instead of discarding the turn. It still decides nothing it cannot verify:
+   * the restated round goes through the same fail-closed reader, and a second
+   * unreadable answer stops the run. A session that already failed is not
+   * resumed at all — its text is cut short by the failure, not by a slip.
+   */
+  private async readTurn(
+    result: AgentResult,
+    options: CliOptions,
+    norms: SagContext | null,
+    workingDirectory: string,
+    agent: AgentAuthority,
+    failed: boolean,
+  ): Promise<{ turn: PlanTurn | null; result: AgentResult }> {
+    let reason: string;
+    try {
+      return { turn: readPlanTurn(result.text), result };
+    } catch (error) {
+      reason = errorMessage(error);
+    }
+    const scope = { hu: options.hu, issue: options.issue, repository: workingDirectory };
+    if (failed) {
+      reportFailure("session-failure", "planning", { ...scope, sessionId: result.sessionId }, `lazy-workflow: la ronda de preguntas no se pudo leer (${reason}); ejecución detenida.`);
+      return { turn: null, result };
+    }
+
+    reportOperator(`lazy-workflow: la ronda de preguntas no se pudo leer (${reason}); pido a la sesión ${result.sessionId} que la vuelva a emitir.`);
+    let restated: AgentResult;
+    try {
+      restated = await this.codingAgent.resume(
+        result.sessionId,
+        buildResumePrompt(await buildRoundRepairPrompt(reason), norms),
+        workingDirectory,
+        undefined,
+        { agent },
+      );
+    } catch (error) {
+      if (error instanceof AgentExhaustionError) {
+        reportFailure("session-failure", "planning", { ...scope, sessionId: error.result.sessionId }, `lazy-workflow: ${describeExhaustion(error.exhaustion)}; entrevista detenida.`);
+        return { turn: null, result: error.result };
+      }
+      reportFailure("session-failure", "planning", { ...scope, sessionId: result.sessionId }, `lazy-workflow: no se pudo pedir de nuevo la ronda de preguntas (${errorMessage(error)}); ejecución detenida.`);
+      return { turn: null, result };
+    }
+
+    try {
+      return { turn: readPlanTurn(restated.text), result: restated };
+    } catch (error) {
+      reportFailure("session-failure", "planning", { ...scope, sessionId: restated.sessionId }, `lazy-workflow: la ronda de preguntas siguió sin poder leerse tras pedirla de nuevo (${errorMessage(error)}); ejecución detenida.`);
+      return { turn: null, result: restated };
+    }
+  }
+
+  /**
    * Carry the session's paused turns to the operator until the plan is final.
    *
    * The pause is read from the finished turn's own text rather than signalled
@@ -4185,13 +4246,10 @@ export class LazyWorkflowCli {
     let failed = failedBefore;
 
     for (let round = 1; ; round += 1) {
-      let turn: PlanTurn;
-      try {
-        turn = readPlanTurn(result.text);
-      } catch (error) {
-        reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: result.sessionId }, `lazy-workflow: la ronda de preguntas no se pudo leer (${errorMessage(error)}); ejecución detenida.`);
-        return { result, failed: true };
-      }
+      const read = await this.readTurn(result, options, norms, workingDirectory, agent, failed);
+      result = read.result;
+      if (!read.turn) return { result, failed: true };
+      const turn = read.turn;
       if (turn.kind === "final") return { result, failed };
       if (failed) {
         reportFailure("session-failure", "planning", { hu: options.hu, issue: options.issue, repository: workingDirectory, sessionId: result.sessionId }, "lazy-workflow: la sesión pidió responder preguntas pero terminó con error; ejecución detenida.");

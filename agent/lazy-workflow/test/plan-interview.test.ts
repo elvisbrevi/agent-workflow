@@ -195,8 +195,30 @@ test("con el tope de rondas agotado se exige el plan final y otra ronda detiene 
   expect(messages.some((message) => message.includes("abrió otra ronda con el tope"))).toBeTrue();
 });
 
-test("una ronda malformada detiene la corrida sin reanudar la sesión", async () => {
-  const { agent, resumes } = scriptedAgent([`${QUESTIONS_PENDING_MARKER}\n{"round":1,`]);
+test("una ronda malformada se pide de nuevo y la reemitida se pregunta", async () => {
+  const broken = `${QUESTIONS_PENDING_MARKER}\n{"round":1,`;
+  const { agent, resumes } = scriptedAgent([broken, pending(1), planReady]);
+  const { channel, asked } = scriptedChannel((round) => completeAnswers(round, []));
+  const { reporterFn, messages } = captureReporter();
+
+  const { value } = await withCapturedStdout(() =>
+    planCli(agent, () => channel, reporterFn).run([
+      "plan", "--interview", "http", "--working-directory", "/repo",
+    ]));
+
+  expect(value).toBe(0);
+  expect(asked).toEqual([round(1)]);
+  // La primera reanudación pide la ronda otra vez; la segunda lleva las respuestas.
+  expect(resumes).toHaveLength(2);
+  expect(resumes[0]?.sessionId).toBe("ses_plan");
+  expect(resumes[0]?.prompt).toContain(QUESTIONS_PENDING_MARKER);
+  expect(resumes[0]?.prompt).toContain("Reader message:");
+  expect(messages.some((message) => message.includes("que la vuelva a emitir"))).toBeTrue();
+});
+
+test("una ronda que sigue malformada tras pedirla de nuevo detiene la corrida", async () => {
+  const broken = `${QUESTIONS_PENDING_MARKER}\n{"round":1,`;
+  const { agent, resumes } = scriptedAgent([broken, broken]);
   const { channel, asked } = scriptedChannel((round) => completeAnswers(round, []));
   const { reporterFn, messages } = captureReporter();
 
@@ -207,8 +229,8 @@ test("una ronda malformada detiene la corrida sin reanudar la sesión", async ()
 
   expect(value).toBe(1);
   expect(asked).toEqual([]);
-  expect(resumes).toEqual([]);
-  expect(messages.some((message) => message.includes("la ronda de preguntas no se pudo leer"))).toBeTrue();
+  expect(resumes).toHaveLength(1);
+  expect(messages.some((message) => message.includes("siguió sin poder leerse tras pedirla de nuevo"))).toBeTrue();
 });
 
 test("un proveedor agotado a mitad de entrevista detiene la corrida con el resultado parcial", async () => {
@@ -233,7 +255,7 @@ test("un proveedor agotado a mitad de entrevista detiene la corrida con el resul
 });
 
 test("el canal se cierra aunque la entrevista termine mal", async () => {
-  const { agent } = scriptedAgent([`${QUESTIONS_PENDING_MARKER}\nsin json`]);
+  const { agent } = scriptedAgent([`${QUESTIONS_PENDING_MARKER}\nsin json`, `${QUESTIONS_PENDING_MARKER}\nsin json`]);
   const { channel, closed } = scriptedChannel((round) => completeAnswers(round, []));
   const { reporterFn } = captureReporter();
 

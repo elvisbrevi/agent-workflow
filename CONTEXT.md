@@ -274,7 +274,9 @@ _Avoid_: chat mode, interactive session, conversational planning
 One paused planning turn: the questions the session handed over together, each
 with an id, the decision it states, and the answer the session recommends. The
 round is read from the turn's own text, never from a terminal marker, because a
-terminal marker closes the session the next round must resume.
+terminal marker closes the session the next round must resume. A round whose
+JSON does not parse is restated once by the same session before the run stops:
+the questions were already written, and reading them again decides nothing.
 _Avoid_: survey, prompt, questionnaire
 
 **Question channel**:

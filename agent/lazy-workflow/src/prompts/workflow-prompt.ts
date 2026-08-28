@@ -35,7 +35,8 @@ type PromptAsset =
   | "architecture-review-sag"
   | "plan-interview-auto"
   | "plan-interview-interactive"
-  | "plan-interview-answers";
+  | "plan-interview-answers"
+  | "plan-interview-round-repair";
 
 export type SagContext = SagNormsContext | SagCodingContext;
 
@@ -198,6 +199,19 @@ export async function buildInterviewAnswersPrompt(
       : "No quedan rondas de preguntas: entrega el plan final ahora, sin abrir otra ronda.",
     QUESTIONS_ANSWERED_MARKER,
     JSON.stringify(answers),
+  ].join("\n");
+}
+
+/**
+ * The resume prompt of a round the coordinator could not read: the static
+ * restating instructions plus what the reader actually complained about, so the
+ * session repairs the payload it wrote instead of guessing what was wrong with
+ * it.
+ */
+export async function buildRoundRepairPrompt(reason: string): Promise<string> {
+  return [
+    await readPromptAsset("plan-interview-round-repair"),
+    `Reader message: ${reason}`,
   ].join("\n");
 }
 

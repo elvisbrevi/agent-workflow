@@ -47,6 +47,20 @@ and a question without one would make an unattended run stop at the first thing
 the session could not decide alone. The payload says which answers were the
 operator's, so a default is never presented to the session as a decision.
 
+A round the coordinator cannot read is asked for again, once. The reader fails
+closed and always will — a round is the operator's decision list, and a half-read
+one would put questions nobody wrote in front of a human — but failing closed
+does not have to mean throwing the turn away. The session had already explored
+the repositories and written the questions when it closed the payload with an
+unbalanced bracket, and discarding all of it over a missing `]` cost a real run
+its whole planning turn. So the coordinator resumes that same session with the
+reader's own complaint and asks it to emit the payload again, then reads the
+result through the identical reader: a second unreadable round stops the run,
+and a session that had already failed is not resumed at all, because its text is
+cut short by the failure rather than by a slip of the pen. Nothing is repaired by
+the coordinator and nothing is guessed — restating is the session's work, and
+verification stays where it was.
+
 The interview is off unless it is asked for. Every existing planning run
 behaves exactly as it did, and an interactive run that cannot announce itself —
 `--quiet` silences the URL, the prompt and the exchange paths alike — is
