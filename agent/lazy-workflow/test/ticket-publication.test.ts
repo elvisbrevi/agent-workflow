@@ -12,13 +12,22 @@ interface Item {
   relations: Array<{ rel: string; url: string; attributes?: Record<string, unknown> }>;
 }
 
+/** The fields a work-item type defines, as the Azure catalog answers them. */
+interface TypeField {
+  referenceName: string;
+  allowedValues?: string[];
+}
+
 /** An in-memory Azure Boards that answers reads, patches, and creations. */
-function azure(children: Item[] = []) {
+function azure(
+  children: Item[] = [],
+  project: { huFields?: Record<string, unknown>; typeFields?: TypeField[] } = {},
+) {
   const items = new Map<number, Item>();
   items.set(HU, {
     id: HU,
     rev: 7,
-    fields: { "System.WorkItemType": "User Story", "System.Title": "HU", "System.TeamProject": "Team" },
+    fields: { "System.WorkItemType": "User Story", "System.Title": "HU", "System.TeamProject": "Team", ...project.huFields },
     relations: children.map((child) => ({ rel: "System.LinkTypes.Hierarchy-Forward", url: `${ORG}/_apis/wit/workItems/${child.id}` })),
   });
   for (const child of children) items.set(child.id, child);
@@ -72,6 +81,14 @@ function azure(children: Item[] = []) {
       }
       item.rev += 1;
       return JSON.stringify(item);
+    }
+
+    if (args[0] === "rest" && args.includes("get") && uri.includes("/workitemtypes/")) {
+      const defined = project.typeFields ?? [];
+      return JSON.stringify({
+        count: defined.length,
+        value: defined.map(({ referenceName, allowedValues }) => ({ referenceName, allowedValues: allowedValues ?? [] })),
+      });
     }
 
     if (args[0] === "rest" && args.includes("get")) {
@@ -192,4 +209,115 @@ test("una relacion no puede apuntarse a si misma", async () => {
   const service = new AzureTicketInfoService(azure().run);
   await expect(service.linkParent(51, 51)).rejects.toThrow(/su propio padre/);
   await expect(service.linkPredecessor(51, 51)).rejects.toThrow(/bloquearse a sí mismo/);
+});
+
+/** Los doce meses tal como el proyecto SAG los enumera, escritos a mano. */
+const MESES = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+];
+
+test("createTicket hereda la iteración y el responsable de su HU", async () => {
+  const boards = azure([], {
+    huFields: {
+      "System.IterationPath": "Team\\Sprint 84 - Odisea",
+      "System.AssignedTo": { uniqueName: "victoria@example.test", displayName: "Victoria" },
+    },
+  });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({ hu: HU, type: "Task", title: "Slice uno", descriptionFile: file });
+
+    const created = boards.items.get(result.ticket)!;
+    expect(created.fields["System.IterationPath"]).toBe("Team\\Sprint 84 - Odisea");
+    expect(created.fields["System.AssignedTo"]).toBe("victoria@example.test");
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket prefiere el responsable declarado al de la HU", async () => {
+  const boards = azure([], { huFields: { "System.AssignedTo": { uniqueName: "victoria@example.test" } } });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({
+      hu: HU, type: "Task", title: "Slice uno", descriptionFile: file, assignee: "elvis@example.test",
+    });
+
+    expect(boards.items.get(result.ticket)!.fields["System.AssignedTo"]).toBe("elvis@example.test");
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket completa los campos de creación que el tipo del proyecto define", async () => {
+  const boards = azure([], {
+    typeFields: [
+      { referenceName: "Microsoft.VSTS.Scheduling.RemainingWork" },
+      { referenceName: "Custom.EsfuerzoEstimadoHH" },
+      { referenceName: "Custom.Mes", allowedValues: MESES },
+    ],
+  });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({
+      hu: HU, type: "Task", title: "Slice uno", descriptionFile: file, estimate: 3,
+    });
+
+    const created = boards.items.get(result.ticket)!;
+    expect(created.fields["Microsoft.VSTS.Scheduling.RemainingWork"]).toBe(3);
+    expect(created.fields["Custom.EsfuerzoEstimadoHH"]).toBe(3);
+    expect(created.fields["Custom.Mes"]).toBe(MESES[new Date().getMonth()]!);
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket no escribe campos de creación que el tipo del proyecto no define", async () => {
+  const boards = azure([], { typeFields: [{ referenceName: "System.Title" }] });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({
+      hu: HU, type: "Task", title: "Slice uno", descriptionFile: file, estimate: 3,
+    });
+
+    const created = boards.items.get(result.ticket)!;
+    expect(created.fields["Custom.EsfuerzoEstimadoHH"]).toBeUndefined();
+    expect(created.fields["Custom.Mes"]).toBeUndefined();
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket prefiere el campo declarado al default de creación", async () => {
+  const boards = azure([], { typeFields: [{ referenceName: "Custom.Mes", allowedValues: MESES }] });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({
+      hu: HU, type: "Task", title: "Slice uno", descriptionFile: file,
+      fields: [{ referenceName: "Custom.Mes", value: "Enero" }],
+    });
+
+    expect(boards.items.get(result.ticket)!.fields["Custom.Mes"]).toBe("Enero");
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket falla cerrado si el mes de hoy no está entre los valores permitidos", async () => {
+  const boards = azure([], { typeFields: [{ referenceName: "Custom.Mes", allowedValues: ["January", "February"] }] });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    await expect(service.createTicket({ hu: HU, type: "Task", title: "Slice uno", descriptionFile: file }))
+      .rejects.toThrow(/Custom\.Mes/);
+    expect(boards.commands.some((args) => args.includes("post"))).toBeFalse();
+  } finally {
+    await unlink(file);
+  }
 });

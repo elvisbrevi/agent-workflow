@@ -307,15 +307,26 @@ _Avoid_: prose ticket list, work-item ids in a plan
 The coordinator-owned creation of a delivery plan in Azure: every work item
 first, in dependency order, then the blocking relations that can now name real
 ids. Both steps are idempotent, so republishing a plan reuses what already
-exists.
+exists. Each published ticket inherits its HU's iteration and assignee, and
+carries the **creation defaults** its project demands.
 _Avoid_: partial publication, duplicated work items
+
+**Creation defaults**:
+The fields a project requires on a delivery ticket that the plan itself never
+names — remaining work, estimated hours, the month. They are repository-owned
+(ADR-0006), written only when the work-item type's field catalog defines them,
+validated against the field's allowed values, and always outranked by an
+explicit `--field`.
+_Avoid_: guessing a field from its display label, hardcoding a project's fields
 
 **Azure multi-repository planning run**:
 A lazy-workflow invocation with `plan --hu <ID> --working-directory
 <repo1,repo2,...>`. It normalizes and inspects the declared Azure repositories,
 combines the User Story data with the English autoplan prompt, and starts one
 OpenCode session from the workspace parent directory. It never prepares
-branches, writes a checkpoint, or mutates tracker state.
+branches or writes a checkpoint, and it ends in the same **plan publication**
+as a single-repository planning run: the repository count is the session's
+scope, never a reason to leave a plan unpublished.
 _Avoid_: Azure multi-repository ticket delivery run
 
 A fresh **Azure ticket delivery run** first queries the HU's native integration

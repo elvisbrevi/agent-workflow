@@ -11,6 +11,7 @@ import { AgentExhaustionError, type CodingAgent } from "../src/coding-agent/codi
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 import { AzureWorkspaceCheckpointStore, type AzureWorkspaceCheckpoint } from "../src/azure/azure-workspace-checkpoint.ts";
 import { captureReporter } from "./_helpers/reporter-capture.ts";
+import { PLAN_READY_MARKER } from "../src/prompts/workflow-contract.ts";
 
 const hu = 192;
 const repoA = "repo-a";
@@ -22,6 +23,8 @@ const projectId = "project-id";
 const remoteUrlA = `https://dev.azure.com/org/${teamProject}/_git/${repoA}`;
 const remoteUrlB = `https://dev.azure.com/org/${teamProject}/_git/${repoB}`;
 const integrationBranch = `refs/heads/hu/${hu}`;
+/** Una sesión de planificación que cierra sin trabajo que publicar. */
+const emptyPlan = `${PLAN_READY_MARKER}\n{"tickets":[]}`;
 
 async function seedRepo(root: string, name: string): Promise<string> {
   const path = join(root, name);
@@ -776,7 +779,7 @@ test("CLI single-repo conserva el rechazo cuando se omite --working-directory", 
   }
 });
 
-test("plan multi-repositorio con --hu inspecciona el alcance Azure sin mutar ramas ni tracker", async () => {
+test("plan multi-repositorio con --hu inspecciona el alcance Azure sin preparar ramas", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-plan-"));
   const pathA = await seedRepo(root, repoA);
   const pathB = await seedRepo(root, repoB);
@@ -809,7 +812,7 @@ test("plan multi-repositorio con --hu inspecciona el alcance Azure sin mutar ram
     agentSource: {
       run: async (options) => {
         sessions.push({ workingDirectory: options.workingDirectory, prompt: options.prompt });
-        return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
+        return { result: { text: emptyPlan, sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
@@ -854,7 +857,7 @@ test("plan multi-repositorio con --hu conserva la sesión y la reanuda tras el l
       run: async () => ({ result: { text: "", sessionId: "ses_login", failed: false } as never, azureLoginRequired: true, failed: false }),
       resume: async (sessionId: string, _prompt: string, workingDirectory: string, _terminalMarker?: string, overrides?: { agent?: { profile: string } }) => {
         resumed.push({ sessionId, workingDirectory, agentProfile: overrides?.agent?.profile });
-        return { text: "plan", sessionId, failed: false } as never;
+        return { text: emptyPlan, sessionId, failed: false } as never;
       },
     },
     git,
@@ -899,7 +902,7 @@ test("plan multi-repositorio fija la frontera de autorización y resuelve las no
     agentSource: {
       run: async (options) => {
         prompt = options.prompt;
-        return { result: { text: "plan", sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
+        return { result: { text: emptyPlan, sessionId: "ses_plan", failed: false } as never, azureLoginRequired: false, failed: false };
       },
       resume: async () => { throw new Error("must not resume"); },
     },
@@ -1100,6 +1103,75 @@ test("un ticket sin contexto de entrega detiene la corrida en vez de abrir una s
 
     expect(exit).toBe(1);
     expect(started).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan multi-repositorio con --hu publica el plan en el tracker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-azure-workspace-publish-"));
+  const pathA = await seedRepo(root, repoA);
+  const pathB = await seedRepo(root, repoB);
+  const plan = {
+    tickets: [
+      { type: "Task", title: "Slice uno", body: "cuerpo uno", blockedBy: [], estimate: 3 },
+      { type: "Task", title: "Slice dos", body: "cuerpo dos", blockedBy: ["Slice uno"] },
+    ],
+  };
+  const created: string[] = [];
+  const links: Array<{ blocker: number; blocked: number }> = [];
+  const ids = new Map<string, number>();
+  let next = 500;
+  let prepareCalled = false;
+  const azureBoundary = {
+    getHuInfo: async (id: number) => ({ id, title: "HU transversal" }),
+    waitForAccess: async () => undefined,
+    prepareWorkspaceBranches: async () => {
+      prepareCalled = true;
+      throw new Error("plan must not prepare branches");
+    },
+    prepareWorkspaceTicketBranches: async () => {
+      prepareCalled = true;
+      throw new Error("plan must not prepare ticket branches");
+    },
+    createTicket: async (input: { hu: number; type: string; title: string }) => {
+      created.push(input.title);
+      const ticket = ids.get(input.title) ?? next++;
+      ids.set(input.title, ticket);
+      return { hu: input.hu, ticket, type: input.type, title: input.title, created: true };
+    },
+    linkPredecessor: async (blocker: number, blocked: number) => {
+      links.push({ blocker, blocked });
+      return { blocker, blocked, linked: true };
+    },
+  };
+  const git: GitRunner = async (args, directory) => {
+    if (args[0] === "remote" && args[1] === "get-url") {
+      return directory.includes(repoA) ? `${remoteUrlA}\n` : `${remoteUrlB}\n`;
+    }
+    if (args[0] === "rev-parse") return directory;
+    if (args[0] === "status") return "";
+    return "";
+  };
+  const cli = createCli({
+    huInfoService: azureBoundary as never,
+    agentSource: {
+      run: async () => ({
+        result: { text: `${PLAN_READY_MARKER}\n${JSON.stringify(plan)}`, sessionId: "ses_plan", failed: false } as never,
+        azureLoginRequired: false,
+        failed: false,
+      }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    git,
+  });
+
+  try {
+    const exit = await cli.run(["plan", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+    expect(exit).toBe(0);
+    expect(prepareCalled).toBe(false);
+    expect(created).toEqual(["Slice uno", "Slice dos"]);
+    expect(links).toEqual([{ blocker: ids.get("Slice uno")!, blocked: ids.get("Slice dos")! }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

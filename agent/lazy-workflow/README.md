@@ -826,9 +826,21 @@ bun run main.ts ticket-link-parent --parent 23438 --child 23459
 bun run main.ts ticket-link-predecessor --blocker 23459 --blocked 23460
 ```
 
-Beyond the system fields, name any field explicitly with
-`--field <referenceName>=<value>`; reference names are never inferred from
-display labels.
+A created ticket inherits its HU's iteration and its assignee: the plan slices
+the work, it does not reschedule or reassign it. `--assignee` overrides the
+inherited identity.
+
+Before creating, the adapter reads the work-item type's field catalog and fills
+the creation defaults the project defines and the invocation did not name —
+`Microsoft.VSTS.Scheduling.RemainingWork` and `Custom.EsfuerzoEstimadoHH` from
+`--estimate`, `Custom.Mes` from the current month, validated against the field's
+allowed values. A project that does not define a field is left untouched.
+Without this, a project whose rules require those fields rejects the whole
+publication with `TF401320`.
+
+Beyond that, name any field explicitly with `--field <referenceName>=<value>`,
+which always wins over an inherited or defaulted value; reference names are
+never inferred from display labels.
 
 To obtain the information of a HU:
 
@@ -1014,8 +1026,10 @@ bun run main.ts code --hu 23438 --ticket 51 \
   --working-directory /path/to/repo-a,/path/to/repo-b
 ```
 
-`plan` only inspects the declared repositories: it prepares no branches, writes
-no workspace state, and mutates no tracker item, with or without `--hu`.
+`plan` only inspects the declared repositories: it prepares no branches and
+writes no workspace state, with or without `--hu`. With `--hu` it publishes the
+resulting delivery plan under the User Story exactly like a single-repository
+plan — the work items in dependency order, then the blocking relations.
 
 **Scope.** Each entry must be the root of a Git repository with an `origin`
 remote and a clean worktree. Entries are canonicalised, duplicates are

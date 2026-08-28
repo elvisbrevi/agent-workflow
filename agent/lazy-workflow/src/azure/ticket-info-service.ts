@@ -109,6 +109,29 @@ const COMPLETION_FIELDS = [
   "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71",
 ] as const;
 
+/**
+ * Repository-owned creation defaults (ADR-0006): fields a project may demand on
+ * a delivery ticket that a plan never names, with where each value comes from.
+ *
+ * A project rule can require a field the catalog does not mark `alwaysRequired`,
+ * so the trigger is that the work-item type *defines* the field, not that Azure
+ * calls it required — writing a value the ticket would carry anyway is harmless,
+ * while a missing one stops the whole publication with TF401320. A project that
+ * does not define the field is left untouched, and an explicit `--field` always
+ * wins, so the defaults are never a way to guess a field the operator named.
+ */
+const CREATION_DEFAULTS = {
+  "Microsoft.VSTS.Scheduling.RemainingWork": "estimate",
+  "Custom.EsfuerzoEstimadoHH": "estimate",
+  "Custom.Mes": "month",
+} as const;
+
+/** The months as Azure's Spanish pick lists spell them; the index is `getMonth()`. */
+const MONTHS = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+] as const;
+
 const GATE = {
   pinnedTicketContext: "pinned-ticket-context",
   ticketState: "ticket-state",
@@ -365,6 +388,23 @@ function assignedTo(item: WorkItem): string | undefined {
   if (typeof value === "object" && value !== null && "displayName" in value) {
     const displayName = (value as { displayName?: unknown }).displayName;
     return typeof displayName === "string" ? displayName : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The identity to write on a child ticket. `uniqueName` is the unambiguous one —
+ * a display name can repeat across a directory — and a plain string is already
+ * whatever the caller chose.
+ */
+function assignee(item: WorkItem): string | undefined {
+  const value = item.fields?.["System.AssignedTo"];
+  if (typeof value === "string") return value.trim() || undefined;
+  if (typeof value === "object" && value !== null) {
+    for (const key of ["uniqueName", "displayName"] as const) {
+      const name = (value as Record<string, unknown>)[key];
+      if (typeof name === "string" && name.trim()) return name;
+    }
   }
   return undefined;
 }
@@ -1099,18 +1139,33 @@ export class AzureTicketInfoService {
       return { hu: input.hu, ticket: existing[0]!.id, type, title, created: false };
     }
 
+    // One read of the HU serves both its project and what the child inherits.
+    const parent = await this.readWorkItem(input.hu);
+    const project = text(parent, "System.TeamProject");
+    if (!project) throw new Error(`La HU ${input.hu} no expone su proyecto Azure`);
+
+    // Last write wins, in ascending order of authority: what the HU passes down,
+    // then what the invocation declared, and finally the creation defaults, which
+    // only fill what nothing else named.
+    const fields = new Map<string, unknown>([
+      ["System.Title", title],
+      [TICKET_FIELDS.description, description],
+    ]);
+    // A ticket belongs to the same sprint and the same person as the HU it
+    // delivers: the plan slices the work, never reassigns or reschedules it.
+    const iteration = text(parent, "System.IterationPath");
+    if (iteration) fields.set("System.IterationPath", iteration);
+    const owner = assignee(parent);
+    if (owner) fields.set("System.AssignedTo", owner);
+    if (input.estimate !== undefined) fields.set("Microsoft.VSTS.Scheduling.OriginalEstimate", input.estimate);
+    if (input.assignee) fields.set("System.AssignedTo", input.assignee);
+    for (const { referenceName, value } of input.fields ?? []) fields.set(referenceName, value);
+    for (const [referenceName, value] of await this.creationDefaults(project, type, input.estimate)) {
+      if (!fields.has(referenceName)) fields.set(referenceName, value);
+    }
+
     const patch = [
-      { op: "add", path: "/fields/System.Title", value: title },
-      { op: "add", path: `/fields/${TICKET_FIELDS.description}`, value: description },
-      ...(input.estimate !== undefined
-        ? [{ op: "add", path: "/fields/Microsoft.VSTS.Scheduling.OriginalEstimate", value: input.estimate }]
-        : []),
-      ...(input.assignee ? [{ op: "add", path: "/fields/System.AssignedTo", value: input.assignee }] : []),
-      ...(input.fields ?? []).map(({ referenceName, value }) => ({
-        op: "add",
-        path: `/fields/${referenceName}`,
-        value,
-      })),
+      ...[...fields].map(([referenceName, value]) => ({ op: "add", path: `/fields/${referenceName}`, value })),
       {
         op: "add",
         path: "/relations/-",
@@ -1120,7 +1175,6 @@ export class AzureTicketInfoService {
         },
       },
     ];
-    const project = await this.ticketProject(input.hu);
     const created = await this.createWorkItem(project, type, patch);
 
     // Reread through the same validation the delivery commands use, so a ticket is
@@ -1660,6 +1714,36 @@ export class AzureTicketInfoService {
     throw new Error(`El proyecto Azure no define ningún campo de completion-evidence: ${COMPLETION_FIELDS.join(", ")}`);
   }
 
+  /**
+   * The creation defaults this project's work-item type actually accepts, read
+   * from its field catalog. A value that cannot be resolved stops the creation
+   * rather than letting Azure reject the whole patch with a rule error.
+   */
+  private async creationDefaults(project: string, type: string, estimate?: number): Promise<Array<[string, unknown]>> {
+    const uri = `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/wit/workitemtypes/${encodeURIComponent(type)}/fields?$expand=all&api-version=${API_VERSION}`;
+    const payload = JSON.parse(await this.az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
+    ])) as { value?: Array<{ referenceName?: string; allowedValues?: unknown }> };
+
+    const defaults: Array<[string, unknown]> = [];
+    for (const [referenceName, source] of Object.entries(CREATION_DEFAULTS)) {
+      const defined = (payload.value ?? []).find((field) => field.referenceName === referenceName);
+      if (!defined) continue;
+      if (source === "estimate") {
+        if (estimate !== undefined) defaults.push([referenceName, estimate]);
+        continue;
+      }
+      const allowed = Array.isArray(defined.allowedValues) ? defined.allowedValues.filter((value): value is string => typeof value === "string") : [];
+      const month = MONTHS[new Date().getMonth()]!;
+      const value = allowed.find((candidate) => candidate.trim().toLowerCase() === month.toLowerCase());
+      if (!value) {
+        throw new Error(`El campo ${referenceName} del tipo ${type} no acepta el mes ${month}; sus valores son: ${allowed.join(", ")}`);
+      }
+      defaults.push([referenceName, value]);
+    }
+    return defaults;
+  }
+
   private async fieldExists(name: string): Promise<boolean> {
     try {
       const payload = JSON.parse(await this.az([
@@ -1902,13 +1986,6 @@ export class AzureTicketInfoService {
     } catch (error) {
       throw new Error(`No se pudo subir el adjunto ${name}: ${sanitizeError(error)}`, { cause: error });
     }
-  }
-
-  /** The Azure project a new child inherits from its HU. */
-  private async ticketProject(hu: number): Promise<string> {
-    const project = text(await this.readWorkItem(hu), "System.TeamProject");
-    if (!project) throw new Error(`La HU ${hu} no expone su proyecto Azure`);
-    return project;
   }
 
   private async createWorkItem(project: string, type: string, patch: unknown[]): Promise<number> {

@@ -2485,6 +2485,11 @@ export class LazyWorkflowCli {
       );
       reportOperator(JSON.stringify(result, null, 2));
       if (failed) return 1;
+      // A workspace plan publishes exactly like a single-repository one: the
+      // session decides the slices, the coordinator creates the work items. The
+      // repository count is the session's scope, never a reason to leave a plan
+      // stranded in stdout.
+      if (provider.kind === "azure-hu-run") return this.publishAzurePlan(provider.hu, result.text, options);
       for (const [path, watermark] of watermarks) {
         if (!await this.applyTriageRole(watermark, path)) return 1;
       }
