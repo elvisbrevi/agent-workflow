@@ -217,11 +217,13 @@ const MESES = [
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
 
-test("createTicket hereda la iteración y el responsable de su HU", async () => {
+test("createTicket hereda la iteración y el desarrollador 1 de su HU", async () => {
   const boards = azure([], {
     huFields: {
       "System.IterationPath": "Team\\Sprint 84 - Odisea",
+      // Quien responde por la HU no es quien la desarrolla: el ticket va al segundo.
       "System.AssignedTo": { uniqueName: "victoria@example.test", displayName: "Victoria" },
+      "Custom.Desarrollador1": { uniqueName: "elvis.brevi@example.test", displayName: "Elvis" },
     },
   });
   const service = new AzureTicketInfoService(boards.run);
@@ -231,14 +233,27 @@ test("createTicket hereda la iteración y el responsable de su HU", async () => 
 
     const created = boards.items.get(result.ticket)!;
     expect(created.fields["System.IterationPath"]).toBe("Team\\Sprint 84 - Odisea");
-    expect(created.fields["System.AssignedTo"]).toBe("victoria@example.test");
+    expect(created.fields["System.AssignedTo"]).toBe("elvis.brevi@example.test");
+  } finally {
+    await unlink(file);
+  }
+});
+
+test("createTicket deja el ticket sin responsable si la HU no declara desarrollador 1", async () => {
+  const boards = azure([], { huFields: { "System.AssignedTo": { uniqueName: "victoria@example.test" } } });
+  const service = new AzureTicketInfoService(boards.run);
+  const file = await descriptionFile("<p>x</p>");
+  try {
+    const result = await service.createTicket({ hu: HU, type: "Task", title: "Slice uno", descriptionFile: file });
+
+    expect(boards.items.get(result.ticket)!.fields["System.AssignedTo"]).toBeUndefined();
   } finally {
     await unlink(file);
   }
 });
 
 test("createTicket prefiere el responsable declarado al de la HU", async () => {
-  const boards = azure([], { huFields: { "System.AssignedTo": { uniqueName: "victoria@example.test" } } });
+  const boards = azure([], { huFields: { "Custom.Desarrollador1": { uniqueName: "elvis.brevi@example.test" } } });
   const service = new AzureTicketInfoService(boards.run);
   const file = await descriptionFile("<p>x</p>");
   try {

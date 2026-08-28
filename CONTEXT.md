@@ -307,9 +307,17 @@ _Avoid_: prose ticket list, work-item ids in a plan
 The coordinator-owned creation of a delivery plan in Azure: every work item
 first, in dependency order, then the blocking relations that can now name real
 ids. Both steps are idempotent, so republishing a plan reuses what already
-exists. Each published ticket inherits its HU's iteration and assignee, and
-carries the **creation defaults** its project demands.
+exists. Each published ticket inherits its HU's iteration, is assigned to the
+HU's **Desarrollador 1**, and carries the **creation defaults** its project
+demands.
 _Avoid_: partial publication, duplicated work items
+
+**Desarrollador 1**:
+The developer a User Story names in `Custom.Desarrollador1`, and the owner every
+ticket published from it is assigned to. Distinct from the HU's own assignee,
+who answers for the story without necessarily writing its code. Azure answers it
+as an identity object, so a reader that only accepts text loses it.
+_Avoid_: HU assignee, session-chosen owner
 
 **Creation defaults**:
 The fields a project requires on a delivery ticket that the plan itself never

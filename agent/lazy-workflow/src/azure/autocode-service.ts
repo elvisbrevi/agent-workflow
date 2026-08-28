@@ -326,7 +326,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
       state: field(item, "System.State"),
       project: field(item, "System.TeamProject"),
       assignedTo: item.fields?.["System.AssignedTo"],
-      desarrollador: field(item, "Custom.Desarrollador1"),
+      // Both are identities: Azure answers them as objects, and reading them as
+      // text drops the developer the delivery tickets are assigned to.
+      desarrollador: item.fields?.["Custom.Desarrollador1"],
+      iteration: field(item, "System.IterationPath"),
     } satisfies HuInfoData);
   }
 

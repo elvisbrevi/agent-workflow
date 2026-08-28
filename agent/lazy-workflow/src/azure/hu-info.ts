@@ -6,7 +6,8 @@ export interface HuInfoData {
   state?: string;
   project?: string;
   assignedTo?: unknown;
-  desarrollador?: string;
+  desarrollador?: unknown;
+  iteration?: string;
 }
 
 export class HuInfo {
@@ -17,7 +18,8 @@ export class HuInfo {
   readonly state?: string;
   readonly project?: string;
   readonly assignedTo?: unknown;
-  readonly desarrollador?: string;
+  readonly desarrollador?: unknown;
+  readonly iteration?: string;
 
   constructor(data: HuInfoData) {
     Object.assign(this, data);

@@ -11,7 +11,8 @@ const HU_QUERY = `{
   state: fields."System.State",
   project: fields."System.TeamProject",
   assignedTo: fields."System.AssignedTo",
-  desarrollador: fields."Custom.Desarrollador1"
+  desarrollador: fields."Custom.Desarrollador1",
+  iteration: fields."System.IterationPath"
 }`;
 
 export class HuInfoService {

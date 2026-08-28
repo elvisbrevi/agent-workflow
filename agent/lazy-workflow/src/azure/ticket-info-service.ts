@@ -393,12 +393,15 @@ function assignedTo(item: WorkItem): string | undefined {
 }
 
 /**
- * The identity to write on a child ticket. `uniqueName` is the unambiguous one —
- * a display name can repeat across a directory — and a plain string is already
- * whatever the caller chose.
+ * Who a child ticket goes to: the HU's `Desarrollador 1`, never its `Assigned
+ * To`. The HU is assigned to whoever answers for it, which is routinely not the
+ * person who writes the code, and a ticket lands on the developer.
+ *
+ * `uniqueName` is the unambiguous identity — a display name can repeat across a
+ * directory — and a plain string is already whatever the project stored.
  */
-function assignee(item: WorkItem): string | undefined {
-  const value = item.fields?.["System.AssignedTo"];
+function developer(item: WorkItem): string | undefined {
+  const value = item.fields?.["Custom.Desarrollador1"];
   if (typeof value === "string") return value.trim() || undefined;
   if (typeof value === "object" && value !== null) {
     for (const key of ["uniqueName", "displayName"] as const) {
@@ -1151,11 +1154,11 @@ export class AzureTicketInfoService {
       ["System.Title", title],
       [TICKET_FIELDS.description, description],
     ]);
-    // A ticket belongs to the same sprint and the same person as the HU it
-    // delivers: the plan slices the work, never reassigns or reschedules it.
+    // A ticket runs in the same sprint as the HU it delivers and goes to its
+    // developer: the plan slices the work, it never reschedules or reroutes it.
     const iteration = text(parent, "System.IterationPath");
     if (iteration) fields.set("System.IterationPath", iteration);
-    const owner = assignee(parent);
+    const owner = developer(parent);
     if (owner) fields.set("System.AssignedTo", owner);
     if (input.estimate !== undefined) fields.set("Microsoft.VSTS.Scheduling.OriginalEstimate", input.estimate);
     if (input.assignee) fields.set("System.AssignedTo", input.assignee);

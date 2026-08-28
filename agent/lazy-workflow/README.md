@@ -826,9 +826,12 @@ bun run main.ts ticket-link-parent --parent 23438 --child 23459
 bun run main.ts ticket-link-predecessor --blocker 23459 --blocked 23460
 ```
 
-A created ticket inherits its HU's iteration and its assignee: the plan slices
-the work, it does not reschedule or reassign it. `--assignee` overrides the
-inherited identity.
+A created ticket inherits its HU's iteration and is assigned to the HU's
+`Desarrollador 1` (`Custom.Desarrollador1`), not to whoever the HU itself is
+assigned to — the HU answers to a lead, the ticket lands on the developer. The
+plan slices the work; it does not reschedule or reroute it. `--assignee`
+overrides the inherited identity, and a HU without a `Desarrollador 1` produces
+unassigned tickets rather than a guessed owner.
 
 Before creating, the adapter reads the work-item type's field catalog and fills
 the creation defaults the project defines and the invocation did not name —
