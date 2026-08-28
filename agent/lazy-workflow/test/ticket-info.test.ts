@@ -254,7 +254,7 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
       repository: { id: "repository-id", project: { id: "project-id" } },
     });
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "update") return "{}";
-    if (args[0] === "rest" && args.includes("patch")) return "{}";
+    if (args[0] === "rest" && args.includes("patch")) throw new Error("REST unavailable");
     if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify({
       pullRequestId: 99,
       status: "completed",
@@ -279,7 +279,11 @@ test("coordinator creates and verifies one exact HU-targeted pull request", asyn
   expect(JSON.parse(complete![complete!.indexOf("--body") + 1]!)).toEqual({
     status: "completed",
     lastMergeSourceCommit: { commitId: "source-merge-commit" },
+    completionOptions: { deleteSourceBranch: true },
   });
+  const fallback = commands.find((args) => args[0] === "repos" && args[1] === "pr" && args[2] === "update");
+  const deleteSourceBranch = fallback?.indexOf("--delete-source-branch") ?? -1;
+  expect(fallback?.slice(deleteSourceBranch, deleteSourceBranch + 2)).toEqual(["--delete-source-branch", "true"]);
 });
 
 test("coordinator creates the pull request in the participant repository, not the ticket's linked one", async () => {
@@ -909,6 +913,43 @@ test("ticket state setter rejects stale and unsupported transitions before Azure
   await expect(service.setState(51, "Done", "New")).rejects.toThrow("estado actual");
   await expect(service.setState(51, "Unknown", "Active")).rejects.toThrow("no soportado");
   await expect(service.setState(51, "Done", "Active")).rejects.toThrow("gates");
+});
+
+test("ticket state setter normalizes In Progress to the exact En progreso delivery state", async () => {
+  let state = "In Progress";
+  let revision = 4;
+  const patches: Array<Array<{ op: string; path: string; value?: unknown }>> = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: revision,
+      fields: { "System.WorkItemType": "Task", "System.State": state },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    if (args[0] === "boards") return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
+    });
+    if (args[0] === "rest" && args.includes("patch")) {
+      const patch = JSON.parse(args[args.indexOf("--body") + 1]!) as Array<{ op: string; path: string; value?: unknown }>;
+      patches.push(patch);
+      state = "En progreso";
+      revision += 1;
+      return JSON.stringify({ id: 51, rev: revision, fields: { "System.WorkItemType": "Task", "System.State": state } });
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  await expect(service.setState(51, "En progreso", "In Progress", false, 4)).resolves.toEqual({
+    ticket: 51,
+    state: "En progreso",
+    revision: 5,
+  });
+  expect(patches[0]).toEqual(expect.arrayContaining([
+    { op: "test", path: "/rev", value: 4 },
+    { op: "replace", path: "/fields/System.State", value: "En progreso" },
+  ]));
 });
 
 test("ticket state setter reaches Done from Scrum SAG's own states, not only the stock ones", async () => {

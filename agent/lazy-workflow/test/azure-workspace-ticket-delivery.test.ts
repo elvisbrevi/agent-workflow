@@ -158,6 +158,46 @@ test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket
   expect(harness.events.indexOf(`checkout:${repoB}`)).toBeLessThan(firstRun);
 });
 
+test("deliverAzureWorkspaceTicket mueve el ticket a En progreso antes de abrir la sesión", async () => {
+  const harness = createHarness({ terminal: false });
+  const stateCalls: Array<{ desiredState: string; expectedState: string; expectedRevision?: number }> = [];
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getState: async (id: number) => ({ ticket: id, state: "In Progress", revision: 4 }),
+      setState: async (_id, desiredState, expectedState, _allowCompletion, expectedRevision) => {
+        stateCalls.push({ desiredState, expectedState, expectedRevision });
+        harness.events.push(`state:${desiredState}`);
+        return { ticket, state: desiredState, revision: 5 };
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(stateCalls).toEqual([{ desiredState: "En progreso", expectedState: "In Progress", expectedRevision: 4 }]);
+  expect(harness.events.indexOf("state:En progreso")).toBeLessThan(harness.events.indexOf("opencode:run"));
+});
+
+test("deliverAzureWorkspaceTicket no inventa guardas si Azure omite estado o revisión", async () => {
+  const harness = createHarness({ terminal: false });
+  let stateWrites = 0;
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getState: async (id: number) => ({ ticket: id, state: null, revision: null }),
+      setState: async () => { stateWrites += 1; return { ticket, state: "En progreso", revision: 1 }; },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(stateWrites).toBe(0);
+  expect(harness.events).not.toContain("opencode:run");
+});
+
 test("deliverAzureWorkspaceTicket creates each PR against its own Azure repository in declared order", async () => {
   const harness = createHarness();
   let exit = -1;

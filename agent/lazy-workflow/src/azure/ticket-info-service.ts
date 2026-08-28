@@ -81,7 +81,7 @@ const STATE_TRANSITIONS: Record<string, readonly string[]> = {
   // the same direct-to-Done reach the stock "New"/"Active" states already have for automation.
   "En espera": ["En progreso", "En revisión", "Done", "Removido"],
   "En progreso": ["Active", "Resolved", "Done", "Removed", "En revisión", "Removido"],
-  "In Progress": ["Active", "Resolved", "Done", "Removed"],
+  "In Progress": ["Active", "En progreso", "Resolved", "Done", "Removed"],
   // "En revisión" is Scrum SAG's Resolved-category state for Task/Bug, the counterpart of the
   // stock "Resolved" above.
   "En revisión": ["En progreso", "Done", "Removido"],
@@ -1881,14 +1881,19 @@ export class AzureTicketInfoService {
         "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
         "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
         "--headers", "Content-Type=application/json",
-        "--body", JSON.stringify({ status: "completed", lastMergeSourceCommit: { commitId: lastMergeSourceCommit } }),
+        "--body", JSON.stringify({
+          status: "completed",
+          lastMergeSourceCommit: { commitId: lastMergeSourceCommit },
+          completionOptions: { deleteSourceBranch: true },
+        }),
         "--output", "json",
       ]);
     } catch (error) {
       try {
         await this.az([
           "repos", "pr", "update", "--id", `${id}`, "--organization", ORGANIZATION,
-          "--project", project, "--repository", repository, "--status", "completed", "--output", "json",
+          "--project", project, "--repository", repository, "--status", "completed",
+          "--delete-source-branch", "true", "--output", "json",
         ]);
       } catch (fallbackError) {
         throw new Error(`No se pudo completar el PR ${id}: ${sanitizeError(fallbackError)}`, { cause: error });

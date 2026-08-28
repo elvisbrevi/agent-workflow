@@ -124,7 +124,8 @@ incomplete.
    workspace resolves its primary repository here and links the ticket branch
    there before validating any manifest.
 6. `integrating`: the coordinator pushes the exact branch, creates or reuses one
-   PR, completes it, and persists PR/merge receipts before the next effect.
+   PR, completes it with Azure's source-branch deletion option, and persists
+   PR/merge receipts before the next effect.
 7. `evidencing`: upload missing digest-identified attachments, publish readable
    completion evidence, and set cumulative effort exactly once.
 8. `completing`: set `Done`, reread all gates, and persist verified completion.

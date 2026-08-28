@@ -362,6 +362,11 @@ declared base, an implicit base in `hu-branch-set`
   gates, recovery, and cleanup; OpenCode owns only scoped implementation,
   validation, review, commit, and completion-manifest generation — which it
   performs by running `ticket-manifest-set`, never by writing that JSON itself.
+  Before opening or resuming the coding session, the coordinator moves the fixed
+  ticket to exactly `En progreso` with the current state and revision as guards.
+  When it completes the canonical Azure PR, its completion options delete the
+  source ticket branch; later cleanup remains idempotent when Azure already
+  removed that remote ref.
   OpenCode emits
   `IMPLEMENTATION_READY`, after which the coordinator verifies completion, removes
   the completed ticket branch, and refreshes Azure before selecting the next ticket.

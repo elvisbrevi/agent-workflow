@@ -1796,6 +1796,19 @@ export class LazyWorkflowCli {
         await save();
       }
       if (checkpoint.phase === "started" || checkpoint.phase === "implementing") {
+        const state = await boundary.getState!(ticket);
+        const started = await this.ensureAzureTicketInProgress(ticket, state, !!checkpoint.receipts["ticket-state"], async (receipt) => {
+          if (receipt) {
+            const verified = checkpoint!.receipts["ticket-state"] ?? { verifiedAt: new Date(this.clock.now()).toISOString() };
+            checkpoint = { ...checkpoint!, intent: null, receipts: { ...checkpoint!.receipts, "ticket-state": verified } };
+          } else {
+            checkpoint = { ...checkpoint!, intent: { effect: "ticket-state", target: "En progreso" } };
+          }
+          await save();
+        }, async (expectedState, expectedRevision) => {
+          await boundary.setState!(ticket, "En progreso", expectedState, false, expectedRevision);
+        }, options);
+        if (!started) return 1;
         // Branch effects belong to the coordinator, so the session has to find every participant
         // already sitting on the ticket branch: manifest validation requires it and the session is
         // not allowed to switch branches itself. The single-repository path does this at the same
@@ -5068,28 +5081,30 @@ export class LazyWorkflowCli {
       reportAzureFailure("branch-preparation-failure", "started", options, `lazy-workflow: la rama de integración del ticket ${ticket} no coincide con la HU fijada; ejecución detenida.`, { ticket }, "preserved");
       return 1;
     }
-    if (checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
-      reportAzureFailure("manifest-mismatch", "reconciling", options, `lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`, { ticket }, "preserved");
-      return 1;
-    }
     if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch !== ticketBranch) {
       reportAzureFailure("manifest-mismatch", "reconciling", options, `lazy-workflow: el recibo de rama del ticket ${ticket} no coincide con Azure; ejecución detenida.`, { ticket }, "preserved");
       return 1;
     }
     await markPhase("started", { ticketBranch });
-    if (!checkpoint.receipts["ticket-state"] && stateInfo.state !== "En progreso" && stateInfo.state !== "In Progress") {
-      if (!this.huInfoService.setState) return 1;
+    const started = await this.ensureAzureTicketInProgress(ticket, stateInfo, !!checkpoint.receipts["ticket-state"], async (receipt) => {
+      if (receipt) {
+        const verified = checkpoint.receipts["ticket-state"] ?? { verifiedAt: new Date(now()).toISOString() };
+        checkpoint = { ...checkpoint, intent: null, receipts: { ...checkpoint.receipts, "ticket-state": verified } };
+        await save();
+      } else {
+        checkpoint = { ...checkpoint, intent: { effect: "ticket-state", target: "En progreso" } };
+        await save();
+      }
+    }, async (expectedState, expectedRevision) => {
       await track("ticket-state", () => this.huInfoService.setState!(
         ticket,
         "En progreso",
-        stateInfo.state ?? context!.ticket.state ?? "Active",
+        expectedState,
         false,
-        azureRevision ?? undefined,
+        expectedRevision,
       ).then(() => undefined), "En progreso");
-    } else {
-      checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-state": { verifiedAt: new Date(now()).toISOString() } } };
-      await save();
-    }
+    }, options);
+    if (!started) return 1;
     if (!this.huInfoService.setTicketBranch) return 1;
     if (checkpoint.receipts["ticket-branch"] && existingBranch?.branch === ticketBranch) {
       await track("ticket-branch", () => this.huInfoService!.setTicketBranch!(hu, ticket, ticketBranch!, options.workingDirectory).then(() => undefined), ticketBranch);
@@ -5291,6 +5306,34 @@ export class LazyWorkflowCli {
         resumePrompt = options.prompt;
       }
     }
+  }
+
+  private async ensureAzureTicketInProgress(
+    ticket: number,
+    state: { state: string | null; revision: number | null },
+    hasReceipt: boolean,
+    persist: (receipt: boolean) => Promise<void>,
+    transition: (expectedState: string, expectedRevision: number) => Promise<void>,
+    options: CliOptions,
+  ): Promise<boolean> {
+    if (hasReceipt && state.state !== "En progreso") {
+      reportAzureFailure("manifest-mismatch", "reconciling", options, `lazy-workflow: el recibo de estado del ticket ${ticket} no coincide con Azure; ejecución detenida.`, { ticket }, "preserved");
+      return false;
+    }
+    if (!hasReceipt && state.state !== "En progreso") {
+      if (state.state === null || state.revision === null) {
+        reportAzureFailure("claim-verification-failure", "started", options, `lazy-workflow: Azure no expone el estado y la revisión necesarios para mover el ticket ${ticket} a En progreso; ejecución detenida.`, { ticket }, "preserved");
+        return false;
+      }
+      if (!this.huInfoService.setState) {
+        reportAzureFailure("deterministic-completion-failure", "started", options, `lazy-workflow: el coordinador no expone la transición de estado del ticket ${ticket}; ejecución detenida.`, { ticket }, "preserved");
+        return false;
+      }
+      await persist(false);
+      await transition(state.state, state.revision);
+    }
+    if (!hasReceipt) await persist(true);
+    return true;
   }
 
   private async cleanupCompletedTicketBranch(
