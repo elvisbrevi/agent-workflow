@@ -1730,31 +1730,42 @@ export class LazyWorkflowCli {
       reportAzureFailure("argument-error", "reconciling", options, "lazy-workflow: la sesión no coincide con el checkpoint workspace Azure fijado.", {}, "preserved");
       return 1;
     }
-    const resolved = await this.resolveAzureWorkspaceTicket(hu, options, checkpoint);
-    if ("exit" in resolved) return resolved.exit;
-    const ticket = resolved.ticket;
+    const pinned = this.pinnedAzureWorkspaceTicket(options, checkpoint);
+    if (pinned && "exit" in pinned) return pinned.exit;
     // Fail closed before any external effect: the recovered scope must be the same repositories,
-    // in the same order, with the same remotes, for the same HU and ticket.
-    if (checkpoint) {
-      const mismatch = this.azureWorkspaceScopeMismatch(checkpoint, scope, hu, ticket);
+    // in the same order, with the same remotes, for the same HU and ticket. A pinned unit is the
+    // only one a checkpoint can carry, so this still precedes every effect below.
+    if (checkpoint && pinned) {
+      const mismatch = this.azureWorkspaceScopeMismatch(checkpoint, scope, hu, pinned.ticket);
       if (mismatch) {
         reportAzureFailure("workspace-scope-failure", "reconciling", options, `lazy-workflow: ${mismatch}; ejecución detenida.`, {}, "preserved");
         return 1;
       }
     }
     try {
-      await boundary.validateDirectTicketContext!(hu, ticket);
-      // Only the branch preparation below is a topology failure. The outer catch used to claim
+      // Only the branch preparation here is a topology failure. The outer catch used to claim
       // every later failure was one too, which sent the operator looking at branches when what
       // had actually stopped the run was an evidence file at the far end of the delivery.
       let topology: AzureWorkspaceBranchTopology;
-      let ticketTopology: AzureWorkspaceBranchTopology;
       try {
+        // The HU branch is prepared before an unpinned selection reads it, at the same point the
+        // single-repository run prepares its own: selection resolves the ticket against the HU's
+        // native Branch link, so a first delivery has nothing to select until this provisions it.
         topology = await this.huInfoService.prepareWorkspaceBranches({
           hu,
           repositories: scope.repositories.map(({ path, remote }) => ({ path, remote })),
           baseBranch: options.baseBranch,
         });
+      } catch (error) {
+        reportAzureFailure("topology-preparation-failure", "preparing", options, `lazy-workflow: no se pudo preparar la topología multi-repositorio Azure (${errorMessage(error)}); ejecución detenida.`, {}, checkpoint ? "preserved" : undefined);
+        return 1;
+      }
+      const resolved = pinned ?? await this.selectAzureWorkspaceTicket(hu, options, topology.integrationBranch);
+      if ("exit" in resolved) return resolved.exit;
+      const ticket = resolved.ticket;
+      await boundary.validateDirectTicketContext!(hu, ticket);
+      let ticketTopology: AzureWorkspaceBranchTopology;
+      try {
         ticketTopology = await this.huInfoService.prepareWorkspaceTicketBranches({
           hu,
           ticket,
@@ -1892,15 +1903,14 @@ export class LazyWorkflowCli {
   }
 
   /**
-   * The delivery unit of an Azure workspace run. A surviving checkpoint pins it, an explicit
-   * `--ticket` fixes it, and otherwise the run drains the HU's eligible children with the same
-   * selection single-repository `code --hu` applies (ADR-0028).
+   * The delivery unit an Azure workspace run already knows before touching anything: a surviving
+   * checkpoint pins it and an explicit `--ticket` fixes it. `null` means the run has to select,
+   * which needs the HU branch and therefore happens after branch preparation.
    */
-  private async resolveAzureWorkspaceTicket(
-    hu: number,
+  private pinnedAzureWorkspaceTicket(
     options: CliOptions,
     checkpoint: AzureWorkspaceCheckpoint | null,
-  ): Promise<{ ticket: number } | { exit: number }> {
+  ): { ticket: number } | { exit: number } | null {
     if (checkpoint) {
       // The checkpointed unit is immutable: a contradicting --ticket is an operator error, not a
       // reason to abandon the delivery already in flight.
@@ -1911,13 +1921,26 @@ export class LazyWorkflowCli {
       return { ticket: checkpoint.ticket };
     }
     if (options.ticket !== null) return { ticket: options.ticket };
+    return null;
+  }
+
+  /**
+   * The next unit of an unpinned workspace run: the HU's eligible children drained with the same
+   * selection single-repository `code --hu` applies (ADR-0028), against the integration branch
+   * branch preparation has already resolved.
+   */
+  private async selectAzureWorkspaceTicket(
+    hu: number,
+    options: CliOptions,
+    integrationBranch: string,
+  ): Promise<{ ticket: number } | { exit: number }> {
     if (!this.huInfoService.getAutocodeState) {
       reportAzureFailure("tracker-read-failure", "selecting", options, "El servicio Azure no expone la selección de tickets pendientes de la HU");
       return { exit: 1 };
     }
     let state: AutocodeState;
     try {
-      state = await this.huInfoService.getAutocodeState(hu);
+      state = await this.huInfoService.getAutocodeState(hu, integrationBranch);
     } catch (error) {
       reportAzureFailure("tracker-read-failure", "selecting", options, `lazy-workflow: no se pudo seleccionar el siguiente ticket de la HU ${hu} (${errorMessage(error)}); ejecución detenida.`);
       return { exit: 1 };

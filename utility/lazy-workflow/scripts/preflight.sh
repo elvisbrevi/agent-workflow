@@ -117,7 +117,7 @@ if [[ -n "$HU" ]]; then
     probe ticket-completion ticket-completion-info --hu "$HU" --ticket "$TICKET"
   fi
   if [[ "$BRANCH_JSON" =~ \"branch\"[[:space:]]*:[[:space:]]*null ]]; then
-    add_note "HU ${HU} has no integration branch link: the first 'code --hu ${HU}' needs --base-branch <name>."
+    add_note "HU ${HU} has no integration branch link: the first 'code --hu ${HU}' provisions hu/${HU} from master or main; pass --base-branch <name> to branch from anything else."
   fi
 else
   SCOPE="github"

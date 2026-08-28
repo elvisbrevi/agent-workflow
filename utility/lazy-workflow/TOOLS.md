@@ -16,7 +16,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | The question | The tool |
 |---|---|
 | What is this HU, and what hangs off it? | `hu-info`, `hu-children-info` |
-| Does the HU have an integration branch? Do I need `--base-branch`? | `hu-branch-info` |
+| Does the HU have an integration branch? Which base would a first delivery use? | `hu-branch-info` |
 | Everything known about one ticket | `ticket-info --hu --ticket` |
 | One facet of a ticket | `ticket-{description,state,effort,attachment,evidence,type}-info` |
 | Why is this ticket not `Done`? | `ticket-completion-info --hu --ticket` — prints the unmet gates |
@@ -42,7 +42,7 @@ exactly these and returns them as one JSON document.
 # Before plan/code --hu
 lazy-workflow hu-info         --hu 23438
 lazy-workflow hu-children-info --hu 23438     # what is already published
-lazy-workflow hu-branch-info  --hu 23438      # "branch": null → the first code run needs --base-branch
+lazy-workflow hu-branch-info  --hu 23438      # "branch": null → the first code run provisions hu/23438 from master or main
 
 # Before code in GitHub scope
 lazy-workflow github-auth-info    --working-directory /repo
@@ -138,6 +138,9 @@ Five rules govern these:
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It
 never resets, cleans or discards worktree changes — a dirty worktree fails closed.
+`hu-branch-ensure` is the provisioning half and is the one that defaults: with no
+`--base-branch` it creates `hu/<HU>` from `master`, or `main` when the repository
+has no `master`, exactly as `code --hu` does.
 
 ## GitHub queue
 

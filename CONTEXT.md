@@ -338,9 +338,22 @@ scope, never a reason to leave a plan unpublished.
 _Avoid_: Azure multi-repository ticket delivery run
 
 A fresh **Azure ticket delivery run** first queries the HU's native integration
-branch and verifies or provisions `hu/<HU>` through structured
-`--base-branch <name>` input before selecting a ticket, writing a checkpoint, or
-starting OpenCode. The operator prompt is not a branch-management interface.
+branch and verifies or provisions `hu/<HU>` from a **delivery base branch**
+before selecting a ticket, writing a checkpoint, or starting OpenCode. Single
+and multi-repository runs prepare it at that same point, because selection
+resolves the ticket against that branch. The operator prompt is not a
+branch-management interface.
+
+**Delivery base branch**:
+The remote branch a delivery run provisions `hu/<HU>` from: the structured
+`--base-branch <name>` input when the operator declares one, and otherwise the
+first of `master` or `main` that exists remotely in that repository, resolved
+per participant repository so a workspace whose repositories disagree still
+provisions each from its own trunk. A repository with neither trunk fails closed
+asking for `--base-branch`. It applies only to provisioning: `hu-branch-set`
+still assigns nothing without an explicit base.
+_Avoid_: a base guessed from another repository, a default that replaces a
+declared base, an implicit base in `hu-branch-set`
 
 **Azure ticket delivery run**:
   A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
@@ -444,14 +457,18 @@ ticket Branch ArtifactLink. The anchor is the existing HU Branch ArtifactLink
 when present and unambiguous, otherwise the first declared repository. The
 ticket primary anchor is later selected as the first repository that actually
 produces changes.
-_Avoid_: per-repository native Branch links, guessed base branches
+_Avoid_: per-repository native Branch links
 
 **Azure HU integration branch preparation**:
 The multi-repository preparation that resolves the anchor, verifies or
 provisions `hu/<HU>` in each participant repository from a checked, clean
-worktree and the explicit remote base branch, and writes the single native
-Branch ArtifactLink only in the anchor repository.
-_Avoid_: multiple native HU Branch links, implicit base branch
+worktree and that repository's delivery base branch, and writes the single
+native Branch ArtifactLink only in the anchor repository. It runs before ticket
+selection, so an unlinked HU is provisioned rather than reported as a queue with
+nothing eligible. An anchor already linked to a branch that is gone from its own
+repository fails closed as a broken link, never provisioned from a base.
+_Avoid_: multiple native HU Branch links, selecting a ticket before the HU
+branch exists
 
 **Explicit command**:
 The first argument must be a supported workflow command: `plan`, `code`,

@@ -254,6 +254,39 @@ test("ensureIntegrationBranch prepara hu/HU desde la base estructurada", async (
   expect(fixture.patchBodies).toHaveLength(1);
 });
 
+test("ensureIntegrationBranch provisiona desde master cuando el operador no declara base", async () => {
+  const fixture = provisioningFixture({
+    desiredBranch: "refs/heads/hu/125",
+    baseBranch: "refs/heads/master",
+    verificationSha: "1".repeat(40),
+  });
+
+  await expect(fixture.service.ensureIntegrationBranch(hu, "/repo")).resolves.toBe("refs/heads/hu/125");
+  const fetchCommand = fixture.gitCommands.find((args) => args[0] === "fetch")!;
+  expect(fetchCommand.at(-1)).toMatch(/^\+refs\/heads\/master:refs\/lazy-workflow\//);
+  expect(fixture.patchBodies).toHaveLength(1);
+});
+
+test("ensureIntegrationBranch cae en main cuando el repositorio no tiene master", async () => {
+  const fixture = provisioningFixture({
+    desiredBranch: "refs/heads/hu/125",
+    baseBranch: "refs/heads/main",
+    verificationSha: "1".repeat(40),
+  });
+
+  await expect(fixture.service.ensureIntegrationBranch(hu, "/repo")).resolves.toBe("refs/heads/hu/125");
+  const fetchCommand = fixture.gitCommands.find((args) => args[0] === "fetch")!;
+  expect(fetchCommand.at(-1)).toMatch(/^\+refs\/heads\/main:refs\/lazy-workflow\//);
+});
+
+test("ensureIntegrationBranch exige base cuando no hay master ni main y no escribe Azure", async () => {
+  const fixture = provisioningFixture({ desiredBranch: "refs/heads/hu/125", baseExists: false });
+
+  await expect(fixture.service.ensureIntegrationBranch(hu, "/repo")).rejects.toThrow("--base-branch");
+  expect(fixture.patchBodies).toHaveLength(0);
+  expect(fixture.gitCommands.some((args) => args[0] === "push")).toBe(false);
+});
+
 test("hu-branch-set exige base explícita y no escribe Azure si falta la base", async () => {
   const fixture = provisioningFixture();
 

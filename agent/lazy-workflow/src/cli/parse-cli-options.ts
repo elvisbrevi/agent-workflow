@@ -358,7 +358,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("fallback-wait-max", positiveIntegerOption("--fallback-wait-max", "Tope total en segundos del ciclo de espera y reintento; alcanzado, el run falla cerrado.", DEFAULT_FALLBACK_WAIT_MAX_SECONDS))
     .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
     .option("branch", stringOption("--branch", "Rama del repositorio (solo Azure)."))
-    .option("base-branch", stringOption("--base-branch", "Rama base remota para crear la rama HU (solo Azure)."))
+    .option("base-branch", stringOption("--base-branch", "Rama base remota para crear la rama HU; sin ella se usa master o main (solo Azure)."))
     .option("ticket", positiveIntegerOption("--ticket", "Identificador del ticket Azure."))
     .option("pr", positiveIntegerOption("--pr", "Identificador del pull request."))
     .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
@@ -714,7 +714,7 @@ function renderHelp(parser: YargsInstance): string {
     autoHelp.trimEnd(),
     "",
     "Notas:",
-    "  code: --base-branch solo es obligatorio al crear hu/<HU> por primera vez",
+    "  code: --base-branch solo aplica al crear hu/<HU> por primera vez; sin declararla se usa master o main de cada repositorio",
     "  code: --working-directory CSV acepta --hu para preparar la topología multi-repositorio Azure",
     "  code: --ticket fija una unica unidad de entrega; omitirlo drena los Task y Bug hijos elegibles de la HU",
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",

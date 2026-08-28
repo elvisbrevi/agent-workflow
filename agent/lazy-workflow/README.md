@@ -795,9 +795,13 @@ Authentication continuation is signaled with exit code 0 and
 
 Before a fresh `code` run selects a ticket or writes a checkpoint, the
 coordinator queries the HU's native Branch link. It reuses a valid linked
-branch, or verifies/creates `hu/<HU>` in the selected repository. Creating a
-missing branch requires the structured `--base-branch <name>` option; the
-operator prompt is never parsed for branch selection.
+branch, or verifies/creates `hu/<HU>` in every selected repository — selection
+resolves the ticket against that branch, so the preparation precedes it in
+single- and multi-repository scope alike. A missing branch is created from the
+structured `--base-branch <name>` option, or from that repository's `master`, or
+`main` when it has no `master`, when the option is absent; a repository with
+neither trunk fails closed. The operator prompt is never parsed for branch
+selection.
 
 To plan an Azure HU:
 
@@ -933,8 +937,9 @@ bun run main.ts code --hu 23438 --base-branch main \
   --working-directory /path/to/repository
 ```
 
-Omit `--base-branch` when the HU is already linked or the expected remote
-`hu/23438` branch already exists. A branch preflight failure stops once,
+Omit `--base-branch` when the HU is already linked, when the expected remote
+`hu/23438` branch already exists, or when `master`/`main` is the right base —
+pass it to branch from anything else. A branch preflight failure stops once,
 without selecting a ticket, writing a checkpoint, or starting OpenCode.
 
 The session produces that manifest with `ticket-manifest-set`, never by writing

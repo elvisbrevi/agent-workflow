@@ -19,6 +19,8 @@ const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const WORK_ITEM_API_VERSION = "7.1";
 const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
+/** The trunks a delivery run provisions `hu/<HU>` from when no `--base-branch` was declared. */
+const DEFAULT_BASE_BRANCHES = ["refs/heads/master", "refs/heads/main"] as const;
 const COMPLETION_EVIDENCE_FIELDS = [
   "Custom.CompletionEvidence",
   "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71",
@@ -749,7 +751,25 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (linked.branch) {
       return (await this.setIntegrationBranch(hu, linked.branch, workingDirectory)).branch;
     }
-    return (await this.setIntegrationBranch(hu, `refs/heads/hu/${hu}`, workingDirectory, baseBranch)).branch;
+    // Provisioning a first delivery is not the same decision as assigning a branch: the operator's
+    // `--base-branch` wins, and without one the repository's own trunk stands in rather than
+    // stopping the run. `hu-branch-set` keeps demanding an explicit base.
+    const base = baseBranch?.trim() ? baseBranch : await this.resolveDefaultBaseBranch(workingDirectory);
+    return (await this.setIntegrationBranch(hu, `refs/heads/hu/${hu}`, workingDirectory, base)).branch;
+  }
+
+  /**
+   * The base an absent `--base-branch` resolves to: the first declared trunk that exists remotely
+   * in that repository. It is probed per repository so a workspace whose participants disagree on
+   * `master` and `main` still provisions each one from its own trunk.
+   */
+  private async resolveDefaultBaseBranch(workingDirectory: string): Promise<string> {
+    for (const candidate of DEFAULT_BASE_BRANCHES) {
+      if (await remoteBranchSha(this.git, candidate, workingDirectory)) return candidate;
+    }
+    throw new Error(
+      `El repositorio ${workingDirectory} no tiene remotamente ${DEFAULT_BASE_BRANCHES.join(" ni ")}; indique --base-branch <name>`,
+    );
   }
 
   async prepareWorkspaceBranches(options: {
@@ -784,18 +804,20 @@ export class AzureAutocodeService implements AutocodeAzureService {
     }
 
     const anchor = matchedAnchor ?? identities[0]!;
-    const baseBranch = options.baseBranch?.trim() ? normalizeBranch(options.baseBranch).ref : null;
-    if (!matchedAnchor && !baseBranch) {
-      throw new Error(`La HU ${options.hu} no tiene una rama de integración vinculada; indique --base-branch <name>`);
-    }
+    const declaredBase = options.baseBranch?.trim() ? normalizeBranch(options.baseBranch).ref : null;
 
     const plan = await Promise.all(identities.map(async (identity) => {
       const isAnchor = identity.workingDirectory === anchor.workingDirectory;
-      const effectiveBase = matchedAnchor && isAnchor ? null : baseBranch;
       const existed = !!(await remoteBranchSha(this.git, integrationBranch, identity.workingDirectory));
-      const requiresBase = !existed && !!effectiveBase;
-      const baseSha = requiresBase
-        ? await remoteBranchSha(this.git, normalizeBranch(effectiveBase!).ref, identity.workingDirectory)
+      // An already linked anchor is prepared on the branch the HU itself names, never provisioned
+      // from a base. Every other repository provisions that same branch from the declared base, or
+      // from its own trunk when the operator declared none.
+      const provisions = !existed && !(matchedAnchor && isAnchor);
+      const effectiveBase = provisions
+        ? declaredBase ?? await this.resolveDefaultBaseBranch(identity.workingDirectory)
+        : null;
+      const baseSha = effectiveBase
+        ? await remoteBranchSha(this.git, effectiveBase, identity.workingDirectory)
         : null;
       const status = await this.git(["status", "--porcelain", "--untracked-files=no"], identity.workingDirectory);
       return { identity, isAnchor, effectiveBase, existed, baseSha, status };
@@ -803,7 +825,9 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
     for (const { identity, existed, effectiveBase, baseSha, status } of plan) {
       if (!existed && !effectiveBase) {
-        throw new Error(`La rama ${integrationBranch} no existe en ${identity.workingDirectory} y no se proporcionó base`);
+        // Only a linked anchor reaches this: the HU names a branch that is gone from the very
+        // repository that owns its link, which is a broken link to repair, not a missing base.
+        throw new Error(`La rama ${integrationBranch} vinculada a la HU ${options.hu} no existe en ${identity.workingDirectory}`);
       }
       if (!existed && !baseSha) {
         throw new Error(`La rama base ${normalizeBranch(effectiveBase!).ref} no existe remotamente`);

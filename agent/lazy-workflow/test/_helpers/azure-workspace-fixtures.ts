@@ -261,33 +261,36 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           return huChildren.map((child) => ({ id: child.id, type: child.type, state: child.state }));
         },
         hasOpenDeliveryChildren: async () => huChildren.length > 0,
-        prepareWorkspaceBranches: async ({ hu: requestedHu, repositories }) => ({
-          hu: requestedHu,
-          ticket: null,
-          integrationBranch,
-          anchor: {
-            workingDirectory: repositories[0]!.path,
-            remote: repositories[0]!.remote,
-            repository: basename(repositories[0]!.path),
-            project: teamProject,
-            projectId: "project-id",
-            repositoryId: `${basename(repositories[0]!.path)}-id`,
-          },
-          ticketBranchAnchor: null,
-          units: repositories.map((repository) => ({
-            path: repository.path,
-            remote: repository.remote,
-            repository: basename(repository.path),
-            repositoryId: `${basename(repository.path)}-id`,
-            projectId,
-            project: teamProject,
+        prepareWorkspaceBranches: async ({ hu: requestedHu, repositories }) => {
+          events.push("prepare-branches");
+          return {
+            hu: requestedHu,
+            ticket: null,
             integrationBranch,
-            ticketBranch: null,
-            integrationBranchCreated: false,
-            ticketBranchCreated: false,
+            anchor: {
+              workingDirectory: repositories[0]!.path,
+              remote: repositories[0]!.remote,
+              repository: basename(repositories[0]!.path),
+              project: teamProject,
+              projectId: "project-id",
+              repositoryId: `${basename(repositories[0]!.path)}-id`,
+            },
             ticketBranchAnchor: null,
-          })),
-        }),
+            units: repositories.map((repository) => ({
+              path: repository.path,
+              remote: repository.remote,
+              repository: basename(repository.path),
+              repositoryId: `${basename(repository.path)}-id`,
+              projectId,
+              project: teamProject,
+              integrationBranch,
+              ticketBranch: null,
+              integrationBranchCreated: false,
+              ticketBranchCreated: false,
+              ticketBranchAnchor: null,
+            })),
+          };
+        },
         prepareWorkspaceTicketBranches: async ({ repositories, ticket: requestedTicket }) => ({
           hu,
           ticket: requestedTicket,

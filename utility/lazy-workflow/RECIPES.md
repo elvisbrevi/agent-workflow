@@ -18,7 +18,7 @@ lazy-workflow plan --hu 23438 --normas-sag \
   --working-directory /repo
 
 # 3. Confirm what was published, and whether the HU has an integration branch:
-#    a "branch": null in the preflight means step 4 needs --base-branch
+#    a "branch": null in the preflight means step 4 will create hu/23438 itself
 scripts/preflight.sh --hu 23438 --working-directory /repo
 
 # 4. Deliver the published Task and Bug tickets, one fresh session each
@@ -27,7 +27,9 @@ lazy-workflow code --hu 23438 --normas-sag --base-branch main \
   --working-directory /repo
 ```
 
-Drop `--base-branch` once `hu/23438` exists or the HU is already linked. Drop
+Drop `--base-branch` once `hu/23438` exists, the HU is already linked, or the HU
+should simply branch from `master`/`main` — it is only needed to branch from
+something else, such as `develop`. Drop
 `--normas-sag` on either run to keep that phase away from SAG sources entirely —
 it is opt-in per run, and `plan --normas-sag` does not imply `code --normas-sag`.
 

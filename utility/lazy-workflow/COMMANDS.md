@@ -42,7 +42,7 @@ Authorization header, never persisted and never sent to the agent.
 | `--issue <id>` | SAG only | The explicit tracker item under review, verification or deployment |
 | `--ticket <id>` | Azure workspace `code`, `ticket-*` tools | The delivery work item; optional for `code`, where omitting it drains the HU |
 | `--branch <name>` | Azure flows | Rejected in GitHub scope |
-| `--base-branch <name>` | Azure flows | Required only when creating `hu/<HU>` for the first time |
+| `--base-branch <name>` | Azure flows | Applies only when creating `hu/<HU>` for the first time; without it the base is `master`, or `main` when the repository has no `master` |
 | `--normas-sag` | `plan`, `code` | Loads the SAG norms of the phase |
 | `--environment <dev\|test\|qa>` | `deploy-sag` | Default `dev`; PROD and aliases fail closed |
 | `--working-directory <path[,path...]>` | all | Defaults to cwd; a CSV makes it a workspace run (`plan`/`code` only) |

@@ -12,8 +12,8 @@ in the same run until the queue is empty or blocked. The coordinator emits the
 completion markers only after each verified delivery. Neither uses Azure tools.
 For an Azure HU planning run, use
 `plan --hu <ID>` and `--working-directory <path>`. Use `code --hu <ID> [--base-branch <name>]` to
-deliver eligible tickets sequentially; a fresh run preflights the HU branch before
-selecting a ticket. Use `hu-info --hu <ID>` to inspect HU data,
+deliver eligible tickets sequentially; a fresh run prepares the HU branch before
+selecting a ticket, from `--base-branch` or from `master`/`main` when it is absent. Use `hu-info --hu <ID>` to inspect HU data,
 and `hu-branch-set --hu <ID> --branch <name> [--base-branch <name>] --working-directory <path>` to
 assign or create an HU branch from an explicit remote base. Read-only and branch-assignment
 commands do not start OpenCode. Missing or unsupported subcommands print help

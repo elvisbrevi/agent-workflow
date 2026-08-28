@@ -320,13 +320,51 @@ test("prepareWorkspaceBranches falla cerrado cuando la rama vinculada no está e
   expect(fixture.pushCommands).toHaveLength(0);
 });
 
-test("prepareWorkspaceBranches exige una base explícita para crear la primera rama HU", async () => {
+test("prepareWorkspaceBranches crea la primera rama HU desde el tronco cuando no hay base declarada", async () => {
   const fixture = workspaceFixture();
+
+  const topology = await fixture.service.prepareWorkspaceBranches({
+    hu,
+    repositories: fixture.repositories,
+  });
+
+  expect(topology.integrationBranch).toBe(integrationBranch);
+  expect(topology.units.every(({ integrationBranchCreated }) => integrationBranchCreated)).toBe(true);
+  expect(fixture.fetchCommands.map(({ args }) => args.at(-1)!.split(":")[0])).toEqual([
+    `+${baseBranch}`,
+    `+${baseBranch}`,
+  ]);
+  expect(new Set(fixture.pushCommands.map(({ repository }) => repository))).toEqual(new Set([remoteUrlA, remoteUrlB]));
+});
+
+test("prepareWorkspaceBranches resuelve el tronco por repositorio y prefiere master sobre main", async () => {
+  const fixture = workspaceFixture({
+    repositories: [
+      { remoteUrl: remoteUrlA, remoteBranches: { "refs/heads/master": baseSha, [baseBranch]: baseSha } },
+      { remoteUrl: remoteUrlB, remoteBranches: { [baseBranch]: baseSha } },
+    ],
+  });
+
+  await fixture.service.prepareWorkspaceBranches({ hu, repositories: fixture.repositories });
+
+  expect(fixture.fetchCommands.map(({ repository, args }) => [repository, args.at(-1)!.split(":")[0]])).toEqual([
+    [remoteUrlA, "+refs/heads/master"],
+    [remoteUrlB, `+${baseBranch}`],
+  ]);
+});
+
+test("prepareWorkspaceBranches falla cerrado si un repositorio no tiene master ni main", async () => {
+  const fixture = workspaceFixture({
+    repositories: [
+      { remoteUrl: remoteUrlA, remoteBranches: { [baseBranch]: baseSha } },
+      { remoteUrl: remoteUrlB, remoteBranches: { "refs/heads/develop": baseSha } },
+    ],
+  });
 
   await expect(fixture.service.prepareWorkspaceBranches({
     hu,
     repositories: fixture.repositories,
-  })).rejects.toThrow("base");
+  })).rejects.toThrow("--base-branch");
   expect(fixture.patchBodies).toHaveLength(0);
   expect(fixture.pushCommands).toHaveLength(0);
 });

@@ -44,7 +44,7 @@ fires now when the checkpoint's issue is genuinely still open — no manual
 | `--working-directory CSV solo se permite con plan o code` | Workspace runs are planning and delivery only |
 | `runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo` | `--ticket` is optional, but a supplied one must be a positive integer |
 | `el checkpoint workspace Azure pertenece al ticket N` | A `--ticket` contradicting the delivery in flight; drop it or pass that one |
-| `no hay un ticket elegible todavía para la HU N` | The queue is blocked: a predecessor has not landed. `hu-children-info --hu <id>` shows the graph |
+| `no hay un ticket elegible todavía para la HU N` | The queue is blocked: every pending child waits on a predecessor that has not landed. `hu-children-info --hu <id>` shows the graph |
 | `--commit requiere el nombre de objeto completo` | Full 40+ hex object name, never abbreviated |
 
 ## The delivery stopped with unmet completion gates
@@ -69,11 +69,17 @@ they say so, and rerunning after fixing the credential is enough.
 
 ## Branch preflight failures
 
-A `code --hu` run queries the HU's native Branch link before selecting anything.
+A `code --hu` run prepares the HU's native Branch link before selecting
+anything, in single- and multi-repository scope alike.
 
-- **No link and no `hu/<HU>`** → supply `--base-branch <name>` once, or create
-  the link deliberately with
+- **No link and no `hu/<HU>`** → the run provisions it from `master`, or `main`
+  when the repository has no `master`. Supply `--base-branch <name>` to branch
+  from anything else, or create the link deliberately with
   `hu-branch-set --hu <id> --branch <name> --base-branch <name> --working-directory <path>`.
+- **A repository with neither `master` nor `main`** → the run stops asking for
+  `--base-branch <name>`; pass the trunk that repository actually uses.
+- **A link whose branch no longer exists in the anchor repository** → the run
+  stops rather than recreating it: repair the link, or restore the branch.
 - **A malformed, multiple or conflicting link** → `hu-branch-info --hu <id>`
   shows what Azure holds; fix it there. Recovery never guesses, resets or
   force-switches a branch.

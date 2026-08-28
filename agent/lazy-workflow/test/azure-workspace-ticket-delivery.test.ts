@@ -496,6 +496,30 @@ test("code --hu without --ticket drains the HU's eligible children across the wo
   expect(await harness.readCheckpoint()).toBeNull();
 });
 
+test("code --hu without --ticket prepares the HU branch before selecting against it", async () => {
+  const harness = createHarness();
+  let selectedAgainst: string | undefined = "unset";
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getAutocodeState: async (_requestedHu: number, branch?: string) => {
+        harness.events.push("select");
+        selectedAgainst = branch;
+        return { context: null, pending: false };
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  // A first delivery has no Branch ArtifactLink yet, so selection can only resolve a ticket once
+  // preparation has provisioned and linked the HU branch.
+  expect(harness.events.indexOf("prepare-branches")).toBeGreaterThanOrEqual(0);
+  expect(harness.events.indexOf("prepare-branches")).toBeLessThan(harness.events.indexOf("select"));
+  expect(selectedAgainst).toBe(integrationBranch);
+});
+
 test("code --hu without --ticket reports an empty queue without delivering anything", async () => {
   const harness = createHarness();
   let exit = -1;

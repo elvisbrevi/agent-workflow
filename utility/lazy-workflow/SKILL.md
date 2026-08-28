@@ -47,7 +47,7 @@ scripts/preflight.sh --hu 23438 --working-directory /repo    # Azure HU scope
 ```
 
 It runs only read-only tools, prints one JSON document with every probe and a
-`notes` array (for example, that this HU still needs `--base-branch`), and
+`notes` array (for example, which base this HU would branch from), and
 resolves the binary itself — `LAZY_WORKFLOW_BIN`, then the launcher on `PATH`,
 then `bun` against the agent source.
 
@@ -101,9 +101,13 @@ queue is empty or blocked. Between them, read what `plan` actually published
 (`hu-children-info`, or `github-issue-list`) — a plan that published nothing
 turns the delivery run into an expensive no-op.
 
-`code --hu` needs `--base-branch <name>` **only** on the first delivery, when the
-HU has no branch link and `hu/<HU>` does not exist. `hu-branch-info --hu <id>`
-answers that: a `"branch": null` means the flag is required.
+`--base-branch <name>` applies to `code --hu` **only** on the first delivery,
+when the HU has no branch link and `hu/<HU>` does not exist — `hu-branch-info
+--hu <id>` answers that with `"branch": null`. It is optional: without it the run
+provisions `hu/<HU>` from `master`, or `main` when the repository has no
+`master`, resolving that per repository in a multi-repository run. Declare it
+when the HU must branch from anything else (`develop`, a release branch), or
+when a repository has neither trunk — that case fails closed asking for it.
 
 ## The operator prompt is supplemental
 
