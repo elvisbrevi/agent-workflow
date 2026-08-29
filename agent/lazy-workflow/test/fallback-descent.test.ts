@@ -530,3 +530,50 @@ test("el checkpoint conserva el escalón completo, modelo y variante, para recup
   expect(descended?.model).toBe("provider/respaldo");
   expect(descended?.variant).toBe("medium");
 });
+
+test("la reanudación sin marcador se queda en el escalón descendido, no vuelve al primario", async () => {
+  // Descender y luego reanudar con el modelo declarado dejaría al escalón agotado
+  // recibiendo el intento extra que ADR-0032 concede al escalón en curso.
+  const agents = scriptedAgents({
+    run: [exhausted("provider/primario")],
+    resume: [agentResult("still working"), terminal()],
+  });
+
+  const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"]);
+
+  expect(code).toBe(0);
+  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual(["provider/respaldo", "provider/respaldo"]);
+  expect(agents.resumed.map(({ overrides }) => overrides.variant)).toEqual(["medium", "medium"]);
+});
+
+test("la recuperación que desciende reanuda el intento extra en el escalón descendido y lo checkpointea entero", async () => {
+  const agents = scriptedAgents({
+    run: [],
+    resume: [new AgentExhaustionError(agentResult("sin cupo"), { cli: "OpenCode", model: "provider/primario", cause: "rate_limit" }), agentResult("still working"), terminal()],
+  });
+  const store = checkpointStore();
+  await store.write({
+    schemaVersion: 2,
+    cli: "opencode",
+    workflow: "github-code",
+    repository: "owner/repo",
+    issue: 178,
+    phase: "implementing",
+    branch: "refs/heads/issue/178",
+    sessionId: SESSION,
+    commit: null,
+    pullRequest: null,
+    receipts: {},
+    baseBranch: "refs/heads/main",
+    manifestPath: "/tmp/lazy-workflow-fake-manifest-178.json",
+  });
+
+  await runDelivery(agents, ["--session", SESSION, "--fallback", "opencode:provider/respaldo:medium"], store);
+
+  // El intento extra pertenece al escalón en curso, y el checkpoint no puede quedar cruzado:
+  // el CLI descendido con el modelo del primario.
+  expect(agents.resumed.at(-1)?.overrides).toEqual({ model: "provider/respaldo", variant: "medium" });
+  const persisted = store.written.filter(({ sessionId }) => sessionId === SESSION).at(-1);
+  expect(persisted?.model).toBe("provider/respaldo");
+  expect(persisted?.variant).toBe("medium");
+});

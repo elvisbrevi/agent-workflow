@@ -2353,3 +2353,163 @@ test("la evidencia HTTP del ticket 23579 vuelve a ser verificable", async () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("ticket-info lee la rama del ticket del PR que la integró cuando el merge ya la borró", async () => {
+  // Completar el PR con deleteSourceBranch borra la rama del ticket (ADR-0010) y Azure
+  // retira con ella el Branch ArtifactLink. Dar el ticket por "sin rama" en ese punto
+  // dejaba el manifest inverificable y los gates incumplidos con la entrega ya mergeada.
+  const service = new AzureTicketInfoService(async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) {
+      return JSON.stringify({
+        id: 23438,
+        fields: { "System.WorkItemType": "User Story", "System.Title": "HU", "System.TeamProject": "Team" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/_apis/wit/workItems/51" },
+          { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+        ],
+      });
+    }
+    if (args[0] === "boards" && args.includes("51")) {
+      return JSON.stringify({
+        id: 51,
+        rev: 9,
+        fields: { "System.WorkItemType": "Task", "System.Title": "Ticket", "System.State": "Active" },
+        relations: [{
+          rel: "ArtifactLink",
+          url: "vstfs:///Git/PullRequestId/project-id%2Frepository-id%2F99",
+          attributes: { name: "Pull Request" },
+        }],
+      });
+    }
+    if (args[0] === "repos" && args[1] === "pr") {
+      if (args.includes("work-item")) return JSON.stringify([51]);
+      return JSON.stringify([{
+        pullRequestId: 99,
+        status: "completed",
+        mergeStatus: "succeeded",
+        sourceRefName: "refs/heads/ticket/51",
+        targetRefName: "refs/heads/hu/23438",
+        lastMergeCommit: { commitId: "merge-commit" },
+        repository: { id: "repository-id", project: { id: "project-id" } },
+      }]);
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  const info = await service.getTicketInfo(23438, 51);
+
+  expect(info.branch).toBe("refs/heads/ticket/51");
+  expect(info.canonicalPullRequest).toBe(99);
+  expect(info.gates.unmet).not.toContain("completed-hu-targeted-pr");
+  expect(info.gates.unmet).not.toContain("native-pr-association");
+});
+
+/** Un ticket cuya rama ya borró el merge: sin Branch ArtifactLink, con su PR ya integrado. */
+function mergedTicketFixture(): (args: string[]) => Promise<string> {
+  let associated = false;
+  const pullRequest = {
+    pullRequestId: 99,
+    status: "completed",
+    mergeStatus: "succeeded",
+    sourceRefName: "refs/heads/ticket/51",
+    targetRefName: "refs/heads/hu/23438",
+    lastMergeCommit: { commitId: "merge-commit" },
+    lastMergeSourceCommit: { commitId: "source-merge-commit" },
+    repository: { id: "repository-id", project: { id: "project-id" } },
+  };
+  return async (args) => {
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Team" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+        { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+      ],
+    });
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task" },
+      relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" }],
+    });
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "show") return JSON.stringify(pullRequest);
+    if (args[0] === "repos" && args[1] === "pr" && args[2] === "list") return JSON.stringify([pullRequest]);
+    if (args[0] === "repos" && args[2] === "work-item" && args[3] === "add") {
+      associated = true;
+      return "{}";
+    }
+    if (args[0] === "repos" && args.includes("work-item")) return JSON.stringify(associated ? [51] : []);
+    if (args[0] === "boards" && args[1] === "work-item" && args[2] === "update") return "{}";
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  };
+}
+
+test("el PR se asocia aunque el merge ya haya borrado la rama del ticket", async () => {
+  // El coordinador asocia el PR después de completarlo, y completar borra la rama: exigir
+  // el Branch ArtifactLink ahí dejaba la asociación imposible con el trabajo ya integrado.
+  const service = new AzureTicketInfoService(mergedTicketFixture());
+
+  await expect(service.linkPullRequest(23438, 51, 99)).resolves.toEqual({
+    hu: 23438,
+    ticket: 51,
+    pullRequest: 99,
+    mergeCommit: "merge-commit",
+  });
+});
+
+test("el PR de otra rama sigue rechazado cuando el ticket no tiene rama vinculada", async () => {
+  const az = mergedTicketFixture();
+  const service = new AzureTicketInfoService(async (args) => {
+    const payload = await az(args);
+    return args[0] === "repos" && args[1] === "pr" && (args[2] === "show" || args[2] === "list")
+      ? payload.replaceAll("refs/heads/ticket/51", "refs/heads/feature/otra")
+      : payload;
+  });
+
+  await expect(service.linkPullRequest(23438, 51, 99)).rejects.toThrow(/no tiene una rama vinculada/);
+});
+
+test("ticket-info busca el PR en el repositorio primario que designó el commit, no en el de la HU", async () => {
+  // Sin Branch ArtifactLink el repositorio primario ya no viaja en la rama del ticket. El
+  // Fixed in Commit designado lo sigue nombrando, y buscar en el repositorio de la HU dejaba
+  // sin PR — y por tanto sin rama ni gates — a una entrega cuyo primario no es el ancla.
+  const commands: string[][] = [];
+  const artifactLink = `vstfs:///Git/Commit/${encodeURIComponent("project-id/primary-id/merge-commit")}`;
+  const service = new AzureTicketInfoService(async (args) => {
+    commands.push(args);
+    if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
+      id: 23438,
+      fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Team" },
+      relations: [
+        { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" },
+        { rel: "ArtifactLink", url: branch, attributes: { name: "Branch" } },
+      ],
+    });
+    if (args[0] === "boards" && args.includes("51")) return JSON.stringify({
+      id: 51,
+      rev: 4,
+      fields: { "System.WorkItemType": "Task", "System.State": "Active", "Custom.URLCommit": artifactLink },
+      relations: [{ rel: "ArtifactLink", url: artifactLink, attributes: { name: "Fixed in Commit" } }],
+    });
+    if (args[0] === "repos" && args[1] === "pr") {
+      if (args.includes("work-item")) return JSON.stringify([51]);
+      const repository = args[args.indexOf("--repository") + 1];
+      return JSON.stringify(repository === "primary-id" ? [{
+        pullRequestId: 99,
+        status: "completed",
+        mergeStatus: "succeeded",
+        sourceRefName: "refs/heads/ticket/51",
+        targetRefName: "refs/heads/hu/23438",
+        lastMergeCommit: { commitId: "merge-commit" },
+        repository: { id: "primary-id", project: { id: "project-id" } },
+      }] : []);
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  });
+
+  const info = await service.getTicketInfo(23438, 51);
+
+  expect(info.branch).toBe("refs/heads/ticket/51");
+  expect(info.canonicalPullRequest).toBe(99);
+  expect(commands.find((args) => args[1] === "pr" && !args.includes("work-item"))).toContain("primary-id");
+});

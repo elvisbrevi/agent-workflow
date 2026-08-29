@@ -1159,6 +1159,17 @@ billing, or authentication — as each CLI's own adapter classifies it. A sessio
 that merely fails its task never descends (ADR-0024). Each descent is reported
 with the rung it left, the rung it moved to, and the cause.
 
+A session that ends without `IMPLEMENTATION_READY` is not exhaustion either, so
+it does not descend: the coordinator resumes it once on the same rung, reports
+that it is doing so, and only then fails closed with the checkpoint preserved
+(ADR-0032). That single resume is what relaunching the command by hand used to
+do. Every coordinated delivery gets it — Azure workspace, GitHub delivery,
+GitHub recovery, GitHub workspace, and the pull-request reconciliation session.
+It runs on the rung the session already had, which after a descent is the
+descended one, and where the path wires this chain the extra attempt descends it
+like any other. The single-repository Azure `code` loop is the exception: it
+already retries its own session every ten seconds instead of failing closed.
+
 A backup that shares the active CLI resumes the same session with the new model
 and variant, so the context already built survives. A backup naming another CLI
 has no session to resume: the work continues through a **handoff**, a fresh

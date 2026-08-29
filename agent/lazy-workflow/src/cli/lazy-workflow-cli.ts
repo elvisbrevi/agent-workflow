@@ -382,6 +382,19 @@ async function manifestBelongsToDelivery(manifestPath: string, issue: number, br
   }
 }
 
+/**
+ * Una reanudación agotada no es un fallo del coordinador: viaja como ejecución agotada para que
+ * la cadena de fallback la reciba igual que a una corrida nueva.
+ */
+async function resumedExecution(resume: () => Promise<AgentResult>): Promise<AgentExecution> {
+  try {
+    return { result: await resume(), azureLoginRequired: false, failed: false };
+  } catch (error) {
+    if (!(error instanceof AgentExhaustionError)) throw error;
+    return { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
+  }
+}
+
 function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
   return {
     ...(options.hasModel ? { model: options.model } : {}),
@@ -1495,6 +1508,44 @@ export class LazyWorkflowCli {
     });
   }
 
+  /** La reanudación que todo escalón hace igual: el prompt del marcador, sobre el directorio de la unidad. */
+  private markerResume(sessionId: string, workingDirectory: string, overrides: AgentResumeOverrides): Promise<AgentResult> {
+    return this.codingAgent.resume(
+      sessionId,
+      markerResumePrompt(IMPLEMENTATION_READY_MARKER),
+      workingDirectory,
+      IMPLEMENTATION_READY_MARKER,
+      overrides,
+    );
+  }
+
+  /**
+   * Un intento más sobre el mismo escalón cuando la sesión terminó sin su marcador (ADR-0032).
+   *
+   * No es un descenso: el CLI, el modelo y la variante no cambian. Es la relanzada que el
+   * operador hacía a mano, cuyo único efecto era reanudar la misma sesión que el checkpoint ya
+   * nombraba. Una sola, porque una segunda que vuelve sin marcador es un defecto que el operador
+   * tiene que ver. La sesión se persiste antes de reanudarla: una corrida nueva todavía no la
+   * había escrito, y morir dentro de la reanudación dejaba su trabajo sin nadie que lo nombrara.
+   */
+  private async resumeWithoutMarker(attempt: {
+    execution: AgentExecution;
+    cli: AgentCli;
+    resume: (sessionId: string) => Promise<AgentResult>;
+    persist?: (sessionId: string) => Promise<void>;
+    descend?: (execution: AgentExecution) => Promise<AgentExecution>;
+  }): Promise<AgentExecution> {
+    const { execution } = attempt;
+    const sessionId = execution.result.sessionId;
+    if (execution.failed || !sessionId || containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER)) {
+      return execution;
+    }
+    reportOperator(`lazy-workflow: la sesión ${attempt.cli} terminó sin ${IMPLEMENTATION_READY_MARKER}; se reanuda una vez.`);
+    await attempt.persist?.(sessionId);
+    const resumed = await resumedExecution(() => attempt.resume(sessionId));
+    return attempt.descend ? attempt.descend(resumed) : resumed;
+  }
+
   /**
    * Provider exhaustion descends the declared chain instead of ending the unit of
    * work. A rung sharing the active CLI resumes the same session with its model
@@ -1830,7 +1881,7 @@ export class LazyWorkflowCli {
         // invocation, so the callbacks are shared and every attempt is routed through the
         // same descent.
         const resumeFn = (sessionId: string, overrides: AgentResumeOverrides) =>
-          this.codingAgent.resume(sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+          this.markerResume(sessionId, scope.parentDirectory, overrides);
         const onDescent = async (rung: FallbackRung, sessionId: string) => {
           activeCli = rung.cli;
           checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
@@ -1866,16 +1917,7 @@ export class LazyWorkflowCli {
           return handedOff;
         };
         if (resuming) {
-          try {
-            execution = {
-              result: await this.codingAgent.resume(resuming, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getRecoveryOverrides(options, checkpoint)),
-              azureLoginRequired: false,
-              failed: false,
-            };
-          } catch (error) {
-            if (!(error instanceof AgentExhaustionError)) throw error;
-            execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
-          }
+          execution = await resumedExecution(() => resumeFn(resuming, getRecoveryOverrides(options, checkpoint!)));
         } else {
            const run = await this.azureWorkspacePrompt(options, hu, ticket, scope, topology, ticketTopology, true);
           if (!run) return 1;
@@ -1888,6 +1930,16 @@ export class LazyWorkflowCli {
           }, true);
         }
         execution = await this.descendFallbackChain(options, execution, resumeFn, onDescent, handOff);
+        execution = await this.resumeWithoutMarker({
+          execution,
+          cli: activeCli,
+          resume: (sessionId) => resumeFn(sessionId, getRecoveryOverrides(options, checkpoint!)),
+          persist: async (sessionId) => {
+            checkpoint = { ...checkpoint!, phase: "implementing", sessionId };
+            await save();
+          },
+          descend: (resumed) => this.descendFallbackChain(options, resumed, resumeFn, onDescent, handOff),
+        });
         const terminal = !execution.failed && containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
           ...checkpoint,
@@ -2164,22 +2216,30 @@ export class LazyWorkflowCli {
     // Azure allows the ticket exactly one native Branch ArtifactLink and it must name the primary
     // implementation repository: the first declared repository that actually changed. An existing
     // link stays authoritative, so the boundary reports which repository the ticket ended up on.
+    // Una entrega ya recibida no vuelve a fijarla: completar el PR borra la rama del ticket y
+    // Azure retira su Branch ArtifactLink con ella (ADR-0010), así que volver a escribirlo al
+    // reanudar nombraría una rama que ya no existe. El primario que el checkpoint recibió sigue
+    // siendo el mismo, y los PR ya entregados nombran la rama que integraron.
+    const checkpointUnit = (path: string): AzureWorkspaceCheckpointUnit | undefined =>
+      checkpoint.units.find((candidate) => candidate.path === path);
     let primaryRepository: string;
-    try {
-      const candidates = checkpoint.primaryRepository
-        ? [checkpoint.primaryRepository, ...changedUnits.map(({ path }) => path)]
-        : changedUnits.map(({ path }) => path);
-      const linked = await boundary.linkTicketBranch!(hu, ticket, ticketBranch, candidates);
-      primaryRepository = (linked as { workingDirectory?: string }).workingDirectory ?? candidates[0]!;
-    } catch (error) {
-      reportAzureFailure("branch-preparation-failure", "integrating", options, `lazy-workflow: no se pudo fijar la rama primaria del ticket (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
-      return 1;
+    if (checkpoint.primaryRepository && changedUnits.every(({ path }) => checkpointUnit(path)?.receipts.delivery)) {
+      primaryRepository = checkpoint.primaryRepository;
+    } else {
+      try {
+        const candidates = checkpoint.primaryRepository
+          ? [checkpoint.primaryRepository, ...changedUnits.map(({ path }) => path)]
+          : changedUnits.map(({ path }) => path);
+        const linked = await boundary.linkTicketBranch!(hu, ticket, ticketBranch, candidates);
+        primaryRepository = (linked as { workingDirectory?: string }).workingDirectory ?? candidates[0]!;
+      } catch (error) {
+        reportAzureFailure("branch-preparation-failure", "integrating", options, `lazy-workflow: no se pudo fijar la rama primaria del ticket (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
+        return 1;
+      }
     }
     checkpoint = { ...checkpoint, primaryRepository };
     await save();
 
-    const checkpointUnit = (path: string): AzureWorkspaceCheckpointUnit | undefined =>
-      checkpoint.units.find((candidate) => candidate.path === path);
     checkpoint = {
       ...checkpoint,
       phase: "integrating",
@@ -2643,7 +2703,14 @@ export class LazyWorkflowCli {
     }
     if (checkpoint.sessionId) {
       try {
-        const result = await this.codingAgent.resume(checkpoint.sessionId, markerResumePrompt(IMPLEMENTATION_READY_MARKER), scope.parentDirectory, IMPLEMENTATION_READY_MARKER, getResumeOverrides(options));
+        const resumeSession = (sessionId: string): Promise<AgentResult> =>
+          this.markerResume(sessionId, scope.parentDirectory, getResumeOverrides(options));
+        const execution = await this.resumeWithoutMarker({
+          execution: { result: await resumeSession(checkpoint.sessionId), azureLoginRequired: false, failed: false },
+          cli: checkpoint.cli,
+          resume: resumeSession,
+        });
+        const result = execution.result;
         reportOperator(JSON.stringify(result, null, 2));
         if (!containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) return 1;
         checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
@@ -2718,7 +2785,16 @@ export class LazyWorkflowCli {
       throw new Error("el checkpoint workspace no conserva una sesión reanudable");
     }
     if (checkpoint.phase === "started" && !checkpoint.sessionId) {
-      const execution = await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...(await this.workspacePrompt(options, scope, issue, units)), session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+      const run = await this.workspacePrompt(options, scope, issue, units);
+      const execution = await this.resumeWithoutMarker({
+        execution: await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false),
+        cli: checkpoint.cli,
+        resume: (sessionId) => this.markerResume(sessionId, scope.parentDirectory, { ...getResumeOverrides(options), agent: run.agent }),
+        persist: async (sessionId) => {
+          checkpoint = { ...checkpoint!, phase: "implementing", sessionId };
+          await save();
+        },
+      });
       reportOperator(JSON.stringify(execution.result, null, 2));
       const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
       checkpoint = { ...checkpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId };
@@ -3162,48 +3238,56 @@ export class LazyWorkflowCli {
       let activeAuthority = run.agent;
       /** The session `activeCli` owns once a handoff opened a new one, so the two are never checkpointed crossed. */
       let activeSessionId: string | null = null;
+      /** Cada intento sobre esta unidad reanuda la sesión con la autoridad que el CLI activo entiende. */
+      const resumeSession = (sessionId: string, overrides: AgentResumeOverrides) =>
+        this.markerResume(sessionId, options.workingDirectory, { ...overrides, agent: activeAuthority });
+      const onDescent = async (rung: FallbackRung, sessionId: string): Promise<void> => {
+        activeRung = rung;
+        await saveCheckpoint("implementing", sessionId);
+      };
+      const handOff = async (rung: FallbackRung): Promise<AgentExecution> => {
+        const handedOff = await this.handOffGitHubDelivery(options, rung, {
+          issue,
+          repository,
+          branch: branch!,
+          baseBranch: baseBranch!,
+          manifestPath: manifestPath!,
+          norms,
+        });
+        activeRung = rung;
+        activeCli = rung.cli;
+        activeAuthority = handedOff.agent;
+        activeSessionId = handedOff.execution.result.sessionId;
+        // El CLI nuevo y la sesión nueva quedan en el checkpoint en una sola
+        // escritura, en cuanto el CLI nuevo devuelve el identificador: antes
+        // de correr la sesión todavía no existe ninguno que registrar.
+        await saveCheckpoint("implementing", activeSessionId);
+        return handedOff.execution;
+      };
+      const descend = (attempted: AgentExecution): Promise<AgentExecution> =>
+        this.descendFallbackChain(options, attempted, resumeSession, onDescent, handOff);
       let execution;
       try {
+        // En dos pasos: el catch de abajo nombra la sesión que quedó viva, y un descenso que
+        // explota tiene que encontrarla ya asignada.
         execution = await this.codingAgent.run({
           ...options,
           ...run,
           session: null,
           terminalMarker: IMPLEMENTATION_READY_MARKER,
         }, false);
-        execution = await this.descendFallbackChain(
-          options,
+        execution = await descend(execution);
+        execution = await this.resumeWithoutMarker({
           execution,
-          (sessionId, overrides) => this.codingAgent.resume(
+          cli: activeCli,
+          // El intento extra es del escalón en curso: tras un descenso ese ya no es el declarado.
+          resume: (sessionId) => resumeSession(
             sessionId,
-            markerResumePrompt(IMPLEMENTATION_READY_MARKER),
-            options.workingDirectory,
-            IMPLEMENTATION_READY_MARKER,
-            { ...overrides, agent: activeAuthority },
+            activeRung ? { model: activeRung.model, variant: activeRung.variant } : getResumeOverrides(options),
           ),
-          async (rung, sessionId) => {
-            activeRung = rung;
-            await saveCheckpoint("implementing", sessionId);
-          },
-          async (rung) => {
-            const handedOff = await this.handOffGitHubDelivery(options, rung, {
-              issue,
-              repository,
-              branch: branch!,
-              baseBranch: baseBranch!,
-              manifestPath: manifestPath!,
-              norms,
-            });
-            activeRung = rung;
-            activeCli = rung.cli;
-            activeAuthority = handedOff.agent;
-            activeSessionId = handedOff.execution.result.sessionId;
-            // El CLI nuevo y la sesión nueva quedan en el checkpoint en una sola
-            // escritura, en cuanto el CLI nuevo devuelve el identificador: antes
-            // de correr la sesión todavía no existe ninguno que registrar.
-            await saveCheckpoint("implementing", activeSessionId);
-            return handedOff.execution;
-          },
-        );
+          persist: (sessionId) => saveCheckpoint("implementing", sessionId),
+          descend,
+        });
       } catch (error) {
         // A descent that failed still leaves a live session behind, so the
         // checkpoint keeps it and recovery resumes that one; only a session the
@@ -3453,16 +3537,19 @@ export class LazyWorkflowCli {
       context.originalCommit,
       context.baseCommit,
     );
-    let failed = false;
-    const result = sessionId
-      ? await this.codingAgent.resume(sessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent })
-      : await this.codingAgent.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false)
-        .then((execution) => {
-          failed = execution.failed === true;
-          return execution.result;
-        });
+    const started: AgentExecution = sessionId
+      ? { result: await this.codingAgent.resume(sessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }), azureLoginRequired: false, failed: false }
+      : await this.codingAgent.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+    // La sesión de reconciliación se reanuda una vez si vuelve sin su marcador (ADR-0032): sin
+    // eso la corrida devolvía "pendiente" y esperaba a que el operador la relanzara a mano.
+    const execution = await this.resumeWithoutMarker({
+      execution: started,
+      cli: options.cli,
+      resume: (resumedSessionId) => this.codingAgent.resume(resumedSessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
+    });
+    const result = execution.result;
     reportOperator(JSON.stringify(result, null, 2));
-    if (failed || !containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) {
+    if (execution.failed || !containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) {
       return { kind: "pending", sessionId: result.sessionId };
     }
     const manifest = await this.readGitHubManifest(delivery, context.manifestPath, context.workingDirectory);
@@ -3761,7 +3848,12 @@ export class LazyWorkflowCli {
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
         const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
-        const execution = await this.codingAgent.run({ ...options, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+        const execution = await this.resumeWithoutMarker({
+          execution: await this.codingAgent.run({ ...options, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false),
+          cli: liveCheckpoint.cli,
+          resume: (sessionId) => this.markerResume(sessionId, options.workingDirectory, { ...getResumeOverrides(options), agent: run.agent }),
+          persist: (sessionId) => store.write({ ...liveCheckpoint, phase: "implementing", sessionId }, options.workingDirectory),
+        });
         const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);
         if (execution.failed || !terminal) {
@@ -3989,12 +4081,20 @@ export class LazyWorkflowCli {
       }
       // Provider exhaustion descends the declared chain here too (ADR-0024): a resume across
       // invocations is not exempt from the descent a fresh session gets.
-      execution = await this.descendFallbackChain(
+      /** El escalón en curso, escrito solo cuando un descenso lo mueve, para no nombrar modelo donde el checkpoint no lo tenía. */
+      let activeRung: FallbackRung | null = null;
+      /** Lo que el escalón en curso aporta a cada escritura del checkpoint: nunca un CLI descendido con el modelo del primario. */
+      const rungFields = (): { model?: string; variant?: string } =>
+        activeRung ? { model: activeRung.model, variant: activeRung.variant } : {};
+      const resumeSession = (descentSessionId: string, overrides: AgentResumeOverrides) =>
+        this.codingAgent.resume(descentSessionId, "continue", options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+      const descend = (attempted: AgentExecution): Promise<AgentExecution> => this.descendFallbackChain(
         options,
-        execution,
+        attempted,
         (descentSessionId, overrides) => this.codingAgent.resume(descentSessionId, "continue", options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides),
         async (rung, descentSessionId) => {
           activeCli = rung.cli;
+          activeRung = rung;
           await store.write({ ...liveCheckpoint, cli: rung.cli, model: rung.model, variant: rung.variant, sessionId: descentSessionId }, options.workingDirectory);
         },
         async (rung) => {
@@ -4010,6 +4110,7 @@ export class LazyWorkflowCli {
             norms,
           });
           activeCli = rung.cli;
+          activeRung = rung;
           await store.write({
             ...liveCheckpoint,
             cli: rung.cli,
@@ -4021,10 +4122,20 @@ export class LazyWorkflowCli {
           return handedOff.execution;
         },
       );
+      execution = await descend(execution);
+      // Y una sesión que vuelve sin su marcador se reanuda una vez más sobre el mismo escalón,
+      // que es lo único que hacía la invocación siguiente del operador (ADR-0032).
+      execution = await this.resumeWithoutMarker({
+        execution,
+        cli: activeCli,
+        resume: (sessionId) => resumeSession(sessionId, activeRung ? rungFields() : getRecoveryOverrides(options, liveCheckpoint)),
+        persist: (sessionId) => store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: "implementing", sessionId }, options.workingDirectory),
+        descend,
+      });
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
       const terminal = !execution.failed && containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
-      await store.write({ ...liveCheckpoint, cli: activeCli, phase: execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+      await store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "reconciling", sessionId: result.sessionId }, false);
         reportFailure(
@@ -5191,7 +5302,7 @@ export class LazyWorkflowCli {
           if (sessionId) {
             try {
               started = {
-                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getRecoveryOverrides(options, checkpoint), agent: run.agent }),
+                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getRecoveryOverrides(options, checkpoint!), agent: run.agent }),
                 azureLoginRequired: false,
                 failed: false,
               };

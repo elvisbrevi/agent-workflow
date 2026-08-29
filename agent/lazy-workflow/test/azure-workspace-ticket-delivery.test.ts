@@ -605,3 +605,35 @@ test("code --hu --ticket delivers exactly that unit without selecting", async ()
   expect(exit).toBe(0);
   expect(harness.events.filter((event) => event === "opencode:run")).toHaveLength(1);
 });
+
+test("una sesión que termina sin IMPLEMENTATION_READY se reanuda una vez antes de fallar", async () => {
+  // Terminar sin el marcador no agota al proveedor, así que la cadena de fallback no
+  // desciende: la corrida se detenía y el operador la relanzaba a mano para que el
+  // checkpoint reanudara la misma sesión. Esa reanudación es del coordinador.
+  const harness = createHarness({ terminal: false, resumeTerminal: true });
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.events.filter((event) => event === "opencode:resume")).toHaveLength(1);
+});
+
+test("la reanudación automática es una sola: una sesión que sigue sin marcador falla cerrado", async () => {
+  const harness = createHarness({ terminal: false, resumeTerminal: false });
+  let exit = -1;
+  let phase: string | undefined;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+    phase = (await harness.readCheckpoint())?.phase;
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(1);
+  expect(harness.events.filter((event) => event === "opencode:resume")).toHaveLength(1);
+  expect(phase).toBe("implementing");
+});

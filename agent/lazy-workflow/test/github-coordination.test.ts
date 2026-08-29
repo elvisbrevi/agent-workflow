@@ -218,7 +218,8 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
 
   expect(code).toBe(1);
   expect(selections).toBe(0);
-  expect(resumes).toBe(1);
+  // Dos: la reanudación del checkpoint y el único reintento que el coordinador se concede (ADR-0032).
+  expect(resumes).toBe(2);
   expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
   expect(state.current?.issue).toBe(178);
   expect(state.current?.phase).toBe("implementing");
@@ -438,3 +439,99 @@ for (const phase of GITHUB_DELIVERY_PHASES) {
     expect(state.current?.issue).toBe(178);
   });
 }
+
+test("la recuperación GitHub reanuda una vez más la sesión que volvió sin el marcador", async () => {
+  // La segunda invocación que el operador hacía a mano era exactamente esta reanudación (ADR-0032).
+  const state = boundaries(checkpoint("ses_178"));
+  const { azure, openCode } = services();
+  const texts = ["still working", "IMPLEMENTATION_READY"];
+  let resumes = 0;
+
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: {
+      ...openCode,
+      resume: async () => {
+        resumes += 1;
+        return AgentResult.fromJsonLines(JSON.stringify({
+          type: "text", sessionID: "ses_178", part: { type: "text", text: texts.shift() ?? "still working" },
+        }));
+      },
+    },
+    githubManagedQueue: {
+      // Recuperado el issue, la corrida sigue drenando: la cola ya está vacía.
+      selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+    },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(resumes).toBe(2);
+  expect(state.current).toBeNull();
+});
+
+test("la recuperación GitHub reanuda una sola vez antes de conservar el checkpoint", async () => {
+  const state = boundaries(checkpoint("ses_178"));
+  const { azure, openCode } = services();
+  let resumes = 0;
+
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
+      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+    },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(resumes).toBe(2);
+  expect(state.current?.phase).toBe("implementing");
+});
+
+test("la recuperación sessionless GitHub reanuda una vez la sesión sin marcador", async () => {
+  const state = boundaries({
+    ...checkpoint(null),
+    phase: "started",
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/missing-manifest.json",
+  });
+  const { azure, openCode } = services();
+  let resumes = 0;
+  const delivery = failingDelivery({
+    verifyRepository: async () => undefined,
+    checkoutBranch: async () => undefined,
+    verifyBranch: async () => undefined,
+  });
+
+  const code = await createCli({
+    huInfoService: azure,
+    agentSource: {
+      run: async () => ({
+        result: AgentResult.fromJsonLines(JSON.stringify({
+          type: "text", sessionID: "ses_178", part: { type: "text", text: "still working" },
+        })),
+        azureLoginRequired: false,
+        failed: false,
+      }),
+      resume: async () => { resumes += 1; return openCode.resume(); },
+    },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
+      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+    },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(resumes).toBe(1);
+  expect(state.current?.phase).toBe("implementing");
+  expect(state.current?.sessionId).toBe("ses_178");
+});

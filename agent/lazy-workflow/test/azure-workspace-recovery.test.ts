@@ -371,3 +371,29 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
   expect(harness.effortCalls).toHaveLength(1);
   expect(harness.effortCalls[0]).toMatchObject({ realEffort: 1.25, realEffortHours: 1.25 });
 });
+
+test("una entrega ya recibida no vuelve a fijar la rama primaria del ticket", async () => {
+  // Completar el PR borra la rama del ticket y Azure retira su Branch ArtifactLink con ella
+  // (ADR-0010). Volver a fijarla al reanudar apuntaría a una rama que ya no existe, y hacía
+  // depender la reanudación de que Azure aceptara ese link. El primario ya está en el checkpoint.
+  const harness = createAzureWorkspaceHarness();
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli();
+    await harness.writeCheckpoint(checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""), {
+      primaryRepository: pathA,
+      units: [
+        unit(pathA, repoA, { pullRequest: 1, mergeCommit: "merge-1", receipts: { delivery: { verifiedAt: "2026-08-29T00:00:00.000Z" } } }),
+        unit(pathB, repoB, { pullRequest: 2, mergeCommit: "merge-2", receipts: { delivery: { verifiedAt: "2026-08-29T00:00:01.000Z" } } }),
+      ],
+    }));
+    await Bun.write(join(pathA, "lazy-workflow/completion-manifest.json"), "{}");
+    await Bun.write(join(pathB, "lazy-workflow/completion-manifest.json"), "{}");
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(harness.ticketBranchLinks).toEqual([]);
+  expect(harness.prCreateCalls).toHaveLength(0);
+});

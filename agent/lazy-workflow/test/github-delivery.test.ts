@@ -665,7 +665,7 @@ test("los marcadores de entrega heredados no avanzan una entrega GitHub", async 
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => execution().result },
+    agentSource: { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) },
     githubManagedQueue: {
       selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
       selectEligibleIssue: async () => ({ kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } }),
@@ -756,4 +756,113 @@ test("reconcilia padres pendientes al iniciar sin lanzar OpenCode", async () => 
   expect(code).toBe(0);
   expect(reconciled).toBe(1);
   expect(openCodeRuns).toBe(0);
+});
+
+/** Una sesión que termina sin el marcador; la reanudación sí lo alcanza. */
+function pendingExecution() {
+  return {
+    result: AgentResult.fromJsonLines(JSON.stringify({
+      type: "text",
+      sessionID: "ses_179",
+      part: { type: "text", text: "still working" },
+    })),
+    azureLoginRequired: false,
+    failed: false,
+  };
+}
+
+test("la entrega GitHub reanuda una vez la sesión que terminó sin IMPLEMENTATION_READY", async () => {
+  // La relanzada manual del operador no hacía más que reanudar la sesión del checkpoint (ADR-0032).
+  let resumes = 0;
+  let selections = 0;
+  let current: GitHubDeliveryCheckpoint | null = null;
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (checkpoint) => { current = checkpoint; },
+    clear: async () => { current = null; },
+  };
+  const manifest: GitHubReadyManifest = {
+    issue: 179,
+    branch: "refs/heads/issue/179",
+    commit: "a".repeat(40),
+    validation: [{ command: "bun test", result: "passed" }],
+    clean: true,
+    summary: "implemented",
+  };
+  const delivery: GitHubDeliveryAdapter = {
+    prepareBranch: async () => ({ branch: manifest.branch, baseBranch: "refs/heads/main", manifestPath: "/repo/.git/lazy-workflow/github-manifest.json" }),
+    readManifest: async () => manifest,
+    pushCommit: async () => undefined,
+    createOrReusePullRequest: async () => ({ number: 201 }),
+    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
+    closeIssue: async () => undefined,
+    cleanupBranch: async () => undefined,
+  };
+
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async () => pendingExecution(),
+      resume: async () => { resumes += 1; return execution().result; },
+    },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
+      selectEligibleIssue: async () => {
+        selections += 1;
+        if (selections > 1) return { kind: "empty" };
+        return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async () => fakeSelectedIssue(179),
+    },
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: delivery,
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(resumes).toBe(1);
+  expect(current).toBeNull();
+});
+
+test("la entrega GitHub no reanuda dos veces: una sesión que sigue sin marcador falla cerrado", async () => {
+  let resumes = 0;
+  let selections = 0;
+  let current: GitHubDeliveryCheckpoint | null = null;
+  const store: GitHubCheckpointStore = {
+    read: async () => current,
+    write: async (checkpoint) => { current = checkpoint; },
+    clear: async () => { current = null; },
+  };
+
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async () => pendingExecution(),
+      resume: async () => { resumes += 1; return pendingExecution().result; },
+    },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
+      selectEligibleIssue: async () => {
+        selections += 1;
+        if (selections > 1) return { kind: "empty" };
+        return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async () => fakeSelectedIssue(179),
+    },
+    githubCheckpointStore: store,
+    githubRepositoryLock: { acquire: async () => async () => undefined },
+    githubDelivery: {
+      prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
+      readManifest: async () => { throw new Error("must not read a manifest without the marker"); },
+      pushCommit: async () => { throw new Error("must not push"); },
+      createOrReusePullRequest: async () => { throw new Error("must not open a PR"); },
+      mergePullRequest: async () => { throw new Error("must not merge"); },
+      closeIssue: async () => { throw new Error("must not close"); },
+      cleanupBranch: async () => { throw new Error("must not clean up"); },
+    },
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(resumes).toBe(1);
+  expect(phaseOf(current)).toBe("implementing");
 });

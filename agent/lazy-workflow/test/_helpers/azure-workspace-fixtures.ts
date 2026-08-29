@@ -70,6 +70,8 @@ export interface AzureWorkspaceHarnessOptions {
   /** Total silence the fake session reports as idle-nudged, so effort tests pin its exclusion (issue #292). */
   idleMs?: number;
   terminal?: boolean;
+  /** Whether a resumed session reaches the marker; defaults to what the first session does. */
+  resumeTerminal?: boolean;
   reporterFn?: typeof createReporter;
   /** Observes which coding agent CLI the run resolved, without changing the fake agent. */
   observeCli?: (cli: AgentCli) => void;
@@ -344,7 +346,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           for (const name of changedRepositories) {
             await Bun.write(join(root!, name, "lazy-workflow/completion-manifest.json"), "{}");
           }
-          return { text: "IMPLEMENTATION_READY", sessionId: "ses" } as never;
+          return { text: (options.resumeTerminal ?? terminal) ? "IMPLEMENTATION_READY" : "still working", sessionId: "ses" } as never;
         },
       };
       const cli = createCli({

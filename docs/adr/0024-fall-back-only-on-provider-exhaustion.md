@@ -16,6 +16,11 @@ already wrong and would hide the defect behind a model change, which is the
 opposite of what a fallback is for. The chain exists to survive an exhausted
 account, not to shop for a model that agrees with a broken run.
 
+A session that ends without its terminal marker is resumed once on the rung it
+already ran on (ADR-0032). That is not a descent — the rung does not change — and
+it does not exempt the attempt from one: where the path wires this chain, the
+resumed session descends it exactly like the first.
+
 The chain is declared on the invocation that already declares `--cli`,
 `--model`, and `--variant`, rather than in a configuration file. A file would
 save repetition, at the price of a second source of truth with its own

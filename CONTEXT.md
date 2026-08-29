@@ -61,8 +61,9 @@ _Avoid_: an open string, a classification derived from a message
 
 **Run interruption**:
 A run that ended without reaching its own conclusion: an operator signal, an
-unhandled failure above every catch, a session that failed or ended without its
-terminal marker, or an exhausted fallback chain. Every interruption leaves a run
+unhandled failure above every catch, a session that failed or that ended without
+its terminal marker and did not reach it on the one same-rung resume it is given,
+or an exhausted fallback chain. Every interruption leaves a run
 record, so the durable state a run left behind — a preserved checkpoint above
 all — is never the only evidence that it stopped.
 _Avoid_: a silent exit, treating a preserved checkpoint as the record
@@ -212,6 +213,14 @@ The ordered agent rungs a run may descend to, declared with a repeatable
 `--fallback <cli>:<model>:<variant>` whose declaration order is its priority.
 The binaries of every rung are verified present when arguments are parsed.
 _Avoid_: implicit fallback, configuration-file chain
+
+**Marker-less resume**:
+The single extra attempt a coordinated delivery gives a session that returned
+without its terminal marker: the rung the session already ran on, the marker
+prompt, and the session identifier written to the checkpoint before it starts
+wherever the run owns one. It is the operator's relaunch performed by the
+coordinator, never a descent, and never twice.
+_Avoid_: retry loop, fallback descent, nudge
 
 **Provider exhaustion**:
 The class of failures in which the active agent rung cannot be retried at all —

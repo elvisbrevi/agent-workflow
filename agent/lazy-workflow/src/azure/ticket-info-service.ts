@@ -459,6 +459,37 @@ function hasTicketNumber(ref: string | undefined, ticket: number): boolean {
   return new RegExp(`(?:^|[/_.-])${ticket}(?:$|[/_.-])`).test(ref.slice("refs/heads/".length));
 }
 
+/** Un PR que Azure ya integró en la rama de la HU: el único que puede responder por la entrega. */
+function integratedPullRequest(pullRequest: TicketPullRequest, integrationBranch: string | null): boolean {
+  return pullRequest.status === "completed"
+    && pullRequest.mergeStatus === "succeeded"
+    && pullRequest.target === integrationBranch;
+}
+
+/**
+ * La rama que el ticket entregó, leída del PR que la integró.
+ *
+ * Completar el PR con `deleteSourceBranch` borra la rama del ticket (ADR-0010) y Azure
+ * retira con ella el Branch ArtifactLink del work item. Después del merge la rama solo
+ * vive en el PR asociado que la integró en la rama de la HU, así que se lee de ahí: darla
+ * por ausente dejaba el manifest inverificable y los gates incumplidos con la entrega ya
+ * mergeada. Solo una rama única responde; varias no son una respuesta.
+ */
+function mergedTicketBranch(
+  pullRequests: readonly TicketPullRequest[],
+  integrationBranch: string | null,
+  ticket: number,
+): string | null {
+  const sources = [...new Set(pullRequests
+    .filter((pullRequest) =>
+      pullRequest.associated
+      && integratedPullRequest(pullRequest, integrationBranch)
+      && hasTicketNumber(pullRequest.source, ticket)
+    )
+    .map(({ source }) => source!))];
+  return sources.length === 1 ? sources[0]! : null;
+}
+
 function commitArtifactLinks(item: WorkItem): string[] {
   return (item.relations ?? [])
     .filter(({ rel, attributes, url }) => rel === "ArtifactLink" && (
@@ -495,6 +526,13 @@ function fixedCommit(item: WorkItem): FixedCommitLink | null {
     return designated;
   }
   return unique[0] ?? null;
+}
+
+/** Una rama Azure nombrada con su repositorio: lo que un Branch ArtifactLink o un PR resuelven. */
+interface BranchLink {
+  ref: string | null;
+  project?: string;
+  repository?: string;
 }
 
 function participantBranch(
@@ -840,8 +878,11 @@ export class AzureTicketInfoService {
     // The ticket's own branch names its primary implementation repository. In a multi-repository
     // delivery that is the first repository that changed, which need not be the HU's anchor; the
     // integration branch carries the same name in every participant, so only the repository moves.
-    const deliveryProject = ticketBranch.project ?? integrationBranch.project;
-    const deliveryRepository = ticketBranch.repository ?? integrationBranch.repository;
+    // Cuando el merge ya borró la rama, el repositorio primario lo sigue nombrando el commit
+    // designado (Custom.URLCommit); solo sin ninguno de los dos se cae al de la HU.
+    const linkedCommit = fixedCommit(item);
+    const deliveryProject = ticketBranch.project ?? linkedCommit?.project ?? integrationBranch.project;
+    const deliveryRepository = ticketBranch.repository ?? linkedCommit?.repository ?? integrationBranch.repository;
     const pullRequests = await this.readPullRequests(
       ticket,
       deliveryProject ?? text(parent, "System.TeamProject"),
@@ -849,16 +890,13 @@ export class AzureTicketInfoService {
       deliveryRepository,
       ticketBranch.ref,
     );
+    const branchRef = ticketBranch.ref ?? mergedTicketBranch(pullRequests, integrationBranch.ref, ticket);
     const validPullRequests = pullRequests.filter((pullRequest) =>
-      pullRequest.status === "completed"
-      && pullRequest.mergeStatus === "succeeded"
-      && pullRequest.target === integrationBranch.ref
-      && pullRequest.source === ticketBranch.ref
+      integratedPullRequest(pullRequest, integrationBranch.ref) && pullRequest.source === branchRef
     );
     const associated = validPullRequests.filter((pullRequest) => pullRequest.associated);
     const canonical = associated.length === 1 ? associated[0]!.id : null;
     const completionEvidence = COMPLETION_FIELDS.map((fieldName) => text(item, fieldName)).find(Boolean) ?? null;
-    const linkedCommit = fixedCommit(item);
     const mergeCommit = pullRequests.find(({ id }) => id === canonical)?.mergeCommit ?? linkedCommit?.commit ?? null;
     const unmet = this.unmetGates(
       summary,
@@ -868,13 +906,13 @@ export class AzureTicketInfoService {
       canonical,
       completionEvidence,
       linkedCommit,
-      ticketBranch.ref,
+      branchRef,
     );
 
     return {
       hu: { id: hu, title: text(parent, "System.Title") },
       ticket: summary,
-      branch: ticketBranch.ref,
+      branch: branchRef,
       integrationBranch: integrationBranch.ref,
       effort: {
         estimated: number(item, ["Microsoft.VSTS.Scheduling.OriginalEstimate", "Custom.Estimacion"]),
@@ -1440,8 +1478,7 @@ export class AzureTicketInfoService {
     )) throw new Error(`El ticket ${ticket} no es hijo directo de la HU ${hu}`);
     await this.readDirectParent(ticket, item);
 
-    const integration = participant ? participantBranch(participant, "target") : uniqueBranch(parent);
-    const ticketBranch = participant ? participantBranch(participant, "source") : uniqueBranch(item);
+    const { integration, ticketBranch } = await this.deliveryBranches(ticket, parent, item, pullRequestId, participant);
     if (!integration.ref) throw new Error(`La HU ${hu} no tiene una rama de integración vinculada`);
     if (!ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene una rama vinculada`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
@@ -1481,8 +1518,7 @@ export class AzureTicketInfoService {
 
     const item = await this.readWorkItemValidated(ticket);
     const parent = await this.readDirectParent(ticket, item);
-    const integration = participant ? participantBranch(participant, "target") : uniqueBranch(parent);
-    const ticketBranch = participant ? participantBranch(participant, "source") : uniqueBranch(item);
+    const { integration, ticketBranch } = await this.deliveryBranches(ticket, parent, item, pullRequestId, participant);
     if (!integration.ref || !ticketBranch.ref) throw new Error(`El ticket ${ticket} no tiene ramas de integración y entrega verificables`);
     if (ticketBranch.project !== integration.project || ticketBranch.repository !== integration.repository) {
       throw new Error(`La rama del ticket ${ticket} no coincide con la rama de integración de su HU`);
@@ -1920,6 +1956,35 @@ export class AzureTicketInfoService {
     return pullRequest;
   }
 
+  /**
+   * Las ramas contra las que se juzga un PR del ticket.
+   *
+   * Sin `participant` la rama del ticket es su Branch ArtifactLink, salvo que el merge ya la
+   * haya borrado: completar el PR con `deleteSourceBranch` (ADR-0010) retira el link con la
+   * rama, y las asociaciones nativas ocurren después de ese merge. Entonces la nombra el PR que
+   * se está asociando, y solo si es un PR ya integrado en la rama de la HU cuya rama lleva el
+   * número del ticket; cualquier otro deja al ticket sin rama y falla cerrado como antes.
+   */
+  private async deliveryBranches(
+    ticket: number,
+    parent: WorkItem,
+    item: WorkItem,
+    pullRequestId: number,
+    participant?: AzurePullRequestTarget,
+  ): Promise<{ integration: BranchLink; ticketBranch: BranchLink }> {
+    const integration = participant ? participantBranch(participant, "target") : uniqueBranch(parent);
+    const declared = participant ? participantBranch(participant, "source") : uniqueBranch(item);
+    if (declared.ref || !integration.ref) return { integration, ticketBranch: declared };
+    const merged = await this.readPullRequest(pullRequestId, integration.project, integration.repository);
+    if (!integratedPullRequest(merged, integration.ref) || !hasTicketNumber(merged.source, ticket)) {
+      return { integration, ticketBranch: declared };
+    }
+    return {
+      integration,
+      ticketBranch: { ref: merged.source!, project: integration.project, repository: integration.repository },
+    };
+  }
+
   private validatePullRequest(
     pullRequest: TicketPullRequest,
     ticket: number,
@@ -2235,10 +2300,7 @@ export class AzureTicketInfoService {
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
     if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
-    const validPrs = pullRequests.filter((pr) =>
-      pr.status === "completed" && pr.mergeStatus === "succeeded" && pr.target === integrationBranch
-      && pr.source === ticketBranch
-    );
+    const validPrs = pullRequests.filter((pr) => integratedPullRequest(pr, integrationBranch) && pr.source === ticketBranch);
     const validPr = validPrs.find((pr) => pr.id === canonical);
     if (validPrs.length === 0) unmet.push(GATE.completedHuPullRequest);
     else if (!validPr) unmet.push(GATE.nativePullRequestAssociation);
