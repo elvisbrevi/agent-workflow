@@ -656,6 +656,47 @@ test("con --cli declarado, un traspaso a mitad de la primera unidad deja la unid
   expect(started[1]?.cli).toBe("claudecode");
 });
 
+test("una unidad sin sesion previa adopta el default de modelo del CLI del checkpoint, no el de --cli sin declarar (issue #298)", async () => {
+  // Sin --cli ni --model declarados, el parseo resuelve el default de opencode
+  // (DEFAULT_CLI). El checkpoint impone claudecode y la unidad todavia no tiene
+  // sesion, asi que abre una nueva a traves de codingAgent.run en vez de
+  // resumir -- la ruta que getResumeOverrides nunca protege. Antes del fix,
+  // options.model conservaba el default de opencode ya resuelto en el parseo.
+  const started: Array<{ cli: AgentCli; model?: string }> = [];
+  const agentSource = (cli: AgentCli): CodingAgent => ({
+    run: async (options) => {
+      started.push({ cli, model: options.model });
+      return {
+        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_new", part: { type: "text", text: "IMPLEMENTATION_READY" } })),
+        azureLoginRequired: false,
+        failed: false,
+      };
+    },
+    resume: async () => { throw new Error("must not resume: checkpoint has no session yet"); },
+  });
+  const checkpoint: GitHubDeliveryCheckpoint = {
+    ...githubDeliveryCheckpoint("claudecode"),
+    sessionId: null,
+    phase: "started",
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
+    manifestPath: "/repo/lazy-workflow/completion-manifest.json",
+  };
+  const state = githubDeliveryCli(checkpoint, { requested: [], resumed: [], overrides: [], source: agentSource }, {
+    githubDelivery: deliveryAdapterStub("refs/heads/issue/178"),
+  });
+
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    await state.cli.run(["code", "--working-directory", "/repo"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(started).toEqual([{ cli: "claudecode", model: "claude-sonnet-5" }]);
+});
+
 function autocodeCheckpoint(cli: AgentCli): VersionedAutocodeCheckpoint {
   return {
     schemaVersion: 3,
