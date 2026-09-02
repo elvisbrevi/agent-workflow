@@ -515,6 +515,7 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
 
   const code = await createCli({
     githubManagedQueue: planTriageQueue(),
+    git: async () => "",
     huInfoService: {
       getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
       waitForAccess: async () => { azureCalls += 1; },
@@ -1832,6 +1833,7 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
   try {
     const code = await createCli({
     githubManagedQueue: planTriageQueue(),
+      git: async () => "",
       huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
       agentSource: {
         run: async () => ({ result, azureLoginRequired: false }),
@@ -1864,6 +1866,7 @@ test("--quiet filtra info y warn pero conserva errores del Reportador", async ()
   try {
     const code = await createCli({
     githubManagedQueue: planTriageQueue(),
+      git: async () => "",
       huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
       agentSource: {
         run: async () => ({ result, azureLoginRequired: false }),
