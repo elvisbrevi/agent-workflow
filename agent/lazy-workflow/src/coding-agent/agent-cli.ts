@@ -3,19 +3,37 @@
  * the checkpoints that record which CLI owns an in-flight session (ADR-0023).
  */
 
+import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
+
 /** The coding agent CLI that executes the session of this run (ADR-0023). */
 export type AgentCli = "opencode" | "claudecode";
 
-/** The binary each CLI is invoked through, so a missing one is named as the operator installs it. */
-export const AGENT_CLI_BINARIES: Record<AgentCli, string> = {
-  opencode: "opencode",
-  claudecode: "claude",
+/**
+ * The per-CLI facts a run needs, resolved once from `--cli` (ADR-0034): the
+ * binary that names a missing install, the model `--model` defaults to when
+ * the operator names none, and the efforts `--variant` accepts — `undefined`
+ * leaves it free-form, as OpenCode's does.
+ */
+export interface AgentCliProfile {
+  readonly binary: string;
+  readonly defaultModel: string;
+  readonly efforts?: readonly string[];
+}
+
+export const AGENT_CLI_PROFILES: Record<AgentCli, AgentCliProfile> = {
+  opencode: { binary: "opencode", defaultModel: "opencode-go/deepseek-v4-pro" },
+  claudecode: { binary: "claude", defaultModel: "claude-sonnet-5", efforts: CLAUDE_CODE_EFFORTS },
 };
+
+/** The binary each CLI is invoked through, so a missing one is named as the operator installs it. */
+export const AGENT_CLI_BINARIES: Record<AgentCli, string> = Object.fromEntries(
+  (Object.entries(AGENT_CLI_PROFILES) as Array<[AgentCli, AgentCliProfile]>).map(([cli, profile]) => [cli, profile.binary]),
+) as Record<AgentCli, string>;
 
 export const DEFAULT_CLI: AgentCli = "opencode";
 
 export function isAgentCli(value: unknown): value is AgentCli {
-  return typeof value === "string" && Object.hasOwn(AGENT_CLI_BINARIES, value);
+  return typeof value === "string" && Object.hasOwn(AGENT_CLI_PROFILES, value);
 }
 
 /**

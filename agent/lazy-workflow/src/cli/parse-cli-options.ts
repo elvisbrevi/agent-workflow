@@ -2,7 +2,7 @@ import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
-import { AGENT_CLI_BINARIES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { AGENT_CLI_BINARIES, AGENT_CLI_PROFILES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
 import type { ShutdownRequest } from "../system/shutdown-service.ts";
 import { DETERMINISTIC_TOOL_COMMANDS, DETERMINISTIC_TOOL_FORMS } from "./tool-commands.ts";
@@ -104,7 +104,6 @@ export type BinaryProbe = (binary: string) => boolean;
 
 const binaryOnPath: BinaryProbe = (binary) => Bun.which(binary) !== null;
 
-const DEFAULT_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
@@ -347,7 +346,12 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       describe: "Agente CLI que ejecuta la sesion.",
     })
     .option("session", stringOption("--session", "Sesion de agente opaca para reanudar."))
-    .option("model", { type: "string", requiresArg: true, default: DEFAULT_MODEL, describe: "Modelo del agente CLI seleccionado.", coerce: stringCoerce("--model") })
+    .option("model", {
+      type: "string",
+      requiresArg: true,
+      describe: `Modelo del agente CLI seleccionado; sin declarar usa el default de --cli (${AGENT_CLIS.map((cli) => `${cli}=${AGENT_CLI_PROFILES[cli].defaultModel}`).join(", ")}).`,
+      coerce: stringCoerce("--model"),
+    })
     .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; con claudecode es el esfuerzo (${CLAUDE_CODE_EFFORTS.join("|")}).`, coerce: stringCoerce("--variant") })
     .option("fallback", {
       type: "array",
@@ -443,19 +447,24 @@ function readAgentCli(parsed: Record<string, unknown>, rawArgs: string[], binary
   return cli;
 }
 
-const isValidVariant = (cli: AgentCli, variant: string): boolean =>
-  cli !== "claudecode" || CLAUDE_CODE_EFFORTS.includes(variant as typeof CLAUDE_CODE_EFFORTS[number]);
+const isValidVariant = (cli: AgentCli, variant: string): boolean => {
+  const efforts = AGENT_CLI_PROFILES[cli].efforts;
+  return !efforts || efforts.includes(variant);
+};
 
 /**
  * Why `cli` cannot execute `variant`, or null when it can. It is exported
  * because parsing is not the last word on which CLI runs the value: recovery
  * adopts the CLI its checkpoint imposes, and that one may reject a variant the
  * command's `--cli` accepted (issue #253). One definition keeps both rejections
- * naming the same CLI, value, and accepted set.
+ * naming the same CLI, value, and accepted set — read from the per-CLI table
+ * rather than special-cased by name (ADR-0034), so a CLI with its own effort
+ * set is rejected the same way without touching this function.
  */
 export function variantRejection(cli: AgentCli, variant: string): string | null {
   if (isValidVariant(cli, variant)) return null;
-  return `--variant ${variant} no es un esfuerzo de ${cli} (usa ${CLAUDE_CODE_EFFORTS.join(", ")})`;
+  const efforts = AGENT_CLI_PROFILES[cli].efforts ?? [];
+  return `--variant ${variant} no es un esfuerzo de ${cli} (usa ${efforts.join(", ")})`;
 }
 
 /**
@@ -557,7 +566,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
   };
 
   const cli = readAgentCli(parsed, rawArgs, binaryPresent);
-  const model = asString("model") ?? DEFAULT_MODEL;
+  const model = asString("model") ?? AGENT_CLI_PROFILES[cli].defaultModel;
   const variant = readVariant(cli, asString("variant") ?? DEFAULT_VARIANT);
   const waitSeconds = asNumber("fallback-wait") ?? DEFAULT_FALLBACK_WAIT_SECONDS;
   const waitMaxSeconds = asNumber("fallback-wait-max") ?? DEFAULT_FALLBACK_WAIT_MAX_SECONDS;
