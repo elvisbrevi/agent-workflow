@@ -186,18 +186,32 @@ should decide; the profile states what it is able to do. There is one profile pe
 authority — GitHub and Azure planning, GitHub and Azure delivery, and review —
 and it is derived from the same specification as the prompt, so the two cannot
 drift apart. Each profile is written once per coding agent CLI in the format that
-CLI's own provider validates, never generated from the other.
+CLI's own provider validates — an OpenCode permission block, a Claude Code
+settings file, a Codex execpolicy rules file — and never generated from another.
+Every CLI runs in its own auto-approve mode, so the deny rules are the whole
+enforcement surface.
 _Avoid_: prohibitions enforced only by prompt prose, one format translated into
 the other at run time
 
 **Coding agent CLI**:
 The external command-line agent that executes one lazy-workflow session:
-`opencode` or `claudecode`, selected per run with `--cli` and defaulting to
-`opencode`. Every command that opens a session resolves it once and runs through
-the same seam. It names the executor, never the authority: the agent authority
-profile still states what a session may do, expressed in the format its own CLI
-enforces.
+`opencode`, `claudecode` or `codex`, selected per run with `--cli` and defaulting
+to `opencode`. Every command that opens a session resolves it once and runs
+through the same seam, and each CLI carries its own binary, its own accepted
+efforts and its own default model. It names the executor, never the authority:
+the agent authority profile still states what a session may do, expressed in the
+format its own CLI enforces.
 _Avoid_: agent, agent authority profile, runner
+
+**Codex authority home**:
+The lazy-workflow-owned Codex home a run is given so its agent authority profile
+reaches Codex, which discovers execpolicy rules only under the resolved home and
+accepts no rules path as a flag. It holds the profile's own `rules/`, and links
+the operator's `auth.json` and `skills/` so the run keeps the operator's login
+and the skills its prompt names. The operator's `config.toml` is not linked: the
+model and the effort are stated on the invocation, and nothing else in the
+operator's home may vary the run.
+_Avoid_: the operator's own Codex home, a hermetic home, generated rules
 
 **Agent rung**:
 One executable position in a run's fallback order: a coding agent CLI, a model,
@@ -252,8 +266,9 @@ _Avoid_: session summary handoff, resumed session across CLIs, base tip as unit 
 **Agent result**:
 The normalized JSON representation of a coding agent CLI's event stream,
 including the session identifier, final text, stop reason, token counts, and
-cost when available. Both CLIs reduce to this shape, so coordination reads one
-result regardless of which agent produced it.
+cost when available. Every CLI reduces to this shape, so coordination reads one
+result regardless of which agent produced it, and a CLI that reports no cost
+simply leaves it absent.
 _Avoid_: raw transcript, CLI-specific result shape
 
 **Default workflow prompt**:

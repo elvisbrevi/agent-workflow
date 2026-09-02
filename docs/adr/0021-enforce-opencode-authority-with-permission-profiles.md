@@ -24,7 +24,9 @@ tags, pull-request operations — and the tracker CLI of the provider it does no
 own. Review additionally denies edits, so a review that modifies the tree fails
 at the tool call rather than at the after-the-fact worktree check. Committing
 stays allowed in delivery profiles because the completion manifest names a
-commit OpenCode must produce.
+commit OpenCode must produce, and in planning profiles because a plan run
+that edits documentation is expected to commit it — a later run in the same
+repository requires a clean working tree before it can prepare a branch.
 
 The profile is derived from the same spec as the prompt and returned with it, so
 a run cannot carry a delivery prompt without the matching authority. Prohibitions
