@@ -25,8 +25,13 @@ own. Review additionally denies edits, so a review that modifies the tree fails
 at the tool call rather than at the after-the-fact worktree check. Committing
 stays allowed in delivery profiles because the completion manifest names a
 commit OpenCode must produce, and in planning profiles because a plan run
-that edits documentation is expected to commit it — a later run in the same
-repository requires a clean working tree before it can prepare a branch.
+may commit the documentation it edits with a message of its own choosing.
+That permission is an opportunity, not the enforcement: a plan run that
+leaves the tree dirty anyway would only surface the failure later, on an
+unrelated `code` run, far from its cause — so the coordinator itself commits
+whatever tracked edits remain once a planning session ends, mechanically and
+without asking the model, the same way it never trusted provider prose for
+queue outcomes (ADR-0020).
 
 The profile is derived from the same spec as the prompt and returned with it, so
 a run cannot carry a delivery prompt without the matching authority. Prohibitions

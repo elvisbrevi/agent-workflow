@@ -1372,6 +1372,7 @@ export class LazyWorkflowCli {
     );
     console.log(JSON.stringify(result, null, 2));
     if (failed) return 1;
+    if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
     return this.publishAzurePlan(options.hu, result.text, options);
   }
 
@@ -1695,6 +1696,7 @@ export class LazyWorkflowCli {
       );
       console.log(JSON.stringify(result, null, 2));
       if (failed) return 1;
+      if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
       return await this.applyTriageRole(watermark, options.workingDirectory) ? 0 : 1;
     }
 
@@ -2581,6 +2583,9 @@ export class LazyWorkflowCli {
       );
       reportOperator(JSON.stringify(result, null, 2));
       if (failed) return 1;
+      for (const repository of scope.repositories) {
+        if (!await this.commitPlanningEdits(repository.path)) return 1;
+      }
       // A workspace plan publishes exactly like a single-repository one: the
       // session decides the slices, the coordinator creates the work items. The
       // repository count is the session's scope, never a reason to leave a plan
@@ -4248,6 +4253,34 @@ export class LazyWorkflowCli {
         `lazy-workflow: no se pudo leer la numeracion de Issues GitHub (${errorMessage(error)}); ejecucion detenida.`,
       );
       return undefined;
+    }
+  }
+
+  /**
+   * A planning session may create or update documentation as its own
+   * deliverable (ADR-0021: committing stays allowed in planning profiles for
+   * exactly this). The coordinator commits it mechanically once the session
+   * ends, rather than trusting the prompt asking the session to do it itself —
+   * ADR-0020 already rejected provider text as a control plane, and a session
+   * that forgot would surface the failure later, on an unrelated `code` run,
+   * far from its cause. `prepareBranch` and `repositoryScope` both require a
+   * clean tracked tree before they act, so this closes exactly that gap.
+   */
+  private async commitPlanningEdits(workingDirectory: string): Promise<boolean> {
+    try {
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
+      if (!status.trim()) return true;
+      await this.git(["add", "-A"], workingDirectory);
+      await this.git(["commit", "-m", "lazy-workflow: commit documentation from planning session"], workingDirectory);
+      return true;
+    } catch (error) {
+      reportFailure(
+        "delivery-failure",
+        "planning",
+        { repository: workingDirectory },
+        `lazy-workflow: no se pudieron commitear los cambios de documentación de la sesión de planificación (${errorMessage(error)}); ejecución detenida.`,
+      );
+      return false;
     }
   }
 
