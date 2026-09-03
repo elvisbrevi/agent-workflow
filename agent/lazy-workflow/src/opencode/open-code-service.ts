@@ -1,3 +1,4 @@
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, describeIdleTimeout } from "../coding-agent/idle-watchdog.ts";
 import {
   spawnAgentProcess,
   type AgentProcess,
@@ -185,41 +186,6 @@ function containsTerminalMarker(line: string, marker: string | undefined): boole
   }
 }
 
-/**
- * What the coordinator says when it nudges a silent session, mirroring the
- * operator's own manual "como vas? continua" and the marker contract of
- * `markerResumePrompt` (issue #292).
- */
-const IDLE_NUDGE_TEXT = "¿Cómo vas? Continúa donde quedaste.";
-
-function idleNudgePrompt(terminalMarker?: string): string {
-  if (!terminalMarker) {
-    return `${IDLE_NUDGE_TEXT} Si ya terminaste, entrega tu resultado final; no abras trabajo nuevo.`;
-  }
-  return [
-    IDLE_NUDGE_TEXT,
-    `Si el trabajo ya está completo, no preguntes nada y no repitas el trabajo: vuelve a emitir ${terminalMarker} como única línea de tu respuesta final.`,
-    `Si queda trabajo por hacer, termínalo y cierra con ${terminalMarker} en su propia línea.`,
-  ].join(" ");
-}
-
-/**
- * The same invocation pointed back at the session it just timed out on: the
- * resume keeps every flag the original had (authority, model, variant, format)
- * and only swaps the prompt for the nudge (issue #292).
- */
-function commandWithSessionAndPrompt(command: string[], sessionId: string, prompt: string): string[] {
-  const next = [...command];
-  const thinking = next.indexOf("--thinking");
-  if (thinking >= 0 && thinking + 1 < next.length) next[thinking + 1] = prompt;
-  const session = next.indexOf("--session");
-  if (session >= 0 && session + 1 < next.length) next[session + 1] = sessionId;
-  else {
-    const anchor = next.indexOf("--auto");
-    next.splice(anchor >= 0 ? anchor + 1 : 2, 0, "--session", sessionId);
-  }
-  return next;
-}
 
 async function readLines(
   stream: ReadableStream<Uint8Array>,
@@ -287,7 +253,7 @@ export class OpenCodeService implements CodingAgent {
      * The silence tolerated before the session is terminated and resumed with
      * the idle nudge; unlimited nudges, never a failure (issue #292).
      */
-    private readonly idleTimeoutMs = 15 * 60 * 1000,
+    private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MINUTES * 60_000,
   ) {}
 
   async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
@@ -445,35 +411,6 @@ export class OpenCodeService implements CodingAgent {
         [exitCode, stderrOutput] = await Promise.all([child.exited, stderrPromise]);
       }
       const markerArrived = streamed.lines.some((line) => containsTerminalMarker(line, terminalMarker));
-      if (idleFired && !streamed.stopped && !markerArrived) {
-        const idleSessionId = streamed.lines
-          .map(parseEvent)
-          .find((event) => typeof event?.sessionID === "string")
-          ?.sessionID;
-        const idleMinutes = Math.max(1, Math.round(this.idleTimeoutMs / 60_000));
-        if (!idleSessionId) {
-          throw new Error(`OpenCode estuvo ${idleMinutes} min sin eventos y sin identificador de sesión; no hay sesión que reanudar`);
-        }
-        reportSessionEvent(
-          "session_idle_timeout",
-          `OpenCode estuvo ${idleMinutes} min sin eventos; se reanuda la sesión con un empujón`,
-          rung,
-          { sessionId: idleSessionId },
-          { durationMs: idleMs },
-          this.reporter,
-        );
-        this.reporter.info(`OpenCode sin eventos durante ${idleMinutes} min; reanudo la sesión ${idleSessionId} automáticamente.`);
-        const resumed = await this.execute(
-          commandWithSessionAndPrompt(command, idleSessionId, idleNudgePrompt(terminalMarker)),
-          detectAzureLogin,
-          workingDirectory,
-          terminalMarker,
-          authority,
-          model,
-          variant,
-        );
-        return { ...resumed, idleMs: (resumed.idleMs ?? 0) + idleMs };
-      }
       const stderr = stderrOutput.lines.join("\n");
       const azureLoginRequired = detectAzureLogin
         && (streamed.lines.some(requiresAzureLogin) || asksForAzureLogin(stderr));
@@ -513,8 +450,15 @@ export class OpenCodeService implements CodingAgent {
         }
       }
 
-      const failed = exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived;
-      const exhaustion = classifyExhaustion(streamed.lines, model, failed);
+      // Una sesión que el watchdog mató nunca es un éxito, cualquiera fuese su código de salida:
+      // el proceso no terminó, se lo terminó (ADR-0039).
+      const failed = idleFired || (exitCode !== 0 && !azureLoginRequired && !terminalMarkerReceived);
+      const exhaustion = idleFired ? undefined : classifyExhaustion(streamed.lines, model, failed);
+      if (idleFired) {
+        const message = describeIdleTimeout("OpenCode", this.idleTimeoutMs);
+        this.reporter.warn(`${message}; se desciende al escalón siguiente.`);
+        reportSessionEvent("session_idle_timeout", message, rung, context, { durationMs: idleMs }, this.reporter);
+      }
       if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
 
       const durationMs = Date.now() - startedAt;
@@ -556,7 +500,7 @@ export class OpenCodeService implements CodingAgent {
         );
       }
 
-      return { result, azureLoginRequired, failed, exhaustion };
+      return { result, azureLoginRequired, failed, exhaustion, ...(idleFired ? { idleTimedOut: true, idleMs } : {}) };
     } finally {
       disarmIdle();
       stopSpinner();

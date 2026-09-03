@@ -44,8 +44,17 @@ export interface AgentExecution {
   /** Set only when `failed` is provider exhaustion rather than an ordinary failure. */
   exhaustion?: ProviderExhaustion;
   /**
-   * Total silence the session sat in before the idle watchdog resumed it, so the
-   * coordinator's effort accounting can exclude those intervals (issue #292).
+   * La sesión se mató por quedarse callada más allá del timeout de inactividad.
+   *
+   * Es la segunda causa de descenso, junto al agotamiento de proveedor: para el
+   * bucle, un agente pegado y una cuota agotada dicen lo mismo —este escalón no
+   * está produciendo— y solo se distinguen cuando la cadena entera se gastó
+   * (ADR-0039).
+   */
+  idleTimedOut?: boolean;
+  /**
+   * El silencio en el que la sesión estuvo antes de que el watchdog la matara, que
+   * el coordinador excluye del esfuerzo: fue tiempo transcurrido y no trabajo.
    */
   idleMs?: number;
 }

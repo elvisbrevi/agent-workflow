@@ -6,6 +6,7 @@
 
 import { spawnAgentProcess, type AgentProcess, type AgentSpawner } from "../coding-agent/agent-process.ts";
 import { join } from "node:path";
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, IdleWatchdog, describeIdleTimeout } from "../coding-agent/idle-watchdog.ts";
 import { AgentResult, lastReasoning, type AgentTokens } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
@@ -262,7 +263,7 @@ function decodeStream(events: CodexEventData[]): AgentResult {
   });
 }
 
-async function readLines(stream: ReadableStream<Uint8Array>, reportLine: (line: string) => void): Promise<string[]> {
+async function readLines(stream: ReadableStream<Uint8Array>, reportLine: (line: string) => void, onChunk: () => void = () => undefined): Promise<string[]> {
   const decoder = new TextDecoder();
   const lines: string[] = [];
   let buffer = "";
@@ -291,6 +292,8 @@ export class CodexService implements CodingAgent {
     private readonly assembleHome: CodexAuthorityHomeAssembler = assembleCodexAuthorityHome,
     private readonly operatorHome: CodexOperatorHomeResolver = resolveOperatorCodexHome,
     private readonly authorityHomePath: CodexAuthorityHomePath = codexAuthorityHomePath,
+    /** El silencio que esta CLI puede pasar entre eventos antes de que se la termine (ADR-0039). */
+    private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MINUTES * 60_000,
   ) {}
 
   async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
@@ -393,11 +396,15 @@ export class CodexService implements CodingAgent {
       }
     };
     const reportStderr = (line: string) => this.reporter.info(`Codex stderr: ${line}`);
+    // Una sesión que deja de emitir se termina, y el resultado lo dice para que el bucle
+    // descienda al escalón siguiente (ADR-0039).
+    const watchdog = new IdleWatchdog(this.idleTimeoutMs, () => { try { child.kill("SIGTERM"); } catch { /* ya salió */ } });
+    watchdog.touch();
     const [lines, errorLines, exitCode] = await Promise.all([
-      readLines(child.stdout, reportStdout),
+      readLines(child.stdout, reportStdout, () => watchdog.touch()),
       readLines(child.stderr, reportStderr),
       child.exited,
-    ]);
+    ]).finally(() => watchdog.disarm());
     const stderr = errorLines.join("\n");
     const events = parseEvents(lines.join("\n"));
     if (events.length === 0) {
@@ -420,8 +427,9 @@ export class CodexService implements CodingAgent {
     const result = decodeStream(events);
     const azureLoginRequired = detectAzureLogin && (requiresAzureLogin(events) || asksForAzureLogin(stderr));
     const markerReceived = containsMarker(result.text, terminalMarker);
-    const failed = exitCode !== 0 && !azureLoginRequired && !markerReceived;
-    const exhaustion = classifyExhaustion(events, model, failed);
+    const failed = watchdog.fired || (exitCode !== 0 && !azureLoginRequired && !markerReceived);
+    if (watchdog.fired) this.reporter.warn(`${describeIdleTimeout("Codex", this.idleTimeoutMs)}; se desciende al escalón siguiente.`);
+    const exhaustion = watchdog.fired ? undefined : classifyExhaustion(events, model, failed);
     if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
     const context = { sessionId: result.sessionId };
     const durationMs = Date.now() - startedAt;
@@ -434,6 +442,6 @@ export class CodexService implements CodingAgent {
     } else {
       reportSessionEvent("session_finished", "Codex finalizo la sesion", rung, { ...context, stopReason: result.reason }, { durationMs, outcome: "success" }, this.reporter);
     }
-    return { result, azureLoginRequired, failed, exhaustion };
+    return { result, azureLoginRequired, failed, exhaustion, ...(watchdog.fired ? { idleTimedOut: true, idleMs: watchdog.idleMs } : {}) };
   }
 }

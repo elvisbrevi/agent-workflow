@@ -533,3 +533,42 @@ test("el checkpoint conserva el escalón completo, modelo y variante, para recup
 });
 
 
+
+test("un escalón que se queda sin actividad desciende igual que uno agotado", async () => {
+  const idle = (): AgentExecution => ({
+    result: agentResult("se quedó callado"),
+    azureLoginRequired: false,
+    failed: true,
+    idleTimedOut: true,
+    idleMs: 1_800_000,
+  });
+  const agents = scriptedAgents({ run: [idle()], resume: [] });
+
+  const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"]);
+
+  expect(code).toBe(0);
+  expect(agents.started).toEqual(["opencode-go/deepseek-v4-pro", "provider/respaldo"]);
+});
+
+test("una cadena gastada por inactividad no espera: la cuota vuelve sola, un prompt colgado no", async () => {
+  const idle = (): AgentExecution => ({
+    result: agentResult("se quedó callado"),
+    azureLoginRequired: false,
+    failed: true,
+    idleTimedOut: true,
+  });
+  const agents = scriptedAgents({ run: [idle(), idle()], resume: [] });
+  const timers = fakeTimers();
+
+  await runDelivery(
+    agents,
+    ["--fallback", "opencode:provider/respaldo:medium", "--fallback-wait", "60"],
+    checkpointStore(),
+    [178],
+    undefined,
+    [],
+    timers,
+  );
+
+  expect(timers.waits).toEqual([]);
+});

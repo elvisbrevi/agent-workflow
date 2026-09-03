@@ -2,6 +2,7 @@ import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { AGENT_CLI_BINARIES, AGENT_CLI_PROFILES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { DEFAULT_IDLE_TIMEOUT_MINUTES } from "../coding-agent/idle-watchdog.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
 import type { ShutdownRequest } from "../system/shutdown-service.ts";
 import { DETERMINISTIC_TOOL_COMMANDS, DETERMINISTIC_TOOL_FORMS } from "./tool-commands.ts";
@@ -20,6 +21,8 @@ export interface CliOptions {
   variant: string;
   hasCli: boolean;
   hasModel: boolean;
+  /** Minutos de silencio que una sesión puede pasar antes de que se la termine (ADR-0039). */
+  idleTimeoutMinutes: number;
   /** Si el operador declaró `--prompt`: sin eso su valor es el default, que no es una petición. */
   hasPrompt: boolean;
   hasVariant: boolean;
@@ -329,7 +332,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       reportError(error?.message ?? message ?? "argumento invalido");
     })
     .group(["hu", "issue", "environment"], "Alcance:")
-    .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "prompt"], "Agente de codificacion:")
+    .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "idle-timeout", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "commit", "manifest"], "Tickets Azure:")
     .group(["validation", "validation-result", "evidence", "summary"], "Manifest de entrega:")
     .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
@@ -363,6 +366,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       requiresArg: true,
       describe: "Escalon de respaldo <cli>:<modelo>:<variante>; repetible, el orden de declaracion es la prioridad de descenso.",
     })
+    .option("idle-timeout", positiveIntegerOption("--idle-timeout", "Minutos de silencio de la sesion antes de terminarla y descender al escalon siguiente.", DEFAULT_IDLE_TIMEOUT_MINUTES))
     .option("fallback-wait", positiveIntegerOption("--fallback-wait", "Segundos entre reintentos del escalon primario con la cadena agotada.", DEFAULT_FALLBACK_WAIT_SECONDS))
     .option("fallback-wait-max", positiveIntegerOption("--fallback-wait-max", "Tope total en segundos del ciclo de espera y reintento; alcanzado, el run falla cerrado.", DEFAULT_FALLBACK_WAIT_MAX_SECONDS))
     .option("prompt", { type: "string", requiresArg: true, default: DEFAULT_PROMPT, describe: "Prompt explicito para la sesion.", coerce: stringCoerce("--prompt") })
@@ -594,6 +598,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     variant,
     hasCli: flagSupplied(rawArgs, "--cli"),
     hasModel: flagSupplied(rawArgs, "--model"),
+    idleTimeoutMinutes: asNumber("idle-timeout") ?? DEFAULT_IDLE_TIMEOUT_MINUTES,
     hasPrompt: flagSupplied(rawArgs, "--prompt"),
     hasVariant: flagSupplied(rawArgs, "--variant"),
     fallbackChain: parseFallbackChain(parsed["fallback"], { cli, model, variant }, binaryPresent),

@@ -17,6 +17,7 @@ import {
   type AgentProcess,
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, IdleWatchdog, describeIdleTimeout } from "../coding-agent/idle-watchdog.ts";
 import { AgentResult, lastReasoning, type AgentTokens, type AgentToolInput } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
@@ -249,11 +250,13 @@ function decodeTokens(event: ClaudeCodeEventData | undefined): AgentTokens | und
 async function readLines(
   stream: ReadableStream<Uint8Array>,
   reportLine: (line: string) => void,
+  onChunk: () => void = () => undefined,
 ): Promise<string[]> {
   const decoder = new TextDecoder();
   const lines: string[] = [];
   let buffer = "";
   for await (const chunk of stream) {
+    onChunk();
     buffer += decoder.decode(chunk, { stream: true });
     const parts = buffer.split(/\r?\n/);
     buffer = parts.pop() ?? "";
@@ -280,6 +283,8 @@ export class ClaudeCodeService implements CodingAgent {
   constructor(
     private readonly spawn: AgentSpawner = spawnAgentProcess,
     private readonly reporter: Reporter = getDefaultReporter(),
+    /** El silencio que esta CLI puede pasar entre eventos antes de que se la termine (ADR-0039). */
+    private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MINUTES * 60_000,
   ) {}
 
   async run(options: AgentRunOptions, detectAzureLogin = false): Promise<AgentExecution> {
@@ -387,14 +392,19 @@ export class ClaudeCodeService implements CodingAgent {
     };
     const reportStderr = (line: string) => this.reporter.info(`Claude Code stderr: ${line}`);
 
+    // Una sesión que deja de emitir se termina, y el resultado lo dice para que el bucle
+    // descienda al escalón siguiente (ADR-0039).
+    const watchdog = new IdleWatchdog(this.idleTimeoutMs, () => { try { child.kill("SIGTERM"); } catch { /* ya salió */ } });
+    watchdog.touch();
     const [lines, errorLines, exitCode] = await Promise.all([
-      readLines(child.stdout, reportStdout),
+      readLines(child.stdout, reportStdout, () => watchdog.touch()),
       readLines(child.stderr, reportStderr),
       child.exited,
-    ]);
+    ]).finally(() => watchdog.disarm());
 
     const events = parseEvents(lines.join("\n"));
-    const exhaustion = classifyExhaustion(events, model, exitCode !== 0);
+    if (watchdog.fired) this.reporter.warn(`${describeIdleTimeout("Claude Code", this.idleTimeoutMs)}; se desciende al escalón siguiente.`);
+    const exhaustion = watchdog.fired ? undefined : classifyExhaustion(events, model, exitCode !== 0);
     if (exhaustion) this.reporter.warn(describeExhaustion(exhaustion));
     const result = decodeStream(events);
     const durationMs = Date.now() - startedAt;
@@ -440,8 +450,9 @@ export class ClaudeCodeService implements CodingAgent {
       result,
       azureLoginRequired: detectAzureLogin
         && (requiresAzureLogin(events) || asksForAzureLogin(errorLines.join("\n"))),
-      failed: exitCode !== 0,
+      failed: watchdog.fired || exitCode !== 0,
       exhaustion,
+      ...(watchdog.fired ? { idleTimedOut: true, idleMs: watchdog.idleMs } : {}),
     };
   }
 }

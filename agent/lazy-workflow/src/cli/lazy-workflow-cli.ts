@@ -642,8 +642,18 @@ export class LazyWorkflowCli {
     return this.activeAgent ?? this.resolveAgent(DEFAULT_CLI);
   }
 
+  /**
+   * El silencio que las sesiones de esta corrida pueden pasar, en milisegundos.
+   *
+   * Se fija al parsear y lo lee cada adaptador que se resuelva después: el watchdog vive en el
+   * adaptador porque el silencio se mide sobre el stream que cada CLI emite (ADR-0039).
+   */
+  private idleTimeoutMs: number | undefined;
+
   private resolveAgent(cli: AgentCli): CodingAgent {
-    this.activeAgent = typeof this.agentSource === "function" ? this.agentSource(cli) : this.agentSource;
+    this.activeAgent = typeof this.agentSource === "function"
+      ? this.agentSource(cli, this.idleTimeoutMs)
+      : this.agentSource;
     return this.activeAgent;
   }
 
@@ -871,6 +881,7 @@ export class LazyWorkflowCli {
   }
 
   private async runParsed(options: CliOptions, args: string[]): Promise<number> {
+    this.idleTimeoutMs = options.idleTimeoutMinutes * 60_000;
     const runLog = createRunLogSink({
       path: resolveRunLogPath({ logFile: options.logFile, noLogFile: options.noLogFile }),
       onWriteFailure: (error) => {
@@ -1583,9 +1594,15 @@ export class LazyWorkflowCli {
     let index = 0;
     /** When the bounded wait ends, set on the first exhausted chain rather than at the start of the run. */
     let waitDeadline: number | null = null;
-    while (current.exhaustion) {
+    // Dos causas de descenso, no una: la cuota agotada y el silencio más allá del timeout. Para el
+    // bucle dicen lo mismo —este escalón no está produciendo— y solo se distinguen cuando la
+    // cadena entera se gastó (ADR-0039).
+    while (current.exhaustion || current.idleTimedOut) {
       let next = nextRung(options, index);
       if (!next) {
+        // Una cadena gastada por silencio no espera: la cuota vuelve sola, un prompt que colgó a
+        // tres CLIs va a colgar al cuarto intento.
+        if (!current.exhaustion) return current;
         waitDeadline ??= this.clock.now() + options.fallbackWaitMaxSeconds * 1000;
         if (!await this.waitForPrimaryRetry(options, active, current.exhaustion, waitDeadline)) return current;
         // The retry starts over at the head of the chain, so whichever rung
@@ -1595,16 +1612,18 @@ export class LazyWorkflowCli {
       }
       const sessionId = current.result.sessionId;
       const handedOff = next.rung.cli !== active.cli;
+      const cause = current.exhaustion?.cause ?? "idle_timeout";
+      const spent = current.exhaustion ? "agotado" : "sin actividad";
       reportOperator(
-        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} traspasando el trabajo a una sesión nueva.`,
+        `lazy-workflow: escalón ${describeRung(active)} ${spent} (${cause}); desciendo a ${describeRung(next.rung)} traspasando el trabajo a una sesión nueva.`,
       );
       const descentContext = { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId };
       reportSessionEvent(
         "fallback_descent",
-        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)}.`,
+        `lazy-workflow: escalón ${describeRung(active)} ${spent} (${cause}); desciendo a ${describeRung(next.rung)}.`,
         next.rung,
         descentContext,
-        { reason: current.exhaustion.cause, fromCli: active.cli },
+        { reason: cause, fromCli: active.cli },
       );
       if (handedOff) {
         reportSessionEvent(
