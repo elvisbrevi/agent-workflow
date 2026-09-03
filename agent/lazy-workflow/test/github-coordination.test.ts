@@ -327,7 +327,6 @@ test("la recuperación fija la rama cuando el checkpoint quedó antes de prepara
   expect(events).toEqual(["prepare-branch:178", "verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
   expect(state.current?.branch).toBe("refs/heads/issue/178");
   expect(state.current?.baseBranch).toBe("refs/heads/main");
-  expect(state.current?.manifestPath).toBe("/missing-manifest.json");
 });
 
 test("la recuperación sessionless cambia a la rama fijada antes de continuar", async () => {

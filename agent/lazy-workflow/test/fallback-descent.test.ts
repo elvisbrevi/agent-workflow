@@ -334,7 +334,7 @@ test("cada descenso escribe un evento de sesión con el escalón, la causa y el 
   expect(detail.fromCli).toBe("opencode");
 });
 
-test("un fallo ordinario al descender conserva la sesión viva en el checkpoint", async () => {
+test("un fallo ordinario al descender deja la unidad reclamada y sigue el drenaje", async () => {
   const agents = scriptedAgents({
     run: [exhausted("provider/primario")],
     resume: [new Error("el respaldo explotó")],
@@ -343,11 +343,11 @@ test("un fallo ordinario al descender conserva la sesión viva en el checkpoint"
 
   const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"], store);
 
+  // La unidad no entregó nada, así que no hay estado a medias que reconciliar: el checkpoint se
+  // limpia, la issue se queda con su claim —que es lo que la saca de la frontera— y el drenaje
+  // continúa. El código de salida dice que algo quedó roto detrás (ADR-0038).
   expect(code).toBe(1);
-  // La sesión sigue viva: solo una sesión que el CLI declara ausente vuelve sin
-  // identificador, para que la recuperación pueda reanudar esta.
-  expect(store.written.at(-1)?.phase).toBe("reconciling");
-  expect(store.written.at(-1)?.sessionId).toBe(SESSION);
+  expect(store.read()).resolves.toBeNull();
 });
 
 test("la recuperación reanuda con el modelo descendido que el checkpoint conserva", async () => {

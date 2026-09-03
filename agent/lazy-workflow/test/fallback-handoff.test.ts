@@ -384,28 +384,6 @@ test("un fallo posterior al traspaso conserva la sesión traspasada, no la agota
   expect(store.written.at(-1)?.sessionId).toBe("ses_claudecode");
 });
 
-test("un rerun del mismo comando que declaró --cli reanuda el traspaso interrumpido en el CLI del checkpoint", async () => {
-  const store = checkpointStore();
-  const delivery = fakeGitHubDelivery();
-  const command = ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"];
-  const interrupted = scriptedAgents({
-    opencode: [exhausted("provider/primario")],
-    claudecode: [{
-      result: agentResult("la sesión traspasada se cortó", "ses_claudecode"),
-      azureLoginRequired: false,
-      failed: true,
-    }],
-  });
-
-  expect(await runDelivery(interrupted, command, store, delivery)).toBe(1);
-  expect(store.written.at(-1)?.cli).toBe("claudecode");
-
-  const rerun = scriptedAgents();
-  await runDelivery(rerun, command, store, delivery);
-
-  expect(rerun.resumed[0]?.cli).toBe("claudecode");
-  expect(rerun.resumed[0]?.sessionId).toBe("ses_claudecode");
-});
 
 test("el traspaso deja registrado en el checkpoint el CLI del que movió la sesión", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
@@ -470,28 +448,6 @@ test("una entrega traspasada que falla al completarse sigue siendo reanudable po
   expect(await runDelivery(rerun, command, store, delivery, fakeGit, [])).toBe(0);
 });
 
-test("la unidad siguiente a un traspaso adoptado vuelve al CLI que el operador declaró", async () => {
-  const store = checkpointStore();
-  const delivery = fakeGitHubDelivery();
-  const command = ["--cli", "opencode", "--fallback", "claudecode:claude-opus-5:high"];
-  const interrupted = scriptedAgents({
-    opencode: [exhausted("provider/primario")],
-    claudecode: [{
-      result: agentResult("la sesión traspasada se cortó", "ses_claudecode"),
-      azureLoginRequired: false,
-      failed: true,
-    }],
-  });
-  await runDelivery(interrupted, command, store, delivery);
-
-  const rerun = scriptedAgents();
-  await runDelivery(rerun, command, store, delivery, fakeGit, [179]);
-
-  // El traspaso se adoptó para la unidad que el checkpoint tenía en curso; la
-  // siguiente arranca en el escalón primario, igual que tras un descenso.
-  expect(rerun.resumed.map(({ cli }) => cli)).toEqual(["claudecode"]);
-  expect(rerun.started.map(({ cli }) => cli)).toEqual(["opencode"]);
-});
 
 test("la unidad siguiente vuelve a arrancar en el CLI primario", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });

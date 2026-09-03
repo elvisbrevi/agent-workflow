@@ -162,8 +162,13 @@ test("el prompt de entrega GitHub es la instrucción del trabajo y nada más", a
     verifyAuthentication: async () => ({ login: "bot" }),
     verifyRepository: async () => ({ nameWithOwner: "owner/repo" }),
     selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
-    selectEligibleIssue: async () => ({ kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } }),
+    selectEligibleIssue: async function () {
+      if (this.done) return { kind: "empty" as const };
+      this.done = true;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
+    },
     claimSelectedIssue: async () => fakeSelectedIssue(179),
+    done: false,
   };
 
   await createCli({
@@ -849,4 +854,57 @@ test("una sesión sin commits sobre la base no abre PR y deja la issue reclamada
 
   expect(code).toBe(1);
   expect(effects).toEqual([]);
+});
+
+/**
+ * El drenaje no se detiene por una unidad (ADR-0038): la issue que falla conserva
+ * su claim, que es lo que la saca de la frontera, y el bucle sigue con la
+ * siguiente. Una issue mal escrita a mitad de la cola no puede parar las diez que
+ * vienen detrás.
+ */
+test("una issue que falla no detiene el drenaje: la siguiente se entrega igual", async () => {
+  const delivered: number[] = [];
+  const pending = [178, 179];
+  const queue = {
+    verifyAuthentication: async () => ({ login: "bot" }),
+    verifyRepository: async () => ({ nameWithOwner: "owner/repo" }),
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    selectEligibleIssue: async () => {
+      const next = pending.shift();
+      return next
+        ? { kind: "candidate" as const, issue: fakeSelectedIssue(next), repository: { nameWithOwner: "owner/repo" } }
+        : { kind: "empty" as const };
+    },
+    claimSelectedIssue: async (issue: number) => fakeSelectedIssue(issue),
+    releaseOwnClaim: async () => { throw new Error("una unidad que falla conserva su claim"); },
+  };
+
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async () => ({
+        result: AgentResult.fromJsonLines(JSON.stringify({
+          type: "text", sessionID: "ses", part: { type: "text", text: "hecho" },
+        })),
+        azureLoginRequired: false,
+      }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    githubManagedQueue: queue,
+    ...fakeCoordinatedGitHubDeps(),
+    githubDelivery: fakeGitHubDelivery({
+      verifySession: async (_branch, _base, _dir) => {
+        if (delivered.length === 0) {
+          delivered.push(-178);
+          throw new GitHubSessionNotVerifiedError("la rama refs/heads/issue/178 no tiene commits sobre refs/heads/main");
+        }
+        return { commit: "a".repeat(40) };
+      },
+      closeIssue: async (issue) => { delivered.push(issue); },
+    }),
+  }).run(["code", "--working-directory", "/repo"]);
+
+  // La #179 se entrega igual; el código de salida dice que algo quedó roto detrás.
+  expect(delivered).toEqual([-178, 179]);
+  expect(code).toBe(1);
 });

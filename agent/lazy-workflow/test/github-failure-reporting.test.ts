@@ -30,7 +30,7 @@ function capturingReporterFactory(): { reporterFn: typeof createReporter; captur
 }
 
 describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
-  test("una sesión no verificada en completeGitHubDelivery produce la línea de operador en error y un registro run-log con failure_kind", async () => {
+  test("una sesión no verificada produce la línea de operador en error y un registro run-log con failure_kind", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-github-failure-"));
     const logFile = join(dir, "runs.jsonl");
     const { reporterFn, captured } = capturingReporterFactory();
@@ -63,7 +63,7 @@ describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
       expect(exit).toBe(1);
 
       // The operator line: error level, the ✖ glyph, survives --quiet.
-      const failureLine = captured.find((line) => line.message.includes("no se pudo completar determinísticamente el Issue #178"));
+      const failureLine = captured.find((line) => line.message.includes("el Issue #178 no quedó verificado"));
       expect(failureLine).toBeDefined();
       expect(failureLine!.level).toBe("error");
 
@@ -77,7 +77,7 @@ describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
         phase: "implementation-ready",
         context: expect.objectContaining({ issue: 178 }),
       });
-      expect((failureRecord!["message"] as string)).toContain("no se pudo completar determinísticamente el Issue #178");
+      expect((failureRecord!["message"] as string)).toContain("el Issue #178 no quedó verificado");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

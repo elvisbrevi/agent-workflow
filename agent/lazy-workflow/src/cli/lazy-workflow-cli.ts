@@ -369,19 +369,6 @@ function activeEffortHours(activeDurationMs: number): number {
   return Math.max(0.25, Math.ceil(activeDurationMs / 900_000) / 4);
 }
 
-async function manifestBelongsToDelivery(manifestPath: string, issue: number, branch: string): Promise<boolean> {
-  try {
-    if (!(await Bun.file(manifestPath).exists())) return false;
-    const value: unknown = await Bun.file(manifestPath).json();
-    return typeof value === "object"
-      && value !== null
-      && (value as { issue?: unknown }).issue === issue
-      && (value as { branch?: unknown }).branch === branch;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Una reanudación agotada no es un fallo del coordinador: viaja como ejecución agotada para que
  * la cadena de fallback la reciba igual que a una corrida nueva.
@@ -3081,8 +3068,15 @@ export class LazyWorkflowCli {
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
     const queue = this.githubManagedQueue;
+    /**
+     * Cuántas unidades fallaron sin detener el drenaje (ADR-0038).
+     *
+     * Una unidad que falla conserva su claim, que es lo que la saca de la frontera, así que la
+     * vuelta siguiente elige otra y el drenaje termina igual. Lo que el conteo cambia es el código
+     * de salida: una corrida que dejó issues rotas detrás no puede reportarse como limpia.
+     */
+    let failedUnits = 0;
     // Deliver every eligible issue in one run: on completion, re-select the next.
-    // Empty/blocked queue or any failure returns and exits the loop.
     while (true) {
       let queueOutcome: ManagedQueueOutcome;
       let checkpointWasWritten = false;
@@ -3164,8 +3158,10 @@ export class LazyWorkflowCli {
         console.log(JSON.stringify({ outcome: QUEUE_EMPTY_MARKER }, null, 2));
         console.log(QUEUE_EMPTY_MARKER);
         console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        reportOperator("lazy-workflow: no quedan issues GitHub elegibles.");
-        return 0;
+        reportOperator(failedUnits === 0
+          ? "lazy-workflow: no quedan issues GitHub elegibles."
+          : `lazy-workflow: no quedan issues GitHub elegibles; ${failedUnits} quedaron reclamadas sin entregar.`);
+        return failedUnits === 0 ? 0 : 1;
       }
       if (queueOutcome.kind === "blocked") {
         const summary = queueOutcome.reasons.map(({ number, title, reasons }) =>
@@ -3182,7 +3178,6 @@ export class LazyWorkflowCli {
       const repository = queueOutcome.repository;
       let branch: string | null = null;
       let baseBranch: string | null = null;
-      let manifestPath: string | null = null;
       /** The session's own closing words, which become the pull-request body (ADR-0037). */
       let summary: string | null = null;
       let commit: string | null = null;
@@ -3214,7 +3209,6 @@ export class LazyWorkflowCli {
           pullRequest,
           receipts,
           baseBranch,
-          manifestPath,
           summary,
           mergeCommit,
           intent,
@@ -3227,7 +3221,6 @@ export class LazyWorkflowCli {
           const prepared = await this.githubDelivery.prepareBranch(issue.number, options.workingDirectory);
           branch = prepared.branch;
           baseBranch = prepared.baseBranch;
-          manifestPath = prepared.manifestPath;
           await saveCheckpoint("started");
         } catch (error) {
           await saveCheckpoint("started");
@@ -3240,20 +3233,19 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      // ADR-0020 superseded the uncoordinated shape: without a coordinator-owned
-      // delivery adapter, branch, and manifest there is no delivery contract to
-      // state, so the run fails closed instead of starting a session that cannot
-      // be completed deterministically.
-      if (!this.githubDelivery || !branch || !manifestPath) {
+      // ADR-0020 superseded the uncoordinated shape: without a coordinator-owned delivery adapter
+      // and a fixed branch no hay entrega que verificar, así que la corrida falla cerrada en vez de
+      // abrir una sesión que nadie va a poder completar.
+      if (!this.githubDelivery || !branch || !baseBranch) {
         reportFailure(
           "delivery-failure",
           "started",
           { issue: issue.number, repository: repository.nameWithOwner, branch },
-          `lazy-workflow: falta el adaptador de entrega GitHub, la rama o el manifest del Issue #${issue.number}; no se inicia una sesion sin contrato de entrega.`,
+          `lazy-workflow: falta el adaptador de entrega GitHub o la rama del Issue #${issue.number}; no se inicia una sesion sin contrato de entrega.`,
         );
         return 1;
       }
-      const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
+      const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, norms);
       /** The authority of the session in course, restated by a handoff in the new CLI's own format. */
       let activeAuthority = run.agent;
       /** The session `activeCli` owns once a handoff opened a new one, so the two are never checkpointed crossed. */
@@ -3301,14 +3293,15 @@ export class LazyWorkflowCli {
         // checkpoint keeps it and recovery resumes that one; only a session the
         // CLI declares gone goes back sessionless, as recovery already does.
         const reconcilingSessionId = error instanceof AgentSessionNotFoundError ? null : activeSessionId ?? execution?.result.sessionId ?? null;
-        await saveCheckpoint("reconciling", reconcilingSessionId);
         reportFailure(
           "session-failure",
           "reconciling",
           { issue: issue.number, repository: repository.nameWithOwner, branch, sessionId: reconcilingSessionId },
-          `lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); checkpoint conservado.`,
+          `lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); el Issue #${issue.number} queda reclamado.`,
         );
-        return 1;
+        failedUnits += 1;
+        if (store) await store.clear(options.workingDirectory);
+        continue;
       }
       // El descenso es sticky solo dentro de esta unidad: la siguiente vuelve a
       // arrancar en el escalón primario, también cuando un traspaso cambió de CLI.
@@ -3319,31 +3312,37 @@ export class LazyWorkflowCli {
       // Que la sesión terminara lo dice su proceso; que entregara lo dice git, y eso lo pregunta
       // `completeGitHubDelivery` antes de tocar el remoto (ADR-0035).
       const terminal = !execution.failed;
-      await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
+      await saveCheckpoint(terminal ? "implementation-ready" : "reconciling", terminal ? null : result.sessionId);
       if (execution.failed) {
         reportFailure(
           "session-failure",
           "reconciling",
           { issue: issue.number, repository: repository.nameWithOwner, branch, sessionId: result.sessionId },
-          `lazy-workflow: la sesión GitHub falló (${errorMessage(result.text)}); checkpoint conservado.`,
+          `lazy-workflow: la sesión GitHub falló (${errorMessage(result.text)}); el Issue #${issue.number} queda reclamado.`,
         );
-        this.reportGitHubReconciliationRequired({
-          schemaVersion: 2,
-          cli: activeCli,
-          workflow: "github-code",
-          repository: repository.nameWithOwner,
-          issue: issue.number,
-          phase: "reconciling",
-          branch: null,
-          sessionId: terminal ? null : result.sessionId,
-          commit: null,
-          pullRequest: null,
-          receipts,
-        }, false);
-        return 1;
+        failedUnits += 1;
+        if (store) await store.clear(options.workingDirectory);
+        continue;
       }
 
       if (this.githubDelivery) {
+        // La compuerta de la unidad, antes de tocar el remoto: git dice si esto es una entrega
+        // (ADR-0035). Lo que no pasa por acá no vuelve a intentarse en esta corrida — queda
+        // reclamado, con su rama, y el drenaje sigue con la siguiente (ADR-0038).
+        try {
+          if (!branch || !baseBranch) throw new Error("la unidad no tiene rama fijada");
+          commit = (await this.githubDelivery.verifySession(branch, baseBranch, options.workingDirectory)).commit;
+        } catch (error) {
+          reportFailure(
+            githubCompletionFailureKind(error),
+            "implementation-ready",
+            { issue: issue.number, repository: repository.nameWithOwner, branch },
+            `lazy-workflow: el Issue #${issue.number} no quedó verificado (${errorMessage(error)}); queda reclamado y su rama se conserva.`,
+          );
+          failedUnits += 1;
+          if (store) await store.clear(options.workingDirectory);
+          continue;
+        }
         try {
           await this.completeGitHubDelivery(options, {
             schemaVersion: 2,
@@ -3359,7 +3358,6 @@ export class LazyWorkflowCli {
             pullRequest,
             receipts,
             baseBranch,
-            manifestPath,
             summary,
             mergeCommit,
             intent,
@@ -3374,6 +3372,8 @@ export class LazyWorkflowCli {
             { issue: issue.number, repository: repository.nameWithOwner, branch },
             `lazy-workflow: no se pudo completar determinísticamente el Issue #${issue.number} (${errorMessage(error)}); checkpoint conservado.`,
           );
+          // Una unidad verificada que ya empujó, abrió PR o mergeó está a medias: tomar la
+          // siguiente enterraría el estado que hay que reconciliar bajo una segunda entrega.
           return 1;
         }
       }
@@ -3397,7 +3397,6 @@ export class LazyWorkflowCli {
     issue: SelectedManagedIssue,
     repository: GitHubRepositoryContext,
     branch: string,
-    manifestPath: string,
     norms: SagContext | null,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
     return this.prompt({ kind: "github-delivery", issue, repository, branch }, options, norms);
@@ -3559,12 +3558,11 @@ export class LazyWorkflowCli {
   private async completeGitHubDelivery(options: CliOptions, initial: GitHubDeliveryCheckpoint): Promise<void> {
     const delivery = this.githubDelivery;
     const store = this.githubCheckpointStore;
-    if (!delivery || !store || !initial.branch || !initial.baseBranch || !initial.manifestPath) {
+    if (!delivery || !store || !initial.branch || !initial.baseBranch) {
       throw new Error("faltan primitivas o contexto para completar la entrega GitHub");
     }
     const fixedBranch = initial.branch;
     const fixedBaseBranch = initial.baseBranch;
-    const fixedManifestPath = initial.manifestPath;
     await delivery.verifyRepository?.(initial.repository, options.workingDirectory);
     let checkpoint = initial;
     const save = async (): Promise<void> => store.write(checkpoint, options.workingDirectory);
@@ -3592,10 +3590,10 @@ export class LazyWorkflowCli {
     };
 
     // El commit lo tiene git, no un archivo que la sesión pidió que le escribieran (ADR-0035).
-    let { commit: verifiedCommit } = await delivery.verifySession(fixedBranch, fixedBaseBranch, options.workingDirectory);
-    if (checkpoint.commit !== null && checkpoint.commit !== verifiedCommit) {
-      throw new GitHubSessionNotVerifiedError("el commit verificado cambió respecto al checkpoint fijado");
-    }
+    // Una unidad que el bucle ya verificó llega con su commit fijado; una que se recupera desde el
+    // checkpoint no, y se verifica acá.
+    let verifiedCommit = checkpoint.commit
+      ?? (await delivery.verifySession(fixedBranch, fixedBaseBranch, options.workingDirectory)).commit;
     checkpoint = {
       ...checkpoint,
       commit: verifiedCommit,
@@ -3690,7 +3688,6 @@ export class LazyWorkflowCli {
     if (this.githubParentReconciliation && !checkpoint.receipts["parent-reconciliation"]) {
       await effect("parent-reconciliation", `${checkpoint.issue}`, () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
     }
-    await unlink(fixedManifestPath).catch(() => undefined);
     await store.clear(options.workingDirectory);
   }
 
@@ -3765,7 +3762,6 @@ export class LazyWorkflowCli {
             phase: "started",
             branch: prepared.branch,
             baseBranch: prepared.baseBranch,
-            manifestPath: prepared.manifestPath,
           };
           await store.write(recoveryCheckpoint, options.workingDirectory);
           checkpoint = recoveryCheckpoint;
@@ -3802,10 +3798,9 @@ export class LazyWorkflowCli {
           return 1;
         }
         const branch = liveCheckpoint.branch;
-        const manifestPath = liveCheckpoint.manifestPath;
         const baseBranch = liveCheckpoint.baseBranch;
-        if (!branch || !manifestPath || !baseBranch) {
-          throw new Error("el checkpoint GitHub no contiene la rama y el manifest fijados");
+        if (!branch || !baseBranch) {
+          throw new Error("el checkpoint GitHub no contiene la rama fijada");
         }
         let issue: SelectedManagedIssue;
         try {
@@ -3814,15 +3809,17 @@ export class LazyWorkflowCli {
           throw new GitHubCoordinatedFailureError("claim-verification-failure", errorMessage(error), { cause: error });
         }
         const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
-        if (await manifestBelongsToDelivery(manifestPath, liveCheckpoint.issue, branch)) {
-          await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, manifestPath, baseBranch, phase: "implementation-ready", sessionId: null });
+        // Un checkpoint que ya pasó la verificación termina su entrega sin abrir sesión: es el
+        // único bit que git no puede contar por sí solo (ADR-0038).
+        if (liveCheckpoint.commit) {
+          await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, baseBranch, phase: "implementation-ready", sessionId: null });
           console.log(TICKET_COMPLETED_MARKER);
           console.log(WORKFLOW_STEP_FINISHED_MARKER);
           return 0;
         }
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
-        const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
+        const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, norms);
         const execution = await this.codingAgent.run({ ...options, ...run, session: null }, false);
         const terminal = !execution.failed;
         await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId, summary: execution.result.text.trim() || null }, options.workingDirectory);
@@ -3874,7 +3871,6 @@ export class LazyWorkflowCli {
         if (!liveCheckpoint
           || liveCheckpoint.issue !== checkpoint.issue
           || !liveCheckpoint.branch
-          || !liveCheckpoint.manifestPath
           || !liveCheckpoint.pullRequest
           || !reconciliation
           || reconciliation.pullRequest !== liveCheckpoint.pullRequest
@@ -5236,8 +5232,8 @@ export class LazyWorkflowCli {
           kind: "azure-delivery",
           context,
           ticketBranch,
-          evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
           manifestPath,
+          evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
           workflowPhase: checkpoint.phase,
           completionGates: Object.values(COMPLETION_GATE),
         }, options, norms);
@@ -5265,8 +5261,8 @@ export class LazyWorkflowCli {
               kind: "azure-delivery",
               context,
               ticketBranch,
-              evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
               manifestPath,
+              evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
               workflowPhase: checkpoint.phase,
               completionGates: Object.values(COMPLETION_GATE),
             }, handoffOptions, norms);
