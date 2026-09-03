@@ -54,6 +54,7 @@ function scriptedAgents(
   const pending: Record<string, AgentExecution[]> = {
     opencode: [...(runs.opencode ?? [])],
     claudecode: [...(runs.claudecode ?? [])],
+    codex: [...(runs.codex ?? [])],
   };
   const pendingResumes = [...resumes];
   return {
@@ -334,6 +335,41 @@ test("una recuperación de GitHub reanuda Codex con su autoridad", async () => {
     profile: "lazy-github-code",
     configPath: expect.stringContaining("codex/lazy-github-code.rules"),
   });
+});
+
+test("un agotamiento con respaldo en Codex continúa la misma unidad en una sesión fresca de Codex", async () => {
+  const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
+
+  const code = await runDelivery(agents, ["--fallback", "codex:gpt-5.6-sol:high"]);
+
+  expect(code).toBe(0);
+  // Codex no tiene sesión que reanudar: el trabajo continúa con un traspaso,
+  // igual que hacia cualquier otro CLI (issue #301).
+  expect(agents.resumed).toEqual([]);
+  expect(agents.started.map(({ cli }) => cli)).toEqual(["opencode", "codex"]);
+  const handoff = agents.started[1]?.options;
+  expect(handoff?.model).toBe("gpt-5.6-sol");
+  expect(handoff?.variant).toBe("high");
+  expect(handoff?.session).toBeNull();
+  expect(handoff?.agent?.configPath).toEndWith("codex/lazy-github-code.rules");
+  expect(handoff?.prompt).toContain("Coordinator-fixed issue branch: refs/heads/issue/178");
+});
+
+test("un agotamiento en Codex con respaldo de otro CLI continúa la misma unidad en una sesión fresca del CLI nuevo", async () => {
+  const agents = scriptedAgents({ codex: [exhausted("gpt-5.6-sol", "Codex")] });
+
+  const code = await runDelivery(agents, ["--cli", "codex", "--fallback", "claudecode:claude-opus-5:high"]);
+
+  expect(code).toBe(0);
+  // Un escalón Codex agotado desciende como cualquier otro: hacia otro CLI hay
+  // un traspaso, no una reanudación (issue #301).
+  expect(agents.resumed).toEqual([]);
+  expect(agents.started.map(({ cli }) => cli)).toEqual(["codex", "claudecode"]);
+  const handoff = agents.started[1]?.options;
+  expect(handoff?.model).toBe("claude-opus-5");
+  expect(handoff?.variant).toBe("high");
+  expect(handoff?.session).toBeNull();
+  expect(handoff?.agent?.configPath).toEndWith("claudecode/lazy-github-code.json");
 });
 
 test("un agotamiento posterior al traspaso reanuda la sesión nueva con la autoridad del CLI nuevo", async () => {

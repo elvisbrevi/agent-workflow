@@ -98,11 +98,11 @@ lazy-workflow code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high
 
-# Several rungs; declaration order is the descent order
+# Several rungs across three CLIs; declaration order is the descent order
 lazy-workflow code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
-  --fallback opencode:opencode-go/deepseek-v4-pro:high \
+  --fallback codex:gpt-5.6-sol:high \
   --fallback-wait 300 --fallback-wait-max 3600
 ```
 

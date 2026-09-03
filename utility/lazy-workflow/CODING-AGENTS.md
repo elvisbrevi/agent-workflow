@@ -34,7 +34,7 @@ severities: assistant text as info, reasoning and tool calls as debug.
 
 The SAG workflows accept `--cli` too and keep their own rules whichever CLI runs
 them — `architecture-review-sag` is the only one that opens a session, and it
-cannot modify the reviewed tree in either CLI.
+cannot modify the reviewed tree in any of them.
 
 ## Authority: what a session may execute
 
@@ -128,7 +128,7 @@ in flight and nothing else.
 lazy-workflow code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
-  --fallback opencode:opencode-go/deepseek-v4-pro:high \
+  --fallback codex:gpt-5.6-sol:high \
   --fallback-wait 300 --fallback-wait-max 3600
 ```
 
