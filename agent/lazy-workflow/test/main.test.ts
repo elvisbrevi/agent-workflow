@@ -2029,6 +2029,9 @@ test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => { throw new Error("must not resume"); },
       }),
+      // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
+      // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
+      git: async () => "",
       cliParser: buildCli(() => true),
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
@@ -2058,6 +2061,9 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
         run: async () => ({ result, azureLoginRequired: false }),
         resume: async () => { throw new Error("must not resume"); },
       }),
+      // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
+      // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
+      git: async () => "",
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan"]);
 
