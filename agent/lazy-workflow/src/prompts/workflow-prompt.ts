@@ -84,8 +84,6 @@ export type WorkflowPromptSpec =
       description: string | null;
       topology: AzureWorkspaceBranchTopology;
       ticketTopology: AzureWorkspaceBranchTopology;
-      /** Where each participant must write its manifest. The coordinator resolves these, never the session. */
-      manifestPaths: Array<{ path: string; manifestPath: string }>;
     }
   | {
       kind: "azure-delivery";
@@ -347,39 +345,20 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       ];
 
     case "azure-workspace-delivery":
-      // The workspace variant of the Azure ticket delivery run: same authority
-      // boundary as the single-repository run, widened to a repository roster.
+      // La variante transversal del ticket Azure: el mismo trabajo, con el roster de repositorios
+      // en lugar de un solo directorio (ADR-0036). El ticket viaja entero por la misma razón que
+      // en el repositorio único — la sesión no tiene `az`.
       return [
-        await readPromptAsset("autocode"),
-        // The asset's last line opens with `HU and ticket context:`, and this is the fragment that
-        // fills it -- the same slot `azure-delivery` fills below. Leaving it to the identity lines
-        // told the session which ticket it was on and nothing about what the ticket asked for, and
-        // a session forbidden from selecting its own work can only refuse.
+        `/implement el ticket ${spec.ticket} usando /tdd /caveman /ponytail y /code-review.`,
         JSON.stringify(spec.context),
-        ...(spec.description ? ["Ticket description:", spec.description] : []),
-        "Selected workflow: code",
-        `Coordinator-fixed HU: ${spec.hu}`,
-        `Coordinator-fixed ticket: ${spec.ticket}`,
-        `Coordinator-fixed integration branch: ${spec.topology.integrationBranch}`,
-        `Coordinator-fixed ticket branch: ${spec.ticketTopology.ticketBranch ?? null}`,
-        `Workspace parent directory: ${spec.scope.parentDirectory}`,
+        ...(spec.description ? ["Descripción del ticket:", spec.description] : []),
+        `Rama de integración: ${spec.topology.integrationBranch}`,
+        `Rama del ticket: ${spec.ticketTopology.ticketBranch ?? null}`,
         ...repositoryRoster(spec.scope),
-        // The contract promises the coordinator supplies the manifest path, so it has to name it:
-        // a session left to infer one writes a manifest the integration phase never finds.
-        ...(spec.manifestPaths.length > 0
-          ? ["Immutable manifest paths:", ...spec.manifestPaths.map(({ path, manifestPath }) => `${path}: manifest ${manifestPath}`)]
-          : []),
-        "Each participant repository must end with a manifest at exactly its listed path including at least one evidence entry, and at least one of the workspace's evidence entries must be http-json or command-output; unchanged repositories must end clean.",
-        ...manifestCommandLines(spec.manifestPaths.map(({ path, manifestPath }) => azureManifestCommandLine({
-          ticket: spec.ticket,
-          ticketBranch: spec.ticketTopology.ticketBranch ?? null,
-          manifestPath,
-          workingDirectory: path,
-        }))),
-        "Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
-        `The working directory is ${spec.scope.parentDirectory}`,
-        "Operator request:",
-        operatorRequest,
+        "Trabaja los repositorios en el orden declarado, commiteando cada uno por separado en la rama del ticket.",
+        await readPromptAsset("delivery"),
+        ...sag,
+        operatorRequest.trim() ? operatorRequest : null,
       ];
 
     case "azure-delivery":

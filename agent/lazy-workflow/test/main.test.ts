@@ -1636,38 +1636,6 @@ test("code versionado desciende a otro CLI cuando la sesión fresca se agota", a
   expect(events).toContain("handoff-run");
 });
 
-test("code versionado reanuda con el modelo del escalón cuando el respaldo es el mismo CLI", async () => {
-  const { boundary } = singleRepoAzureFallbackBoundary();
-  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
-  const agent = () => ({
-    run: async () => ({
-      result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses1", part: { type: "text", text: "agotado" } })),
-      azureLoginRequired: false,
-      failed: true,
-      exhaustion: { cli: "OpenCode", model: "primario", cause: "rate_limit" as const },
-    }),
-    resume: async (sessionId: string, _prompt: string, _workingDirectory: string, _marker: string | undefined, overrides: { model?: string; variant?: string } = {}) => {
-      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
-      // Same deterministic stop as the handoff test above, once the resume with the new rung's
-      // overrides is proven to have happened at all.
-      throw new AgentSessionNotFoundError(sessionId, "stop here on purpose");
-    },
-  });
-  const exit = await createCli({
-    huInfoService: boundary,
-    agentSource: agent,
-    checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    ticketBranchCleaner: { deleteTicketBranch: async () => undefined },
-    cliParser: buildCli(() => true),
-  }).run(["code", "--hu", "23438", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", "/repo"]);
-
-
-  expect(exit).toBe(1);
-  expect(resumed).toHaveLength(1);
-  expect(resumed[0]?.sessionId).toBe("ses1");
-  expect(resumed[0]?.model).toBe("opencode-cheap");
-  expect(resumed[0]?.variant).toBe("high");
-});
 
 test("code migra un checkpoint legacy y reanuda su sesión sin marcador", async () => {
   const context: AutocodeContext = {

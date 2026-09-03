@@ -34,6 +34,8 @@ function checkpointFor(
     ticketBranch,
     parentDirectory,
     activeDurationMs: 0,
+    // La corrida interrumpida ya había dejado su resumen: es lo que cierra el ticket (ADR-0037).
+    summary: "entrega workspace completada",
     repositories: [{ path: pathA, remote: remoteUrlA }, { path: pathB, remote: remoteUrlB }],
     units: [],
     receipts: {},
@@ -151,8 +153,7 @@ test("azure workspace recovery reuses a verified delivery receipt instead of cre
   let exit = -1;
   try {
     const { cli, pathA, pathB } = await harness.setupCli();
-    // The interrupted run already produced both manifests before it stopped.
-    for (const path of [pathA, pathB]) await Bun.write(join(path, "lazy-workflow/completion-manifest.json"), "{}");
+
     await harness.writeCheckpoint(checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""), {
       phase: "implementation-ready",
       units: [
@@ -213,7 +214,7 @@ test("azure workspace recovery reuses the checkpointed primary repository instea
   let exit = -1;
   try {
     const { cli, pathA, pathB } = await harness.setupCli();
-    for (const path of [pathA, pathB]) await Bun.write(join(path, "lazy-workflow/completion-manifest.json"), "{}");
+
     await harness.writeCheckpoint(checkpointFor(pathA, pathB, harness.stateDirectory().replace(/\/\.lazy-workflow$/, ""), {
       phase: "implementation-ready",
       // An earlier run picked repo-b because repo-a had not changed yet.
@@ -241,24 +242,6 @@ test("azure workspace delivery records the primary repository in the checkpoint"
   expect(preserved).not.toBeNull();
 });
 
-test("azure workspace delivery does not pin the ticket branch on a repository whose manifest fails verification", async () => {
-  const harness = createAzureWorkspaceHarness();
-  let exit = -1;
-  try {
-    const { cli, pathA, pathB } = await harness.setupCli({
-      validateCompletionManifest: async (_manifest, _info, _ticketId, workingDirectory: string) => {
-        if (basename(workingDirectory) === repoA) throw new Error("manifest obsoleto");
-      },
-    });
-    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
-  } finally {
-    await harness.cleanup();
-  }
-  expect(exit).toBe(1);
-  // Pinning is permanent, so it must never happen on the strength of an unverified manifest.
-  expect(harness.ticketBranchLinks).toHaveLength(0);
-  expect(harness.prCreateCalls).toHaveLength(0);
-});
 
 test("azure workspace delivery treats an existing ticket Branch ArtifactLink as authoritative", async () => {
   const harness = createAzureWorkspaceHarness({ resolvedPrimary: repoB });

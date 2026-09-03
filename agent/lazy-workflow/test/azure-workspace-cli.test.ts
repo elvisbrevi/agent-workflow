@@ -47,7 +47,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => {
@@ -114,19 +114,10 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       if (id === hu) currentHuState = desiredState;
       return { ticket: id, state: desiredState, revision: 5 };
     },
-    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
-    readCompletionManifest: async () => ({
-      ticket: 51,
-      ticketBranch,
-      commit: "a".repeat(40),
-      validation: [{ command: "bun test", result: "passed" }],
-      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
-    }),
-    validateCompletionManifest: async () => undefined,
+    verifySession: async () => ({ commit: "a".repeat(40) }),
+    validateSummary: async () => undefined,
+    setSummary: async () => undefined,
     getBranch: async () => ({ hu, ticket: 51, branch: ticketBranch, integrationBranch }),
-    validateEvidenceFile: async () => undefined,
-    addAttachment: async () => ({ ticket: 51, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
-    setEvidence: async () => undefined,
     getState: async (id: number) => {
       if (id === 51) return { ticket: id, state: currentTicketState, revision: 4 };
       throw new Error(`unexpected ${id}`);
@@ -136,7 +127,6 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       throw new Error(`unexpected ${id}`);
     },
     getEffort: async () => ({ ticket: 51, effort: { estimated: 1, real: 1, realHours: 1 } }),
-    validateEvidence: async () => undefined,
     setHuState: async (id: number, desiredState: string) => {
       currentHuState = desiredState;
       return { hu: id, state: desiredState, revision: 8 };
@@ -208,7 +198,7 @@ async function setupWorkspaceFallbackFixture() {
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => ({
@@ -258,19 +248,10 @@ async function setupWorkspaceFallbackFixture() {
       if (id === hu) currentHuState = desiredState;
       return { ticket: id, state: desiredState, revision: 5 };
     },
-    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
-    readCompletionManifest: async () => ({
-      ticket: 51,
-      ticketBranch,
-      commit: "a".repeat(40),
-      validation: [{ command: "bun test", result: "passed" }],
-      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
-    }),
-    validateCompletionManifest: async () => undefined,
+    verifySession: async () => ({ commit: "a".repeat(40) }),
+    validateSummary: async () => undefined,
+    setSummary: async () => undefined,
     getBranch: async () => ({ hu, ticket: 51, branch: ticketBranch, integrationBranch }),
-    validateEvidenceFile: async () => undefined,
-    addAttachment: async () => ({ ticket: 51, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
-    setEvidence: async () => undefined,
     getState: async (id: number) => {
       if (id === 51) return { ticket: id, state: currentTicketState, revision: 4 };
       throw new Error(`unexpected ${id}`);
@@ -280,7 +261,6 @@ async function setupWorkspaceFallbackFixture() {
       throw new Error(`unexpected ${id}`);
     },
     getEffort: async () => ({ ticket: 51, effort: { estimated: 1, real: 1, realHours: 1 } }),
-    validateEvidence: async () => undefined,
     setHuState: async (id: number, desiredState: string) => {
       currentHuState = desiredState;
       return { hu: id, state: desiredState, revision: 8 };
@@ -371,7 +351,7 @@ async function setupWorkspaceDrainFixture() {
   let currentTicketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let autocodeCalls = 0;
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "getCompletionManifestPath" | "readCompletionManifest" | "validateCompletionManifest" | "getBranch" | "validateEvidenceFile" | "addAttachment" | "setEvidence" | "getState" | "getHuState" | "getEffort" | "validateEvidence" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getAutocodeState" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getAutocodeState" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => ({
@@ -425,23 +405,13 @@ async function setupWorkspaceDrainFixture() {
       if (id === currentTicket) currentTicketState = desiredState;
       return { ticket: id, state: desiredState, revision: 5 };
     },
-    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
-    readCompletionManifest: async () => ({
-      ticket: currentTicket,
-      ticketBranch: currentTicketBranch,
-      commit: "a".repeat(40),
-      validation: [{ command: "bun test", result: "passed" }],
-      evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
-    }),
-    validateCompletionManifest: async () => undefined,
+    verifySession: async () => ({ commit: "a".repeat(40) }),
+    validateSummary: async () => undefined,
+    setSummary: async () => undefined,
     getBranch: async () => ({ hu, ticket: currentTicket, branch: currentTicketBranch, integrationBranch }),
-    validateEvidenceFile: async () => undefined,
-    addAttachment: async () => ({ ticket: currentTicket, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
-    setEvidence: async () => undefined,
     getState: async (id: number) => ({ ticket: id, state: currentTicketState, revision: 4 }),
     getHuState: async (id: number) => ({ hu: id, state: "En Desarrollo", revision: 7 }),
     getEffort: async () => ({ ticket: currentTicket, effort: { estimated: 1, real: 1, realHours: 1 } }),
-    validateEvidence: async () => undefined,
     setHuState: async (id: number, desiredState: string) => ({ hu: id, state: desiredState, revision: 8 }),
     // Kept open throughout: this fixture is about which CLI the *next* ticket starts on, not
     // about the HU's own closing transition.
@@ -527,35 +497,6 @@ test("un agotamiento a mitad del drenaje no contamina el CLI del siguiente ticke
   }
 });
 
-test("un agotamiento con respaldo del mismo CLI reanuda la sesión con el modelo del escalón nuevo", async () => {
-  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
-  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
-  const agentSource = (): CodingAgent => ({
-    run: async () => ({
-      result: { text: "agotado", sessionId: "ses1", failed: true } as never,
-      azureLoginRequired: false,
-      failed: true,
-      exhaustion: { cli: "OpenCode", model: "primario", cause: "rate_limit" },
-    }),
-    resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
-      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
-      await writeManifests();
-      return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
-    },
-  });
-  const cli = createCli({ huInfoService: azureBoundary, agentSource: agentSource, git: git, cliParser: buildCli(() => true) });
-
-  try {
-    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--fallback", "opencode:opencode-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
-    expect(exit).toBe(0);
-    expect(resumed).toHaveLength(1);
-    expect(resumed[0]?.sessionId).toBe("ses1");
-    expect(resumed[0]?.model).toBe("opencode-cheap");
-    expect(resumed[0]?.variant).toBe("high");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 test("un agotamiento sin --fallback declarado sigue fallando cerrado, igual que antes", async () => {
   const { root, pathA, pathB, azureBoundary, git } = await setupWorkspaceFallbackFixture();
@@ -651,42 +592,6 @@ test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende a
   }
 });
 
-test("un agotamiento al reanudar la sesión de un ticket ya en curso desciende al mismo CLI con el modelo del escalón nuevo", async () => {
-  const { root, pathA, pathB, azureBoundary, git, writeManifests } = await setupWorkspaceFallbackFixture();
-  const checkpointStore = new AzureWorkspaceCheckpointStore();
-  await checkpointStore.write(await checkpointForResume(pathA, pathB, root), join(root, ".lazy-workflow"));
-  const resumed: Array<{ sessionId: string; model?: string; variant?: string }> = [];
-  const agentSource = (): CodingAgent => ({
-    run: async () => { throw new Error("must not start a fresh session: a checkpointed one exists"); },
-    resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
-      resumed.push({ sessionId, model: overrides.model, variant: overrides.variant });
-      if (resumed.length === 1) {
-        throw new AgentExhaustionError({ cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" }, { text: "agotado", sessionId, failed: true } as never);
-      }
-      await writeManifests();
-      return { text: "IMPLEMENTATION_READY", sessionId, failed: false } as never;
-    },
-  });
-  const cli = createCli({
-    huInfoService: azureBoundary,
-    agentSource,
-    git,
-    cliParser: buildCli(() => true),
-    azureWorkspaceCheckpoint: checkpointStore,
-  });
-
-  try {
-    const exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", "51", "--base-branch", "main", "--cli", "opencode", "--model", "opencode-go/deepseek-v4-pro", "--fallback", "opencode:opencode-go/deepseek-v4-cheap:high", "--working-directory", `${pathA}, ${pathB}`]);
-    expect(exit).toBe(0);
-    expect(resumed).toHaveLength(2);
-    expect(resumed[0]?.sessionId).toBe("ses_exhausted");
-    expect(resumed[1]?.sessionId).toBe("ses_exhausted");
-    expect(resumed[1]?.model).toBe("opencode-go/deepseek-v4-cheap");
-    expect(resumed[1]?.variant).toBe("high");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 test("un agotamiento al reanudar sin --fallback declarado falla cerrado con un mensaje preciso, no con el de topología", async () => {
   const { root, pathA, pathB, azureBoundary, git } = await setupWorkspaceFallbackFixture();
@@ -1066,12 +971,12 @@ test("el segundo ticket del drenaje recibe su propia identidad y contenido, no n
 
     expect(exit).toBe(0);
     expect(prompts.length).toBe(2);
-    expect(prompts[0]).toContain("Coordinator-fixed ticket: 51");
-    expect(prompts[1]).toContain("Coordinator-fixed ticket: 52");
+    expect(prompts[0]).toContain("/implement el ticket 51");
+    expect(prompts[1]).toContain("/implement el ticket 52");
     // La identidad sola no alcanza: la sesión tiene prohibido elegir trabajo, así que el prompt
     // debe traer lo que el ticket pide.
     expect(prompts[1]).toContain("Ticket 52");
-    for (const prompt of prompts) expect(prompt).not.toContain("Coordinator-fixed ticket: null");
+    for (const prompt of prompts) expect(prompt).not.toContain("el ticket null");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

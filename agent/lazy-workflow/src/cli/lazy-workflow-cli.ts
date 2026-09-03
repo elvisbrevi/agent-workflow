@@ -78,8 +78,6 @@ import {
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
 import { SudoSystemShutdown, type SystemShutdown } from "../system/shutdown-service.ts";
 import {
-  IMPLEMENTATION_READY_MARKER,
-  markerResumePrompt,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
   RECONCILIATION_REQUIRED_MARKER,
@@ -448,15 +446,12 @@ function sanitizeDeploymentOutput(value: unknown): unknown {
   return value;
 }
 
-function containsMarker(text: string, marker: string): boolean {
-  return text.split(/\r?\n/).some((line) => line.trim() === marker);
-}
-
+/** El veredicto que una revisión de arquitectura devuelve detrás de su marcador. */
 interface ArchitectureReviewResult {
   status: "clean" | "findings";
   summary: string;
   specification?: { title: string; body: string };
-  tickets?: Array<{ title: string; body: string }>;
+  tickets?: ArchitectureReviewTicket[];
 }
 
 function parseArchitectureReviewResult(text: string): ArchitectureReviewResult {
@@ -1504,77 +1499,6 @@ export class LazyWorkflowCli {
     });
   }
 
-  /** La reanudación que todo escalón hace igual: el prompt del marcador, sobre el directorio de la unidad. */
-  private markerResume(sessionId: string, workingDirectory: string, overrides: AgentResumeOverrides): Promise<AgentResult> {
-    return this.codingAgent.resume(
-      sessionId,
-      markerResumePrompt(IMPLEMENTATION_READY_MARKER),
-      workingDirectory,
-      IMPLEMENTATION_READY_MARKER,
-      overrides,
-    );
-  }
-
-  /**
-   * Un intento más sobre el mismo escalón cuando la sesión terminó sin su marcador (ADR-0032).
-   *
-   * No es un descenso: el CLI, el modelo y la variante no cambian. Es la relanzada que el
-   * operador hacía a mano, cuyo único efecto era reanudar la misma sesión que el checkpoint ya
-   * nombraba. Una sola, porque una segunda que vuelve sin marcador es un defecto que el operador
-   * tiene que ver. La sesión se persiste antes de reanudarla: una corrida nueva todavía no la
-   * había escrito, y morir dentro de la reanudación dejaba su trabajo sin nadie que lo nombrara.
-   */
-  private async resumeWithoutMarker(attempt: {
-    execution: AgentExecution;
-    cli: AgentCli;
-    resume: (sessionId: string) => Promise<AgentResult>;
-    persist?: (sessionId: string) => Promise<void>;
-    descend?: (execution: AgentExecution) => Promise<AgentExecution>;
-  }): Promise<AgentExecution> {
-    const { execution } = attempt;
-    const sessionId = execution.result.sessionId;
-    if (execution.failed || !sessionId || containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER)) {
-      return execution;
-    }
-    reportOperator(`lazy-workflow: la sesión ${attempt.cli} terminó sin ${IMPLEMENTATION_READY_MARKER}; se reanuda una vez.`);
-    await attempt.persist?.(sessionId);
-    const resumed = await resumedExecution(() => attempt.resume(sessionId));
-    return attempt.descend ? attempt.descend(resumed) : resumed;
-  }
-
-  /**
-   * Provider exhaustion descends the declared chain instead of ending the unit of
-   * work. A rung sharing the active CLI resumes the same session with its model
-   * and variant, so the work continues with the context already built; a rung
-   * naming another CLI has no session to resume and continues the same unit
-   * through `handOff`. The descent is sticky — the chain is only walked forward,
-   * never back — and it keeps descending while each new rung exhausts too. An
-   * ordinary failure, an exhausted chain, and a run without `--fallback` all come
-   * back untouched, so the caller decides exactly as it does today (issues #238,
-   * #239).
-   */
-  /**
-   * El descenso de Azure, todavía con reanudación dentro del mismo CLI.
-   *
-   * La entrega GitHub ya abre sesión fresca en cada escalón (ADR-0039); Azure lo
-   * hará en su propia rebanada. Hasta entonces esto adapta sus tres callbacks al
-   * único que el descenso toma ahora, en vez de mantener dos descensos.
-   */
-  private resumingDescent(
-    cli: AgentCli,
-    sessionId: () => string,
-    resume: (sessionId: string, overrides: AgentResumeOverrides) => Promise<AgentResult>,
-    onDescent: (rung: FallbackRung, sessionId: string) => Promise<void>,
-    handOff: (rung: FallbackRung) => Promise<AgentExecution>,
-  ): (rung: FallbackRung) => Promise<AgentExecution> {
-    return async (rung) => {
-      if (rung.cli !== cli) return handOff(rung);
-      const current = sessionId();
-      await onDescent(rung, current);
-      return { result: await resume(current, { model: rung.model, variant: rung.variant }), azureLoginRequired: false, failed: false };
-    };
-  }
-
   private async descendFallbackChain(
     options: CliOptions,
     execution: AgentExecution,
@@ -1757,11 +1681,9 @@ export class LazyWorkflowCli {
       || !this.huInfoService.pushTicketBranch || !this.huInfoService.linkPullRequest
       || !this.huInfoService.linkCommit || !this.huInfoService.getTicketInfo
       || !this.huInfoService.setEffort || !this.huInfoService.setState
-      || !this.huInfoService.getCompletionManifestPath || !this.huInfoService.readCompletionManifest
-      || !this.huInfoService.validateCompletionManifest || !this.huInfoService.getBranch
-      || !this.huInfoService.validateEvidenceFile || !this.huInfoService.addAttachment
-      || !this.huInfoService.setEvidence || !this.huInfoService.getState
-      || !this.huInfoService.getEffort || !this.huInfoService.validateEvidence
+      || !this.huInfoService.verifySession || !this.huInfoService.getBranch
+      || !this.huInfoService.validateSummary || !this.huInfoService.setSummary
+      || !this.huInfoService.getState || !this.huInfoService.getEffort
       || !this.huInfoService.setHuState || !this.huInfoService.hasOpenDeliveryChildren
       || !this.huInfoService.getHuState
       || !this.huInfoService.getAutocodeContextForTicket || !this.huInfoService.getTicket
@@ -1897,17 +1819,11 @@ export class LazyWorkflowCli {
           configPath: authorityConfigPath(activeCli, "lazy-azure-code"),
         };
         let execution: AgentExecution;
-        // Both branches descend the same declared chain on provider exhaustion (ADR-0024):
-        // a resume of a checkpointed session is not exempt just because it crosses an
-        // invocation, so the callbacks are shared and every attempt is routed through the
-        // same descent.
+        // Reanudar la sesión que el checkpoint fija sigue existiendo —es la relanzada del
+        // operador sobre una corrida cortada—; lo que ya no existe es reanudar al descender
+        // (ADR-0039), así que la cadena solo recibe el traspaso.
         const resumeFn = (sessionId: string, overrides: AgentResumeOverrides) =>
-          this.markerResume(sessionId, scope.parentDirectory, { ...overrides, agent: activeAuthority });
-        const onDescent = async (rung: FallbackRung, sessionId: string) => {
-          activeCli = rung.cli;
-          checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
-          await save();
-        };
+          this.codingAgent.resume(sessionId, undefined, scope.parentDirectory, undefined, { ...overrides, agent: activeAuthority });
         const handOff = async (rung: FallbackRung) => {
           const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
            const handoffRun = await this.azureWorkspacePrompt(handoffOptions, hu, ticket, scope, topology, ticketTopology, true);
@@ -1923,7 +1839,6 @@ export class LazyWorkflowCli {
             workingDirectory: scope.parentDirectory,
             ...handoffRun,
             session: null,
-            terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, false);
           activeCli = rung.cli;
           activeAuthority = handoffRun.agent;
@@ -1949,37 +1864,25 @@ export class LazyWorkflowCli {
             workingDirectory: scope.parentDirectory,
             ...run,
             session: null,
-            terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, true);
         }
-        execution = await this.descendFallbackChain(options, execution, this.resumingDescent(activeCli, () => execution.result.sessionId, resumeFn, onDescent, handOff));
-        execution = await this.resumeWithoutMarker({
-          execution,
-          cli: activeCli,
-          resume: (sessionId) => resumeFn(sessionId, getRecoveryOverrides(options, checkpoint!)),
-          persist: async (sessionId) => {
-            checkpoint = { ...checkpoint!, phase: "implementing", sessionId };
-            await save();
-          },
-          descend: (resumed) => this.descendFallbackChain(options, resumed, this.resumingDescent(activeCli, () => resumed.result.sessionId, resumeFn, onDescent, handOff)),
-        });
-        const terminal = !execution.failed && containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
+        execution = await this.descendFallbackChain(options, execution, handOff);
+        // Que la sesión terminara lo dice su proceso; que cada repositorio entregara lo dice git,
+        // y eso lo pregunta la integración de abajo antes de tocar Azure (ADR-0035).
+        const processSucceeded = !execution.failed;
         checkpoint = {
           ...checkpoint,
           cli: activeCli,
-          phase: terminal ? "implementation-ready" : "implementing",
-          sessionId: terminal ? null : execution.result.sessionId,
+          phase: processSucceeded ? "implementation-ready" : "implementing",
+          sessionId: processSucceeded ? null : execution.result.sessionId,
+          summary: execution.result.text.trim() || null,
           // The idle watchdog's silent intervals are nudged waits, not active
           // effort, so they come back out of the accrued window (issue #292).
           activeDurationMs: checkpoint.activeDurationMs + Math.max(0, accrue() - (execution.idleMs ?? 0)),
         };
         await save();
-        if (execution.failed) {
+        if (!processSucceeded) {
           reportAzureFailure("session-failure", "reconciling", options, `lazy-workflow: ${activeCli} falló durante la entrega workspace Azure (${errorMessage(execution.result.text)}); ejecución detenida.`, { sessionId: execution.result.sessionId }, "preserved");
-          return 1;
-        }
-        if (!terminal) {
-          reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${activeCli} workspace Azure terminó sin ${IMPLEMENTATION_READY_MARKER}.`, { sessionId: execution.result.sessionId }, "preserved");
           return 1;
         }
       }
@@ -2132,13 +2035,7 @@ export class LazyWorkflowCli {
     ticketTopology: AzureWorkspaceBranchTopology,
     checkpointPreserved = false,
   ): Promise<{ prompt: string; agent: AgentAuthority } | null> {
-    // The session is told where every manifest goes instead of inferring it: the integration phase
-    // only ever looks at these paths, so a guessed location reads as a repository with no changes.
-    const [manifestPaths, context, description] = await Promise.all([
-      Promise.all(scope.repositories.map(async ({ path }) => ({
-        path,
-        manifestPath: await this.huInfoService.getCompletionManifestPath!(path),
-      }))),
+    const [context, description] = await Promise.all([
       this.huInfoService.getAutocodeContextForTicket!(hu, ticket, topology.integrationBranch),
       this.huInfoService.getDescription!(ticket),
     ]);
@@ -2158,7 +2055,6 @@ export class LazyWorkflowCli {
         description: description.description,
         topology,
         ticketTopology,
-        manifestPaths,
       },
       options,
     );
@@ -2183,14 +2079,20 @@ export class LazyWorkflowCli {
     const boundary = this.huInfoService;
 
     const azureIdentity = new Map(ticketTopology.units.map((unit) => [unit.path, unit]));
-    const units: Array<{ path: string; manifestPath: string; manifest?: CompletionManifest; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
+    const units: Array<{ path: string; commit?: string; pullRequest?: number; mergeCommit?: string; changed: boolean }> = [];
     for (const repository of scope.repositories) {
-      const manifestPath = await boundary.getCompletionManifestPath!(repository.path);
-      const exists = await Bun.file(manifestPath).exists();
-      if (!exists) {
+      // Un repositorio cambió si su rama de ticket lleva commits sobre la de integración y su
+      // árbol quedó limpio; uno que no cambió tiene que estar exactamente donde empezó (ADR-0035).
+      let verified: { commit: string } | null = null;
+      try {
+        verified = await boundary.verifySession!(ticketBranch, integrationBranch, repository.path);
+      } catch {
+        verified = null;
+      }
+      if (!verified) {
         const status = await this.git(["status", "--porcelain", "--untracked-files=no"], repository.path);
         if (status.trim()) {
-          reportAzureFailure("workspace-scope-failure", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} quedó sucio sin manifest; ejecución detenida.`, { repository: repository.path }, "preserved");
+          reportAzureFailure("workspace-scope-failure", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} quedó con cambios sin commitear; ejecución detenida.`, { repository: repository.path }, "preserved");
           return 1;
         }
         // Sin manifest el repositorio se entrega como "sin cambios", y la limpieza
@@ -2205,35 +2107,19 @@ export class LazyWorkflowCli {
           repository.path,
         ).catch(() => "0");
         if (unpublished.trim() !== "0") {
-          reportAzureFailure("manifest-not-verifiable", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} tiene commits sin manifest verificable; ejecución detenida.`, { repository: repository.path }, "preserved");
+          reportAzureFailure("session-not-verified", "evidencing", options, `lazy-workflow: el repositorio ${repository.path} tiene commits que su rama remota no lleva; ejecución detenida.`, { repository: repository.path }, "preserved");
           return 1;
         }
-        units.push({ path: repository.path, manifestPath, changed: false });
+        units.push({ path: repository.path, changed: false });
         continue;
       }
-      units.push({ path: repository.path, manifestPath, changed: true });
+      units.push({ path: repository.path, commit: verified.commit, changed: true });
     }
 
     const changedUnits = units.filter((unit) => unit.changed);
     if (changedUnits.length === 0) {
       reportAzureFailure("delivery-failure", "evidencing", options, "lazy-workflow: el workspace no contiene cambios entregables; ejecución detenida.", {}, "preserved");
       return 1;
-    }
-
-    // Verify every manifest before anything is pinned: the ticket's Branch ArtifactLink is
-    // permanent, so an unverified manifest must never be able to name the primary repository.
-    // The coordinator's own fixed ticket branch stands in for the not-yet-written link.
-    for (const unit of changedUnits) {
-      try {
-        const manifest = await boundary.readCompletionManifest!(unit.manifestPath, unit.path);
-        const info = await boundary.getTicketInfo!(hu, ticket);
-        await boundary.validateCompletionManifest!(manifest, { ...info, branch: ticketBranch }, ticket, unit.path);
-        unit.manifest = manifest;
-        unit.commit = manifest.commit;
-      } catch (error) {
-        reportAzureFailure("manifest-not-verifiable", "evidencing", options, `lazy-workflow: el manifest de ${unit.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: unit.path }, "preserved");
-        return 1;
-      }
     }
 
     // Azure allows the ticket exactly one native Branch ArtifactLink and it must name the primary
@@ -2334,88 +2220,28 @@ export class LazyWorkflowCli {
       }
     }
 
-    // La evidencia que cierra el ticket es la del workspace entero, no la del primer repositorio.
-    // Mirar solo `changedUnits[0]` dejaba sin adjuntar todo lo que los demás repositorios habían
-    // declarado, y detenía la entrega como si no existiera una evidencia textual que viviera en el
-    // segundo. Los manifests ya vienen leídos y verificados del bucle de arriba; aquí se revalidan
-    // contra el ticket ya entregado, porque los merges adelantaron la rama.
+    // Lo que cierra el ticket es lo último que dijo la sesión, una sola para todo el workspace
+    // (ADR-0037). Antes se publicaba un documento armado con la evidencia de cada repositorio.
     const completionInfo = await boundary.getTicketInfo!(hu, ticket);
-    const workspaceEvidence: CompletionManifestEvidence[] = [];
-    // El documento publicado sí las lleva todas: una captura se empareja con la pantalla que vive
-    // junto a ella, así que quedarse solo con la primera de dos pantallas idénticas dejaba al
-    // segundo repositorio publicando su intercambio sin la imagen del navegador que lo hizo.
-    const reportEvidence: CompletionManifestEvidence[] = [];
-    const workspaceValidation: Array<{ command: string; result: string }> = [];
-    for (const unit of changedUnits) {
-      await boundary.validateCompletionManifest!(unit.manifest!, completionInfo, ticket, unit.path);
-      for (const evidence of unit.manifest!.evidence) {
-        if (!reportEvidence.some(({ path }) => path === evidence.path)) reportEvidence.push(evidence);
-        // Dos repositorios pueden declarar el mismo archivo; el ticket lo adjunta una sola vez.
-        if (!workspaceEvidence.some(({ sha256 }) => sha256.toLowerCase() === evidence.sha256.toLowerCase())) {
-          workspaceEvidence.push(evidence);
-        }
-      }
-      // Lo mismo vale para las validaciones: el documento publicado las lista una vez cada una.
-      for (const entry of unit.manifest!.validation) {
-        if (!workspaceValidation.some(({ command, result }) => command === entry.command && result === entry.result)) {
-          workspaceValidation.push(entry);
-        }
-      }
+    const summary = checkpoint.summary?.trim();
+    if (!summary && !completionInfo.completionEvidence) {
+      reportAzureFailure("session-not-verified", "evidencing", options, "lazy-workflow: la sesión workspace no dejó resumen para completion-evidence; ejecución detenida.", {}, "preserved");
+      return 1;
     }
-    // El ticket publica la entrega completa, no el archivo textual suelto: las capturas, las
-    // salidas y las validaciones de todos los repositorios se leen como un solo documento.
-    const evidenceReport: CompletionEvidenceReport = {
-      ticketBranch,
-      validation: workspaceValidation,
-      evidence: reportEvidence,
-    };
-
     const ticketEffortBefore = await boundary.getEffort!(ticket);
     const baselineReal = ticketEffortBefore.effort.real ?? 0;
     const baselineRealHours = ticketEffortBefore.effort.realHours ?? 0;
     const ticketStateBefore = await boundary.getState!(ticket);
 
-    for (const evidence of workspaceEvidence) {
+    if (summary) {
       try {
-        await boundary.validateEvidenceFile!(evidence.path, evidence.kind);
+        await boundary.validateSummary!(ticket, summary);
       } catch (error) {
-        reportAzureFailure("evidence-not-verifiable", "evidencing", options, `lazy-workflow: la evidencia ${evidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: evidence.path }, "preserved");
+        reportAzureFailure("session-not-verified", "evidencing", options, `lazy-workflow: el resumen de la sesión no es publicable (${errorMessage(error)}); ejecución detenida.`, {}, "preserved");
         return 1;
       }
-    }
-
-    // Un manifest sin evidencia textual ya no pasa `parseCompletionManifest`, así que esto solo
-    // alcanza a manifests escritos antes de esa regla. Un ticket que ya carga completion-evidence no
-    // necesita otra, que es lo que `applyTicketCompletion` sostiene para la ruta de repo único.
-    const textEvidence = findTextEvidence(workspaceEvidence);
-    if (!textEvidence && !completionInfo.completionEvidence) {
-      reportAzureFailure("evidence-not-verifiable", "evidencing", options, "lazy-workflow: el manifest workspace no contiene evidencia textual para completion-evidence; ejecución detenida.", {}, "preserved");
-      return 1;
-    }
-    if (textEvidence) {
-      try {
-        await boundary.validateEvidence!(ticket, textEvidence.path, evidenceReport);
-      } catch (error) {
-        reportAzureFailure("evidence-not-verifiable", "evidencing", options, `lazy-workflow: la evidencia ${textEvidence.path} no es verificable (${errorMessage(error)}); ejecución detenida.`, { repository: textEvidence.path }, "preserved");
-        return 1;
-      }
-    }
-
-    for (const evidence of workspaceEvidence) {
-      const existingAttachment = completionInfo.attachments.find((attachment) =>
-        typeof attachment.url === "string"
-        && attachment.url.trim().length > 0
-        && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
-        && attachment.evidenceKind === evidence.kind
-      );
-      if (!existingAttachment) {
-        await boundary.addAttachment!(ticket, evidence.path, evidence.kind);
-      }
-    }
-
-    const refreshedInfo = await boundary.getTicketInfo!(hu, ticket);
-    if (textEvidence && !refreshedInfo.completionEvidence) {
-      await boundary.setEvidence!(ticket, textEvidence.path, evidenceReport);
+      const refreshedInfo = await boundary.getTicketInfo!(hu, ticket);
+      if (!refreshedInfo.completionEvidence) await boundary.setSummary!(ticket, summary);
     }
 
     // Effort has to be reconciled before the completion gates are judged, not after: real-effort and
@@ -2503,7 +2329,7 @@ export class LazyWorkflowCli {
       }
     }
 
-    const summary = {
+    const deliveryReport = {
       hu: hu,
       ticket: ticket,
       integrationBranch,
@@ -2537,11 +2363,6 @@ export class LazyWorkflowCli {
         reportAzureFailure("manifest-not-verifiable", "cleaning", options, `lazy-workflow: no se pudo escribir el manifest agregado del workspace (${errorMessage(error)}); el checkpoint se conservó.`, {}, "preserved");
         return 1;
       }
-      // El manifest por repositorio es la señal de "hay algo que entregar", y
-      // sobrevivirlo a su propia entrega hacía que la fase siguiente leyera como
-      // pendiente un commit ya mergeado, sobre una rama de ticket que ya cerró.
-      // Se retira junto con el checkpoint, como hace la ruta GitHub.
-      for (const unit of units) await unlink(unit.manifestPath).catch(() => undefined);
       await this.azureWorkspaceCheckpoint.clear(scope.stateDirectory);
       // Without a fixed --ticket the run is a drain: select the next eligible child of the HU, as
       // single-repository `code --hu` does. Only a clean delivery continues; an unclean one stops
@@ -4793,7 +4614,7 @@ export class LazyWorkflowCli {
               session: null,
             }, true);
           }
-          return await this.descendFallbackChain(options, started, this.resumingDescent(activeCli, () => started.result.sessionId, resumeFn, onDescent, handOff));
+          return await this.descendFallbackChain(options, started, handOff);
         });
         // Same exclusion as the workspace path: the idle watchdog's silent
         // intervals never count as active effort (issue #292).

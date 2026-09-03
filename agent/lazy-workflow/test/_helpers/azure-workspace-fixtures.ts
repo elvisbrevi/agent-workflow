@@ -57,7 +57,7 @@ export interface AzureWorkspaceHarnessOptions {
   linkPullRequestFails?: boolean;
   huTransitionFails?: boolean;
   elapsedMs?: number;
-  /** Repositories (by directory name) whose OpenCode session leaves a completion manifest. */
+  /** Repositorios (por nombre de directorio) cuya sesión deja commits sobre la rama de integración. */
   changedRepositories?: string[];
   /** Repository (by directory name) whose pull-request creation must fail. */
   pullRequestFailsIn?: string;
@@ -184,15 +184,15 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           return { ticket: ticketId, branch, workingDirectory: resolved };
         },
         getCompletionInfo: async (huId, ticketId) => ({ hu: huId, ticket: ticketId, gates: { satisfied: [], unmet: [] } }),
-        readCompletionManifest: async () => ({
-          ticket,
-          ticketBranch,
-          commit: "a".repeat(40),
-          validation: [{ command: "bun test", result: "passed" }],
-          evidence: [{ path: "/tmp/evidence.json", kind: "command-output", sha256: "a".repeat(64) }],
-        }),
-        validateCompletionManifest: async () => undefined,
-        getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
+        // Cada repositorio del workspace entrega, salvo los que la prueba declare sin cambios.
+        verifySession: async (_branch: string, _base: string, workingDirectory: string) => {
+          if (!changedRepositories.some((name) => workingDirectory.endsWith(name))) {
+            throw new Error(`la rama de ${workingDirectory} no tiene commits sobre su base`);
+          }
+          return { commit: "a".repeat(40) };
+        },
+        validateSummary: async () => undefined,
+        setSummary: async () => undefined,
         createOrReusePullRequest: async (_huId, _ticketId, target?: AzurePullRequestTarget) => {
           if (options.pullRequestFailsIn && target?.repository === options.pullRequestFailsIn) {
             events.push(`pr-failed:${target.repository}`);

@@ -49,6 +49,8 @@ export interface AzureWorkspaceCheckpoint {
   ticketBranch: string;
   parentDirectory: string;
   activeDurationMs: number;
+  /** Lo último que dijo la sesión, que puebla la completion-evidence del ticket (ADR-0037). */
+  summary?: string | null;
   /** Repository owning the ticket's single native Branch ArtifactLink; the first changed one. */
   primaryRepository?: string | null;
   repositories: Array<{ path: string; remote: string }>;
@@ -96,6 +98,8 @@ export function isAzureWorkspaceCheckpoint(value: unknown): value is AzureWorksp
     && isBranchRef(checkpoint.ticketBranch)
     && typeof checkpoint.parentDirectory === "string" && checkpoint.parentDirectory.length > 0
     && typeof checkpoint.activeDurationMs === "number" && Number.isFinite(checkpoint.activeDurationMs) && checkpoint.activeDurationMs >= 0
+    && (checkpoint.summary === undefined || checkpoint.summary === null || typeof checkpoint.summary === "string")
+    && (checkpoint.summary === undefined || checkpoint.summary === null || typeof checkpoint.summary === "string")
     && (checkpoint.primaryRepository === undefined || checkpoint.primaryRepository === null
       || (typeof checkpoint.primaryRepository === "string" && checkpoint.primaryRepository.length > 0))
     && Array.isArray(repositories) && repositories.length > 0

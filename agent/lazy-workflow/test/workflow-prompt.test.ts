@@ -245,9 +245,8 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
     description: null,
     topology: topology as never,
     ticketTopology: topology as never,
-    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
   }, context);
-  expect(workspaceDelivery).toContain("You are implementing exactly one Azure delivery ticket");
+  expect(workspaceDelivery).toContain("/implement el ticket 51");
   expect(workspaceDelivery).not.toContain("Use GitHub and `gh` for");
 });
 
@@ -267,20 +266,14 @@ test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
     description: null,
     topology: topology as never,
     ticketTopology: topology as never,
-    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
   }, context);
-  expect(prompt).toContain("Coordinator-fixed HU: 23438");
-  expect(prompt).toContain("Coordinator-fixed ticket: 51");
-  expect(prompt).toContain("Coordinator-fixed integration branch: refs/heads/hu/23438");
-  expect(prompt).toContain("Coordinator-fixed ticket branch: refs/heads/ticket/51");
-  // The session must never have to infer where its manifest goes: the integration phase only reads
-  // the coordinator's own path, so an inferred one delivers nothing.
-  expect(prompt).toContain("/repo/a: manifest /repo/a/.git/lazy-workflow/completion-manifest.json");
-  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
-  expect(prompt).toContain(
-    `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket 51 --branch refs/heads/ticket/51`
-    + " --manifest /repo/a/.git/lazy-workflow/completion-manifest.json --working-directory /repo/a",
-  );
+  expect(prompt).toContain('"id":23438');
+  expect(prompt).toContain("/implement el ticket 51");
+  expect(prompt).toContain("Rama de integración: refs/heads/hu/23438");
+  expect(prompt).toContain("Rama del ticket: refs/heads/ticket/51");
+  // El roster ordena el trabajo; el contrato del manifest ya no existe (ADR-0036, ADR-0037).
+  expect(prompt).toContain("1. /ws/api");
+  expect(prompt).not.toContain("manifest");
 });
 
 test("la entrega Azure nombra el ticket, lo describe y dice el trabajo, nada más", async () => {
@@ -422,15 +415,14 @@ test("la entrega workspace Azure lleva el contenido del ticket, no solo su ident
     description: "Criterio de aceptación: el intento de pago se concilia contra el proveedor.",
     topology: topology as never,
     ticketTopology: topology as never,
-    manifestPaths: [{ path: "/repo/a", manifestPath: "/repo/a/.git/lazy-workflow/completion-manifest.json" }],
   }, context);
 
   expect(prompt).toContain("Conciliar el intento de pago");
   expect(prompt).toContain("HU transversal de pagos");
-  expect(prompt).toContain("Ticket description:");
+  expect(prompt).toContain("Descripción del ticket:");
   expect(prompt).toContain("el intento de pago se concilia contra el proveedor");
-  // El contenido rellena el hueco del asset, antes de las líneas de identidad.
-  expect(prompt.indexOf("Conciliar el intento de pago")).toBeLessThan(prompt.indexOf("Coordinator-fixed HU"));
+  // El contenido del ticket va antes que el roster: es lo que la sesión necesita leer primero.
+  expect(prompt.indexOf("Conciliar el intento de pago")).toBeLessThan(prompt.indexOf("Ordered participant repositories"));
 });
 
 test("un ticket sin descripción no deja el encabezado colgando", async () => {
@@ -443,7 +435,6 @@ test("un ticket sin descripción no deja el encabezado colgando", async () => {
     description: null,
     topology: topology as never,
     ticketTopology: topology as never,
-    manifestPaths: [],
   }, context);
 
   expect(prompt).toContain("Conciliar el intento de pago");
