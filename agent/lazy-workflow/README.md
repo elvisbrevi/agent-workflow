@@ -251,6 +251,10 @@ lazy-workflow code --cli opencode --model opencode-go/deepseek-v4-pro --variant 
 lazy-workflow code --cli claudecode --model claude-sonnet-5 --variant high \
   --working-directory /path/to/repository
 
+# Codex with gpt-5.6-sol at high effort
+lazy-workflow code --cli codex --model gpt-5.6-sol --variant high \
+  --working-directory /path/to/repository
+
 # The SAG workflows resolve a CLI the same way
 lazy-workflow architecture-review-sag --issue 154 --cli claudecode \
   --model claude-sonnet-5 --variant high --working-directory /path/to/repository
@@ -270,6 +274,11 @@ lazy-workflow code --working-directory /path/to/repository \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
   --fallback opencode:opencode-go/deepseek-v4-pro:high \
   --fallback-wait 300 --fallback-wait-max 3600
+
+# Codex can also be a primary or fallback rung
+lazy-workflow code --working-directory /path/to/repository \
+  --cli codex --model gpt-5.6-sol --variant high \
+  --fallback claudecode:claude-opus-5:high
 ```
 
 The walkthrough of the first one is in

@@ -91,17 +91,17 @@ bun run main.ts plan --prompt "plan the requested GitHub work" --working-directo
 ```
 
 Omitting `--hu` selects the GitHub-only default prompt and never uses Azure
-tools. `code` delivers each eligible GitHub issue in its own fresh OpenCode
+tools. `code` delivers each eligible GitHub issue in its own fresh selected-CLI
 session and re-selects the next until the queue is empty or blocked; the
 coordinator emits `TICKET_COMPLETED` and
 `WORKFLOW_STEP_FINISHED` only after each verified delivery. Add `--hu <ID>` to select
 the existing Azure planning or delivery workflow.
 
 If a canonical GitHub PR conflicts with its base, `code` fixes the exact base
-commit and starts a conflict-only OpenCode session for the same Issue, branch
-and PR. It accepts the result only when the new manifest commit contains both
-the original implementation and fixed base; interrupted reconciliation resumes
-from its checkpoint without selecting another Issue.
+commit and starts a conflict-only session on the selected CLI for the same Issue,
+branch and PR. It accepts the result only when the new manifest commit contains
+both the original implementation and fixed base; interrupted reconciliation
+resumes from its checkpoint without selecting another Issue.
 
 Sessions run with OpenCode by default. Add `--cli claudecode` or `--cli codex` to
 execute the same workflow with another coding agent:

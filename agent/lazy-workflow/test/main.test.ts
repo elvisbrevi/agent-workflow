@@ -2004,11 +2004,12 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
   try {
     expect(await planWith(["plan", "--cli", "claudecode"])).toBe(0);
     expect(await planWith(["plan"])).toBe(0);
+    expect(await planWith(["plan", "--cli", "codex"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
 
-  expect(requested).toEqual(["claudecode", "opencode"]);
+  expect(requested).toEqual(["claudecode", "opencode", "codex"]);
 });
 
 test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en orden", async () => {
@@ -2086,6 +2087,7 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
   try {
     expect(await planWith(["plan", "--cli", "claudecode"])).toBe(0);
     expect(await planWith(["plan"])).toBe(0);
+    expect(await planWith(["plan", "--cli", "codex"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
@@ -2097,6 +2099,10 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
   expect(authorities[1]).toEqual({
     profile: "lazy-github-plan",
     configPath: authorityConfigPath("opencode", "lazy-github-plan"),
+  });
+  expect(authorities[2]).toEqual({
+    profile: "lazy-github-plan",
+    configPath: authorityConfigPath("codex", "lazy-github-plan"),
   });
 });
 
@@ -2134,6 +2140,44 @@ test("code --cli claudecode entrega la cola gestionada y fija el CLI en el check
   expect(requested).toEqual(["claudecode"]);
   expect(checkpoints.every(({ cli }) => cli === "claudecode")).toBeTrue();
   expect(checkpoints.map(({ phase }) => phase)).toContain("implementation-ready");
+});
+
+test("code --cli codex entrega la cola gestionada con autoridad Codex", async () => {
+  const requested: AgentCli[] = [];
+  let received: AgentRunOptions | null = null;
+  const { githubCheckpointStore, githubRepositoryLock, githubDelivery } = fakeCoordinatedGitHubDeps();
+  const code = await createCli({
+    huInfoService: {
+      getHuInfo: async () => { throw new Error("must not use Azure"); },
+      waitForAccess: async () => undefined,
+    },
+    agentSource: (cli: AgentCli) => {
+      requested.push(cli);
+      return {
+        run: async (options: AgentRunOptions) => {
+          received = options;
+          return {
+            result: new AgentResult({ sessionId: "thread_codex", text: "IMPLEMENTATION_READY" }),
+            azureLoginRequired: false,
+          };
+        },
+        resume: async () => { throw new Error("must not resume"); },
+      };
+    },
+    checkpointStore: emptyCheckpointStore(),
+    cliParser: buildCli(() => true),
+    githubManagedQueue: queueAdapter([fakeSelectedOutcome(202)]),
+    githubCheckpointStore,
+    githubRepositoryLock,
+    githubDelivery,
+  }).run(["code", "--cli", "codex", "--model", "gpt-5.6-sol", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(requested).toEqual(["codex"]);
+  expect(received?.agent).toEqual({
+    profile: "lazy-github-code",
+    configPath: authorityConfigPath("codex", "lazy-github-code"),
+  });
 });
 
 const reviewContext: SagArchitectureReviewContext = {
@@ -2219,6 +2263,47 @@ test("architecture-review-sag --cli claudecode revisa con la autoridad de review
   expect(received?.agent).toEqual({
     profile: "lazy-review",
     configPath: authorityConfigPath("claudecode", "lazy-review"),
+  });
+});
+
+test("architecture-review-sag --cli codex revisa con la autoridad de review de Codex", async () => {
+  const requested: AgentCli[] = [];
+  let received: AgentRunOptions | null = null;
+  const result = AgentResult.fromJsonLines(JSON.stringify({
+    type: "text",
+    sessionID: "ses_review_codex",
+    part: { type: "text", text: 'ARCHITECTURE_REVIEW_RESULT\n{"status":"clean","summary":"clean"}' },
+  }));
+  const originalLog = console.log;
+  console.log = () => undefined;
+  let code: number;
+  try {
+    code = await createCli({
+      huInfoService: {
+        getHuInfo: async () => { throw new Error("must not use Azure"); },
+        waitForAccess: async () => undefined,
+      },
+      agentSource: (cli: AgentCli) => {
+        requested.push(cli);
+        return {
+          run: async (options: AgentRunOptions) => { received = options; return { result, azureLoginRequired: false }; },
+          resume: async () => { throw new Error("must not resume"); },
+        };
+      },
+      sagNormsService: { loadPlanning: async () => { throw new Error("must not plan"); }, loadArchitectureReview: async () => reviewContext },
+      git: async () => "",
+      githubTracker: { readIssue: async (issue: number) => ({ number: issue, title: "scope", body: "body", comments: [], state: "OPEN", labels: [] }), publishFindings: async () => ({ specification: 1, tickets: [] }) },
+      cliParser: buildCli(() => true),
+    }).run(["architecture-review-sag", "--issue", "178", "--cli", "codex", "--model", "gpt-5.6-sol"]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  expect(code).toBe(0);
+  expect(requested).toEqual(["codex"]);
+  expect(received?.agent).toEqual({
+    profile: "lazy-review",
+    configPath: authorityConfigPath("codex", "lazy-review"),
   });
 });
 
