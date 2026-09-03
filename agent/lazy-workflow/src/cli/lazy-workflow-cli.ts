@@ -2693,7 +2693,7 @@ export class LazyWorkflowCli {
           workingDirectory: unit.path,
           issueWorkingDirectory: scope.repositories[0]!.path,
           requireEvidence: true,
-        }, checkpoint.sessionId);
+        });
         if (outcome.kind === "pending") {
           await this.githubWorkspaceCheckpoint.write({ ...checkpoint, sessionId: outcome.sessionId }, scope.stateDirectory);
           return 1;
@@ -2722,16 +2722,16 @@ export class LazyWorkflowCli {
           profile: "lazy-github-code",
           configPath: authorityConfigPath(checkpoint.cli, "lazy-github-code"),
         };
-        const resumeSession = (sessionId: string): Promise<AgentResult> =>
-          this.markerResume(sessionId, scope.parentDirectory, { ...getResumeOverrides(options), agent: resumeAuthority });
-        const execution = await this.resumeWithoutMarker({
-          execution: { result: await resumeSession(checkpoint.sessionId), azureLoginRequired: false, failed: false },
-          cli: checkpoint.cli,
-          resume: resumeSession,
-        });
-        const result = execution.result;
+        const result = await this.codingAgent.resume(
+          checkpoint.sessionId,
+          undefined,
+          scope.parentDirectory,
+          undefined,
+          { ...getResumeOverrides(options), agent: resumeAuthority },
+        );
         reportOperator(JSON.stringify(result, null, 2));
-        if (!containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) return 1;
+        // La sesión volvió: lo que cada repositorio entregó lo dice git en la integración, no un
+        // marcador en su texto (ADR-0035).
         checkpoint = { ...checkpoint, phase: "implementation-ready", sessionId: null };
         await save();
       } catch (error) {
@@ -2800,25 +2800,23 @@ export class LazyWorkflowCli {
       checkpoint = { ...checkpoint, phase: "started" };
       await save();
     }
-    if (checkpoint.phase === "implementing" && !checkpoint.sessionId) {
-      throw new Error("el checkpoint workspace no conserva una sesión reanudable");
-    }
-    if (checkpoint.phase === "started" && !checkpoint.sessionId) {
+    if (checkpoint.phase === "started") {
       const run = await this.workspacePrompt(options, scope, issue, units);
-      const execution = await this.resumeWithoutMarker({
-        execution: await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, false),
-        cli: checkpoint.cli,
-        resume: (sessionId) => this.markerResume(sessionId, scope.parentDirectory, { ...getResumeOverrides(options), agent: run.agent }),
-        persist: async (sessionId) => {
-          checkpoint = { ...checkpoint!, phase: "implementing", sessionId };
-          await save();
-        },
-      });
+      const execution = await this.codingAgent.run(
+        { ...options, workingDirectory: scope.parentDirectory, ...run, session: null },
+        false,
+      );
       reportOperator(JSON.stringify(execution.result, null, 2));
-      const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
-      checkpoint = { ...checkpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId };
+      // Igual que la entrega de un solo repositorio: el proceso que sale es la señal, y lo que
+      // cada repositorio entregó lo dice git más abajo (ADR-0035).
+      const processSucceeded = !execution.failed;
+      checkpoint = {
+        ...checkpoint,
+        phase: processSucceeded ? "implementation-ready" : "implementing",
+        sessionId: processSucceeded ? null : execution.result.sessionId,
+      };
       await save();
-      if (execution.failed || !terminal) return 1;
+      if (!processSucceeded) return 1;
     }
     return this.integrateWorkspaceCode(options, scope, checkpoint);
   }
@@ -2918,7 +2916,7 @@ export class LazyWorkflowCli {
             workingDirectory: currentUnit.path,
             issueWorkingDirectory: scope.repositories[0]!.path,
             requireEvidence: true,
-          }, null);
+          });
           if (outcome.kind === "pending") {
             checkpoint = { ...checkpoint, sessionId: outcome.sessionId };
             await save();
@@ -3076,6 +3074,23 @@ export class LazyWorkflowCli {
      * de salida: una corrida que dejó issues rotas detrás no puede reportarse como limpia.
      */
     let failedUnits = 0;
+    /**
+     * Dejar la unidad en curso y seguir con la siguiente.
+     *
+     * Lo que la saca de la frontera es su propio claim, que no se libera; el checkpoint se limpia
+     * porque la unidad no llegó a tocar el remoto y no hay nada a medias que reconciliar. El
+     * llamador hace `continue` — un cierre no puede hacerlo por él.
+     */
+    const skipFailedUnit = async (
+      kind: FailureKind,
+      phase: GitHubDeliveryPhase,
+      context: { issue: number; repository: string; branch: string | null; sessionId?: string | null },
+      message: string,
+    ): Promise<void> => {
+      reportFailure(kind, phase, context, message);
+      failedUnits += 1;
+      if (store) await store.clear(options.workingDirectory);
+    };
     // Deliver every eligible issue in one run: on completion, re-select the next.
     while (true) {
       let queueOutcome: ManagedQueueOutcome;
@@ -3234,8 +3249,8 @@ export class LazyWorkflowCli {
         }
       }
       // ADR-0020 superseded the uncoordinated shape: without a coordinator-owned delivery adapter
-      // and a fixed branch no hay entrega que verificar, así que la corrida falla cerrada en vez de
-      // abrir una sesión que nadie va a poder completar.
+      // and a fixed branch there is nothing to verify, so the run fails closed instead of opening a
+      // session nobody will be able to complete.
       if (!this.githubDelivery || !branch || !baseBranch) {
         reportFailure(
           "delivery-failure",
@@ -3250,13 +3265,6 @@ export class LazyWorkflowCli {
       let activeAuthority = run.agent;
       /** The session `activeCli` owns once a handoff opened a new one, so the two are never checkpointed crossed. */
       let activeSessionId: string | null = null;
-      /** Cada intento sobre esta unidad reanuda la sesión con la autoridad que el CLI activo entiende. */
-      const resumeSession = (sessionId: string, overrides: AgentResumeOverrides) =>
-        this.markerResume(sessionId, options.workingDirectory, { ...overrides, agent: activeAuthority });
-      const onDescent = async (rung: FallbackRung, sessionId: string): Promise<void> => {
-        activeRung = rung;
-        await saveCheckpoint("implementing", sessionId);
-      };
       const handOff = async (rung: FallbackRung, reasoning: string[]): Promise<AgentExecution> => {
         const handedOff = await this.handOffGitHubDelivery(options, rung, {
           issue,
@@ -3293,14 +3301,12 @@ export class LazyWorkflowCli {
         // checkpoint keeps it and recovery resumes that one; only a session the
         // CLI declares gone goes back sessionless, as recovery already does.
         const reconcilingSessionId = error instanceof AgentSessionNotFoundError ? null : activeSessionId ?? execution?.result.sessionId ?? null;
-        reportFailure(
+        await skipFailedUnit(
           "session-failure",
           "reconciling",
           { issue: issue.number, repository: repository.nameWithOwner, branch, sessionId: reconcilingSessionId },
           `lazy-workflow: la sesion GitHub fallo (${errorMessage(error)}); el Issue #${issue.number} queda reclamado.`,
         );
-        failedUnits += 1;
-        if (store) await store.clear(options.workingDirectory);
         continue;
       }
       // El descenso es sticky solo dentro de esta unidad: la siguiente vuelve a
@@ -3309,19 +3315,17 @@ export class LazyWorkflowCli {
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
       summary = result.text.trim() || null;
-      // Que la sesión terminara lo dice su proceso; que entregara lo dice git, y eso lo pregunta
-      // `completeGitHubDelivery` antes de tocar el remoto (ADR-0035).
-      const terminal = !execution.failed;
-      await saveCheckpoint(terminal ? "implementation-ready" : "reconciling", terminal ? null : result.sessionId);
-      if (execution.failed) {
-        reportFailure(
+      // Que el proceso saliera bien es lo único que dice esto; que la unidad se entregara lo dice
+      // git, y eso se pregunta abajo antes de tocar el remoto (ADR-0035).
+      const processSucceeded = !execution.failed;
+      await saveCheckpoint(processSucceeded ? "implementation-ready" : "reconciling", processSucceeded ? null : result.sessionId);
+      if (!processSucceeded) {
+        await skipFailedUnit(
           "session-failure",
           "reconciling",
           { issue: issue.number, repository: repository.nameWithOwner, branch, sessionId: result.sessionId },
           `lazy-workflow: la sesión GitHub falló (${errorMessage(result.text)}); el Issue #${issue.number} queda reclamado.`,
         );
-        failedUnits += 1;
-        if (store) await store.clear(options.workingDirectory);
         continue;
       }
 
@@ -3333,14 +3337,12 @@ export class LazyWorkflowCli {
           if (!branch || !baseBranch) throw new Error("la unidad no tiene rama fijada");
           commit = (await this.githubDelivery.verifySession(branch, baseBranch, options.workingDirectory)).commit;
         } catch (error) {
-          reportFailure(
+          await skipFailedUnit(
             githubCompletionFailureKind(error),
             "implementation-ready",
             { issue: issue.number, repository: repository.nameWithOwner, branch },
             `lazy-workflow: el Issue #${issue.number} no quedó verificado (${errorMessage(error)}); queda reclamado y su rama se conserva.`,
           );
-          failedUnits += 1;
-          if (store) await store.clear(options.workingDirectory);
           continue;
         }
         try {
@@ -3377,7 +3379,7 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      if (!terminal) {
+      if (!processSucceeded) {
         reportFailure(
           "session-failure",
           "implementation-ready",
@@ -3514,7 +3516,6 @@ export class LazyWorkflowCli {
       issueWorkingDirectory: string;
       requireEvidence: boolean;
     },
-    sessionId: string | null,
   ): Promise<GitHubReconciliationOutcome> {
     const delivery = this.githubDelivery;
     const readIssue = (this.githubManagedQueue.reconcileClaimedIssue ?? this.githubManagedQueue.readIssueDetail)?.bind(this.githubManagedQueue);
@@ -3531,16 +3532,12 @@ export class LazyWorkflowCli {
       context.originalCommit,
       context.baseCommit,
     );
-    const started: AgentExecution = sessionId
-      ? { result: await this.codingAgent.resume(sessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }), azureLoginRequired: false, failed: false }
-      : await this.codingAgent.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null }, false);
-    // La sesión de reconciliación se reanuda una vez si vuelve sin su marcador (ADR-0032): sin
-    // eso la corrida devolvía "pendiente" y esperaba a que el operador la relanzara a mano.
-    const execution = await this.resumeWithoutMarker({
-      execution: started,
-      cli: options.cli,
-      resume: (resumedSessionId) => this.codingAgent.resume(resumedSessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
-    });
+    // Sesión fresca, siempre: la reconciliación es su propio trabajo y no continúa la sesión de
+    // entrega que dejó el conflicto (ADR-0039).
+    const execution = await this.codingAgent.run(
+      { ...options, workingDirectory: context.workingDirectory, ...run, session: null },
+      false,
+    );
     const result = execution.result;
     reportOperator(JSON.stringify(result, null, 2));
     if (execution.failed) return { kind: "pending", sessionId: result.sessionId };
@@ -3648,7 +3645,7 @@ export class LazyWorkflowCli {
           workingDirectory: options.workingDirectory,
           issueWorkingDirectory: options.workingDirectory,
           requireEvidence: false,
-        }, null);
+        });
         if (outcome.kind === "pending") {
           checkpoint = { ...checkpoint, phase: "conflict-resolving", sessionId: outcome.sessionId };
           await save();
@@ -3896,7 +3893,7 @@ export class LazyWorkflowCli {
           workingDirectory: options.workingDirectory,
           issueWorkingDirectory: options.workingDirectory,
           requireEvidence: false,
-        }, liveCheckpoint.sessionId);
+        });
         if (outcome.kind === "pending") {
           await store.write({ ...liveCheckpoint, sessionId: outcome.sessionId }, options.workingDirectory);
           this.reportGitHubReconciliationRequired({ ...liveCheckpoint, sessionId: outcome.sessionId });
@@ -4217,7 +4214,10 @@ export class LazyWorkflowCli {
     try {
       const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
       if (!status.trim()) return true;
-      await this.git(["add", "-A"], workingDirectory);
+      // Solo lo que git ya rastrea: un `-A` barre lo que estaba suelto en el directorio —un
+      // `.env`, un dump— y el commit siguiente lo publica. Un archivo sin rastrear casi siempre
+      // no está versionado porque no debe estarlo, y no bloquea el checkout de una rama nueva.
+      await this.git(["add", "-u"], workingDirectory);
       await this.git(["commit", "-m", "lazy-workflow: commit documentation from planning session"], workingDirectory);
       return true;
     } catch (error) {
@@ -4670,7 +4670,8 @@ export class LazyWorkflowCli {
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
     return {
       prompt: await buildWorkflowPrompt(spec, {
-        operatorRequest: options.prompt,
+        // El default de `--prompt` no viaja: no es una petición del operador, es relleno.
+        operatorRequest: options.hasPrompt ? options.prompt : "",
         workingDirectory: options.workingDirectory,
         norms,
         questions: options.numberOfQuestions,

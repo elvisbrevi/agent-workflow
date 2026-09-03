@@ -20,6 +20,17 @@ already enforces per ADR-0021. Keeping both meant that every escape produced
 another paragraph rather than a tighter profile, which is how the prompt reached
 its size.
 
+Two of those clauses survive on purpose, at the operator's instruction: *no abras
+PR, no me hagas preguntas*. Both restate a boundary the profile already holds, so
+by this ADR's own reasoning they are redundant — the operator wanted them said
+anyway, and one line is not the paragraph this decision was about. They are the
+exception, not the pattern; a third escape belongs in the profile.
+
+The prompt says *commit*, and not *push*, precisely because the profiles are the
+authority: `git push` is denied in all three, and the coordinator pushes the
+verified commit itself. An earlier draft of this prompt said "comitea y push" and
+would have hit that deny on every delivery.
+
 The issue arrives as its number alone. The session runs inside the repository
 with `gh` available, so reading the title, body and comments is one deterministic
 call it makes itself, against the issue as it stands rather than against the

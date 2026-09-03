@@ -15,9 +15,10 @@ made a fallback feel like a stall. It also left two behaviours in the coordinato
 depending on whether the rung crossed a CLI boundary. One path is now enough:
 fresh session, same prompt, same progress section, whichever rung comes next.
 
-This supersedes ADR-0025, which held that nothing the outgoing session said may
-travel, because an exhausted account cannot be interrogated and its prose is not
-verifiable. That reasoning is accepted and overridden deliberately: the reasoning
+This overturns the decision recorded in the deleted ADR-0025 ("hand off across
+CLIs with verified progress"), which held that nothing the outgoing session said
+may travel, because an exhausted account cannot be interrogated and its prose is
+not verifiable. That reasoning is accepted and overridden deliberately: the reasoning
 chains are not asked for and not paraphrased — they are the last three the stream
 already emitted, passed through as-is, and every CLI adapter already parses them
 (they are rendered today at `debug` severity and then discarded). They are

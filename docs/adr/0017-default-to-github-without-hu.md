@@ -1,5 +1,5 @@
 ---
-status: superseded by ADR-0018
+status: accepted
 ---
 
 # Default to GitHub without an HU

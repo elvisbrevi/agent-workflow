@@ -56,7 +56,7 @@ publishes the set of models it accepts; an unusable one still surfaces as a
 failed session.
 
 Failing closed protects the operator from their own contradiction, not from the
-run's. A cross-CLI handoff (ADR-0025) moves the session off the `--cli` that
+run's. A handoff to the next rung (ADR-0039) moves the session off the `--cli` that
 started it, so the command that originated the work would otherwise contradict a
 checkpoint it wrote itself and keep failing on every retry. The GitHub delivery
 checkpoint therefore records the CLI the handoff moved the session away from,

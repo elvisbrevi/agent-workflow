@@ -20,6 +20,8 @@ export interface CliOptions {
   variant: string;
   hasCli: boolean;
   hasModel: boolean;
+  /** Si el operador declaró `--prompt`: sin eso su valor es el default, que no es una petición. */
+  hasPrompt: boolean;
   hasVariant: boolean;
   /** Declared with `--fallback`, in declaration order; empty when the run has none. */
   fallbackChain: FallbackRung[];
@@ -108,7 +110,7 @@ export type BinaryProbe = (binary: string) => boolean;
 const binaryOnPath: BinaryProbe = (binary) => Bun.which(binary) !== null;
 
 const DEFAULT_VARIANT = "high";
-export const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
+const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 /** No interview unless the operator asks for one: an unattended run is the normal one. */
 const DEFAULT_INTERVIEW_CHANNEL: InterviewChannelKind = "off";
@@ -592,6 +594,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     variant,
     hasCli: flagSupplied(rawArgs, "--cli"),
     hasModel: flagSupplied(rawArgs, "--model"),
+    hasPrompt: flagSupplied(rawArgs, "--prompt"),
     hasVariant: flagSupplied(rawArgs, "--variant"),
     fallbackChain: parseFallbackChain(parsed["fallback"], { cli, model, variant }, binaryPresent),
     fallbackWaitSeconds: waitSeconds,

@@ -14,7 +14,6 @@ import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.
 import type { SagArchitectureReviewContext, SagCodingContext, SagNormsContext } from "../sag/sag-norms-service.ts";
 import type { WorkspaceScope } from "../workspace/repository-scope.ts";
 import type { QuestionAnswers } from "../interaction/question-round.ts";
-import { DEFAULT_PROMPT } from "../cli/parse-cli-options.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
   QUESTIONS_ANSWERED_MARKER,
@@ -99,7 +98,11 @@ export type WorkflowPromptSpec =
   | { kind: "architecture-review-sag"; scope: unknown; context: SagArchitectureReviewContext };
 
 export interface WorkflowPromptContext {
-  /** The supplemental operator request. Never authoritative over coordinator facts. */
+  /**
+   * La petición del operador, y solo cuando la hay: el coordinador manda `""` cuando `--prompt`
+   * quedó en su default, porque ese texto no es una petición sino relleno, y un prompt de cuatro
+   * líneas no tiene dónde esconderlo.
+   */
   operatorRequest: string;
   /** The directory the run was scoped to. Workspace runs override it with the parent directory. */
   workingDirectory: string;
@@ -314,9 +317,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         `/implement the issue #${spec.issue.number} usando /tdd /caveman /ponytail y /code-review.`,
         await readPromptAsset("github-code"),
         ...sag,
-        // El default de `--prompt` no es una petición: es relleno, y un prompt de cuatro líneas no
-        // tiene dónde esconderlo.
-        operatorRequest.trim() && operatorRequest !== DEFAULT_PROMPT ? operatorRequest : null,
+        operatorRequest.trim() ? operatorRequest : null,
       ];
 
     case "github-reconciliation": {
@@ -328,7 +329,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         `Coordinator-fetched base commit: ${baseCommit}`,
         `Merge exactly ${baseCommit} into ${branch}; resolve every conflict while preserving both the fixed Issue requirements and already integrated base changes.`,
         "Do not rebase, reset, force-push, switch branches, select another issue, or mutate GitHub.",
-        `Run relevant validation, create the merge commit, run the manifest tool again so the manifest names the new HEAD, then emit ${IMPLEMENTATION_READY_MARKER}.`,
+        "Corre la validación que corresponda y crea el commit de merge. No pushees: el coordinador lo hace y verifica el resultado con git.",
       ];
     }
 
@@ -421,9 +422,9 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
 
 /**
  * Compose the prompt for one coordinator-fixed run. A handoff passes the same
- * spec with `progress`, so the session in the new CLI is told the same fixed
- * work — issue, branch, manifest path, marker contract — plus where it stands,
- * rather than a prompt written in parallel at the call site (ADR-0025).
+ * spec with `progress`, so the session on the next rung is told the same fixed
+ * work — the issue and its branch — plus where it stands, rather than a prompt
+ * written in parallel at the call site (ADR-0039).
  */
 export async function buildWorkflowPrompt(
   spec: WorkflowPromptSpec,

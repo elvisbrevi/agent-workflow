@@ -95,10 +95,19 @@ _Avoid_: new direct `console.log` calls, new top-level log helpers
 A line a planning session prints alone to hand control back to the coordinator:
 `PLAN_READY` with the slices it decided, `QUESTIONS_PENDING` with the round it
 wants answered, and `QUESTIONS_ANSWERED`, which the coordinator prints when it
-resumes that session with the operator's replies. These are the only markers
-left. Delivery has none: a session is finished when its process exits, and it
-succeeded when git says so (ADR-0035).
-_Avoid_: a marker for delivery, provider text as a completion signal
+resumes that session with the operator's replies.
+
+A GitHub delivery session prints none: it is finished when its process exits, and
+it succeeded when git says so (ADR-0035). An Azure delivery session still prints
+`IMPLEMENTATION_READY`, until its own slice retires it.
+_Avoid_: a marker for GitHub delivery, provider text as a completion signal
+
+**Run outcome line**:
+What the coordinator itself prints on stdout when a run ends —
+`TICKET_COMPLETED`, `QUEUE_EMPTY`, `QUEUE_BLOCKED`, `WORKFLOW_STEP_FINISHED`,
+`RECONCILIATION_REQUIRED`. It shares a vocabulary with the protocol markers and is
+not one: no session emits it and nothing parses it back out of a session's text.
+_Avoid_: calling it a marker, letting a session print one
 
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the

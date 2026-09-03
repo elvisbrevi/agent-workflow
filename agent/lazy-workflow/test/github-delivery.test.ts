@@ -180,7 +180,7 @@ test("el prompt de entrega GitHub es la instrucción del trabajo y nada más", a
 
   expect(prompt).toBe([
     "/implement the issue #179 usando /tdd /caveman /ponytail y /code-review.",
-    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "trabaja y comitea en esta misma branch.",
     "no abras PR, no me hagas preguntas.",
     "termina con un resumen de lo realizado entendible por un humano.",
   ].join("\n"));
@@ -493,7 +493,7 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   expect(current).toBeNull();
 });
 
-test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y luego drena la cola", async () => {
+test("retoma una reconciliación conflictiva sin seleccionar un reemplazo y luego drena la cola", async () => {
   const originalCommit = "a".repeat(40);
   const baseCommit = "b".repeat(40);
   const reconciledCommit = "c".repeat(40);
@@ -542,15 +542,15 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
   const code = await createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
     agentSource: {
-      run: async () => { runs += 1; throw new Error("must resume"); },
-      resume: async (session, prompt) => {
-        resumes += 1;
-        expect(session).toBe("ses_conflict");
-        expect(prompt).toContain(baseCommit);
-        expect(prompt).toContain("Coordinator-fixed pull request: #201");
+      run: async (options) => {
+        runs += 1;
+        expect(options.session).toBeNull();
+        expect(options.prompt).toContain(baseCommit);
+        expect(options.prompt).toContain("Coordinator-fixed pull request: #201");
         reconciled = true;
-        return execution().result;
+        return execution();
       },
+      resume: async () => { throw new Error("la reconciliación no reanuda"); },
     },
     githubManagedQueue: { selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; }, reconcileClaimedIssue: async () => fakeSelectedIssue(179) },
     githubCheckpointStore: store,
@@ -559,7 +559,9 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
   }).run(["code", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
-  expect({ selections, runs, resumes }).toEqual({ selections: 1, runs: 0, resumes: 1 });
+  // La reconciliación interrumpida se retoma con una sesión nueva, no reanudando la anterior
+  // (ADR-0039): el conflicto sigue en el árbol y el prompt vuelve a nombrarlo.
+  expect({ selections, runs, resumes }).toEqual({ selections: 1, runs: 1, resumes: 0 });
   expect(events.filter((event) => event === "verify-pending")).toHaveLength(1);
   expect(events.indexOf("verify-pending")).toBeLessThan(events.indexOf("verify-reconciled"));
   expect(events.indexOf("verify-reconciled")).toBeLessThan(events.indexOf(`push:${reconciledCommit}`));

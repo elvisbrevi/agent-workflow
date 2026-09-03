@@ -185,7 +185,7 @@ test("la entrega GitHub fija issue, rama, manifest y markers", async () => {
   // tiene `gh` y lee el cuerpo fresco.
   expect(prompt).toBe([
     "/implement the issue #201 usando /tdd /caveman /ponytail y /code-review.",
-    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "trabaja y comitea en esta misma branch.",
     "no abras PR, no me hagas preguntas.",
     "termina con un resumen de lo realizado entendible por un humano.",
     "entrega lo pedido",

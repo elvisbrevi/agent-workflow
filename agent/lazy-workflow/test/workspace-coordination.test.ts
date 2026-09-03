@@ -314,17 +314,11 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
         } else {
           expect(options.prompt).toContain(baseCommit);
           expect(options.prompt).toContain("Coordinator-fixed pull request: #1");
+          reconciled = true;
         }
-        return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: `ses-${runs}`, part: { type: "text", text: runs === 2 ? "still working" : "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
+        return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: `ses-${runs}`, part: { type: "text", text: "resuelto" } })), azureLoginRequired: false };
       },
-      resume: async (session, prompt) => {
-        resumes += 1;
-        expect(session).toBe("ses-2");
-        expect(prompt).toContain(baseCommit);
-        expect(prompt).toContain("Coordinator-fixed pull request: #1");
-        reconciled = true;
-        return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: session, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
-      },
+      resume: async () => { throw new Error("la reconciliación no reanuda"); },
     },
     git,
     githubManagedQueue: queue,
@@ -333,11 +327,11 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
     githubDelivery: delivery,
   });
   try {
-    // Una sola invocación: la sesión de reconciliación que vuelve sin marcador la reanuda el
-    // coordinador, no el operador (ADR-0032).
+    // Dos invocaciones y ninguna reanudación: la de entrega y la de reconciliación, cada una en
+    // su propia sesión fresca.
     expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(0);
     expect(runs).toBe(2);
-    expect(resumes).toBe(1);
+    expect(resumes).toBe(0);
     expect(events).toContain("prepare:repo-a");
     // La verificación de reconciliación pendiente pertenece a la reanudación entre invocaciones;
     // con la reconciliación resuelta dentro de la misma corrida, ya no hay una que verificar.
@@ -519,55 +513,3 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
 });
 
 
-test("la recuperación del workspace GitHub reanuda una vez más la sesión sin marcador", async () => {
-  // La sesión que el checkpoint reanuda no es distinta de una recién abierta: si vuelve sin
-  // el marcador, el coordinador se concede el mismo único reintento (ADR-0032).
-  const root = await realpath(await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-resume-")));
-  const repoA = join(root, "repo-a");
-  const repoB = join(root, "repo-b");
-  await Bun.$`mkdir -p ${repoA} ${repoB}`.quiet();
-  const texts = ["still working", "still working"];
-  let resumes = 0;
-  let sessionRan = false;
-  const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
-    if (args[0] === "rev-parse") return directory;
-    if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
-    return "";
-  };
-  const checkpoint = {
-    schemaVersion: 2,
-    cli: "opencode",
-    workflow: "github-workspace-code",
-    issue: 188,
-    phase: "implementing",
-    sessionId: "ses-workspace",
-    branch: "refs/heads/issue/188",
-    parentDirectory: root,
-    repositories: [repoA, repoB].map((path) => ({ path, remote: `git@github.com:owner/${basename(path)}.git`, repository: `owner/${basename(path)}` })),
-    units: [],
-    receipts: {},
-    intent: null,
-  };
-  await Bun.write(join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json"), `${JSON.stringify(checkpoint)}\n`);
-  const cli = createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => { sessionRan = true; throw new Error("la recuperación reanuda, no arranca"); },
-      resume: async () => {
-        resumes += 1;
-        return AgentResult.fromJsonLines(JSON.stringify({
-          type: "text", sessionID: "ses-workspace", part: { type: "text", text: texts.shift() ?? "still working" },
-        }));
-      },
-    },
-    git,
-    githubManagedQueue: { selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }) },
-  });
-  try {
-    expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(1);
-    expect(resumes).toBe(2);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});

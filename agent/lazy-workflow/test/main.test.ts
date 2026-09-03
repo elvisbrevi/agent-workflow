@@ -603,7 +603,7 @@ test("code sin HU entrega un solo issue por sesion", async () => {
   expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
   expect(calls[0]?.options.prompt).toBe([
     "/implement the issue #201 usando /tdd /caveman /ponytail y /code-review.",
-    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "trabaja y comitea en esta misma branch.",
     "no abras PR, no me hagas preguntas.",
     "termina con un resumen de lo realizado entendible por un humano.",
   ].join("\n"));
