@@ -1,0 +1,12 @@
+# lazy-workflow Azure delivery authority: implement, validate, commit, write the
+# manifest. The coordinator owns Azure and every remote effect. Hand-written
+# from ADR-0021; not generated from opencode/authority.json or claudecode/*.json.
+
+prefix_rule(pattern=["git", "push"], decision="forbidden")
+prefix_rule(pattern=["git", "branch"], decision="forbidden")
+prefix_rule(pattern=["git", "checkout", "-b"], decision="forbidden")
+prefix_rule(pattern=["git", "switch", "-c"], decision="forbidden")
+prefix_rule(pattern=["git", "remote"], decision="forbidden")
+prefix_rule(pattern=["git", "tag"], decision="forbidden")
+prefix_rule(pattern=["az"], decision="forbidden")
+prefix_rule(pattern=["gh"], decision="forbidden")

@@ -1,0 +1,22 @@
+# lazy-workflow GitHub delivery authority: implement, validate, commit. Every
+# remote effect belongs to the coordinator. Hand-written from ADR-0021; not
+# generated from opencode/authority.json or claudecode/*.json.
+
+prefix_rule(pattern=["git", "push"], decision="forbidden")
+prefix_rule(pattern=["git", "branch"], decision="forbidden")
+prefix_rule(pattern=["git", "checkout", "-b"], decision="forbidden")
+prefix_rule(pattern=["git", "switch", "-c"], decision="forbidden")
+prefix_rule(pattern=["git", "remote"], decision="forbidden")
+prefix_rule(pattern=["git", "tag"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr"], decision="forbidden")
+prefix_rule(pattern=["gh", "repo"], decision="forbidden")
+prefix_rule(pattern=["gh", "api"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "edit"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "close"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "reopen"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "comment"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "delete"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "transfer"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "lock"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "unlock"], decision="forbidden")
+prefix_rule(pattern=["az"], decision="forbidden")

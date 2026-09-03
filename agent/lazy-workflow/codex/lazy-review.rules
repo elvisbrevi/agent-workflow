@@ -1,0 +1,31 @@
+# lazy-workflow review authority: read the tree and report. Modifies nothing.
+# Hand-written from ADR-0021; not generated from opencode/authority.json or
+# claudecode/*.json. `apply_patch` is the shell-intercepted command Codex uses
+# to edit files, so forbidding its prefix denies edits the way Claude Code
+# denies Edit/Write/NotebookEdit and OpenCode denies `edit`.
+
+prefix_rule(pattern=["apply_patch"], decision="forbidden")
+prefix_rule(pattern=["git", "push"], decision="forbidden")
+prefix_rule(pattern=["git", "commit"], decision="forbidden")
+prefix_rule(pattern=["git", "add"], decision="forbidden")
+prefix_rule(pattern=["git", "rm"], decision="forbidden")
+prefix_rule(pattern=["git", "mv"], decision="forbidden")
+prefix_rule(pattern=["git", "branch"], decision="forbidden")
+prefix_rule(pattern=["git", "checkout"], decision="forbidden")
+prefix_rule(pattern=["git", "switch"], decision="forbidden")
+prefix_rule(pattern=["git", "merge"], decision="forbidden")
+prefix_rule(pattern=["git", "rebase"], decision="forbidden")
+prefix_rule(pattern=["git", "reset"], decision="forbidden")
+prefix_rule(pattern=["git", "restore"], decision="forbidden")
+prefix_rule(pattern=["git", "revert"], decision="forbidden")
+prefix_rule(pattern=["git", "cherry-pick"], decision="forbidden")
+prefix_rule(pattern=["git", "clean"], decision="forbidden")
+prefix_rule(pattern=["git", "stash"], decision="forbidden")
+prefix_rule(pattern=["git", "apply"], decision="forbidden")
+prefix_rule(pattern=["git", "tag"], decision="forbidden")
+prefix_rule(pattern=["git", "remote"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue"], decision="forbidden")
+prefix_rule(pattern=["gh", "repo"], decision="forbidden")
+prefix_rule(pattern=["gh", "api"], decision="forbidden")
+prefix_rule(pattern=["az"], decision="forbidden")
