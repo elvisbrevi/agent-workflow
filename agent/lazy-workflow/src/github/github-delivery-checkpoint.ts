@@ -59,6 +59,8 @@ export interface GitHubDeliveryCheckpoint {
   receipts: Partial<Record<string, GitHubDeliveryReceipt>>;
   baseBranch?: string | null;
   manifestPath?: string | null;
+  /** The session's closing summary, which becomes the pull-request body (ADR-0037). */
+  summary?: string | null;
   mergeCommit?: string | null;
   intent?: GitHubDeliveryIntent | null;
   reconciliation?: GitHubPullRequestReconciliation | null;
@@ -124,6 +126,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     "receipts",
     "baseBranch",
     "manifestPath",
+    "summary",
     "mergeCommit",
     "intent",
     "reconciliation",
@@ -146,6 +149,7 @@ export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliv
     && isRung(checkpoint.variant)
     && (checkpoint.baseBranch === undefined || isBranch(checkpoint.baseBranch))
     && (checkpoint.manifestPath === undefined || checkpoint.manifestPath === null || (typeof checkpoint.manifestPath === "string" && checkpoint.manifestPath.length > 0 && !/[\r\n]/.test(checkpoint.manifestPath)))
+    && (checkpoint.summary === undefined || checkpoint.summary === null || typeof checkpoint.summary === "string")
     && (checkpoint.mergeCommit === undefined || isCommit(checkpoint.mergeCommit))
     && (checkpoint.intent === undefined || checkpoint.intent === null || (
       typeof checkpoint.intent === "object"

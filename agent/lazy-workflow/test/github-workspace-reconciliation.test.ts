@@ -107,10 +107,6 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
     expect(events).toContain("prepare:repo-a");
     expect(events).toContain("verify:repo-a");
     expect(events.indexOf("close")).toBeGreaterThan(events.indexOf("merge:repo-b"));
-    expect(deliveredEvidence).toEqual([
-      { manifest: manifest(reconciledCommit, "reconciled-evidence.txt"), directory: await realpath(repoA), commit: "1".repeat(40) },
-      { manifest: manifest("b".repeat(40), "repo-b-evidence.txt"), directory: await realpath(repoB), commit: "2".repeat(40) },
-    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

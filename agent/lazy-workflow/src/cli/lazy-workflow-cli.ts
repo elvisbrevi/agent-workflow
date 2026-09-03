@@ -63,7 +63,6 @@ import {
   GitHubPullRequestConflictError,
   githubRepositoryFromRemote,
   type GitHubDeliveryAdapter,
-  type DeliveredEvidence,
   type GitHubReadyManifest,
 } from "../github/github-delivery-service.ts";
 import {
@@ -2890,7 +2889,7 @@ export class LazyWorkflowCli {
       }
       let pullRequest = currentUnit.pullRequest;
       if (!pullRequest) {
-        await effect(`pull-request:${currentUnit.path}`, currentUnit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, currentUnit.branch, currentUnit.baseBranch!, currentUnit.commit!, currentUnit.path, false, `${checkpoint.repositories[0]!.repository}#${checkpoint.issue}`, manifests.get(currentUnit.path))).number; });
+        await effect(`pull-request:${currentUnit.path}`, currentUnit.branch, async () => { pullRequest = (await delivery.createOrReusePullRequest(checkpoint.issue, currentUnit.branch, currentUnit.baseBranch!, currentUnit.commit!, currentUnit.path, false, `${checkpoint.repositories[0]!.repository}#${checkpoint.issue}`)).number; });
         currentUnit = { ...currentUnit, pullRequest, receipts: { ...currentUnit.receipts, "pull-request": { verifiedAt: new Date().toISOString() } } };
         checkpoint = { ...checkpoint, units: checkpoint.units.map((candidate) => candidate.path === currentUnit.path ? currentUnit : candidate) };
         await save();
@@ -2957,13 +2956,7 @@ export class LazyWorkflowCli {
       await save();
     }
     const first = delivered[0]!;
-    // El Issue vive en el repositorio ancla, pero la evidencia y su manifest pertenecen a cada
-    // repositorio que cambió: el cierre publica la de todos, leída donde cada una está.
-    const deliveredEvidence: DeliveredEvidence[] = delivered.flatMap((unit) => {
-      const manifest = manifests.get(unit.path);
-      return manifest && unit.mergeCommit ? [{ manifest, directory: unit.path, commit: unit.mergeCommit }] : [];
-    });
-    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path, deliveredEvidence));
+    if (!checkpoint.receipts["issue-closure"]) await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, first.pullRequest!, first.mergeCommit!, scope.repositories[0]!.path));
     for (const changedUnit of changed) {
       const unit = checkpoint.units.find(({ path }) => path === changedUnit.path) ?? changedUnit;
       if (!unit.baseBranch) throw new Error(`falta la rama base verificada para ${unit.path}`);
@@ -3187,6 +3180,8 @@ export class LazyWorkflowCli {
       let branch: string | null = null;
       let baseBranch: string | null = null;
       let manifestPath: string | null = null;
+      /** The session's own closing words, which become the pull-request body (ADR-0037). */
+      let summary: string | null = null;
       let commit: string | null = null;
       let pullRequest: number | null = null;
       let mergeCommit: string | null = null;
@@ -3217,6 +3212,7 @@ export class LazyWorkflowCli {
           receipts,
           baseBranch,
           manifestPath,
+          summary,
           mergeCommit,
           intent,
           ...(activeRung ? { model: activeRung.model, variant: activeRung.variant } : {}),
@@ -3328,6 +3324,7 @@ export class LazyWorkflowCli {
       if (activeCli !== options.cli) this.resolveAgent(options.cli);
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
+      summary = result.text.trim() || null;
       const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
       await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
       if (execution.failed) {
@@ -3379,6 +3376,7 @@ export class LazyWorkflowCli {
             receipts,
             baseBranch,
             manifestPath,
+            summary,
             mergeCommit,
             intent,
           });
@@ -3647,7 +3645,7 @@ export class LazyWorkflowCli {
     let pullRequest = checkpoint.pullRequest;
     if (!pullRequest) {
       await effect("pull-request", fixedBranch, async () => {
-        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory, true, `#${checkpoint.issue}`, manifest);
+        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory, true, `#${checkpoint.issue}`, checkpoint.summary ?? undefined);
         pullRequest = created.number;
         checkpoint = { ...checkpoint, pullRequest };
       });
@@ -3715,7 +3713,7 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "reconciling", mergeCommit };
     await save();
     if (!checkpoint.receipts["issue-closure"]) {
-      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory, [{ manifest, directory: options.workingDirectory, commit: mergeCommit! }]));
+      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory));
     }
     checkpoint = { ...checkpoint, phase: "cleaning" };
     await save();

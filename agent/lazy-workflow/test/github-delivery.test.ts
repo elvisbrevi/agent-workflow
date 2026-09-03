@@ -13,6 +13,7 @@ import type { GitHubParentReconciliationAdapter } from "../src/github/github-par
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
+import { fakeCoordinatedGitHubDeps, fakeGitHubDelivery } from "./_helpers/github-delivery-fixtures.ts";
 
 function execution() {
   return {
@@ -865,4 +866,112 @@ test("la entrega GitHub no reanuda dos veces: una sesión que sigue sin marcador
   expect(code).toBe(1);
   expect(resumes).toBe(1);
   expect(phaseOf(current)).toBe("implementing");
+});
+
+/**
+ * El resumen de entrega (ADR-0037): lo último que dijo la sesión es lo que un
+ * revisor abre. No hay manifest que renderizar ni evidencia que mostrar, así que
+ * el cuerpo del PR es la referencia al Issue y ese texto, y nada más.
+ */
+function deliveryService(calls: string[][]) {
+  return new GitHubDeliveryService(
+    async (command) => {
+      calls.push(command);
+      if (command[0] === "repo") return JSON.stringify({ nameWithOwner: "acme/app", defaultBranchRef: { name: "main" } });
+      if (command[0] === "pr" && command[1] === "list") return "[]";
+      if (command[0] === "pr" && command[1] === "create") return "https://github.com/acme/app/pull/7\n";
+      if (command[0] === "issue" && command[1] === "view") return JSON.stringify({ state: "OPEN", comments: [] });
+      if (command[0] === "issue") return "";
+      throw new Error(`unexpected gh command: ${command.join(" ")}`);
+    },
+    async (command) => {
+      if (command[0] === "remote") return "git@github.com:acme/app.git\n";
+      if (command[0] === "ls-remote") return `${"a".repeat(40)}\trefs/heads/issue/42\n`;
+      throw new Error(`unexpected git command: ${command.join(" ")}`);
+    },
+  );
+}
+
+test("el cuerpo del PR es la referencia al Issue y el resumen del agente", async () => {
+  const calls: string[][] = [];
+
+  await deliveryService(calls).createOrReusePullRequest(
+    42, "refs/heads/issue/42", "refs/heads/main", "a".repeat(40), "/repo", true, "#42",
+    "Agregué el parser de X y cubrí el caso vacío con tests.",
+  );
+
+  const body = calls.find(([verb, action]) => verb === "pr" && action === "create")!.at(-1);
+  expect(body).toBe("Closes #42\n\nAgregué el parser de X y cubrí el caso vacío con tests.");
+});
+
+test("un PR sin resumen lleva solo la referencia", async () => {
+  const calls: string[][] = [];
+
+  await deliveryService(calls).createOrReusePullRequest(42, "refs/heads/issue/42", "refs/heads/main", "a".repeat(40), "/repo");
+
+  expect(calls.find(([verb, action]) => verb === "pr" && action === "create")!.at(-1)).toBe("Closes #42");
+});
+
+test("el comentario que cierra el Issue es solo el marcador de entrega", async () => {
+  const calls: string[][] = [];
+  const service = new GitHubDeliveryService(
+    async (command) => {
+      calls.push(command);
+      if (command[0] === "issue" && command[1] === "view") {
+        return JSON.stringify(calls.some(([verb, action]) => verb === "issue" && action === "close")
+          ? { state: "CLOSED" }
+          : { state: "OPEN", comments: [] });
+      }
+      return "";
+    },
+    async () => { throw new Error("must not use git"); },
+  );
+
+  await service.closeIssue(42, 7, "c".repeat(40), "/repo");
+
+  const comment = calls.find(([verb, action]) => verb === "issue" && action === "comment")!.at(-1);
+  expect(comment).toBe("lazy-workflow: delivered PR #7 (ccccccccccccccccccccccccccccccccccccccccc".slice(0, -1) + ")");
+});
+
+test("el resumen del agente llega al cuerpo del PR que abre el coordinador", async () => {
+  const bodies: string[] = [];
+  const queue = {
+    verifyAuthentication: async () => ({ login: "bot" }),
+    verifyRepository: async () => ({ nameWithOwner: "owner/repo" }),
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    selectEligibleIssue: async function () {
+      if (this.done) return { kind: "empty" as const };
+      this.done = true;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
+    },
+    claimSelectedIssue: async () => fakeSelectedIssue(178),
+    done: false,
+  };
+
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async () => ({
+        result: AgentResult.fromJsonLines(JSON.stringify({
+          type: "text",
+          sessionID: "ses_178",
+          part: { type: "text", text: "Reescribí el parser y agregué tests del caso vacío.\nIMPLEMENTATION_READY" },
+        })),
+        azureLoginRequired: false,
+      }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    githubManagedQueue: queue,
+    ...fakeCoordinatedGitHubDeps(),
+    githubDelivery: fakeGitHubDelivery({
+      createOrReusePullRequest: async (_issue, _branch, _base, _commit, _dir, _closes, _ref, summary) => {
+        bodies.push(summary ?? "");
+        return { number: 1 };
+      },
+    }),
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(0);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]).toContain("Reescribí el parser y agregué tests del caso vacío.");
 });
