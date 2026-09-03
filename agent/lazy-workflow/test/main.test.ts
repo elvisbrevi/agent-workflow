@@ -1996,6 +1996,11 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
         resume: async () => { throw new Error("must not resume"); },
       };
     },
+    git: async () => "",
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
+      readQueueWatermark: async () => ({ latestIssue: 0 }),
+    },
     cliParser: buildCli(() => true),
   }).run(args);
 
@@ -2079,6 +2084,11 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
       },
       resume: async () => { throw new Error("must not resume"); },
     }),
+    git: async () => "",
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
+      readQueueWatermark: async () => ({ latestIssue: 0 }),
+    },
     cliParser: buildCli(() => true),
   }).run(args);
 
