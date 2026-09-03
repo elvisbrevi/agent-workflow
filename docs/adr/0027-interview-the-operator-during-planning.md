@@ -5,9 +5,15 @@ status: accepted
 # Interview the operator during planning
 
 A planning run may stop, hand its open decisions to the operator, and continue
-from the answers. The questions travel through a channel the coordinator owns —
-a local HTTP page, the terminal, or a pair of JSON files — and the answers come
-back into the same session, which is resumed rather than replaced.
+from the answers. The questions travel through an HTTP channel the coordinator
+owns, and the answers come back into the same session, which is resumed rather
+than replaced. The channel serves its own page at `/i/<token>/` and exposes the
+round and the answers as JSON at `/i/<token>/round` and `/i/<token>/answers`, so
+another client can replace the page without touching the coordinator.
+
+The terminal and file channels were removed. Three transports for one question
+is the shape this repository is retiring everywhere, and HTTP is the only one
+that reaches an operator who is not sitting at the machine the run is on.
 
 Planning is the one workflow where a human decision is load-bearing. The
 `/grilling` skill our planning prompts invoke was written to ask one question at

@@ -61,9 +61,8 @@ _Avoid_: an open string, a classification derived from a message
 
 **Run interruption**:
 A run that ended without reaching its own conclusion: an operator signal, an
-unhandled failure above every catch, a session that failed or that ended without
-its terminal marker and did not reach it on the one same-rung resume it is given,
-or an exhausted fallback chain. Every interruption leaves a run
+unhandled failure above every catch, or a fallback chain spent by provider
+exhaustion. Every interruption leaves a run
 record, so the durable state a run left behind — a preserved checkpoint above
 all — is never the only evidence that it stopped.
 _Avoid_: a silent exit, treating a preserved checkpoint as the record
@@ -92,13 +91,14 @@ swappable default Reporter. They are a shrinking set, not a fixed one. The Repor
 the seam name and the legacy entry point.
 _Avoid_: new direct `console.log` calls, new top-level log helpers
 
-**Terminal protocol marker**:
-An exact machine-readable workflow token such as `TICKET_COMPLETED` or
-`WORKFLOW_STEP_FINISHED`. CLI coordination writes these tokens directly to
-stdout because reporter decoration, filtering, or severity would break their
-control-plane contract. Human-readable results and diagnostics still use the
-Reporter.
-_Avoid_: routing operator prose through stdout protocol output
+**Planning protocol marker**:
+A line a planning session prints alone to hand control back to the coordinator:
+`PLAN_READY` with the slices it decided, `QUESTIONS_PENDING` with the round it
+wants answered, and `QUESTIONS_ANSWERED`, which the coordinator prints when it
+resumes that session with the operator's replies. These are the only markers
+left. Delivery has none: a session is finished when its process exits, and it
+succeeded when git says so (ADR-0035).
+_Avoid_: a marker for delivery, provider text as a completion signal
 
 **GitHub repository run**:
 A lazy-workflow `plan` or `code` invocation without `--hu`. It follows the
@@ -113,19 +113,53 @@ role. An issue may belong to the queue while blocked; eligibility additionally
 requires an unclaimed issue whose native dependencies are closed.
 _Avoid_: every open issue, prompt-selected work
 
-**GitHub triage-role reconciliation**:
-The verified application of the literal `ready-for-agent` label to every issue
-a planning run publishes above the numbering mark read before its session. The
-coordinator owns the role; the planning session never names it, and epics and
-specifications are excluded by the same rule that keeps them out of the queue.
-_Avoid_: prompt-named label, configurable triage role
-
 **GitHub coordinated delivery**:
-The `code` lifecycle in which lazy workflow selects and claims one issue,
-fixes its identity for OpenCode, verifies every Git and GitHub effect, and
-reconciles the queue before advancing. OpenCode prepares one implementation;
-it does not select work or declare queue state.
+The `code` lifecycle in which lazy workflow selects and claims one issue, fixes
+its identity and branch for the session, verifies the outcome against git, and
+performs every Git and GitHub effect itself before advancing. The session
+prepares one implementation; it does not select work, open pull requests, or
+declare queue state.
 _Avoid_: prompt-driven queue drain, autonomous issue selection
+
+**Queue drain**:
+The shape of a `code` run: ask the tracker for the first eligible unit, deliver
+it, ask again, until there is none. It is an unfold over an immutable run state,
+not an iteration of a list captured up front — merging one unit is what makes the
+unit it blocked eligible, so the frontier has to be re-asked each turn (ADR-0038).
+_Avoid_: foreach over a snapshot, an index into a fixed list
+
+**Session verification**:
+What the coordinator asks after a delivery session's process exits: exit code
+zero, the fixed branch ahead of its base, and a clean worktree. In a workspace,
+per repository: every participant clean, at least one ahead. Nothing the session
+wrote is consulted (ADR-0035).
+_Avoid_: trusting the exit code alone, reading a completion claim out of the text
+
+**Unit failure**:
+Any outcome that is not a verified session: a non-zero exit, a branch with no
+commits, a dirty tree, an unresolved merge conflict, a `BLOCKED` pull request, or
+a chain spent by idle timeout. The unit keeps its claim on GitHub and its
+`En progreso` state on Azure, which is what removes it from the frontier through
+the eligibility predicate that already existed. The branch and its commits
+survive for inspection. A person unassigns the issue, or reverts the state, to
+retry it.
+_Avoid_: releasing a failed claim, stopping the drain, a new state to mark failure
+
+**Delivery summary**:
+The last text a delivery session produces, asked for by the last line of the
+prompt. It is the body of the GitHub pull request and the content of the Azure
+ticket's completion-evidence field — the delivery's only narrative artifact, and
+the only thing in it the coordinator cannot derive (ADR-0037).
+_Avoid_: completion manifest, rendered evidence document, a summary the
+coordinator writes
+
+**Conflict resolution session**:
+The one session a delivery may open beyond its own: when `gh` reports
+`mergeStateStatus: DIRTY`, the coordinator merges the base into the unit's branch
+itself and opens a session whose whole instruction is to resolve the conflicts,
+keeping this branch's changes without discarding the base's. Its result passes
+the same session verification, and the merge is retried once (ADR-0041).
+_Avoid_: keeping ours, a reconciliation subsystem, a second retry
 
 **GitHub parent reconciliation**:
 The verified closure of an open native parent after all of its direct native
@@ -134,33 +168,19 @@ the parent's ancestors and never infers hierarchy from prose or titles.
 _Avoid_: checklist closure, title-based epic closure
 
 **GitHub delivery checkpoint**:
-The repository-scoped record that fixes an in-flight issue and its delivery
-phase so recovery reconciles that issue before consulting the managed queue.
-_Avoid_: selecting replacement work after partial delivery
+The repository-scoped record of the one fact git cannot supply: that the unit in
+flight passed its session verification before the delivery effects finished. It
+carries the unit, the branch, that verified flag, and the active milliseconds
+accrued so far, and nothing else — phase, receipts, intents, the session
+identifier and the CLI that owned it are all derivable or meaningless now that no
+session is resumed (ADR-0038).
+_Avoid_: a phase machine, a persisted session identifier
 
-**Session-owning CLI**:
-The coding agent CLI recorded next to the session identifier in every checkpoint
-that keeps one. Recovery resumes against the CLI the checkpoint names rather than
-the run's default, and an explicit `--cli` that contradicts it fails closed with
-the checkpoint preserved, naming the CLI that owns it and how to resume. The one
-contradiction that does not fail closed is the one the run itself created: only
-the cross-CLI handoff of a GitHub delivery moves a session off the declared
-`--cli`, so only that checkpoint also records the CLI it came from, and the same
-command adopts the CLI now holding its work — for that unit only, since the next
-one starts on the declared rung. The distinction is what the checkpoint recorded,
-never what the rerun's chain declares. Every other checkpoint has no handoff to
-record and fails closed on any contradiction. Adopting a CLI revalidates an
-explicit `--variant` against it, since parsing validated that value against the
-`--cli` of the command: one the adopted CLI cannot execute stops the run before
-the session opens, with the checkpoint preserved. A checkpoint written before the
-session-owning CLI existed reads as OpenCode and is
-rewritten in the current schema, so a delivery in flight survives the update.
-_Avoid_: inferring the CLI from the current invocation, a second checkpoint file
-
-**GitHub queue outcome**:
-A coordinator-owned result distinguishing completed delivery, an empty managed
-queue, a blocked managed queue, and delivery state requiring reconciliation.
-_Avoid_: marker text supplied by OpenCode
+**Queue outcome**:
+A coordinator-owned result distinguishing a drained queue, a queue with nothing
+eligible yet, and a unit that failed. It is computed from the tracker and from
+git, never read out of the session's text.
+_Avoid_: marker text supplied by the coding agent
 
 **Azure HU run**:
 A lazy-workflow invocation selected by `--hu`, or recovered from an Azure HU
@@ -168,16 +188,16 @@ checkpoint. It preserves the HU's planning or ticket-delivery lifecycle.
 _Avoid_: GitHub repository run
 
 **Workflow prompt**:
-The single module that composes what OpenCode is told for one run, keyed by the
-class of run and the facts the coordinator has already fixed. It owns fragment
-order, the completion-manifest contract, and the terminal protocol marker
-vocabulary, so a contract change reaches every run at once. The manifest contract
-is a command name, not a shape: the prompts tell a session which tool writes the
-manifest and hand it the invocation with the fixed identities already in place.
-Each run receives only its own workflow's instructions and only its own
-provider's scope.
-_Avoid_: prompt text assembled at the call site, contract text restated in a
-prompt asset, the manifest's JSON shape described to a session
+The single module that composes what a coding session is told for one run, keyed
+by the class of run and the facts the coordinator has already fixed. It owns
+fragment order and the planning protocol marker vocabulary, so a contract change
+reaches every run at once. Each run receives only its own workflow's instructions
+and only its own provider's scope. A delivery prompt states the work and nothing
+else: the issue's number, the skills that implement it, the branch to stay on,
+and the request for a closing summary. What the session may do is stated by its
+authority profile, not restated here (ADR-0036).
+_Avoid_: prompt text assembled at the call site, fencing prose duplicating a
+permission, a contract described to a session
 
 **Agent authority profile**:
 The definition whose permission deny rules bound what one run may execute,
@@ -228,14 +248,6 @@ The ordered agent rungs a run may descend to, declared with a repeatable
 The binaries of every rung are verified present when arguments are parsed.
 _Avoid_: implicit fallback, configuration-file chain
 
-**Marker-less resume**:
-The single extra attempt a coordinated delivery gives a session that returned
-without its terminal marker: the rung the session already ran on, the marker
-prompt, and the session identifier written to the checkpoint before it starts
-wherever the run owns one. It is the operator's relaunch performed by the
-coordinator, never a descent, and never twice.
-_Avoid_: retry loop, fallback descent, nudge
-
 **Provider exhaustion**:
 The class of failures in which the active agent rung cannot be retried at all —
 usage or rate limit, quota, billing, or authentication. It is the only condition
@@ -244,24 +256,33 @@ exhaustion and never descends.
 _Avoid_: failed session, non-zero exit
 
 **Bounded fallback wait**:
-The wait a run enters when every rung of its declared chain is exhausted for the
-unit of work in progress: it pauses `--fallback-wait` seconds and retries the
-chain from its primary rung, up to the `--fallback-wait-max` wall-clock total
-counted from the first wait, which covers the retries as well as the waits. Every wait is reported with the exhausted rung, its cause, and
-the time left; once the bound is spent the run fails closed with the checkpoint
-intact. A run that declared no chain never waits.
-_Avoid_: unbounded retry, backoff schedule
+The fixed-interval retry the run performs when every rung is spent **by provider
+exhaustion**, up to a bounded total, after which it fails closed with the
+checkpoint preserved. A chain spent by idle timeout does not wait: quota returns
+on its own, a hung prompt does not.
+_Avoid_: waiting on a stuck session, an unbounded wait
 
-**Cross-CLI handoff**:
-The continuation of fixed work in a fallback rung whose coding agent CLI differs
-from the exhausted one, where no session can be resumed. The coordinator starts
-a fresh session with its own rebuilt prompt for the same fixed work plus a
-progress section assembled from verified state — checkpoint phase, branch, last
-commit, uncommitted worktree, completion manifest — and never from the outgoing
-session's text. Verified state is state of this unit: the commit is the one the
-branch has over its base, and the manifest is cited only when it names this issue
-and this branch; anything else is stated as the absence it is.
-_Avoid_: session summary handoff, resumed session across CLIs, base tip as unit commit, manifest of another delivery
+**Agent handoff**:
+What every fallback descent performs: a fresh session on the next rung receiving
+the same workflow prompt plus a progress section. No session is ever resumed,
+whether or not the rung changes CLI, because resuming replayed a whole
+transcript to change a model.
+_Avoid_: resuming a session on a new rung, two behaviours depending on the CLI
+
+**Progress section**:
+What an agent handoff states about the work already done: the branch, the commits
+it carries, and the last three reasoning chains of the outgoing session,
+reproduced verbatim. The reasoning is passed through as what it is — the previous
+agent's last thoughts — never as a verified account of what landed. What landed
+is the commit list beside it.
+_Avoid_: a summary the outgoing session is asked to write, a paraphrase
+
+**Idle timeout**:
+The silence a session is allowed between stream events before the coordinator
+kills it and descends the fallback chain, on every CLI. A stuck agent and an
+exhausted quota mean the same thing to the loop. The silence that tripped it is
+subtracted from the unit's accrued effort.
+_Avoid_: an idle nudge, resuming the killed session, counting the silence as work
 
 **Agent result**:
 The normalized JSON representation of a coding agent CLI's event stream,
@@ -297,19 +318,19 @@ _Avoid_: chat mode, interactive session, conversational planning
 **Question round**:
 One paused planning turn: the questions the session handed over together, each
 with an id, the decision it states, and the answer the session recommends. The
-round is read from the turn's own text, never from a terminal marker, because a
-terminal marker closes the session the next round must resume. A round whose
+round is read from the turn's own text rather than from the stream, because the
+session the next round must resume is the one that would otherwise be closed. A round whose
 JSON does not parse is restated once by the same session before the run stops:
 the questions were already written, and reading them again decides nothing.
 _Avoid_: survey, prompt, questionnaire
 
 **Question channel**:
-What carries a question round to a human and the answers back — a loopback HTTP
-page, the terminal, or a pair of JSON files. The coordinator owns it and decides
-what the answers mean; the session only prints a marker and reads what it is
-handed, so a channel grants the coding agent no capability and changes no
-authority profile. Another channel is another adapter.
-_Avoid_: input adapter, UI, agent tool
+The HTTP surface the coordinator opens to put a question round in front of the
+operator: its own page at `/i/<token>/`, and the round and the answers as JSON at
+`/i/<token>/round` and `/i/<token>/answers`, so another client can replace the
+page without touching the coordinator. Outside loopback the URL with its token is
+the only credential. It is off unless asked for.
+_Avoid_: a terminal channel, a file channel, a channel per workflow
 
 **Recommended answer**:
 The answer a planning session would take on its own. Mandatory in every question
@@ -328,13 +349,15 @@ nothing.
 _Avoid_: prose ticket list, work-item ids in a plan
 
 **Plan publication**:
-The coordinator-owned creation of a delivery plan in Azure: every work item
-first, in dependency order, then the blocking relations that can now name real
-ids. Both steps are idempotent, so republishing a plan reuses what already
-exists. Each published ticket inherits its HU's iteration, is assigned to the
-HU's **Desarrollador 1**, and carries the **creation defaults** its project
-demands.
-_Avoid_: partial publication, duplicated work items
+The deterministic half of a planning run, in both trackers. The session decides
+the slices and returns them behind `PLAN_READY` — type, title, body, blocking
+edges, estimate. The coordinator creates the items, wires parents and blocking
+relations, applies `ready-for-agent` on GitHub in the same call that creates the
+issue, and sets every derivable Azure field: assignee, month, remaining work,
+and the HU's integration branch. The agent supplies title, description and
+estimate; everything else about a published item is derivable, and therefore not
+the agent's to state (ADR-0040).
+_Avoid_: a session publishing to the tracker, a numbering watermark
 
 **Desarrollador 1**:
 The developer a User Story names in `Custom.Desarrollador1`, and the owner every
@@ -380,26 +403,25 @@ _Avoid_: a base guessed from another repository, a default that replaces a
 declared base, an implicit base in `hu-branch-set`
 
 **Azure ticket delivery run**:
-  A lazy-workflow invocation with `code --hu <ID>`. It delivers one eligible
-  direct Task or Bug per fresh OpenCode session. The coordinator owns ticket
-  selection, branches, pull requests, Azure fields, evidence, effort, completion
-  gates, recovery, and cleanup; OpenCode owns only scoped implementation,
-  validation, review, commit, and completion-manifest generation — which it
-  performs by running `ticket-manifest-set`, never by writing that JSON itself.
-  Before opening or resuming the coding session, the coordinator moves the fixed
-  ticket to exactly `En progreso` with the current state and revision as guards.
-  When it completes the canonical Azure PR, its completion options delete the
-  source ticket branch; later cleanup remains idempotent when Azure already
-  removed that remote ref.
-  OpenCode emits
-  `IMPLEMENTATION_READY`, after which the coordinator verifies completion, removes
-  the completed ticket branch, and refreshes Azure before selecting the next ticket.
+  A lazy-workflow invocation with `code --hu <ID>`. It drains the HU's eligible
+  direct Tasks and Bugs one at a time, each in a fresh session. The coordinator
+  owns ticket selection, branches, pull requests, Azure fields, effort,
+  completion gates, recovery, and cleanup; the session owns only scoped
+  implementation, validation, review and commit, and closes with its delivery
+  summary. Before opening the coding session, the coordinator moves the fixed
+  ticket to exactly `En progreso` with the current state and revision as guards —
+  which is also what removes a failed ticket from the frontier. When the session's
+  process exits, the coordinator runs its session verification, and only then
+  pushes, opens the canonical Azure PR, completes it (whose completion options
+  delete the source ticket branch), verifies the completion gates, and selects the
+  next ticket. Later cleanup remains idempotent when Azure already removed that
+  remote ref.
 
 **Azure multi-repository ticket delivery run**:
-  A lazy-workflow invocation with `code --hu <ID> --ticket <ID>
+  A lazy-workflow invocation with `code --hu <ID> [--ticket <ID>]
   --working-directory <repo1,repo2,...> [--base-branch <name>]`. It runs one
-  OpenCode session from the workspace parent directory, validates one
-  completion manifest per changed repository, associates every changed-repository
+  session from the workspace parent directory, verifies every participant
+  repository clean and at least one ahead of its base, associates every changed-repository
   pull request and merge commit with the same ticket through native Azure
   ArtifactLinks, applies every existing completion gate before moving the ticket
   to `Done`, and only then transitions the HU from exactly `En Desarrollo` to
@@ -413,67 +435,17 @@ _Avoid_: Azure HU planning run
 **Azure workspace delivery checkpoint**:
 The aggregate record kept in the workspace state directory that fixes the HU,
 the ticket, the normalized repository list with its declared order and remote
-identities, the accumulated active duration, and one unit per repository. It is
-the only authority on which repositories were already delivered, so recovery
-resumes the same run instead of restarting or reselecting work.
-_Avoid_: per-repository Azure checkpoints, restarting a partial delivery
-
-**Textual completion evidence**:
-The manifest evidence entry whose kind is not `screen` — `command-output` or
-`http-json`. Only a textual file can populate the ticket's completion-evidence
-field, so every completion manifest must carry at least one, and the shape check
-the writing tool and the coordinator share refuses a manifest without one. A
-delivery reads the evidence of every changed repository as one set, so the
-textual entry may live in any of them.
-_Avoid_: a manifest of screenshots alone, evidence read from one repository only
-
-**Browser HTTP capture**:
-An `http-json` evidence file, written as the object the delivery renders from:
-`title`, `screenshot`, a `request` with its method, URL, headers and optional
-body, and a `response` with its status, headers and optional body. It is taken by
-driving the request in the browser Chrome MCP opens, and the screenshot it names
-travels in the same manifest as `screen` evidence, beside the capture file: the
-two are paired by file name within their directory. `ticket-manifest-set` checks
-the shape when it writes an Azure manifest, and only there, so a file that cannot
-be laid out is refused while the session can still rewrite it, while a manifest
-that predates the shape still publishes — as a plain JSON blob, which is what a
-GitHub delivery also publishes for evidence in any other shape.
-_Avoid_: a pasted `curl` transcript, a body with no endpoint, a capture whose
-screenshot lives somewhere else, the shape demanded at publication
-
-**Rendered completion evidence**:
-The single document the coordinator publishes from a verified manifest: the
-delivery's identities, the validations that ran, every capture as endpoint,
-header tables and pretty-printed bodies, every command output, and every
-screenshot shown inline. It is written as HTML into an Azure ticket's
-completion-evidence field, and as Markdown into a GitHub pull-request body and
-the comment that closes the issue. The session produces content; the coordinator
-produces presentation.
-_Avoid_: a session formatting the field itself, the raw bytes of one file as the
-whole evidence, screenshots attached but referenced by nobody
-
-**Aggregate workspace manifest**:
-The validated proof, written to the workspace state directory once every changed
-repository carries a delivery receipt and every tracker gate passes, that a whole
-transversal delivery landed. It records the tracker identity, the integration and
-ticket branches, the primary repository, and one entry per participant repository
-with its changed status, commit, pull request and merge commit. It is written and
-re-read before the delivery checkpoint is cleared, so it outlives the checkpoint
-and the per-repository receipts the checkpoint carried.
-_Avoid_: clearing the checkpoint without a manifest, a manifest nobody re-read
-
-**Delivery receipt**:
-The verified record that a repository's external delivery effect already
-happened. A repository unit carrying one is reused as-is rather than repeated,
-and a repository unit without one stays pending. Aggregate completion, the
-ticket transition to `Done`, and the HU transition require a receipt for every
-changed repository.
-_Avoid_: rollback or revert pull requests after a partial merge
+identities, the accumulated active duration, and whether the unit passed its
+session verification. It is the only authority on which repositories were already
+delivered, so recovery resumes the same run instead of restarting or reselecting
+work.
+_Avoid_: per-repository Azure checkpoints, restarting a partial delivery, a phase
+machine
 
 **Ticket primary repository**:
 The single participant repository that owns the ticket's one native Branch
-ArtifactLink: the first repository in declared order that produced a verified
-completion manifest, which need not be the HU's anchor repository. It is chosen
+ArtifactLink: the first repository in declared order that produced commits of its
+own, which need not be the HU's anchor repository. It is chosen
 after the implementation session, recorded in the workspace checkpoint, and
 determines where the ticket's pull request and completion gates are read.
 _Avoid_: first declared repository, multiple ticket Branch links
@@ -543,38 +515,19 @@ does not depend on which one executed the run.
 _Avoid_: automatic credential capture
 
 **SAG norms context**:
-An optional, phase-selected view of the engineering norms in the remote
-`sag-norms` `master` branch. A run records the resolved commit and
-stops when the source cannot be read; summaries and procedural guidance do not
-replace the identified normative rules.
-_Avoid_: local SAG checkout, implicit SAG compliance
+What `--normas-sag` puts in a prompt: the paths of the normative files that apply
+to this repository's `tipo`, read from `.sag/config.json`. The session reads the
+files itself with `az`. The coordinator selects paths; it does not extract rule
+identifiers, decide applicability, or inline normative text.
+_Avoid_: rule-identifier metadata, applicability decisions, inlined norms
 
 **SAG-scoped workflow**:
-A workflow whose purpose and name are tied to SAG norms. Unlike `plan` and
-`code`, it always loads SAG norms and has no non-SAG mode.
-_Avoid_: generic workflow with implicit norms
-
-**SAG infrastructure verification run**:
-A tracker-scoped `infra-sag` run that verifies development prerequisites such
-as repository, Consul configuration, and database availability without
-provisioning them. Missing or unverifiable prerequisites become corrective
-work in the source tracker.
-_Avoid_: infrastructure provisioning run
-
-**SAG architecture review run**:
-A tracker-scoped `architecture-review-sag` run that reviews the completed scope
-against applicable SAG architecture and design norms without correcting code.
-Findings are synthesized into a specification and corrective tickets in the
-source tracker.
-_Avoid_: implementation run, automatic remediation
-
-**SAG deployment run**:
-A tracker-scoped `deploy-sag` run that discovers one unambiguous repository
-deployment route and may execute it for DEV by default or explicit TEST/QA.
-PROD and ambiguous or unverifiable deployment routes fail closed.
-_Avoid_: production deployment, guessed pipeline
+A `plan` or `code` run invoked with `--normas-sag`, which appends the SAG norms
+context to its prompt. There are no SAG-only commands.
+_Avoid_: a workflow that exists only to consult norms
 
 **SAG source scope**:
-The complete Azure HU selected by `--hu`, or the single GitHub Issue selected
-by `--issue`, used by a SAG-scoped workflow for context and publication.
-_Avoid_: Azure child ticket, GitHub queue drain
+The complete Azure HU selected by `--hu`, or the GitHub repository the run is
+scoped to, whose `.sag/config.json` names the `tipo` that selects which normative
+paths a SAG-scoped workflow is given.
+_Avoid_: Azure child ticket, a SAG-only command

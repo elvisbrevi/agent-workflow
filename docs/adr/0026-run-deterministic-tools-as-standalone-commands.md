@@ -15,7 +15,8 @@ its adapter answered as JSON, and exits zero or one.
 The Azure `ticket-*` commands already worked this way, and the reason
 generalizes. ADR-0020 and ADR-0022 moved every mechanical tracker mutation out of
 the coding agent and into the coordinator, precisely because those effects are
-deterministic and verifiable. An effect worth taking away from the model is one
+deterministic and verifiable, and ADR-0040 finished the job by taking ticket
+publication out of the planning session too. An effect worth taking away from the model is one
 worth being able to run, inspect and retry on its own: when a delivery stops
 half-way, the operator's question is which step failed and what it answers now,
 and that question was previously only answerable by rerunning a whole workflow.
@@ -25,6 +26,10 @@ tool command and the workflow step it mirrors validate identically — the same
 branch checks, the same pull-request requirements, the same fail-closed
 conflicts. A tool that answered differently from the step it stands for would be
 worse than no tool at all.
+
+The two manifest commands are gone with the manifest itself (ADR-0037); nothing
+else in the set changed, because every remaining command names an effect the
+drain still performs.
 
 They open no session. `--cli`, `--model`, `--variant` and `--fallback` are
 meaningless to them, and the run header says so by omitting the agent it would

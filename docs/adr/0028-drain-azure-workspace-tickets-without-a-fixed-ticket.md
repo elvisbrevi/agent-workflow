@@ -24,16 +24,23 @@ gate, the completed-state filter and the `createdDate` ordering are computed in
 one place for both scopes. A ticket the coordinator finished is in a completed
 state and is therefore not selected again, which is what terminates the drain.
 
-The checkpoint keeps pinning a concrete ticket, so recovery is unchanged. A
-surviving checkpoint is the delivery in flight and it wins over selection — the
+The checkpoint keeps pinning a concrete ticket, so recovery is unchanged in
+shape, though it now carries only that the unit passed verification (ADR-0038).
+A surviving checkpoint is the delivery in flight and it wins over selection — the
 run resumes that unit rather than choosing a new one, and a `--ticket` that
 contradicts it is an operator error rather than a reason to abandon work already
 underway. Only the first run of a unit chooses; every later one recovers.
 
-The drain continues only after a clean delivery. An unclean one — a repository
-whose ticket branch survived, an unwritable aggregate manifest — stops with its
-checkpoint intact, because claiming the next ticket would bury the state the
-operator has to reconcile under a second delivery. For the same reason a pending
-queue with nothing eligible stops and says so instead of reporting an empty one:
-a dependency that has not landed yet is a wait, and an HU with no open children
-is a finish, and the two must not be reported as the same outcome.
+A failed delivery no longer stops the drain. The ticket keeps the `En progreso`
+state the coordinator set before opening the session, which is what removes it
+from the frontier, so the next selection cannot pick it again and the run
+continues (ADR-0038). What used to stop the drain — a surviving ticket branch, an
+unwritable aggregate manifest — either no longer exists or is now the ordinary
+failure of one unit rather than of the run. A pending queue with nothing eligible
+still stops and says so instead of reporting an empty one: a dependency that has
+not landed yet is a wait, and an HU with no open children is a finish, and the
+two must not be reported as the same outcome.
+
+Verification in a workspace is per repository: every participant clean, at least
+one ahead of its base (ADR-0035). A repository the ticket did not need is a
+repository with nothing to prove.

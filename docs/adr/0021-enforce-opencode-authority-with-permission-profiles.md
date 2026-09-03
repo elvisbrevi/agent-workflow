@@ -23,8 +23,8 @@ effects the coordinator owns — pushes, branch creation and deletion, remotes,
 tags, pull-request operations — and the tracker CLI of the provider it does not
 own. Review additionally denies edits, so a review that modifies the tree fails
 at the tool call rather than at the after-the-fact worktree check. Committing
-stays allowed in delivery profiles because the completion manifest names a
-commit OpenCode must produce, and in planning profiles because a plan run
+stays allowed in delivery profiles because the branch a session leaves behind is
+what proves the work landed (ADR-0035), and in planning profiles because a plan run
 may commit the documentation it edits with a message of its own choosing.
 That permission is an opportunity, not the enforcement: a plan run that
 leaves the tree dirty anyway would only surface the failure later, on an
@@ -34,7 +34,11 @@ without asking the model, the same way it never trusted provider prose for
 queue outcomes (ADR-0020).
 
 The profile is derived from the same spec as the prompt and returned with it, so
-a run cannot carry a delivery prompt without the matching authority. Prohibitions
-a permission cannot express — do not select other work, treat coordinator
-identities as immutable, do not print coordinator markers — stay in the prompt,
-because they constrain judgment rather than execution.
+a run cannot carry a delivery prompt without the matching authority.
+
+The prohibitions that once stayed in the prompt as prose — do not select other
+work, treat coordinator identities as immutable, do not print coordinator
+markers — are gone (ADR-0036). Each one restated a rule the profile already
+enforces or a contract that no longer exists, and keeping both meant every
+escape produced another paragraph instead of a tighter profile. What the prompt
+states now is the work; what the profile states is the authority.
