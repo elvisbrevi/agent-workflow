@@ -306,6 +306,36 @@ test("una recuperación posterior al traspaso reanuda contra el CLI que quedó r
   expect(agents.resumed[0]?.overrides.model).toBe("claude-opus-5");
 });
 
+test("una recuperación de GitHub reanuda Codex con su autoridad", async () => {
+  const agents = scriptedAgents();
+  const store = checkpointStore();
+  await store.write({
+    schemaVersion: 2,
+    cli: "codex",
+    workflow: "github-code",
+    repository: "owner/repo",
+    issue: 178,
+    phase: "implementing",
+    branch: "refs/heads/issue/178",
+    sessionId: "ses_codex",
+    model: "gpt-5.6-sol",
+    variant: "high",
+    commit: null,
+    pullRequest: null,
+    receipts: {},
+    baseBranch: "refs/heads/main",
+    manifestPath: "/tmp/lazy-workflow-fake-manifest-178.json",
+  });
+
+  await runDelivery(agents, ["--cli", "codex", "--session", "ses_codex"], store);
+
+  expect(agents.resumed[0]?.cli).toBe("codex");
+  expect(agents.resumed[0]?.overrides.agent).toEqual({
+    profile: "lazy-github-code",
+    configPath: expect.stringContaining("codex/lazy-github-code.rules"),
+  });
+});
+
 test("un agotamiento posterior al traspaso reanuda la sesión nueva con la autoridad del CLI nuevo", async () => {
   const agents = scriptedAgents({
     opencode: [exhausted("provider/primario")],

@@ -572,7 +572,11 @@ test("la recuperación que desciende reanuda el intento extra en el escalón des
 
   // El intento extra pertenece al escalón en curso, y el checkpoint no puede quedar cruzado:
   // el CLI descendido con el modelo del primario.
-  expect(agents.resumed.at(-1)?.overrides).toEqual({ model: "provider/respaldo", variant: "medium" });
+  expect(agents.resumed.at(-1)?.overrides).toEqual(expect.objectContaining({ model: "provider/respaldo", variant: "medium" }));
+  expect(agents.resumed.at(-1)?.overrides.agent).toEqual({
+    profile: "lazy-github-code",
+    configPath: expect.stringContaining("opencode/authority.json"),
+  });
   const persisted = store.written.filter(({ sessionId }) => sessionId === SESSION).at(-1);
   expect(persisted?.model).toBe("provider/respaldo");
   expect(persisted?.variant).toBe("medium");

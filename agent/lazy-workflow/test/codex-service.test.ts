@@ -100,6 +100,35 @@ test("Codex construye exec JSON con autoridad, modelo y esfuerzo", async () => {
   }
 });
 
+test("Codex reanuda bajo el home de autoridad recibido", async () => {
+  let environment: Record<string, string> | undefined;
+  const destination = await mkdtemp(join(tmpdir(), "codex-resume-home-"));
+  try {
+    const service = new CodexService(
+      (_command, options) => {
+        environment = options?.env;
+        return processFor([threadStarted("thread_authority"), assistantMessage("ok")].join("\n"));
+      },
+      reporter(),
+      async (profile, _operatorHome, home) => {
+        await mkdir(join(home, "rules"), { recursive: true });
+        await Bun.write(join(home, "rules", `${profile}.rules`), "rules");
+        return home;
+      },
+      () => "/operator/.codex",
+      () => destination,
+    );
+
+    await service.resume("thread_authority", "continue", "/repo", undefined, {
+      agent: { profile: "lazy-github-code", configPath: "/rules/lazy-github-code.rules" },
+    });
+
+    expect(environment?.CODEX_HOME).toBe(destination);
+  } finally {
+    await rm(destination, { recursive: true, force: true });
+  }
+});
+
 test("Codex normaliza el thread, texto final, razon, tokens y ausencia de costo", async () => {
   const service = new CodexService(() => processFor([
     threadStarted("thread_result"),

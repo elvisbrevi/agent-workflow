@@ -1883,13 +1883,17 @@ export class LazyWorkflowCli {
         }
         const resuming = checkpoint.sessionId;
         let activeCli = checkpoint.cli;
+        let activeAuthority: AgentAuthority = {
+          profile: "lazy-azure-code",
+          configPath: authorityConfigPath(activeCli, "lazy-azure-code"),
+        };
         let execution: AgentExecution;
         // Both branches descend the same declared chain on provider exhaustion (ADR-0024):
         // a resume of a checkpointed session is not exempt just because it crosses an
         // invocation, so the callbacks are shared and every attempt is routed through the
         // same descent.
         const resumeFn = (sessionId: string, overrides: AgentResumeOverrides) =>
-          this.markerResume(sessionId, scope.parentDirectory, overrides);
+          this.markerResume(sessionId, scope.parentDirectory, { ...overrides, agent: activeAuthority });
         const onDescent = async (rung: FallbackRung, sessionId: string) => {
           activeCli = rung.cli;
           checkpoint = { ...checkpoint!, model: rung.model, variant: rung.variant, sessionId };
@@ -1913,6 +1917,7 @@ export class LazyWorkflowCli {
             terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, false);
           activeCli = rung.cli;
+          activeAuthority = handoffRun.agent;
           checkpoint = {
             ...checkpoint!,
             cli: rung.cli,
@@ -1929,6 +1934,7 @@ export class LazyWorkflowCli {
         } else {
            const run = await this.azureWorkspacePrompt(options, hu, ticket, scope, topology, ticketTopology, true);
           if (!run) return 1;
+          activeAuthority = run.agent;
           execution = await this.codingAgent.run({
             ...options,
             workingDirectory: scope.parentDirectory,
@@ -2714,8 +2720,12 @@ export class LazyWorkflowCli {
     }
     if (checkpoint.sessionId) {
       try {
+        const resumeAuthority: AgentAuthority = {
+          profile: "lazy-github-code",
+          configPath: authorityConfigPath(checkpoint.cli, "lazy-github-code"),
+        };
         const resumeSession = (sessionId: string): Promise<AgentResult> =>
-          this.markerResume(sessionId, scope.parentDirectory, getResumeOverrides(options));
+          this.markerResume(sessionId, scope.parentDirectory, { ...getResumeOverrides(options), agent: resumeAuthority });
         const execution = await this.resumeWithoutMarker({
           execution: { result: await resumeSession(checkpoint.sessionId), azureLoginRequired: false, failed: false },
           cli: checkpoint.cli,
@@ -4073,6 +4083,13 @@ export class LazyWorkflowCli {
       if (options.normasSag && norms === null) return 1;
       const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
       let activeCli = liveCheckpoint.cli;
+      let activeAuthority = this.authority({
+        kind: "github-delivery",
+        issue,
+        repository,
+        branch: liveCheckpoint.branch ?? "",
+        manifestPath: liveCheckpoint.manifestPath ?? "",
+      }, activeCli);
       let execution: AgentExecution;
       try {
         execution = {
@@ -4081,7 +4098,7 @@ export class LazyWorkflowCli {
             "continue",
             options.workingDirectory,
             IMPLEMENTATION_READY_MARKER,
-            getRecoveryOverrides(options, liveCheckpoint),
+            { ...getRecoveryOverrides(options, liveCheckpoint), agent: activeAuthority },
           ),
           azureLoginRequired: false,
           failed: false,
@@ -4098,11 +4115,23 @@ export class LazyWorkflowCli {
       const rungFields = (): { model?: string; variant?: string } =>
         activeRung ? { model: activeRung.model, variant: activeRung.variant } : {};
       const resumeSession = (descentSessionId: string, overrides: AgentResumeOverrides) =>
-        this.codingAgent.resume(descentSessionId, "continue", options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+        this.codingAgent.resume(
+          descentSessionId,
+          "continue",
+          options.workingDirectory,
+          IMPLEMENTATION_READY_MARKER,
+          { ...overrides, agent: activeAuthority },
+        );
       const descend = (attempted: AgentExecution): Promise<AgentExecution> => this.descendFallbackChain(
         options,
         attempted,
-        (descentSessionId, overrides) => this.codingAgent.resume(descentSessionId, "continue", options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides),
+        (descentSessionId, overrides) => this.codingAgent.resume(
+          descentSessionId,
+          "continue",
+          options.workingDirectory,
+          IMPLEMENTATION_READY_MARKER,
+          { ...overrides, agent: activeAuthority },
+        ),
         async (rung, descentSessionId) => {
           activeCli = rung.cli;
           activeRung = rung;
@@ -4122,6 +4151,7 @@ export class LazyWorkflowCli {
           });
           activeCli = rung.cli;
           activeRung = rung;
+          activeAuthority = handedOff.agent;
           await store.write({
             ...liveCheckpoint,
             cli: rung.cli,
@@ -5296,12 +5326,19 @@ export class LazyWorkflowCli {
           workflowPhase: checkpoint.phase,
           completionGates: Object.values(COMPLETION_GATE),
         }, options, norms);
+        let activeAuthority = run.agent;
         const execution = await track(null, async () => {
           // Both a fresh session and a resume of a checkpointed one descend the same declared
           // chain on provider exhaustion (ADR-0024): crossing an invocation or a turn is not an
           // exemption, so the callbacks are shared and every attempt routes through one descent.
           const resumeFn = (descentSessionId: string, overrides: AgentResumeOverrides) =>
-            this.codingAgent.resume(descentSessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, overrides);
+            this.codingAgent.resume(
+              descentSessionId,
+              authoritativeResumePrompt,
+              options.workingDirectory,
+              IMPLEMENTATION_READY_MARKER,
+              { ...overrides, agent: activeAuthority },
+            );
           const onDescent = async (rung: FallbackRung, descentSessionId: string) => {
             activeCli = rung.cli;
             checkpoint = { ...checkpoint, model: rung.model, variant: rung.variant, sessionId: descentSessionId };
@@ -5326,6 +5363,7 @@ export class LazyWorkflowCli {
               terminalMarker: IMPLEMENTATION_READY_MARKER,
             }, false);
             activeCli = rung.cli;
+            activeAuthority = handoffRun.agent;
             checkpoint = {
               ...checkpoint,
               cli: rung.cli,
