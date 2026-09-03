@@ -59,6 +59,7 @@ Options:
   --global              Install to ~/.agents/skills/ and ~/.agents/agents/
   --local               Install to D/.agents/ (default D: cwd)
   --opencode            Install to D/.opencode/ (default D: cwd)
+  --codex               Install to ~/.codex/skills/ (Codex resolves skills from its home)
   --both                Install to both local .agents/ and .opencode/
   --target D            Project directory for local modes
   --uninstall           Remove installed symlinks
@@ -75,6 +76,7 @@ Examples:
   $(basename "$0") --global                        # Shared ~/.agents/ install
   $(basename "$0") --local --target ~/proj         # Local .agents/ install
   $(basename "$0") --both                          # Both local shared directories
+  $(basename "$0") --codex                         # Codex, all projects
   $(basename "$0") --uninstall --claude-global     # Remove Claude Code skills
   $(basename "$0") --dry-run --local               # Preview local install
 EOF
@@ -95,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --global)        MODE="global"; shift ;;
     --local)         MODE="local"; shift ;;
     --opencode)      MODE="opencode"; shift ;;
+    --codex)         MODE="codex"; shift ;;
     --both)          MODE="both"; shift ;;
     --target)        TARGET="$2"; shift 2 ;;
     --uninstall)     UNINSTALL=true; shift ;;
@@ -629,10 +632,11 @@ interactive_menu() {
   echo -e "  ${CYAN}5)${NC} Local .agents/      → {proyecto}/.agents/skills/ + {proyecto}/.agents/agents/"
   echo -e "  ${CYAN}6)${NC} Local .opencode/    → {proyecto}/.opencode/skills/ + {proyecto}/.opencode/agent/"
   echo -e "  ${CYAN}7)${NC} Ambas locales       → .agents/ + .opencode/"
+  echo -e "  ${CYAN}8)${NC} Codex global        → ~/.codex/skills/"
   echo ""
 
   local choice input_target ans
-  prompt_tty "Selecciona [1-7]: " "Interactive mode requires a TTY. Pass an explicit mode such as --all-global."
+  prompt_tty "Selecciona [1-8]: " "Interactive mode requires a TTY. Pass an explicit mode such as --all-global."
   choice="$TTY_RESPONSE"
 
   case "$choice" in
@@ -643,10 +647,11 @@ interactive_menu() {
     5) MODE="local" ;;
     6) MODE="opencode" ;;
     7) MODE="both" ;;
+    8) MODE="codex" ;;
     *) die "Opción inválida: $choice" ;;
   esac
 
-  if [[ "$MODE" != "all-global" && "$MODE" != "global" && "$MODE" != "claude-global" ]]; then
+  if [[ "$MODE" != "all-global" && "$MODE" != "global" && "$MODE" != "claude-global" && "$MODE" != "codex" ]]; then
     prompt_tty "Ruta del proyecto (Enter para cwd): " "Interactive mode requires a TTY. Pass --target with an explicit mode."
     input_target="$TTY_RESPONSE"
     if [[ -n "$input_target" ]]; then
@@ -670,6 +675,7 @@ dispatch_destinations() {
       echo "runners:${HOME}/.local/bin"
       echo "skills:${HOME}/.agents/skills"
       echo "agents:${HOME}/.agents/agents"
+      echo "skills:${HOME}/.codex/skills"
       ;;
     claude-global)
       echo "skills:${HOME}/.claude/skills"
@@ -698,6 +704,13 @@ dispatch_destinations() {
       echo "agents:${TARGET}/.agents/agents"
       echo "skills:${TARGET}/.opencode/skills"
       echo "agents:${TARGET}/.opencode/agent"
+      ;;
+    codex)
+      # Codex descubre skills bajo el home que resuelve como CODEX_HOME, y lazy-workflow
+      # symlinkea ese `skills/` dentro del home de autoridad que arma por corrida
+      # (`assembleCodexAuthorityHome`). Sin este destino, un fallback que baja a Codex le
+      # entrega un prompt que nombra comandos que ahí no existen.
+      echo "skills:${CODEX_HOME:-${HOME}/.codex}/skills"
       ;;
   esac
 }
