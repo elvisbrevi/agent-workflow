@@ -90,6 +90,7 @@ function planCli(
     agentSource: agent,
     createReporterFn: reporterFn,
     createQuestionChannelFn: factory,
+    git: async () => "",
   });
 }
 
