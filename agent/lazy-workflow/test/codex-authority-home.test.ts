@@ -118,6 +118,14 @@ const REPRESENTATIVE: Record<AuthorityProfile, { forbidden: string[]; allowed: s
   "lazy-review": { forbidden: ["apply_patch"], allowed: ["git", "log"] },
 };
 
+const BRANCH_CREATION_COMMANDS: string[][] = [
+  ["git", "checkout", "-B", "temporary"],
+  ["git", "checkout", "--orphan", "temporary"],
+  ["git", "switch", "-C", "temporary"],
+  ["git", "switch", "--create", "temporary"],
+  ["git", "switch", "--force-create", "temporary"],
+];
+
 test.skipIf(!Bun.which("codex"))(
   "cada perfil de Codex reporta forbidden para un comando prohibido y no-forbidden para uno permitido, segun el evaluador del proveedor",
   async () => {
@@ -127,6 +135,18 @@ test.skipIf(!Bun.which("codex"))(
       expect(`${profile} forbidden: ${await evaluate(rulesPath, forbidden)}`).toBe(`${profile} forbidden: forbidden`);
       const allowedDecision = await evaluate(rulesPath, allowed);
       expect(`${profile} allowed: ${allowedDecision === "forbidden"}`).toBe(`${profile} allowed: false`);
+    }
+  },
+);
+
+test.skipIf(!Bun.which("codex"))(
+  "los perfiles de entrega y planificacion de Codex prohiben cada forma de crear una rama, segun el evaluador del proveedor",
+  async () => {
+    for (const profile of AUTHORITY_PROFILES.filter((profile) => profile !== "lazy-review")) {
+      for (const command of BRANCH_CREATION_COMMANDS) {
+        expect(`${profile} ${command.join(" ")}: ${await evaluate(codexRulesPath(profile), command)}`)
+          .toBe(`${profile} ${command.join(" ")}: forbidden`);
+      }
     }
   },
 );
