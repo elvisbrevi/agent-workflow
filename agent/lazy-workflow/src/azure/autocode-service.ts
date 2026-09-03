@@ -1,6 +1,7 @@
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { verifySessionWithGit } from "../git/session-verification.ts";
 import {
   AzureTicketInfoService,
   runAzureCommand,
@@ -18,7 +19,17 @@ import type { InfrastructurePublication } from "../sag/infrastructure-service.ts
 const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const WORK_ITEM_API_VERSION = "7.1";
-const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Resolved"]);
+/**
+ * Los estados que sacan una task de la frontera del drenaje.
+ *
+ * El proceso Scrum SAG nombra los suyos en español, y la lista solo tenía los estándar en inglés:
+ * una task que el equipo removió seguía siendo elegible y el drenaje le abría una entrega. Los dos
+ * juegos conviven porque una HU puede mezclar tipos de work item de procesos distintos.
+ *
+ * `En revisión` no está: es el equivalente de `Resolved` para el tipo Task del proceso, y una task
+ * resuelta todavía tiene entrega pendiente.
+ */
+const COMPLETED_STATES = new Set(["Done", "Closed", "Removed", "Removido", "Resolved"]);
 /** The trunks a delivery run provisions `hu/<HU>` from when no `--base-branch` was declared. */
 const DEFAULT_BASE_BRANCHES = ["refs/heads/master", "refs/heads/main"] as const;
 const COMPLETION_EVIDENCE_FIELDS = [
@@ -127,6 +138,8 @@ export interface AutocodeAzureService {
   setIntegrationBranch(hu: number, branch: string, workingDirectory: string, baseBranch?: string | null): Promise<{ hu: number; branch: string }>;
   setTicketBranch(hu: number, ticket: number, branch: string, workingDirectory: string): Promise<{ hu: number; ticket: number; branch: string }>;
   pushTicketBranch(branch: string, workingDirectory: string): Promise<void>;
+  /** Lo que git responde cuando el proceso de la sesión sale (ADR-0035). */
+  verifySession(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
   checkoutTicketBranch(branch: string, workingDirectory: string): Promise<void>;
   ensureIntegrationBranch(hu: number, workingDirectory: string, baseBranch?: string | null): Promise<string | null>;
   getAutocodeState(hu: number, integrationBranch?: string): Promise<AutocodeState>;
@@ -368,6 +381,10 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   getTicketInfo(hu: number, ticket: number): Promise<TicketInfo> {
     return this.ticketInfoService.getTicketInfo(hu, ticket);
+  }
+
+  async verifySession(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }> {
+    return verifySessionWithGit(this.git, ticketBranch, integrationBranch, workingDirectory);
   }
 
   getCompletionManifestPath(workingDirectory: string): Promise<string> {

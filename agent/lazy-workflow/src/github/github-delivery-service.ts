@@ -2,6 +2,10 @@ import { existsSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { reportOperator } from "../output/operator-output.ts";
+import { SessionNotVerifiedError, verifySessionWithGit } from "../git/session-verification.ts";
+
+/** El nombre que el camino GitHub ya usaba para el mismo fallo, ahora compartido con Azure. */
+export { SessionNotVerifiedError as GitHubSessionNotVerifiedError };
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 
 export interface GitHubBranchPreparation {
@@ -13,14 +17,6 @@ export interface GitHubBranchPreparation {
 export interface GitHubPullRequest {
   number: number;
   mergeCommit?: string;
-}
-
-/** La sesión salió, pero lo que dejó en el repositorio no es una entrega (ADR-0035). */
-export class GitHubSessionNotVerifiedError extends Error {
-  constructor(reason: string) {
-    super(`La sesión no quedó verificada: ${reason}`);
-    this.name = "GitHubSessionNotVerifiedError";
-  }
 }
 
 export class GitHubPullRequestConflictError extends Error {
@@ -220,20 +216,12 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
    * ninguna se distingue mirando el código de salida.
    */
   async verifySession(branch: string, baseBranch: string, workingDirectory: string): Promise<{ commit: string }> {
-    const verifiedBranch = requireBranch(branch, "La rama");
-    const verifiedBase = requireBranch(baseBranch, "La rama base");
-    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-    if (active !== branchName(verifiedBranch)) {
-      throw new GitHubSessionNotVerifiedError(`la rama activa ${active || "detached"} no coincide con ${verifiedBranch}`);
-    }
-    if ((await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory)).trim()) {
-      throw new GitHubSessionNotVerifiedError("la sesión dejó cambios sin commitear");
-    }
-    const ahead = Number((await this.git(["rev-list", "--count", `${verifiedBase}..${verifiedBranch}`], workingDirectory)).trim());
-    if (!Number.isInteger(ahead) || ahead <= 0) {
-      throw new GitHubSessionNotVerifiedError(`la rama ${verifiedBranch} no tiene commits sobre ${verifiedBase}`);
-    }
-    return { commit: requireCommit((await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim()) };
+    return verifySessionWithGit(
+      this.git,
+      requireBranch(branch, "La rama"),
+      requireBranch(baseBranch, "La rama base"),
+      workingDirectory,
+    );
   }
 
   async pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void> {
