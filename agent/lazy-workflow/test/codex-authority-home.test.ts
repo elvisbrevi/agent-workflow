@@ -14,7 +14,7 @@ function forbiddenPrefixes(rulesText: string): string[][] {
   const prefixes: string[][] = [];
   const ruleRegex = /prefix_rule\(pattern=\[(.*?)\],\s*decision="forbidden"\)/g;
   for (const match of rulesText.matchAll(ruleRegex)) {
-    prefixes.push([...match[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]));
+    prefixes.push([...(match[1] ?? "").matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1] ?? ""));
   }
   return prefixes;
 }
