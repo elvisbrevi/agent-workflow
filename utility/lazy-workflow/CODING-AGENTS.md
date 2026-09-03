@@ -16,8 +16,8 @@ Contents: [One CLI per run](#one-cli-per-run) · [Authority](#authority-what-a-s
 | Flag | Default | Notes |
 |---|---|---|
 | `--cli opencode\|claudecode` | `opencode` | Naming one verifies its binary (`opencode` / `claude`) while parsing, so a missing install is an argument error, not a dead session |
-| `--model <id>` | `opencode-go/deepseek-v4-pro` | Written exactly as the selected CLI exposes it — `claude-sonnet-5` for Claude Code, `<provider>/<model>` for OpenCode |
-| `--variant <effort>` | `high` | The effort of the selected CLI; Claude Code accepts `low`, `medium`, `high`, `xhigh`, `max` and rejects anything else before opening a session |
+| `--model <id>` | per `--cli`: `opencode-go/deepseek-v4-pro` for OpenCode, `claude-sonnet-5` for Claude Code | Resolved after `--cli` from the same table as the binary and the accepted efforts (ADR-0034), so naming a CLI without `--model` never opens a session against a model it cannot resolve; an explicit `--model` always overrides the default, including for a recovery that adopts a checkpoint's CLI |
+| `--variant <effort>` | `high` | The effort of the selected CLI, read from that same table; Claude Code accepts `low`, `medium`, `high`, `xhigh`, `max` and rejects anything else before opening a session |
 
 ```bash
 lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high --working-directory /repo

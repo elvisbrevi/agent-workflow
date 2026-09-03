@@ -275,6 +275,40 @@ describe("buildCli parser", () => {
       expect(result.output).toContain("claudecode");
       expect(result.output).toContain("opencode");
     });
+
+    test("--model sin declarar toma el default de --cli, no un valor global (issue #298)", () => {
+      const opencode = parse(["plan"]);
+      expect(opencode.kind).toBe("options");
+      if (opencode.kind !== "options") return;
+      expect(opencode.options.model).toBe("opencode-go/deepseek-v4-pro");
+      expect(opencode.options.hasModel).toBeFalse();
+
+      const claude = captureParse(buildCli(() => true), ["plan", "--cli", "claudecode"]);
+      expect(claude.kind).toBe("options");
+      if (claude.kind !== "options") return;
+      expect(claude.options.model).toBe("claude-sonnet-5");
+      expect(claude.options.hasModel).toBeFalse();
+    });
+
+    test("un --model explicito sobreescribe el default por CLI", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--cli", "claudecode", "--model", "claude-opus-5"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.model).toBe("claude-opus-5");
+      expect(result.options.hasModel).toBeTrue();
+    });
+
+    test("--help documenta el default de --model por CLI, no un unico valor global", () => {
+      const result = parse(["plan", "--help"]);
+      expect(result.kind).toBe("help");
+      if (result.kind !== "help") return;
+      // El texto se envuelve por columna al renderizarse, incluso dentro de una
+      // palabra sin espacios; quitar todo el espacio en blanco (no colapsarlo)
+      // reconstruye el token exacto para la comparacion.
+      const unwrapped = result.output.replace(/\s+/g, "");
+      expect(unwrapped).toContain("opencode=opencode-go/deepseek-v4-pro");
+      expect(unwrapped).toContain("claudecode=claude-sonnet-5");
+    });
   });
 
   describe("cadena de fallback", () => {

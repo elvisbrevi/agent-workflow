@@ -30,7 +30,7 @@ import {
 import { AgentExhaustionError, AgentSessionCloseError, AgentSessionNotFoundError, describeExhaustion, type AgentAuthority, type AgentExecution, type AgentResumeOverrides, type AgentRunOptions, type CodingAgent, type ProviderExhaustion } from "../coding-agent/coding-agent.ts";
 import type { AgentResult } from "../coding-agent/agent-result.ts";
 import { createCodingAgent, type CodingAgentFactory } from "../coding-agent/create-coding-agent.ts";
-import { DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { AGENT_CLI_PROFILES, DEFAULT_CLI, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { getDefaultReporter, reportOperator, reportOperatorHeading, setDefaultReporter } from "../output/operator-output.ts";
 import { createReporter, type ReporterRunLogSink } from "../output/reporter.ts";
 import { reportFailure, type FailureKind } from "../output/failure-kind.ts";
@@ -775,9 +775,15 @@ export class LazyWorkflowCli {
         `lazy-workflow: --model ${options.model} quedó declarado para ${options.cli} y el trabajo vive en ${cli}; `
         + "se reanuda con el escalón que el checkpoint conserva.",
       );
-      return { ...options, cli, hasModel: false };
+      return { ...options, cli, hasModel: false, model: AGENT_CLI_PROFILES[cli].defaultModel };
     }
-    return { ...options, cli };
+    // No explicit override survives adoption here (the branch above is what clears
+    // one), so `options.model` may still be the default resolved for the CLI this
+    // run started with — or with none declared — rather than the one it adopts.
+    // A brand-new session opened straight off `adopted` (never through
+    // `getResumeOverrides`, which only gates a *resume*) would otherwise carry that
+    // stale default into the adopted CLI's binary (ADR-0034, issue #298).
+    return { ...options, cli, ...(options.hasModel ? {} : { model: AGENT_CLI_PROFILES[cli].defaultModel }) };
   }
 
   /**
