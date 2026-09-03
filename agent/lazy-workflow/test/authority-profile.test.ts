@@ -71,11 +71,15 @@ test("cada CLI resuelve su propia autoridad para cada perfil", async () => {
   for (const profile of AUTHORITY_PROFILES) {
     const opencode = authorityConfigPath("opencode", profile);
     const claudecode = authorityConfigPath("claudecode", profile);
+    const codex = authorityConfigPath("codex", profile);
     expect(`${profile} opencode: ${opencode.endsWith("/opencode/authority.json")}`)
       .toBe(`${profile} opencode: true`);
     expect(`${profile} claudecode: ${claudecode.endsWith(`/claudecode/${profile}.json`)}`)
       .toBe(`${profile} claudecode: true`);
+    expect(`${profile} codex: ${codex.endsWith(`/codex/${profile}.rules`)}`)
+      .toBe(`${profile} codex: true`);
     expect(`${profile} existe: ${await Bun.file(claudecode).exists()}`).toBe(`${profile} existe: true`);
+    expect(`${profile} Codex existe: ${await Bun.file(codex).exists()}`).toBe(`${profile} Codex existe: true`);
   }
 });
 

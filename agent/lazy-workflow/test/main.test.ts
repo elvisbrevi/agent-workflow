@@ -12,6 +12,7 @@ import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { AgentSessionNotFoundError, type AgentRunOptions } from "../src/coding-agent/coding-agent.ts";
 import { OpenCodeService } from "../src/opencode/open-code-service.ts";
 import { ClaudeCodeService } from "../src/claude-code/claude-code-service.ts";
+import { CodexService } from "../src/codex/codex-service.ts";
 import { createCodingAgent } from "../src/coding-agent/create-coding-agent.ts";
 import { buildCli } from "../src/cli/parse-cli-options.ts";
 import type { AgentCli } from "../src/coding-agent/agent-cli.ts";
@@ -1971,12 +1972,13 @@ test("lazy-workflow --help imprime ayuda y devuelve codigo 0", async () => {
   expect(output[0]).toContain("--verbose");
   expect(output[0]).toContain("--quiet");
   expect(output[0]).toContain("Agente de codificacion:");
-  expect(output[0]).toContain('[choices: "opencode", "claudecode"] [default: "opencode"]');
+  expect(output[0]).toContain('[choices: "opencode", "claudecode", "codex"] [default: "opencode"]');
 });
 
 test("createCodingAgent construye el adaptador de cada CLI soportado", () => {
   expect(createCodingAgent("opencode")).toBeInstanceOf(OpenCodeService);
   expect(createCodingAgent("claudecode")).toBeInstanceOf(ClaudeCodeService);
+  expect(createCodingAgent("codex")).toBeInstanceOf(CodexService);
 });
 
 test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", async () => {

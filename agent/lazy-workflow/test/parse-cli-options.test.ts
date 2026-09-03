@@ -222,6 +222,15 @@ describe("buildCli parser", () => {
       expect(result.options.cli).toBe("claudecode");
     });
 
+    test("--cli codex selecciona Codex y toma su modelo por defecto", () => {
+      const result = captureParse(buildCli(() => true), ["plan", "--cli", "codex"]);
+      expect(result.kind).toBe("options");
+      if (result.kind !== "options") return;
+      expect(result.options.cli).toBe("codex");
+      expect(result.options.model).toBe("gpt-5.6-sol");
+      expect(result.options.hasModel).toBeFalse();
+    });
+
     test("un --cli no soportado falla al parsear", () => {
       const result = parse(["plan", "--cli", "gemini"]);
       expect(result.kind).toBe("error");
@@ -267,6 +276,15 @@ describe("buildCli parser", () => {
       expect(opencode.options.variant).toBe("turbo");
     });
 
+    test("Codex acepta sus siete esfuerzos y rechaza los demas", () => {
+      for (const variant of ["none", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+        const result = captureParse(buildCli(() => true), ["plan", "--cli", "codex", "--variant", variant]);
+        expect(`${variant}: ${result.kind}`).toBe(`${variant}: options`);
+      }
+      const invalid = captureParse(buildCli(() => true), ["plan", "--cli", "codex", "--variant", "turbo"]);
+      expect(invalid.kind).toBe("error");
+    });
+
     test("--help documenta --cli con sus valores y su default", () => {
       const result = parse(["plan", "--help"]);
       expect(result.kind).toBe("help");
@@ -274,6 +292,7 @@ describe("buildCli parser", () => {
       expect(result.output).toContain("--cli");
       expect(result.output).toContain("claudecode");
       expect(result.output).toContain("opencode");
+      expect(result.output).toContain("codex");
     });
 
     test("--model sin declarar toma el default de --cli, no un valor global (issue #298)", () => {

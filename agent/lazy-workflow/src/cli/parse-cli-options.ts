@@ -1,7 +1,6 @@
 import yargs from "yargs";
 import type { Argv } from "yargs";
 import type { EvidenceKind } from "../azure/ticket-info-service.ts";
-import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
 import { AGENT_CLI_BINARIES, AGENT_CLI_PROFILES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
 import type { ShutdownRequest } from "../system/shutdown-service.ts";
@@ -98,6 +97,10 @@ export interface CliParserHooks {
 export type CliParser = (args: string[], hooks: CliParserHooks) => CliParseResult;
 
 const AGENT_CLIS = Object.keys(AGENT_CLI_BINARIES) as AgentCli[];
+const FIXED_EFFORT_HELP = AGENT_CLIS
+  .map((cli) => AGENT_CLI_PROFILES[cli].efforts ? `${cli}: ${AGENT_CLI_PROFILES[cli].efforts!.join("|")}` : null)
+  .filter((description): description is string => description !== null)
+  .join("; ");
 
 /** Answers whether a binary is on the PATH; injected so tests never depend on the host. */
 export type BinaryProbe = (binary: string) => boolean;
@@ -352,7 +355,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       describe: `Modelo del agente CLI seleccionado; sin declarar usa el default de --cli (${AGENT_CLIS.map((cli) => `${cli}=${AGENT_CLI_PROFILES[cli].defaultModel}`).join(", ")}).`,
       coerce: stringCoerce("--model"),
     })
-    .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; con claudecode es el esfuerzo (${CLAUDE_CODE_EFFORTS.join("|")}).`, coerce: stringCoerce("--variant") })
+    .option("variant", { type: "string", requiresArg: true, default: DEFAULT_VARIANT, describe: `Variante del modelo; esfuerzos fijos por CLI (${FIXED_EFFORT_HELP}).`, coerce: stringCoerce("--variant") })
     .option("fallback", {
       type: "array",
       requiresArg: true,
