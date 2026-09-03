@@ -4,8 +4,9 @@
  * The prompt states what the coding agent should decide; this states what it is
  * able to do, in the format each CLI's own provider validates and enforces, so a
  * prohibition no longer depends on the model reading and obeying prose (ADR-0021,
- * ADR-0023). Every profile exists in both formats and neither file is generated
- * from the other: a rule lost in translation is a rule that stops enforcing.
+ * ADR-0023). Every profile is written in each provider's own format, and no
+ * format is generated from another: a rule lost in translation is a rule that
+ * stops enforcing.
  *
  * OpenCode carries all five profiles in `opencode/authority.json`, injected
  * through `OPENCODE_CONFIG`, which merges with — rather than replaces — whatever

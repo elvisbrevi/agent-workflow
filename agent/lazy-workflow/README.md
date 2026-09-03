@@ -1333,15 +1333,18 @@ Azure planning session can be resumed by hand with `--session <id>`.
 
 Every run carries an agent authority profile alongside its prompt. The prompt
 states what the coding agent should decide; the profile states what it may
-execute. The same five profiles exist in both formats, one per CLI, and neither
-file is generated from the other: each provider validates and enforces its own.
+execute. The same five profiles exist in three formats, one per CLI, and none is
+generated from the other: each provider validates and enforces its own.
 
 For OpenCode the profiles live in `opencode/authority.json`, injected per run
 through `OPENCODE_CONFIG`, which merges with the target repository's own OpenCode
 configuration rather than replacing it — enforcement does not require the target
 repository to be configured for lazy-workflow. For Claude Code each profile is
 its own settings file under `claudecode/<profile>.json`, injected per run by path
-with `--settings`.
+with `--settings`. Codex keeps each profile in its own
+`codex/<profile>.rules` file and discovers it from a lazy-workflow-owned Codex
+home, which links the operator's `auth.json` and `skills/` but never
+`config.toml`.
 
 | Profile | Used by | Denies |
 |---|---|---|
@@ -1366,6 +1369,7 @@ main.ts                 CLI entrypoint
 prompts/                OpenCode prompt assets (composed by src/prompts/)
 opencode/authority.json Agent permission profiles injected per run (OpenCode)
 claudecode/             One settings file per profile, injected per run (Claude Code)
+codex/                  One execpolicy rules file per profile (Codex)
 src/prompts/            Prompt composition, contract vocabulary, authority profiles
 src/interaction/        Planning interview: question rounds and the channels that carry them
 src/azure/              Azure Boards model and service

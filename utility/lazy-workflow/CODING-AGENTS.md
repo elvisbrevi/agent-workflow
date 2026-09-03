@@ -58,11 +58,16 @@ so no deny rule has to move to let a session write its manifest.
 **This is the constraint that shapes prompts.** A session cannot read the tracker,
 push, open a PR or move a work item, whatever `--prompt` asks of it. So anything
 the session needs from outside the repository has to be on disk before the run
-starts — capture it with a tool command and reference the path. OpenCode reads
-these profiles from `opencode/authority.json` through `OPENCODE_CONFIG`, which
-merges with the target repository's own configuration; Claude Code reads one
-settings file per profile from `claudecode/<profile>.json`, injected with
-`--settings`. Neither file is generated from the other.
+starts — capture it with a tool command and reference the path. The profiles
+exist in three formats, one per CLI, and none is generated from another: a rule
+lost in translation is a rule that stops enforcing. OpenCode reads them from
+`opencode/authority.json` through `OPENCODE_CONFIG`, which merges with the
+target repository's own configuration; Claude Code reads one settings file per
+profile from `claudecode/<profile>.json`, injected with `--settings`; Codex
+reads one execpolicy rules file per profile from `codex/<profile>.rules`,
+discovered from a lazy-workflow-owned Codex home that also links in the
+operator's `auth.json` and `skills/` — but never their `config.toml` — and is
+assembled fresh from the profile the coordinator already fixed.
 
 ## The division of labour
 
