@@ -5,7 +5,9 @@ Five hand-written execpolicy rules files (agent/lazy-workflow/codex/*.rules)
 carry the same prohibitions as opencode/authority.json and claudecode/*.json,
 generated from neither: `prefix_rule(pattern=["git","push"],
 decision="forbidden")` is the Codex analogue of OpenCode's `"git push*":
-"deny"` and Claude Code's `Bash(git push:*)`. `lazy-review.rules` additionally
+"deny"` and Claude Code's `Bash(git push:*)`. The planning and delivery rules
+also deny every Git branch-creation spelling (`-b`, `-B`, `--orphan`, `-c`,
+`-C`, `--create`, and `--force-create`). `lazy-review.rules` additionally
 forbids `apply_patch` -- the shell-intercepted command Codex uses to edit
 files -- matching Claude Code's Edit/Write/NotebookEdit denial and OpenCode's
 `"edit": "deny"`. Committing stays unforbidden in the two `-code` profiles,
@@ -15,29 +17,31 @@ and no profile forbids `lazy-workflow` itself.
 Codex home for a fixed profile: writes only that profile's rules into
 `rules/<profile>.rules`, symlinks `auth.json` and `skills/` from the operator
 home, and never links `config.toml`. `utility/lazy-workflow/CODING-AGENTS.md`
-now names all three authority formats and states none is generated from
-another.
+and `agent/lazy-workflow/README.md` now name all three authority formats and
+state none is generated from another.
 
 Out of scope for this issue (per its own text): wiring `codex` into the
 AgentCli type / CLI dispatch (src/coding-agent/agent-cli.ts,
 create-coding-agent.ts). Not touched.
 
-A code-review pass (Standards + Spec axes, run in parallel) found no findings
-on either axis; a self-review during validation found one strict-mode
-TypeScript issue in the new test (RegExpMatchArray indexing under
-noUncheckedIndexedAccess), fixed by defaulting the capture groups.
+A code-review pass (Standards + Spec axes, run in parallel) found no actionable
+findings on either axis. It noted only the deliberate repeated hand-written
+rules and the standalone home resolver, both required by the ADR/issue
+boundary. A self-review during validation found one strict-mode TypeScript
+issue in the new test (RegExpMatchArray indexing under noUncheckedIndexedAccess),
+fixed by defaulting the capture groups.
 
 == bun test -- targeted file ==
-$ (cd agent/lazy-workflow && bun test test/codex-authority-home.test.ts)
+$ bun test test/codex-authority-home.test.ts
 
 bun test v1.3.14 (0d9b296a)
 
- 8 pass
+ 9 pass
  0 fail
- 98 expect() calls
-Ran 8 tests across 1 file. [132.00ms]
+ 118 expect() calls
+Ran 9 tests across 1 file. [390.00ms]
 
-One of the 8 tests drives the provider's own policy evaluator directly
+Two of the 9 tests drive the provider's own policy evaluator directly
 (gated by `Bun.which("codex")`, so it degrades to skipped rather than
 failing where the binary is absent), rather than re-implementing execpolicy
 matching in TypeScript:
@@ -64,30 +68,53 @@ $ codex execpolicy check --pretty --rules codex/lazy-github-code.rules -- gh iss
 $ codex execpolicy check --pretty --rules codex/lazy-github-code.rules -- git commit -m x
 { "matchedRules": [] }
 
+$ codex execpolicy check --pretty --rules codex/lazy-github-plan.rules -- git checkout --orphan temporary
+{
+  "matchedRules": [
+    { "prefixRuleMatch": { "matchedPrefix": ["git", "checkout", "--orphan"], "decision": "forbidden" } }
+  ],
+  "decision": "forbidden"
+}
+
 $ codex execpolicy check --pretty --rules codex/lazy-azure-code.rules -- lazy-workflow code --hu 1
 { "matchedRules": [] }
 
 == bun test (full suite) ==
-$ (cd agent/lazy-workflow && bun test)
+$ bun test
 
- 968 pass
+ 969 pass
  11 fail
- 3401 expect() calls
-Ran 979 tests across 52 files. [31.80s]
+ 3421 expect() calls
+Ran 980 tests across 52 files. [30.89s]
 
 The 11 failures are pre-existing and unrelated: reproduced identically (same
 count, same tests) on this branch's parent commit before any file in this
 change existed, none reference codex, authority, .rules files or
-codex-authority-home, and this change adds exactly 8 passing tests on top of
+codex-authority-home, and this change adds exactly 9 passing tests on top of
 that same pre-existing baseline (960 pass / 11 fail / 971 total before ->
-968 pass / 11 fail / 979 total after).
+969 pass / 11 fail / 980 total after).
 
-== bunx tsc --noEmit -- errors touching this change's own files ==
-$ (cd agent/lazy-workflow && bunx tsc --noEmit -p tsconfig.json | grep -i codex-authority-home)
+== bunx tsc --noEmit -- changed-file check ==
+$ bunx tsc --noEmit -p tsconfig.json
 
-(no output -- neither src/prompts/codex-authority-home.ts nor
-test/codex-authority-home.test.ts produce a type error)
+(the full project check reports pre-existing errors in unrelated Azure,
+tracker, workspace, and test fixtures; neither src/prompts/codex-authority-home.ts
+nor test/codex-authority-home.test.ts produces a type error)
 
-Pre-existing type errors elsewhere (AzureBoundary/ticket-info/
-workspace-coordination test fixtures) reproduced identically without this
-change (git stash -u), unrelated to AgentCli, authority profiles, or Codex.
+Those pre-existing errors are unrelated to AgentCli, authority profiles, or
+Codex and were reproduced without this change.
+
+== bash tests/install_test.sh ==
+$ bash tests/install_test.sh
+
+PASS: no-TTY invocation reports an actionable error
+PASS: piped invocation accepts an explicit non-interactive mode
+PASS: shared global install and uninstall process every entry
+PASS: Claude Code destinations install and uninstall skills, agents, and runners
+PASS: unified global mode installs and uninstalls every global integration
+PASS: install refreshes dirty cache and reconciles only repository-owned links
+6 installer tests passed.
+
+== git diff --check ==
+$ git diff --check
+(no output; exit 0)
