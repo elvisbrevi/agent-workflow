@@ -137,13 +137,18 @@ _Avoid_: trusting the exit code alone, reading a completion claim out of the tex
 
 **Unit failure**:
 Any outcome that is not a verified session: a non-zero exit, a branch with no
-commits, a dirty tree, an unresolved merge conflict, a `BLOCKED` pull request, or
-a chain spent by idle timeout. The unit keeps its claim on GitHub and its
-`En progreso` state on Azure, which is what removes it from the frontier through
-the eligibility predicate that already existed. The branch and its commits
-survive for inspection. A person unassigns the issue, or reverts the state, to
-retry it.
-_Avoid_: releasing a failed claim, stopping the drain, a new state to mark failure
+commits, a dirty tree, or a chain spent by idle timeout. The unit keeps its claim
+on GitHub and its `En progreso` state on Azure, which is what removes it from the
+frontier through the eligibility predicate that already existed. The branch and
+its commits survive for inspection, the drain continues, and the run exits
+non-zero because it left work broken behind it. A person unassigns the issue, or
+reverts the state, to retry it.
+
+A unit that fails *after* verification — pushing, opening the pull request,
+merging — is not this: it is a half-finished delivery, it keeps its checkpoint,
+and it stops the run.
+_Avoid_: releasing a failed claim, a new state to mark failure, treating a
+half-delivered unit as an ordinary failure
 
 **Delivery summary**:
 The last text a delivery session produces, asked for by the last line of the

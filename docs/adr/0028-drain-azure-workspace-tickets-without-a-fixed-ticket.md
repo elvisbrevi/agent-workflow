@@ -31,12 +31,12 @@ run resumes that unit rather than choosing a new one, and a `--ticket` that
 contradicts it is an operator error rather than a reason to abandon work already
 underway. Only the first run of a unit chooses; every later one recovers.
 
-A failed delivery no longer stops the drain. The ticket keeps the `En progreso`
-state the coordinator set before opening the session, which is what removes it
-from the frontier, so the next selection cannot pick it again and the run
-continues (ADR-0038). What used to stop the drain — a surviving ticket branch, an
-unwritable aggregate manifest — either no longer exists or is now the ordinary
-failure of one unit rather than of the run. A pending queue with nothing eligible
+A delivery that never reached verification no longer stops the drain. The ticket
+keeps the `En progreso` state the coordinator set before opening the session,
+which is what removes it from the frontier, so the next selection cannot pick it
+again and the run continues (ADR-0038). One that failed after verification still
+stops, for the reason this ADR already gave: claiming the next ticket would bury
+the state the operator has to reconcile under a second delivery. A pending queue with nothing eligible
 still stops and says so instead of reporting an empty one: a dependency that has
 not landed yet is a wait, and an HU with no open children is a finish, and the
 two must not be reported as the same outcome.

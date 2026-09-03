@@ -18,9 +18,8 @@ would stop with unblocked work untouched. Re-asking each turn is also what the
 Azure and GitHub adapters already did — the change is that the coordinator now
 calls them in a loop rather than once.
 
-An ordinary failure — a non-zero exit, a branch with no commits, a dirty tree, a
-merge conflict, a `BLOCKED` pull request, or a session silent past the idle
-timeout on every rung — does not release the unit. On GitHub the claim stays,
+An ordinary failure — a non-zero exit, a branch with no commits, a dirty tree, or
+a session silent past the idle timeout on every rung — does not release the unit. On GitHub the claim stays,
 and `evaluateEligibility` already rejects assigned issues; on Azure the state
 stays `En progreso`. The unit leaves the frontier through the predicate that was
 already there, so a failure needs no new state and cannot be selected again in a
@@ -28,7 +27,15 @@ loop that re-asks. A person unassigns the issue, or reverts the state, to retry
 it. The branch and any commits survive for inspection.
 
 Failing the whole run instead was rejected: one badly written issue in the middle
-of a queue would stop the ten behind it, which defeats an unattended drain.
+of a queue would stop the ten behind it, which defeats an unattended drain. The
+run still exits non-zero when it leaves any unit claimed and undelivered — a
+night's drain has to be able to say that something behind it is broken.
+
+A unit that failed *after* verification is the exception, and it does stop the
+run: it has already pushed, opened a pull request, or merged, so claiming the next
+unit would bury the state an operator has to reconcile under a second delivery.
+That is why verification happens in the loop, before any remote effect — what has
+touched the remote and what has not are different failures.
 
 The only state persisted across a crash is the one bit git cannot supply: that a
 unit passed its verification (ADR-0035) before the delivery effects finished. The
