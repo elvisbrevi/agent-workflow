@@ -7,6 +7,7 @@ import {
   GitHubDeliveryService,
   GitHubPullRequestConflictError,
   type GitHubDeliveryAdapter,
+  GitHubSessionNotVerifiedError,
   type GitHubReadyManifest,
 } from "../src/github/github-delivery-service.ts";
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
@@ -155,54 +156,32 @@ test("merge propaga fallos de gh pr checks que no sean 'no checks reported'", as
     .rejects.toThrow("API rate limit exceeded");
 });
 
-test("el prompt de entrega GitHub manda crear el manifest con la herramienta, no describirlo", async () => {
+test("el prompt de entrega GitHub es la instrucción del trabajo y nada más", async () => {
   let prompt = "";
-  let current: GitHubDeliveryCheckpoint | null = null;
-  const store: GitHubCheckpointStore = {
-    read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; },
-    clear: async () => { current = null; },
-  };
-  let selected = true;
   const queue = {
-    selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
-    selectEligibleIssue: async () => {
-      if (!selected) return { kind: "empty" as const };
-      selected = false;
-      return { kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
-    },
+    verifyAuthentication: async () => ({ login: "bot" }),
+    verifyRepository: async () => ({ nameWithOwner: "owner/repo" }),
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    selectEligibleIssue: async () => ({ kind: "candidate" as const, issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } }),
     claimSelectedIssue: async () => fakeSelectedIssue(179),
-  };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
-    readManifest: async () => { throw new Error("must not read"); },
-    pushCommit: async () => undefined,
-    createOrReusePullRequest: async () => ({ number: 201 }),
-    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
-    closeIssue: async () => undefined,
-    cleanupBranch: async () => undefined,
   };
 
   await createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async (options) => { prompt = options.prompt; throw new Error("stop after capturing prompt"); }, resume: async () => execution().result },
+    agentSource: { run: async (options) => { prompt = options.prompt; throw new Error("stop after capturing prompt"); }, resume: async () => { throw new Error("must not resume"); } },
     githubManagedQueue: queue,
-    githubCheckpointStore: store,
-    githubRepositoryLock: { acquire: async () => async () => undefined },
-    githubDelivery: delivery,
+    ...fakeCoordinatedGitHubDeps(),
   }).run(["code", "--working-directory", "/repo"]);
 
-  // La sesión recibe el comando exacto con las identidades ya puestas, y la
-  // prohibición de escribir el archivo: describir la forma del JSON es lo que
-  // hacía que la sesión la reprodujera mal y la entrega se detuviera al final.
-  expect(prompt).toContain(
-    "lazy-workflow github-manifest-set --issue 179 --branch refs/heads/issue/179 --manifest /manifest.json --working-directory /repo",
-  );
-  expect(prompt).toContain("never write, edit, or repair that JSON file yourself");
-  expect(prompt).not.toContain("non-empty JSON array of objects");
+  expect(prompt).toBe([
+    "/implement the issue #179 usando /tdd /caveman /ponytail y /code-review.",
+    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "no abras PR, no me hagas preguntas.",
+    "termina con un resumen de lo realizado entendible por un humano.",
+  ].join("\n"));
 });
 
-test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", async () => {
+test("entrega GitHub desde la sesión verificada hasta la limpieza", async () => {
   const calls: string[] = [];
   let selections = 0;
   let current: GitHubDeliveryCheckpoint | null = null;
@@ -211,22 +190,14 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
     write: async (checkpoint) => { current = checkpoint; },
     clear: async () => { current = null; },
   };
-  const manifest: GitHubReadyManifest = {
-    issue: 179,
-    branch: "refs/heads/issue/179",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "passed" }],
-    clean: true,
-    summary: "implemented",
-  };
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async () => {
       calls.push("prepare-branch");
-      return { branch: manifest.branch, baseBranch: "refs/heads/main", manifestPath: "/repo/.git/lazy-workflow/github-manifest.json" };
+      return { branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/repo/.git/lazy-workflow/github-manifest.json" };
     },
-    readManifest: async () => {
-      calls.push("read-manifest");
-      return manifest;
+    verifySession: async () => {
+      calls.push("verify-session");
+      return { commit: "a".repeat(40) };
     },
     pushCommit: async () => { calls.push("push"); },
     createOrReusePullRequest: async () => {
@@ -260,64 +231,10 @@ test("entrega GitHub desde IMPLEMENTATION_READY hasta limpieza verificada", asyn
 
   expect(code).toBe(0);
   expect(selections).toBe(2);
-  expect(calls).toEqual(["prepare-branch", "read-manifest", "push", "pull-request", "merge", "close-issue", "cleanup"]);
+  expect(calls).toEqual(["prepare-branch", "verify-session", "push", "pull-request", "merge", "close-issue", "cleanup"]);
   expect(current).toBeNull();
 });
 
-test("la entrega completada elimina el manifest para que no contamine el siguiente issue", async () => {
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-manifest-cleanup-"));
-  const manifestPath = join(root, "github-completion-manifest.json");
-  writeFileSync(manifestPath, JSON.stringify({ issue: 179, branch: "refs/heads/issue/179", commit: "a".repeat(40) }));
-  let selections = 0;
-  let current: GitHubDeliveryCheckpoint | null = null;
-  const store: GitHubCheckpointStore = {
-    read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; },
-    clear: async () => { current = null; },
-  };
-  const manifest: GitHubReadyManifest = {
-    issue: 179,
-    branch: "refs/heads/issue/179",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "passed" }],
-    clean: true,
-    summary: "implemented",
-  };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: manifest.branch, baseBranch: "refs/heads/main", manifestPath }),
-    readManifest: async () => manifest,
-    pushCommit: async () => undefined,
-    createOrReusePullRequest: async () => ({ number: 201 }),
-    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
-    closeIssue: async () => undefined,
-    cleanupBranch: async () => undefined,
-  };
-
-  try {
-    const code = await createCli({
-      huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-      agentSource: { run: async () => execution(), resume: async () => execution().result },
-      githubManagedQueue: {
-        selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-        selectEligibleIssue: async () => {
-          selections += 1;
-          if (selections > 1) return { kind: "empty" };
-          return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
-        },
-        claimSelectedIssue: async () => fakeSelectedIssue(179),
-      },
-      githubCheckpointStore: store,
-      githubRepositoryLock: { acquire: async () => async () => undefined },
-      githubDelivery: delivery,
-    }).run(["code", "--working-directory", "/repo"]);
-
-    expect(code).toBe(0);
-    expect(current).toBeNull();
-    expect(existsSync(manifestPath)).toBe(false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 function drainDelivery(closed: number[]): GitHubDeliveryAdapter {
   let pendingIssue = 179;
@@ -328,7 +245,7 @@ function drainDelivery(closed: number[]): GitHubDeliveryAdapter {
       pendingBranch = `refs/heads/issue/${issueNumber}`;
       return { branch: pendingBranch, baseBranch: "refs/heads/main", manifestPath: `/nonexistent-${issueNumber}-manifest.json` };
     },
-    readManifest: async () => ({ issue: pendingIssue, branch: pendingBranch, commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "done" }),
+    verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => undefined,
     createOrReusePullRequest: async () => ({ number: 200 + pendingIssue }),
     mergePullRequest: async () => ({ number: 200 + pendingIssue, mergeCommit: "b".repeat(40) }),
@@ -439,7 +356,7 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
   };
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
-    readManifest: async () => ({ issue: 179, branch: "refs/heads/issue/179", commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "implemented" }),
+    verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => undefined,
     createOrReusePullRequest: async () => ({ number: 201 }),
     mergePullRequest: async () => {
@@ -518,7 +435,7 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
     verifyRepository: async () => undefined,
     verifyBranch: async () => undefined,
     prepareBranch: async () => { throw new Error("must not prepare"); },
-    readManifest: async () => manifest(reconciled ? reconciledCommit : originalCommit),
+    verifySession: async () => ({ commit: reconciled ? reconciledCommit : originalCommit }),
     pushCommit: async (_branch, commit) => { events.push(`push:${commit}`); },
     createOrReusePullRequest: async () => { throw new Error("must reuse PR"); },
     preparePullRequestReconciliation: async () => {
@@ -609,7 +526,7 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
     verifyBranch: async () => undefined,
     verifyPendingPullRequestReconciliation: async () => { events.push("verify-pending"); },
     prepareBranch: async () => { throw new Error("must not prepare"); },
-    readManifest: async () => ({ issue: 179, branch: "refs/heads/issue/179", commit: reconciled ? reconciledCommit : originalCommit, validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "reconciled" }),
+    verifySession: async () => ({ commit: reconciled ? reconciledCommit : originalCommit }),
     pushCommit: async (_branch, commit) => { events.push(`push:${commit}`); },
     createOrReusePullRequest: async () => { throw new Error("must reuse PR"); },
     verifyPullRequestReconciliation: async () => { events.push("verify-reconciled"); },
@@ -647,40 +564,6 @@ test("reanuda una reconciliación conflictiva sin seleccionar un reemplazo y lue
   expect(current).toBeNull();
 });
 
-test("los marcadores de entrega heredados no avanzan una entrega GitHub", async () => {
-  let deliveryCalls = 0;
-  let current: GitHubDeliveryCheckpoint | null = null;
-  const store: GitHubCheckpointStore = {
-    read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; },
-    clear: async () => { current = null; },
-  };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
-    readManifest: async () => { deliveryCalls += 1; throw new Error("must not deliver"); },
-    pushCommit: async () => undefined,
-    createOrReusePullRequest: async () => ({ number: 201 }),
-    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
-    closeIssue: async () => undefined,
-    cleanupBranch: async () => undefined,
-  };
-  const cli = createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => ({ ...execution(), result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) }), resume: async () => AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_legacy", part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" } })) },
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      selectEligibleIssue: async () => ({ kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } }),
-      claimSelectedIssue: async () => fakeSelectedIssue(179),
-    },
-    githubCheckpointStore: store,
-    githubRepositoryLock: { acquire: async () => async () => undefined },
-    githubDelivery: delivery,
-  });
-
-  expect(await cli.run(["code", "--working-directory", "/repo"])).toBe(1);
-  expect(deliveryCalls).toBe(0);
-  expect(phaseOf(current)).toBe("implementing");
-});
 
 test("reconciliación de padres ocurre después de la limpieza y antes de borrar el checkpoint", async () => {
   const events: string[] = [];
@@ -692,7 +575,7 @@ test("reconciliación de padres ocurre después de la limpieza y antes de borrar
   };
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
-    readManifest: async () => ({ issue: 179, branch: "refs/heads/issue/179", commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "implemented" }),
+    verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => { events.push("push"); },
     createOrReusePullRequest: async () => { events.push("pull-request"); return { number: 201 }; },
     mergePullRequest: async () => { events.push("merge"); return { number: 201, mergeCommit: "b".repeat(40) }; },
@@ -772,101 +655,6 @@ function pendingExecution() {
   };
 }
 
-test("la entrega GitHub reanuda una vez la sesión que terminó sin IMPLEMENTATION_READY", async () => {
-  // La relanzada manual del operador no hacía más que reanudar la sesión del checkpoint (ADR-0032).
-  let resumes = 0;
-  let selections = 0;
-  let current: GitHubDeliveryCheckpoint | null = null;
-  const store: GitHubCheckpointStore = {
-    read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; },
-    clear: async () => { current = null; },
-  };
-  const manifest: GitHubReadyManifest = {
-    issue: 179,
-    branch: "refs/heads/issue/179",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "passed" }],
-    clean: true,
-    summary: "implemented",
-  };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: manifest.branch, baseBranch: "refs/heads/main", manifestPath: "/repo/.git/lazy-workflow/github-manifest.json" }),
-    readManifest: async () => manifest,
-    pushCommit: async () => undefined,
-    createOrReusePullRequest: async () => ({ number: 201 }),
-    mergePullRequest: async () => ({ number: 201, mergeCommit: "b".repeat(40) }),
-    closeIssue: async () => undefined,
-    cleanupBranch: async () => undefined,
-  };
-
-  const code = await createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => pendingExecution(),
-      resume: async () => { resumes += 1; return execution().result; },
-    },
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      selectEligibleIssue: async () => {
-        selections += 1;
-        if (selections > 1) return { kind: "empty" };
-        return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
-      },
-      claimSelectedIssue: async () => fakeSelectedIssue(179),
-    },
-    githubCheckpointStore: store,
-    githubRepositoryLock: { acquire: async () => async () => undefined },
-    githubDelivery: delivery,
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(0);
-  expect(resumes).toBe(1);
-  expect(current).toBeNull();
-});
-
-test("la entrega GitHub no reanuda dos veces: una sesión que sigue sin marcador falla cerrado", async () => {
-  let resumes = 0;
-  let selections = 0;
-  let current: GitHubDeliveryCheckpoint | null = null;
-  const store: GitHubCheckpointStore = {
-    read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; },
-    clear: async () => { current = null; },
-  };
-
-  const code = await createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => pendingExecution(),
-      resume: async () => { resumes += 1; return pendingExecution().result; },
-    },
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      selectEligibleIssue: async () => {
-        selections += 1;
-        if (selections > 1) return { kind: "empty" };
-        return { kind: "candidate", issue: fakeSelectedIssue(179), repository: { nameWithOwner: "owner/repo" } };
-      },
-      claimSelectedIssue: async () => fakeSelectedIssue(179),
-    },
-    githubCheckpointStore: store,
-    githubRepositoryLock: { acquire: async () => async () => undefined },
-    githubDelivery: {
-      prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
-      readManifest: async () => { throw new Error("must not read a manifest without the marker"); },
-      pushCommit: async () => { throw new Error("must not push"); },
-      createOrReusePullRequest: async () => { throw new Error("must not open a PR"); },
-      mergePullRequest: async () => { throw new Error("must not merge"); },
-      closeIssue: async () => { throw new Error("must not close"); },
-      cleanupBranch: async () => { throw new Error("must not clean up"); },
-    },
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(1);
-  expect(resumes).toBe(1);
-  expect(phaseOf(current)).toBe("implementing");
-});
 
 /**
  * El resumen de entrega (ADR-0037): lo último que dijo la sesión es lo que un
@@ -974,4 +762,91 @@ test("el resumen del agente llega al cuerpo del PR que abre el coordinador", asy
   expect(code).toBe(0);
   expect(bodies).toHaveLength(1);
   expect(bodies[0]).toContain("Reescribí el parser y agregué tests del caso vacío.");
+});
+
+/**
+ * La verificación de sesión (ADR-0035): lo que el coordinador pregunta cuando el
+ * proceso del agente sale. No hay marcador que leer ni manifest que validar, así
+ * que responde git — la rama activa, el árbol y los commits sobre la base.
+ */
+function verifyingService(answers: Record<string, string>) {
+  return new GitHubDeliveryService(
+    async () => { throw new Error("must not use GitHub"); },
+    async (command) => {
+      const key = command.slice(0, 2).join(" ");
+      const answer = answers[key] ?? answers[command[0]!];
+      if (answer === undefined) throw new Error(`unexpected git command: ${command.join(" ")}`);
+      return answer;
+    },
+  );
+}
+
+const verified = {
+  "symbolic-ref --quiet": "issue/42\n",
+  "status --porcelain": "",
+  "rev-list --count": "3\n",
+  "rev-parse HEAD^{commit}": `${"a".repeat(40)}\n`,
+};
+
+test("una sesión verificada devuelve el commit que git tiene en HEAD", async () => {
+  expect(await verifyingService(verified).verifySession("refs/heads/issue/42", "refs/heads/main", "/repo"))
+    .toEqual({ commit: "a".repeat(40) });
+});
+
+test("una rama sin commits sobre la base no es una sesión verificada", async () => {
+  await expect(verifyingService({ ...verified, "rev-list --count": "0\n" })
+    .verifySession("refs/heads/issue/42", "refs/heads/main", "/repo"))
+    .rejects.toThrow("no tiene commits sobre");
+});
+
+test("un árbol sucio no es una sesión verificada", async () => {
+  await expect(verifyingService({ ...verified, "status --porcelain": " M src/x.ts\n" })
+    .verifySession("refs/heads/issue/42", "refs/heads/main", "/repo"))
+    .rejects.toThrow("sin commitear");
+});
+
+test("otra rama activa no es una sesión verificada", async () => {
+  await expect(verifyingService({ ...verified, "symbolic-ref --quiet": "main\n" })
+    .verifySession("refs/heads/issue/42", "refs/heads/main", "/repo"))
+    .rejects.toThrow("no coincide");
+});
+
+test("una sesión sin commits sobre la base no abre PR y deja la issue reclamada", async () => {
+  const effects: string[] = [];
+  const queue = {
+    verifyAuthentication: async () => ({ login: "bot" }),
+    verifyRepository: async () => ({ nameWithOwner: "owner/repo" }),
+    selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+    selectEligibleIssue: async function () {
+      if (this.done) return { kind: "empty" as const };
+      this.done = true;
+      return { kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
+    },
+    claimSelectedIssue: async () => fakeSelectedIssue(178),
+    releaseOwnClaim: async () => { effects.push("release"); },
+    done: false,
+  };
+
+  const code = await createCli({
+    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async () => ({
+        result: AgentResult.fromJsonLines(JSON.stringify({
+          type: "text", sessionID: "ses_178", part: { type: "text", text: "No entendí el issue, ¿podrías aclararlo?\nIMPLEMENTATION_READY" },
+        })),
+        azureLoginRequired: false,
+      }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    githubManagedQueue: queue,
+    ...fakeCoordinatedGitHubDeps(),
+    githubDelivery: fakeGitHubDelivery({
+      verifySession: async () => { throw new GitHubSessionNotVerifiedError("la rama refs/heads/issue/178 no tiene commits sobre refs/heads/main"); },
+      pushCommit: async () => { effects.push("push"); },
+      createOrReusePullRequest: async () => { effects.push("pr"); return { number: 1 }; },
+    }),
+  }).run(["code", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  expect(effects).toEqual([]);
 });

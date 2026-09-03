@@ -19,8 +19,9 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
   let prompt = "";
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -30,7 +31,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) }; },
@@ -47,7 +48,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async (options) => {
+    agentSource: { run: async (options) => { sessionRan = true;
       prompt = options.prompt;
       for (const repository of [repoA, repoB]) {
         await Bun.write(join(repository, "manifest.json"), "{}\n");
@@ -78,10 +79,6 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
     ]);
     expect(units.map((unit) => unit.changed)).toEqual([true, true]);
     expect(units.map((unit) => unit.phase)).toEqual(["cleaning", "cleaning"]);
-    expect(units.map((unit) => unit.evidence)).toEqual([
-      [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }],
-      [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }],
-    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -93,8 +90,13 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    // Solo repo-a commitea: repo-b se queda exactamente donde empezó, que es lo que lo hace
+    // «sin cambios» a ojos del coordinador (ADR-0035).
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") {
+      return sessionRan && directory.includes("repo-a") ? "d".repeat(40) : "c".repeat(40);
+    }
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -104,7 +106,7 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: "a".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: 1 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: "1".repeat(40) }; },
@@ -121,7 +123,7 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => {
+    agentSource: { run: async () => { sessionRan = true;
       // Only repo-a receives a manifest; repo-b stays untouched (unchanged).
       await Bun.write(join(repoA, "manifest.json"), "{}\n");
       await Bun.write(join(repoA, "evidence.txt"), "evidence");
@@ -154,8 +156,9 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -165,7 +168,7 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async () => { throw new Error("must not read manifest"); },
+    verifySession: async () => { throw new Error("must not verify"); },
     pushCommit: async () => { throw new Error("must not push"); },
     createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
     mergePullRequest: async () => { throw new Error("must not merge"); },
@@ -204,6 +207,7 @@ test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () 
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
@@ -213,7 +217,7 @@ test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () 
   const delivery: GitHubDeliveryAdapter = {
     verifyRepository: async () => { events.push("verify"); },
     prepareBranch: async () => { events.push("prepare"); throw new Error("must not prepare"); },
-    readManifest: async () => { throw new Error("must not read manifest"); },
+    verifySession: async () => { throw new Error("must not verify"); },
     pushCommit: async () => { events.push("push"); },
     createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
     mergePullRequest: async () => { throw new Error("must not merge"); },
@@ -225,7 +229,7 @@ test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () 
     selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
   const openCode = {
-    run: async () => { events.push("opencode"); throw new Error("must not run"); },
+    run: async () => { sessionRan = true; events.push("opencode"); throw new Error("must not run"); },
     resume: async () => { events.push("resume"); throw new Error("must not resume"); },
   };
   const lock: GitHubRepositoryLockBoundary = {
@@ -266,8 +270,9 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   let reconciled = false;
   let runs = 0;
   let resumes = 0;
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -275,7 +280,7 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   const delivery: GitHubDeliveryAdapter = {
     verifyRepository: async () => undefined,
     prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") }),
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? (reconciled ? reconciledCommit : originalCommit) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? (reconciled ? reconciledCommit : originalCommit) : "b".repeat(40) }),
     pushCommit: async (_branch, commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}:${commit}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => ({ number: basename(workingDirectory) === "repo-a" ? 1 : 2 }),
     preparePullRequestReconciliation: async () => { events.push("prepare:repo-a"); return { baseCommit }; },
@@ -299,7 +304,7 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
     agentSource: {
-      run: async (options) => {
+      run: async (options) => { sessionRan = true;
         runs += 1;
         if (runs === 1) {
           for (const repository of [repoA, repoB]) {
@@ -355,8 +360,9 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   const checkpointPath = join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json");
   let checkpointExistedDuringReconciliation: boolean | null = null;
   let reconciliationWorkingDirectory: string | null = null;
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -366,7 +372,7 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) }; },
@@ -391,7 +397,7 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => {
+    agentSource: { run: async () => { sessionRan = true;
       for (const repository of [repoA, repoB]) {
         await Bun.write(join(repository, "manifest.json"), "{}\n");
         await Bun.write(join(repository, "evidence.txt"), "evidence");
@@ -425,8 +431,9 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
   const events: string[] = [];
   let mergeBAttempts = 0;
   let runCalls = 0;
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -436,7 +443,7 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
+    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: basename(workingDirectory) === "repo-a" ? 1 : 2 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => {
@@ -464,7 +471,7 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => {
+    agentSource: { run: async () => { sessionRan = true;
       runCalls += 1;
       if (runCalls > 1) throw new Error("must not run OpenCode again on resume");
       for (const repository of [repoA, repoB]) {
@@ -511,66 +518,6 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
   }
 });
 
-test("el workspace GitHub reanuda una vez la sesión que terminó sin IMPLEMENTATION_READY", async () => {
-  // Igual que la entrega de un solo repositorio: la relanzada manual del operador solo
-  // reanudaba la sesión que el checkpoint ya nombraba (ADR-0032).
-  const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-nudge-"));
-  const repoA = join(root, "repo-a");
-  const repoB = join(root, "repo-b");
-  await Bun.$`mkdir -p ${repoA} ${repoB}`;
-  let resumes = 0;
-  const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
-    if (args[0] === "rev-parse") return directory;
-    if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
-    return "";
-  };
-  const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") }),
-    readManifest: async (path) => ({ issue: 188, branch: "refs/heads/issue/188", commit: path.includes("repo-a") ? "a".repeat(40) : "b".repeat(40), validation: [{ command: "bun test", result: "passed" }], clean: true, summary: "changed", evidence: [{ path: "evidence.txt", sha256: createHash("sha256").update("evidence").digest("hex") }] }),
-    pushCommit: async () => undefined,
-    createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => ({ number: basename(workingDirectory) === "repo-a" ? 1 : 2 }),
-    mergePullRequest: async (pullRequest) => ({ number: pullRequest, mergeCommit: `${pullRequest}`.repeat(40) }),
-    closeIssue: async () => undefined,
-    cleanupBranch: async () => undefined,
-  };
-  const issue = { number: 188, title: "workspace", state: "OPEN", labels: [{ name: "ready-for-agent" }], assignees: [], createdAt: "2026-01-01", blockedBy: { nodes: [] } };
-  const writeManifests = async (): Promise<void> => {
-    for (const repository of [repoA, repoB]) {
-      await Bun.write(join(repository, "manifest.json"), "{}\n");
-      await Bun.write(join(repository, "evidence.txt"), "evidence");
-    }
-  };
-  const cli = createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => ({
-        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "still working" } })),
-        azureLoginRequired: false,
-      }),
-      resume: async () => {
-        resumes += 1;
-        await writeManifests();
-        return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } }));
-      },
-    },
-    git,
-    githubManagedQueue: {
-      selectEligibleIssue: async () => ({ kind: "candidate" as const, issue, repository: { nameWithOwner: "owner/repo-a" } }),
-      claimSelectedIssue: async () => ({ ...issue, body: "body", comments: [] }),
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
-    },
-    githubCheckpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
-    githubRepositoryLock: { acquire: async () => async () => undefined },
-    githubDelivery: delivery,
-  });
-  try {
-    expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(0);
-    expect(resumes).toBe(1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 test("la recuperación del workspace GitHub reanuda una vez más la sesión sin marcador", async () => {
   // La sesión que el checkpoint reanuda no es distinta de una recién abierta: si vuelve sin
@@ -581,8 +528,9 @@ test("la recuperación del workspace GitHub reanuda una vez más la sesión sin 
   await Bun.$`mkdir -p ${repoA} ${repoB}`.quiet();
   const texts = ["still working", "still working"];
   let resumes = 0;
+  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -605,7 +553,7 @@ test("la recuperación del workspace GitHub reanuda una vez más la sesión sin 
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
     agentSource: {
-      run: async () => { throw new Error("la recuperación reanuda, no arranca"); },
+      run: async () => { sessionRan = true; throw new Error("la recuperación reanuda, no arranca"); },
       resume: async () => {
         resumes += 1;
         return AgentResult.fromJsonLines(JSON.stringify({

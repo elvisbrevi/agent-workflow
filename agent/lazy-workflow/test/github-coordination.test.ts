@@ -69,7 +69,7 @@ function failingDelivery(overrides: Partial<GitHubDeliveryAdapter> = {}): GitHub
   const unexpected = async (): Promise<never> => { throw new Error("unexpected delivery operation"); };
   return {
     prepareBranch: unexpected,
-    readManifest: unexpected,
+    verifySession: async () => { throw new Error("must not verify"); },
     pushCommit: unexpected,
     createOrReusePullRequest: unexpected,
     mergePullRequest: unexpected,
@@ -395,7 +395,7 @@ test("la recuperación sessionless ignora un manifest ajeno de un issue previo",
     verifyRepository: async () => { events.push("verify-repository"); },
     checkoutBranch: async () => { events.push("checkout-branch"); },
     verifyBranch: async () => { events.push("verify-branch"); },
-    readManifest: async () => { events.push("read-manifest"); throw new Error("must not read stale manifest"); },
+    verifySession: async () => { throw new Error("must not verify"); },
   });
 
   try {

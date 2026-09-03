@@ -14,6 +14,7 @@ import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.
 import type { SagArchitectureReviewContext, SagCodingContext, SagNormsContext } from "../sag/sag-norms-service.ts";
 import type { WorkspaceScope } from "../workspace/repository-scope.ts";
 import type { QuestionAnswers } from "../interaction/question-round.ts";
+import { DEFAULT_PROMPT } from "../cli/parse-cli-options.ts";
 import {
   IMPLEMENTATION_READY_MARKER,
   QUESTIONS_ANSWERED_MARKER,
@@ -22,12 +23,10 @@ import {
   TICKET_COMPLETED_MARKER,
   WORKFLOW_STEP_FINISHED_MARKER,
   azureManifestCommandLine,
-  githubManifestCommandLine,
   renderContract,
 } from "./workflow-contract.ts";
 
 type PromptAsset =
-  | "github-scope"
   | "github-plan"
   | "github-code"
   | "autoplan"
@@ -63,14 +62,12 @@ export type WorkflowPromptSpec =
       issue: SelectedManagedIssue;
       repository: GitHubRepositoryContext;
       branch: string;
-      manifestPath: string;
     }
   | {
       kind: "github-reconciliation";
       issue: SelectedManagedIssue;
       repository: GitHubRepositoryContext;
       branch: string;
-      manifestPath: string;
       pullRequest: number;
       originalCommit: string;
       baseCommit: string;
@@ -133,8 +130,6 @@ export interface HandoffProgress {
   commit: string | null;
   /** `git status --porcelain` of the worktree, empty when it is clean. */
   uncommitted: string;
-  /** The completion manifest already on disk, when the outgoing session wrote one. */
-  manifest: string | null;
 }
 
 /** The progress section a handed-off session starts from, appended to its own workflow prompt. */
@@ -147,31 +142,17 @@ export function formatHandoffProgress(progress: HandoffProgress): string {
     `Rama fijada: ${progress.branch}`,
     `Último commit: ${progress.commit ?? "todavía no hay commits en la rama"}`,
     uncommitted ? `Archivos sin commitear:\n${uncommitted}` : "El árbol de trabajo no tiene cambios sin commitear.",
-    progress.manifest
-      ? `Completion manifest ya escrito:\n${progress.manifest}`
-      : "Todavía no hay completion manifest escrito.",
   ].join("\n");
 }
 
-function readAsset(name: PromptAsset): Promise<string> {
-  return Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text();
+async function readAsset(name: PromptAsset): Promise<string> {
+  // Sin el recorte, el salto final del archivo se vuelve una línea vacía del prompt.
+  return (await Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text()).trimEnd();
 }
 
 /** Load a prompt asset and resolve its contract placeholders. */
 export async function readPromptAsset(name: PromptAsset): Promise<string> {
   return renderContract(await readAsset(name));
-}
-
-/**
- * The GitHub scope paragraph plus exactly the selected workflow's instructions.
- * The coordinator has already chosen; OpenCode never receives the other branch.
- */
-async function githubWorkflow(workflow: "plan" | "code"): Promise<string[]> {
-  return [
-    await readPromptAsset("github-scope"),
-    `Selected workflow: ${workflow}`,
-    await readPromptAsset(workflow === "plan" ? "github-plan" : "github-code"),
-  ];
 }
 
 /**
@@ -291,7 +272,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
   switch (spec.kind) {
     case "github-plan":
       return [
-        ...(await githubWorkflow("plan")),
+        await readPromptAsset("github-plan"),
         ...sag,
         `The number of questions must be ${questions}`,
         await planInterviewSection(interview),
@@ -315,7 +296,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       return [
         ...(spec.run.kind === "azure-hu-run"
           ? await azureHuPlanningSections(spec.huInfo!, questions, interview)
-          : [...(await githubWorkflow("plan")), await planInterviewSection(interview)]),
+          : [await readPromptAsset("github-plan"), await planInterviewSection(interview)]),
         ...sag,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
@@ -325,35 +306,22 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         operatorRequest,
       ];
 
-    case "github-delivery": {
-      const { issue, repository, branch, manifestPath } = spec;
+    case "github-delivery":
+      // La única instrucción: el trabajo, y nada del contrato (ADR-0036). El Issue viaja como su
+      // número porque la sesión tiene `gh` y lee el cuerpo fresco, no la foto que el coordinador
+      // sacó antes de abrirla.
       return [
-        ...(await githubWorkflow("code")),
-        `Coordinator-fixed repository: ${repository.nameWithOwner}`,
-        "Coordinator-fixed issue context:",
-        issueContext(issue),
-        `The coordinator owns queue outcomes; do not print ${QUEUE_EMPTY_MARKER} or ${QUEUE_BLOCKED_MARKER}.`,
-        `Coordinator-fixed issue branch: ${branch}`,
-        `Write the ${IMPLEMENTATION_READY_MARKER} manifest to: ${manifestPath}`,
-        // The instruction itself arrives with the `github-code` asset; what the
-        // spec adds is the invocation with this unit's identities already in it.
-        ...manifestCommandLines([githubManifestCommandLine({ issue: issue.number, branch, manifestPath, workingDirectory })]),
-        `The only successful terminal marker is ${IMPLEMENTATION_READY_MARKER}; do not print ${TICKET_COMPLETED_MARKER} or ${WORKFLOW_STEP_FINISHED_MARKER}.`,
+        `/implement the issue #${spec.issue.number} usando /tdd /caveman /ponytail y /code-review.`,
+        await readPromptAsset("github-code"),
         ...sag,
-        `The working directory is ${workingDirectory}`,
-        "Operator request:",
-        operatorRequest,
+        // El default de `--prompt` no es una petición: es relleno, y un prompt de cuatro líneas no
+        // tiene dónde esconderlo.
+        operatorRequest.trim() && operatorRequest !== DEFAULT_PROMPT ? operatorRequest : null,
       ];
-    }
 
     case "github-reconciliation": {
-      const { issue, repository, branch, manifestPath, pullRequest, originalCommit, baseCommit } = spec;
-      const delivery = await fragments(
-        { kind: "github-delivery", issue, repository, branch, manifestPath },
-        { ...context, norms: null },
-      );
+      const { branch, pullRequest, originalCommit, baseCommit } = spec;
       return [
-        delivery.filter((line): line is string => line !== null).join("\n"),
         "Reconcile the existing pull request conflict. This is not a new issue implementation.",
         `Coordinator-fixed pull request: #${pullRequest}`,
         `Original implementation commit: ${originalCommit}`,
@@ -366,20 +334,14 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
 
     case "github-workspace-delivery":
       return [
-        ...(await githubWorkflow("code")),
+        await readPromptAsset("github-code"),
         ...(spec.issue ? ["Coordinator-fixed issue context:", issueContext(spec.issue)] : []),
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
         ...(spec.units.length > 0
-          ? ["Immutable delivery paths:", ...spec.units.map(({ path, branch, manifestPath }) => `${path}: branch ${branch}, manifest ${manifestPath}`)]
+          ? ["Ramas fijadas:", ...spec.units.map(({ path, branch }) => `${path}: ${branch}`)]
           : []),
-        "OpenCode may only read or modify the listed repositories. Do not create, switch, push, delete, or associate delivery branches or pull requests through provider commands.",
-        "Work through repositories serially in the declared order, committing each changed repository independently.",
-        "Each changed repository must end with a manifest carrying at least one in-repository evidence path.",
-        ...manifestCommandLines(spec.issue
-          ? spec.units.map(({ path, branch, manifestPath }) =>
-              githubManifestCommandLine({ issue: spec.issue!.number, branch, manifestPath, workingDirectory: path }))
-          : []),
+        "Trabaja los repositorios en el orden declarado, commiteando cada uno por separado.",
         `The working directory is ${spec.scope.parentDirectory}`,
         "Operator request:",
         operatorRequest,

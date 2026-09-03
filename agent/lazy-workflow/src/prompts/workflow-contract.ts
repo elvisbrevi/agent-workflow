@@ -9,7 +9,7 @@
  */
 
 import { EVIDENCE_KINDS, TEXT_EVIDENCE_KINDS } from "../azure/completion-manifest.ts";
-import { AZURE_TOOL_COMMANDS, GITHUB_TOOL_COMMANDS } from "../cli/tool-commands.ts";
+import { AZURE_TOOL_COMMANDS } from "../cli/tool-commands.ts";
 
 export const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 export const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
@@ -51,7 +51,6 @@ export const markerResumePrompt = (marker: string): string => [
  * that spells one out by hand fail its test.
  */
 export const AZURE_MANIFEST_COMMAND: typeof AZURE_TOOL_COMMANDS[number] = "ticket-manifest-set";
-export const GITHUB_MANIFEST_COMMAND: typeof GITHUB_TOOL_COMMANDS[number] = "github-manifest-set";
 
 /**
  * How a session proves an endpoint, spelled once.
@@ -97,14 +96,6 @@ export const AZURE_MANIFEST_TOOL_INSTRUCTION = [
   "If it fails, fix exactly what its message names and run it again.",
 ].join(" ");
 
-export const GITHUB_MANIFEST_TOOL_INSTRUCTION = [
-  `Create the manifest only by running \`lazy-workflow ${GITHUB_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
-  `It takes --issue, --branch, --manifest, --summary, ${VALIDATION_FLAGS}, and one --evidence <path> per in-repository evidence file.`,
-  "It resolves the commit from HEAD, verifies the worktree is clean, and computes every SHA-256 digest itself.",
-  "It refuses evidence the commit does not carry — the published document shows each file from that commit — and evidence whose text holds a credential.",
-  "If it fails, fix exactly what its message names and run it again.",
-].join(" ");
-
 /** The exact invocation for one coordinator-fixed unit, with its identities already filled in. */
 export function azureManifestCommandLine(fixed: {
   ticket: number | null;
@@ -116,17 +107,6 @@ export function azureManifestCommandLine(fixed: {
   return `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket ${fixed.ticket} --branch ${fixed.ticketBranch}`
     + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
     + ` --validation "<command>" --validation-result "<outcome>" --evidence command-output:<path>`;
-}
-
-export function githubManifestCommandLine(fixed: {
-  issue: number;
-  branch: string;
-  manifestPath: string;
-  workingDirectory: string;
-}): string {
-  return `lazy-workflow ${GITHUB_MANIFEST_COMMAND} --issue ${fixed.issue} --branch ${fixed.branch}`
-    + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
-    + ` --summary "<what changed>" --validation "<command>" --validation-result "<outcome>"`;
 }
 
 /** Every placeholder a prompt asset may use, and the text it resolves to. */
@@ -142,9 +122,7 @@ const CONTRACT_VALUES: Record<string, string> = {
   QUESTIONS_PENDING: QUESTIONS_PENDING_MARKER,
   QUESTIONS_ANSWERED: QUESTIONS_ANSWERED_MARKER,
   AZURE_MANIFEST_COMMAND,
-  GITHUB_MANIFEST_COMMAND,
   AZURE_MANIFEST_TOOL: AZURE_MANIFEST_TOOL_INSTRUCTION,
-  GITHUB_MANIFEST_TOOL: GITHUB_MANIFEST_TOOL_INSTRUCTION,
   HTTP_EVIDENCE: HTTP_EVIDENCE_INSTRUCTION,
 };
 

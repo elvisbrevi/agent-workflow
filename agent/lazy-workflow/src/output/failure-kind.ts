@@ -26,6 +26,7 @@ export const FAILURE_KIND_SEVERITY = {
   "branch-preparation-failure": "error",
   "session-failure": "error",
   "manifest-not-verifiable": "error",
+  "session-not-verified": "error",
   "delivery-failure": "error",
   "pull-request-failure": "error",
   "reconciliation-required": "error",

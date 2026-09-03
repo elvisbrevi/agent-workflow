@@ -29,8 +29,11 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
     summary: "changed",
     evidence: [{ path: evidencePath, sha256: createHash("sha256").update(evidencePath).digest("hex") }],
   });
+  let sessionRan = false;
   const git = async (args: string[], directory: string) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") {
+      return sessionRan ? (directory.includes("repo-a") ? originalCommit : "b".repeat(40)) : "c".repeat(40);
+    }
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -38,9 +41,7 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
   const delivery: GitHubDeliveryAdapter = {
     verifyRepository: async () => undefined,
     prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") }),
-    readManifest: async (path) => path.includes("repo-a")
-      ? manifest(reconciled ? reconciledCommit : originalCommit, reconciled ? "reconciled-evidence.txt" : "original-evidence.txt")
-      : manifest("b".repeat(40), "repo-b-evidence.txt"),
+    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? reconciledCommit : "b".repeat(40) }),
     pushCommit: async (_branch, commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}:${commit}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => ({ number: basename(workingDirectory) === "repo-a" ? 1 : 2 }),
     preparePullRequestReconciliation: async (_branch, _base, commit, workingDirectory) => {
@@ -83,6 +84,7 @@ test("cierra un workspace con el manifest reconciliado del repositorio conflicti
     agentSource: {
       run: async () => {
         runs += 1;
+        sessionRan = true;
         if (runs === 1) {
           for (const repository of [repoA, repoB]) {
             await Bun.write(join(repository, "manifest.json"), "{}\n");

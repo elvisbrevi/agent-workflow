@@ -59,7 +59,7 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       checkoutBranch: record("checkoutBranch", undefined),
       verifyBranch: record("verifyBranch", undefined),
       cleanupBranch: record("cleanupBranch", undefined),
-      readManifest: record("readManifest", { issue: 201, branch: "refs/heads/issue/201", commit: COMMIT, validation: [], clean: true, summary: "ok" }),
+      verifySession: record("verifySession", { commit: COMMIT }),
       writeManifest: record("writeManifest", { issue: 201, branch: "refs/heads/issue/201", commit: COMMIT, validation: [], clean: true, summary: "ok" }),
       pushCommit: record("pushCommit", undefined),
       createOrReusePullRequest: record("createOrReusePullRequest", { number: 9 }),
@@ -227,8 +227,7 @@ describe("herramientas deterministas como comandos", () => {
       "github-branch-checkout": "branch-preparation-failure",
       "github-branch-verify": "branch-preparation-failure",
       "github-branch-cleanup": "deterministic-completion-failure",
-      "github-manifest-info": "manifest-not-verifiable",
-      "github-manifest-set": "manifest-not-verifiable",
+      "github-session-verify": "session-not-verified",
       "github-commit-push": "deterministic-completion-failure",
       "github-pr-create": "pull-request-failure",
       "github-pr-merge": "pull-request-failure",
@@ -337,32 +336,15 @@ describe("herramientas deterministas como comandos", () => {
       expect(parsed(printed)).toEqual({ number: 9, mergeCommit: OTHER_COMMIT });
     });
 
-    test("github-manifest-set arma la declaración del manifest desde los flags", async () => {
-      const { code, calls } = await runTool([
-        "github-manifest-set", "--issue", "201", "--branch", "issue/201",
-        "--manifest", "/repo/.git/manifest.json", "--summary", "Agrega X",
-        "--validation", "bun test", "--validation-result", "198 pass",
-        "--validation", "bun run build", "--validation-result", "ok",
-        "--evidence", "docs/run.json", "--working-directory", "/repo",
+
+    test("github-session-verify responde el commit que git tiene en HEAD", async () => {
+      const { code, printed, calls } = await runTool([
+        "github-session-verify", "--branch", "issue/201", "--base-branch", "main", "--working-directory", "/repo",
       ]);
 
       expect(code).toBe(0);
-      expect(calls[0]?.operation).toBe("writeManifest");
-      // Los pares llegan emparejados por posición y la rama completada a su ref.
-      expect(calls[0]?.args).toEqual([
-        "/repo/.git/manifest.json",
-        {
-          issue: 201,
-          branch: "refs/heads/issue/201",
-          summary: "Agrega X",
-          validation: [
-            { command: "bun test", result: "198 pass" },
-            { command: "bun run build", result: "ok" },
-          ],
-          evidence: ["docs/run.json"],
-        },
-        "/repo",
-      ]);
+      expect(calls).toEqual([{ operation: "verifySession", args: ["refs/heads/issue/201", "refs/heads/main", "/repo"] }]);
+      expect(parsed(printed)).toEqual({ branch: "refs/heads/issue/201", baseBranch: "refs/heads/main", commit: COMMIT });
     });
 
     test("github-issue-close pasa el commit de merge fijado", async () => {

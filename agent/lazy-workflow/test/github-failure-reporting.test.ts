@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GitHubSessionNotVerifiedError } from "../src/github/github-delivery-service.ts";
 import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
 import { createReporter, type ReporterOptions, type ReporterStream } from "../src/output/reporter.ts";
@@ -29,23 +30,15 @@ function capturingReporterFactory(): { reporterFn: typeof createReporter; captur
 }
 
 describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
-  test("un manifest no verificable en completeGitHubDelivery produce la línea de operador en error y un registro run-log con failure_kind", async () => {
+  test("una sesión no verificada en completeGitHubDelivery produce la línea de operador en error y un registro run-log con failure_kind", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-github-failure-"));
     const logFile = join(dir, "runs.jsonl");
     const { reporterFn, captured } = capturingReporterFactory();
     try {
       const delivery = fakeGitHubDelivery({
-        // The checkpoint fixes issue 178; a manifest naming another issue makes
-        // completeGitHubDelivery throw "El manifest no coincide..." — a real
-        // manifest-not-verifiable failure, not a stubbed error message.
-        readManifest: async () => ({
-          issue: 999,
-          branch: "refs/heads/issue/178",
-          commit: "a".repeat(40),
-          validation: [],
-          clean: true,
-          summary: "entrega completada",
-        }),
+        // La rama fijada no lleva commits sobre su base: un fallo de verificación real
+        // (ADR-0035), no un mensaje de error simulado.
+        verifySession: async () => { throw new GitHubSessionNotVerifiedError("la rama refs/heads/issue/178 no tiene commits sobre refs/heads/main"); },
       });
       const cli = createCli({
         huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
@@ -76,11 +69,11 @@ describe("emisión tipada de fallos GitHub (ADR-0029)", () => {
 
       // The run-log record: same failure, carrying its kind, phase and context.
        const lines = await readLines(logFile);
-      const failureRecord = lines.find((line) => line["failure_kind"] === "manifest-not-verifiable");
+      const failureRecord = lines.find((line) => line["failure_kind"] === "session-not-verified");
       expect(failureRecord).toBeDefined();
       expect(failureRecord).toMatchObject({
         severity: "error",
-        failure_kind: "manifest-not-verifiable",
+        failure_kind: "session-not-verified",
         phase: "implementation-ready",
         context: expect.objectContaining({ issue: 178 }),
       });

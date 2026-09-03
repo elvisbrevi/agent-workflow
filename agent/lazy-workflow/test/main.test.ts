@@ -551,9 +551,9 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   expect(cleanupCalls).toBe(0);
   expect(received.detectAzureLogin).toBeFalse();
   expect(received.options?.workingDirectory).toBe("/repo");
-  expect(received.options?.prompt).toContain("default GitHub repository workflow");
-  expect(received.options?.prompt).toContain("Selected workflow: plan");
-  expect(received.options?.prompt).toContain("Do not use Azure DevOps");
+  expect(received.options?.prompt).toContain("/grill-with-docs");
+  expect(received.options?.prompt).toContain("This is a planning workflow: do not implement code.");
+
   expect(received.options?.prompt).toContain("trabaja sobre GitHub");
   expect(received.options?.prompt).toContain("3");
 });
@@ -599,14 +599,14 @@ test("code sin HU entrega un solo issue por sesion", async () => {
   expect(code).toBe(0);
   expect(calls).toHaveLength(1);
   expect(calls.map(({ options }) => options.session)).toEqual([null]);
-  expect(calls.map(({ options }) => options.terminalMarker)).toEqual(["IMPLEMENTATION_READY"]);
+  expect(calls.map(({ options }) => options.terminalMarker)).toEqual([undefined]);
   expect(calls.every(({ detectAzure }) => detectAzure === false)).toBeTrue();
-  expect(calls[0]?.options.prompt).toContain("IMPLEMENTATION_READY");
-  expect(calls[0]?.options.prompt).toContain("QUEUE_EMPTY");
-  expect(calls[0]?.options.prompt).toContain("TICKET_COMPLETED");
-  expect(calls[0]?.options.prompt).toContain("Coordinator-fixed issue context");
-  expect(calls[0]?.options.prompt).toContain("\"number\":201");
-  expect(calls[0]?.options.prompt).toContain("\"body of #201\"");
+  expect(calls[0]?.options.prompt).toBe([
+    "/implement the issue #201 usando /tdd /caveman /ponytail y /code-review.",
+    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "no abras PR, no me hagas preguntas.",
+    "termina con un resumen de lo realizado entendible por un humano.",
+  ].join("\n"));
   expect(azureCalls).toBe(0);
   expect(checkpointCalls).toBe(0);
   expect(cleanupCalls).toBe(0);

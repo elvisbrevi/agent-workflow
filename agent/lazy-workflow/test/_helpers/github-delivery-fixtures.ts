@@ -19,6 +19,10 @@ export function fakeGitHubDelivery(overrides: Partial<GitHubDeliveryAdapter> = {
       };
       return { branch: prepared.branch, baseBranch: prepared.baseBranch, manifestPath: prepared.manifestPath };
     },
+    async verifySession() {
+      if (!prepared) throw new Error("verifySession llamado antes de prepareBranch");
+      return { commit: "a".repeat(40) };
+    },
     async readManifest(): Promise<GitHubReadyManifest> {
       if (!prepared) throw new Error("readManifest llamado antes de prepareBranch");
       return {

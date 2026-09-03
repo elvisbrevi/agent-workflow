@@ -16,9 +16,7 @@ import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   GitHubDeliveryService,
   type GitHubBranchPreparation,
-  type GitHubManifestInput,
   type GitHubPullRequest,
-  type GitHubReadyManifest,
 } from "../github/github-delivery-service.ts";
 import {
   isEvidenceKind,
@@ -62,9 +60,7 @@ export interface GitHubDeliveryTools {
   checkoutBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   verifyBranch(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   cleanupBranch(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<void>;
-  readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
-  /** Optional for the same reason the Azure operations are: an injected boundary implements what its test needs. */
-  writeManifest?(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest>;
+  verifySession(branch: string, baseBranch: string, workingDirectory: string): Promise<{ commit: string }>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
   createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest>;
   mergePullRequest(pullRequest: number, issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<GitHubPullRequest & { mergeCommit: string }>;
@@ -114,6 +110,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 export function deterministicFailureKind(command: DeterministicToolCommand) {
   if (command.includes("manifest")) return "manifest-not-verifiable" as const;
   if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
+  if (command === "github-session-verify") return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
   if (command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
   if (command === "github-issue-claim") return "claim-verification-failure" as const;
@@ -342,21 +339,10 @@ async function runGitHubTool(
     await delivery.cleanupBranch(branch, baseBranch, commit, workingDirectory);
     return { branch, baseBranch, commit, removed: true };
   }
-  if (command === "github-manifest-info") {
-    const manifest = requireText(options.manifest, "--manifest <path>", command);
-    return delivery.readManifest(manifest, workingDirectory);
-  }
-  if (command === "github-manifest-set") {
-    const issue = requirePositive(options.issue, "--issue <id>", command);
+  if (command === "github-session-verify") {
     const branch = requireBranchRef(options.branch, "--branch <name>", command);
-    const manifest = requireText(options.manifest, "--manifest <path>", command);
-    const summary = requireText(options.summary, "--summary <text>", command);
-    const validation = requireValidation(options, command);
-    return requireOperation(delivery, "writeManifest", command)(
-      manifest,
-      { issue, branch, ...(options.commit ? { commit: options.commit } : {}), validation, summary, evidence: options.evidence },
-      workingDirectory,
-    );
+    const baseBranch = requireBranchRef(options.baseBranch, "--base-branch <name>", command);
+    return { branch, baseBranch, ...await delivery.verifySession(branch, baseBranch, workingDirectory) };
   }
   if (command === "github-commit-push") {
     const branch = requireBranchRef(options.branch, "--branch <name>", command);

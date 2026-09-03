@@ -108,7 +108,7 @@ export type BinaryProbe = (binary: string) => boolean;
 const binaryOnPath: BinaryProbe = (binary) => Bun.which(binary) !== null;
 
 const DEFAULT_VARIANT = "high";
-const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
+export const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
 const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 /** No interview unless the operator asks for one: an unattended run is the normal one. */
 const DEFAULT_INTERVIEW_CHANNEL: InterviewChannelKind = "off";

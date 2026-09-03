@@ -4,8 +4,6 @@ import {
   AZURE_MANIFEST_COMMAND,
   AZURE_MANIFEST_TOOL_INSTRUCTION,
   CONTRACT_LITERALS,
-  GITHUB_MANIFEST_COMMAND,
-  GITHUB_MANIFEST_TOOL_INSTRUCTION,
   HTTP_EVIDENCE_INSTRUCTION,
   IMPLEMENTATION_READY_MARKER,
   QUESTIONS_ANSWERED_MARKER,
@@ -67,21 +65,17 @@ const deliveryContext = {
 test("renderContract resuelve los placeholders del contrato", () => {
   expect(renderContract("marca {{IMPLEMENTATION_READY}}")).toBe(`marca ${IMPLEMENTATION_READY_MARKER}`);
   expect(renderContract("{{AZURE_MANIFEST_TOOL}}")).toBe(AZURE_MANIFEST_TOOL_INSTRUCTION);
-  expect(renderContract("{{GITHUB_MANIFEST_TOOL}}")).toBe(GITHUB_MANIFEST_TOOL_INSTRUCTION);
 });
 
 test("el contrato del manifest nombra la herramienta y prohíbe escribir el archivo", () => {
   // El manifest dejó de ser una forma que la sesión reproduce: es un comando que
   // ejecuta. Si el prompt vuelve a describir el JSON, vuelve a inventarlo.
-  for (const instruction of [AZURE_MANIFEST_TOOL_INSTRUCTION, GITHUB_MANIFEST_TOOL_INSTRUCTION]) {
-    expect(instruction).toContain("never write, edit, or repair that JSON file yourself");
-  }
+  expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain("never write, edit, or repair that JSON file yourself");
   expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND}`);
   // Los kinds salen del enum, no de un literal: si alguien agrega uno, el contrato lo nombra solo.
   expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(EVIDENCE_KINDS.join(", "));
   // Y la regla que la sesión solo descubría en la última compuerta, con los PR ya mergeados.
   expect(AZURE_MANIFEST_TOOL_INSTRUCTION).toContain(`At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}`);
-  expect(GITHUB_MANIFEST_TOOL_INSTRUCTION).toContain(`lazy-workflow ${GITHUB_MANIFEST_COMMAND}`);
 });
 
 test("la instrucción de evidencia HTTP nombra el navegador y la forma que el coordinador maqueta", () => {
@@ -100,7 +94,7 @@ test("la instrucción de evidencia HTTP nombra el navegador y la forma que el co
 
 test("los prompts de entrega piden la evidencia por el contrato, no por su cuenta", async () => {
   const directory = new URL("../prompts/", import.meta.url);
-  for (const asset of ["autocode-prompt.md", "github-code-prompt.md"]) {
+  for (const asset of ["autocode-prompt.md"]) {
     const raw = await Bun.file(new URL(asset, directory)).text();
     expect(`${asset}: ${raw.includes("{{HTTP_EVIDENCE}}")}`).toBe(`${asset}: true`);
   }
@@ -130,11 +124,9 @@ test("resolveWorkflowRun resuelve el proveedor una sola vez desde --hu", () => {
   expect(resolveWorkflowRun(23438)).toEqual({ kind: "azure-hu-run", hu: 23438 });
 });
 
-test("el plan GitHub fija el workflow y prohibe Azure", async () => {
+test("el plan GitHub declara su workflow y su presupuesto de preguntas", async () => {
   const prompt = await buildWorkflowPrompt({ kind: "github-plan" }, context);
-  expect(prompt).toContain("default GitHub repository workflow");
-  expect(prompt).toContain("Selected workflow: plan");
-  expect(prompt).toContain("Do not use Azure DevOps");
+  expect(prompt).toContain("This is a planning workflow: do not implement code.");
   expect(prompt).toContain("The number of questions must be 3");
   expect(prompt).toContain("The working directory is /repo");
   expect(prompt.endsWith("Operator request:\nentrega lo pedido")).toBe(true);
@@ -150,9 +142,8 @@ test("cada run recibe solo la rama de workflow que el coordinador eligio", async
     issue,
     repository: { nameWithOwner: "o/api" },
     branch: "issue/201",
-    manifestPath: "/repo/.git/manifest.json",
   }, context);
-  expect(code).toContain("deliver that exact issue");
+  expect(code).toContain("/implement the issue #201");
   expect(code).not.toContain("This is a planning workflow");
 });
 
@@ -190,18 +181,16 @@ test("la entrega GitHub fija issue, rama, manifest y markers", async () => {
     branch: "issue/201",
     manifestPath: "/repo/.git/manifest.json",
   }, context);
-  expect(prompt).toContain("Coordinator-fixed repository: o/api");
-  expect(prompt).toContain('"number":201');
-  expect(prompt).toContain('"body of #201"');
-  expect(prompt).toContain("Coordinator-fixed issue branch: issue/201");
-  expect(prompt).toContain(`Write the ${IMPLEMENTATION_READY_MARKER} manifest to: /repo/.git/manifest.json`);
-  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
-  // La invocación llega armada con las identidades que el coordinador ya fijó:
-  // lo único que la sesión completa es lo que solo ella sabe.
-  expect(prompt).toContain(
-    `lazy-workflow ${GITHUB_MANIFEST_COMMAND} --issue 201 --branch issue/201 --manifest /repo/.git/manifest.json --working-directory /repo`,
-  );
-  expect(prompt).toContain(`do not print ${QUEUE_EMPTY_MARKER} or ${QUEUE_BLOCKED_MARKER}`);
+  // El trabajo, y nada del contrato (ADR-0036). El Issue viaja como su número: la sesión
+  // tiene `gh` y lee el cuerpo fresco.
+  expect(prompt).toBe([
+    "/implement the issue #201 usando /tdd /caveman /ponytail y /code-review.",
+    "trabaja en esta misma branch, comitea y push en esta misma branch.",
+    "no abras PR, no me hagas preguntas.",
+    "termina con un resumen de lo realizado entendible por un humano.",
+    "entrega lo pedido",
+  ].join("\n"));
+  expect(prompt).not.toContain('"body of #201"');
 });
 
 test("la reconciliacion GitHub conserva el contrato de entrega y fija los commits", async () => {
@@ -210,7 +199,6 @@ test("la reconciliacion GitHub conserva el contrato de entrega y fija los commit
     issue,
     repository: { nameWithOwner: "o/api" },
     branch: "issue/201",
-    manifestPath: "/repo/.git/manifest.json",
     pullRequest: 314,
     originalCommit: "aaaa111",
     baseCommit: "bbbb222",
@@ -219,12 +207,9 @@ test("la reconciliacion GitHub conserva el contrato de entrega y fija los commit
   expect(prompt).toContain("Original implementation commit: aaaa111");
   expect(prompt).toContain("Coordinator-fetched base commit: bbbb222");
   expect(prompt).toContain("Merge exactly bbbb222 into issue/201");
-  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
-  // Reconciliar no reescribe el manifest a mano: vuelve a correr la herramienta.
-  expect(prompt).toContain("run the manifest tool again so the manifest names the new HEAD");
 });
 
-test("la entrega workspace GitHub declara el orden y un manifest por repositorio", async () => {
+test("la entrega workspace GitHub declara el orden y la rama de cada repositorio", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "github-workspace-delivery",
     scope,
@@ -237,12 +222,9 @@ test("la entrega workspace GitHub declara el orden y un manifest por repositorio
   expect(prompt).toContain("Workspace parent directory: /ws");
   expect(prompt).toContain("1. /ws/api (https://github.com/o/api.git)");
   expect(prompt).toContain("2. /ws/web (https://github.com/o/web.git)");
-  expect(prompt).toContain("Work through repositories serially in the declared order");
-  expect(prompt).toContain(GITHUB_MANIFEST_TOOL_INSTRUCTION);
-  // Cada repositorio recibe su propia invocación: una sola, compartida, escribiría
-  // el manifest de un repositorio con el directorio de otro.
-  expect(prompt).toContain(`--manifest /ws/api/.git/manifest.json --working-directory /ws/api`);
-  expect(prompt).toContain(`--manifest /ws/web/.git/manifest.json --working-directory /ws/web`);
+  expect(prompt).toContain("Trabaja los repositorios en el orden declarado");
+  expect(prompt).toContain("/ws/api: issue/201");
+  expect(prompt).toContain("/ws/web: issue/201");
   expect(prompt).toContain("The working directory is /ws");
 });
 
@@ -269,10 +251,9 @@ test("un run Azure nunca recibe el alcance GitHub", async () => {
   expect(workspaceDelivery).not.toContain("Use GitHub and `gh` for");
 });
 
-test("un plan de workspace GitHub conserva el alcance GitHub", async () => {
+test("un plan de workspace GitHub conserva su roster y su workflow", async () => {
   const prompt = await buildWorkflowPrompt({ kind: "workspace-plan", scope, run: { kind: "github-repository-run" }, huInfo: null }, context);
-  expect(prompt).toContain("Do not use Azure DevOps");
-  expect(prompt).toContain("Selected workflow: plan");
+  expect(prompt).toContain("This is a planning workflow: do not implement code.");
   expect(prompt).not.toContain("child work items");
 });
 

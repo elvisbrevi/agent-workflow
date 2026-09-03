@@ -144,10 +144,9 @@ test("la sesión traspasada recibe el mismo trabajo fijado que la original", asy
   await runDelivery(agents, ["--fallback", "claudecode:claude-opus-5:high"]);
 
   const prompt = agents.started[1]?.options.prompt ?? "";
-  expect(prompt).toContain("Coordinator-fixed issue branch: refs/heads/issue/178");
-  expect(prompt).toContain("/tmp/lazy-workflow-fake-manifest-178.json");
-  expect(prompt).toContain(IMPLEMENTATION_READY_MARKER);
-  expect(prompt).toContain('"number":178');
+  expect(prompt).toContain("/implement the issue #178");
+  expect(prompt).toContain("Rama fijada: refs/heads/issue/178");
+
 });
 
 test("la sección de avance se arma con estado verificado y no con el texto de la sesión agotada", async () => {
@@ -163,27 +162,6 @@ test("la sección de avance se arma con estado verificado y no con el texto de l
   expect(prompt).not.toContain("lo que dijo la sesión agotada");
 });
 
-test("el manifest ya escrito viaja en la sección de avance, y su ausencia se dice", async () => {
-  const manifestPath = join(tmpdir(), `lazy-workflow-handoff-manifest-${process.pid}.json`);
-  await Bun.write(manifestPath, JSON.stringify({ issue: 178, branch: "refs/heads/issue/178", clean: true }));
-  const delivery = fakeGitHubDelivery({
-    prepareBranch: async () => ({ branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath }),
-  });
-  const withManifest = scriptedAgents({ opencode: [exhausted("provider/primario")] });
-  const withoutManifest = scriptedAgents({ opencode: [exhausted("provider/primario")] });
-
-  try {
-    await runDelivery(withManifest, ["--fallback", "claudecode:claude-opus-5:high"], checkpointStore(), delivery);
-    await runDelivery(withoutManifest, ["--fallback", "claudecode:claude-opus-5:high"], checkpointStore(), fakeGitHubDelivery({
-      prepareBranch: async () => ({ branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath: `${manifestPath}.ausente` }),
-    }));
-  } finally {
-    await unlink(manifestPath);
-  }
-
-  expect(withManifest.started[1]?.options.prompt).toContain('"issue":178,"branch":"refs/heads/issue/178"');
-  expect(withoutManifest.started[1]?.options.prompt).toContain("Todavía no hay completion manifest escrito.");
-});
 
 test("una rama sin commits todavía se dice como ausencia, no como el commit de la base", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
@@ -205,32 +183,6 @@ test("una rama sin commits todavía se dice como ausencia, no como el commit de 
   expect(prompt).toContain("El árbol de trabajo no tiene cambios sin commitear.");
 });
 
-test("un manifest de otra issue o de otra rama no se cita como avance de esta unidad", async () => {
-  // La ruta del manifest es fija por repositorio: el que dejó una entrega
-  // anterior sigue ahí, y solo pertenece a esta unidad si la nombra.
-  const foreignIssue = join(tmpdir(), `lazy-workflow-handoff-otra-issue-${process.pid}.json`);
-  const foreignBranch = join(tmpdir(), `lazy-workflow-handoff-otra-rama-${process.pid}.json`);
-  await Bun.write(foreignIssue, JSON.stringify({ issue: 177, branch: "refs/heads/issue/177", clean: true }));
-  await Bun.write(foreignBranch, JSON.stringify({ issue: 178, branch: "refs/heads/issue/178-anterior", clean: true }));
-  const agents = { issue: scriptedAgents({ opencode: [exhausted("provider/primario")] }), branch: scriptedAgents({ opencode: [exhausted("provider/primario")] }) };
-
-  try {
-    for (const [key, manifestPath] of [["issue", foreignIssue], ["branch", foreignBranch]] as const) {
-      await runDelivery(agents[key], ["--fallback", "claudecode:claude-opus-5:high"], checkpointStore(), fakeGitHubDelivery({
-        prepareBranch: async () => ({ branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath }),
-      }));
-    }
-  } finally {
-    await unlink(foreignIssue);
-    await unlink(foreignBranch);
-  }
-
-  for (const agent of [agents.issue, agents.branch]) {
-    const prompt = agent.started[1]?.options.prompt ?? "";
-    expect(prompt).toContain("Todavía no hay completion manifest escrito.");
-    expect(prompt).not.toContain('"clean":true');
-  }
-});
 
 test("una rama sin commits propios sobre una base con historia dice la ausencia, no el commit de la base", async () => {
   const agents = scriptedAgents({ opencode: [exhausted("provider/primario")] });
@@ -352,7 +304,7 @@ test("un agotamiento con respaldo en Codex continúa la misma unidad en una sesi
   expect(handoff?.variant).toBe("high");
   expect(handoff?.session).toBeNull();
   expect(handoff?.agent?.configPath).toEndWith("codex/lazy-github-code.rules");
-  expect(handoff?.prompt).toContain("Coordinator-fixed issue branch: refs/heads/issue/178");
+  expect(handoff?.prompt).toContain("/implement the issue #178");
 });
 
 test("un agotamiento en Codex con respaldo de otro CLI continúa la misma unidad en una sesión fresca del CLI nuevo", async () => {

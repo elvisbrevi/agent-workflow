@@ -1,35 +1,8 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { GitTicketBranchCleaner, checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
-import { writeVerifiedManifest } from "../manifest/verified-write.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
-import { assertEvidenceIsPublishable } from "../evidence/evidence-safety.ts";
-
-export interface GitHubReadyManifest {
-  issue: number;
-  branch: string;
-  commit: string;
-  validation: Array<{ command: string; result: string }>;
-  clean: boolean;
-  summary: string;
-  evidence?: Array<{ path: string; sha256: string }>;
-}
-
-/**
- * What a session declares for its manifest, and only that: what it alone knows.
- * The commit, the clean flag and every digest are read from the repository by
- * `writeManifest`, so they cannot be misdeclared.
- */
-export interface GitHubManifestInput {
-  issue: number;
-  branch: string;
-  commit?: string;
-  validation: Array<{ command: string; result: string }>;
-  summary: string;
-  evidence: string[];
-}
 
 export interface GitHubBranchPreparation {
   branch: string;
@@ -40,6 +13,14 @@ export interface GitHubBranchPreparation {
 export interface GitHubPullRequest {
   number: number;
   mergeCommit?: string;
+}
+
+/** La sesión salió, pero lo que dejó en el repositorio no es una entrega (ADR-0035). */
+export class GitHubSessionNotVerifiedError extends Error {
+  constructor(reason: string) {
+    super(`La sesión no quedó verificada: ${reason}`);
+    this.name = "GitHubSessionNotVerifiedError";
+  }
 }
 
 export class GitHubPullRequestConflictError extends Error {
@@ -61,8 +42,7 @@ export interface GitHubDeliveryAdapter {
   checkoutBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   verifyBranch?(branch: string, baseBranch: string, workingDirectory: string): Promise<void>;
   prepareBranch(issue: number, workingDirectory: string): Promise<GitHubBranchPreparation>;
-  readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest>;
-  writeManifest?(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest>;
+  verifySession(branch: string, baseBranch: string, workingDirectory: string): Promise<{ commit: string }>;
   pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void>;
   createOrReusePullRequest(issue: number, branch: string, baseBranch: string, commit: string, workingDirectory: string, closesIssue?: boolean, issueReference?: string, summary?: string): Promise<GitHubPullRequest>;
   preparePullRequestReconciliation?(branch: string, baseBranch: string, commit: string, workingDirectory: string): Promise<{ baseCommit: string }>;
@@ -131,40 +111,7 @@ function referencesIssue(body: string, issue: number): boolean {
   return new RegExp(`(?:^|\\s)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${issue}(?!\\d)`).test(body);
 }
 
-/**
- * Whether a file's decoded bytes are text a comment can carry.
- *
- * The extension decides the kind, and no list of extensions ever names every binary a repository
- * holds: a `.pdf`, an `.mp4` or a font declared as evidence decodes into control characters and
- * replacement marks, and eight thousand of them fenced into a pull request is worse than the file
- * being left out. The bytes answer for themselves -- and only the bytes no text carries, since a
- * test runner's colour codes are text a reader wants, cleaned when the document is rendered.
- */
-const readsAsText = (content: string): boolean => !/[\u0000-\u0008\ufffd]/.test(content);
-
 const MAX_SUMMARY_CHARACTERS = 1000;
-
-function validationResultIsNotFailure(result: string): boolean {
-  return !/^(?:fail(?:ed|ure)?|error)(?:\b|:)/i.test(result.trim()) && !/^exit\s+[1-9]/i.test(result.trim());
-}
-
-function manifestIsValid(value: unknown): value is GitHubReadyManifest {
-  if (typeof value !== "object" || value === null) return false;
-  const allowedKeys = new Set(["issue", "branch", "commit", "validation", "clean", "summary", "evidence"]);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
-  const manifest = value as Partial<GitHubReadyManifest>;
-  return Number.isInteger(manifest.issue)
-    && (manifest.issue ?? 0) > 0
-    && typeof manifest.branch === "string"
-    && typeof manifest.commit === "string"
-    && Array.isArray(manifest.validation)
-    && manifest.validation.length > 0
-    && manifest.validation.every((entry) => typeof entry?.command === "string" && entry.command.trim().length > 0 && typeof entry.result === "string" && entry.result.trim().length > 0 && validationResultIsNotFailure(entry.result))
-    && manifest.clean === true
-    && typeof manifest.summary === "string"
-    && manifest.summary.trim().length > 0
-    && (manifest.evidence === undefined || (Array.isArray(manifest.evidence) && manifest.evidence.length > 0 && manifest.evidence.every((entry) => typeof entry?.path === "string" && entry.path.trim().length > 0 && typeof entry.sha256 === "string" && /^[0-9a-f]{64}$/i.test(entry.sha256))));
-}
 
 export class GitHubDeliveryService implements GitHubDeliveryAdapter {
   constructor(
@@ -262,90 +209,31 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
     return { branch, baseBranch, manifestPath };
   }
 
-  async readManifest(path: string, workingDirectory: string): Promise<GitHubReadyManifest> {
-    const value: unknown = await Bun.file(path).json();
-    if (!manifestIsValid(value)) throw new Error("El manifest IMPLEMENTATION_READY es inválido");
-    const manifest = value;
-    const branch = requireBranch(manifest.branch, "El manifest");
-    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-    if (active !== branchName(branch)) throw new Error("La rama activa no coincide con el manifest");
-    const commit = requireCommit(manifest.commit);
-    const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-    if (head !== commit) throw new Error("El commit del manifest no coincide con HEAD");
-    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
-    if (status.trim()) throw new Error("El worktree no está limpio para publicar el manifest");
-    for (const evidence of manifest.evidence ?? []) {
-      const evidencePath = resolve(workingDirectory, evidence.path);
-      const relativeEvidencePath = relative(resolve(workingDirectory), evidencePath);
-      const outsideRepository = relativeEvidencePath === ".." || relativeEvidencePath.startsWith(`..${sep}`);
-      if (outsideRepository || !await Bun.file(evidencePath).exists()) throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${evidence.path}`);
-      const digest = createHash("sha256").update(new Uint8Array(await Bun.file(evidencePath).arrayBuffer())).digest("hex");
-      if (digest.toLowerCase() !== evidence.sha256.toLowerCase()) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
-    }
-    return { ...manifest, branch, commit };
-  }
-
   /**
-   * Writes the `IMPLEMENTATION_READY` manifest, already valid.
+   * Lo que el coordinador pregunta cuando el proceso de la sesión sale: git, y
+   * solo git (ADR-0035).
    *
-   * The session declares only what it alone knows — the issue, the branch, what
-   * it ran and what came out, and the summary. Everything a session used to get
-   * wrong is taken from the repository instead: the commit is HEAD, `clean` is
-   * the worktree's real state rather than a claim, and every evidence digest is
-   * read off the file. The result goes back through `readManifest`, the same gate
-   * the coordinator applies, so the file on disk is one the delivery accepts or
-   * there is no file at all.
+   * La rama activa es la fijada, el árbol no tiene cambios sin commitear y la
+   * rama lleva al menos un commit sobre su base. Un agente que preguntó, que se
+   * negó o que exploró sin commitear deja una rama vacía; uno que commiteó parte
+   * de su trabajo deja el árbol sucio. Ninguna de las dos es una entrega, y
+   * ninguna se distingue mirando el código de salida.
    */
-  async writeManifest(path: string, input: GitHubManifestInput, workingDirectory: string): Promise<GitHubReadyManifest> {
-    if (!Number.isInteger(input.issue) || input.issue <= 0) throw new Error("El issue del manifest no es válido");
-    const branch = requireBranch(input.branch, "La rama");
-    const summary = input.summary.trim();
-    if (!summary) throw new Error("El manifest requiere un resumen");
-    const head = (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-    const commit = input.commit ? requireCommit(input.commit) : requireCommit(head);
-    if (commit !== head) throw new Error("El commit del manifest no coincide con HEAD");
-    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
-    if (status.trim()) throw new Error("El worktree no está limpio para publicar el manifest");
-    const root = resolve(workingDirectory);
-    const evidence: Array<{ path: string; sha256: string }> = [];
-    for (const declared of input.evidence) {
-      const evidencePath = resolve(root, declared);
-      const relativePath = relative(root, evidencePath);
-      const outsideRepository = !relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`);
-      if (outsideRepository || !await Bun.file(evidencePath).exists()) {
-        throw new Error(`La evidencia del manifest no es un archivo del repositorio: ${declared}`);
-      }
-      // The pull request and the closing comment now carry this file's own text, and a repository
-      // is a more public place than a work item: what the Azure ticket refuses to publish, the
-      // GitHub surface refuses too. Judged here, where the session can still redact and recommit.
-      const bytes = new Uint8Array(await Bun.file(evidencePath).arrayBuffer());
-      const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-      if (readsAsText(decoded)) assertEvidenceIsPublishable(decoded);
-      // Evidence is published from the commit (`blob/<commit>/<path>?raw=1`), so a file the commit
-      // does not carry leaves a permanently broken image on an issue already closed. A clean
-      // worktree does not answer this: `--untracked-files=no` cannot see a file that was never
-      // added. Ask the commit itself, here, where the session can still commit what it wrote.
-      const trackedPath = relativePath.split(sep).join("/");
-      try {
-        await this.git(["cat-file", "-e", `${commit}:${trackedPath}`], workingDirectory);
-      } catch {
-        throw new Error(`La evidencia del manifest no está en el commit: ${declared}`);
-      }
-      evidence.push({ path: trackedPath, sha256: createHash("sha256").update(bytes).digest("hex") });
+  async verifySession(branch: string, baseBranch: string, workingDirectory: string): Promise<{ commit: string }> {
+    const verifiedBranch = requireBranch(branch, "La rama");
+    const verifiedBase = requireBranch(baseBranch, "La rama base");
+    const active = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    if (active !== branchName(verifiedBranch)) {
+      throw new GitHubSessionNotVerifiedError(`la rama activa ${active || "detached"} no coincide con ${verifiedBranch}`);
     }
-    const manifest: GitHubReadyManifest = {
-      issue: input.issue,
-      branch,
-      commit,
-      validation: input.validation,
-      clean: true,
-      summary,
-      // The key itself is optional, and an empty array is invalid, so an evidence-less
-      // delivery must not carry it at all (`manifestIsValid`).
-      ...(evidence.length > 0 ? { evidence } : {}),
-    };
-    if (!manifestIsValid(manifest)) throw new Error("El manifest IMPLEMENTATION_READY es inválido");
-    return writeVerifiedManifest(resolve(path), manifest, (manifestPath) => this.readManifest(manifestPath, workingDirectory));
+    if ((await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory)).trim()) {
+      throw new GitHubSessionNotVerifiedError("la sesión dejó cambios sin commitear");
+    }
+    const ahead = Number((await this.git(["rev-list", "--count", `${verifiedBase}..${verifiedBranch}`], workingDirectory)).trim());
+    if (!Number.isInteger(ahead) || ahead <= 0) {
+      throw new GitHubSessionNotVerifiedError(`la rama ${verifiedBranch} no tiene commits sobre ${verifiedBase}`);
+    }
+    return { commit: requireCommit((await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim()) };
   }
 
   async pushCommit(branch: string, commit: string, workingDirectory: string): Promise<void> {

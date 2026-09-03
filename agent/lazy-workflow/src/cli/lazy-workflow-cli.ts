@@ -58,12 +58,12 @@ import {
   type GitHubDeliveryPhase,
 } from "../github/github-delivery-checkpoint.ts";
 import {
+  GitHubSessionNotVerifiedError,
   GitHubDeliveryService,
   GitHubManifestNotVerifiableError,
   GitHubPullRequestConflictError,
   githubRepositoryFromRemote,
   type GitHubDeliveryAdapter,
-  type GitHubReadyManifest,
 } from "../github/github-delivery-service.ts";
 import {
   GitHubParentReconciliationService,
@@ -122,7 +122,7 @@ type CliOptions = AgentRunOptions & ParsedCliOptions;
 
 type GitHubReconciliationOutcome =
   | { kind: "pending"; sessionId: string }
-  | { kind: "ready"; manifest: GitHubReadyManifest };
+  | { kind: "ready"; commit: string };
 
 export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   & Pick<AutocodeAzureService, "createTicket" | "linkParent" | "linkPredecessor">
@@ -298,6 +298,7 @@ function azureFailureKind(error: unknown, fallback: FailureKind): FailureKind {
 }
 
 function githubCompletionFailureKind(error: unknown): FailureKind {
+  if (error instanceof GitHubSessionNotVerifiedError) return "session-not-verified";
   if (error instanceof GitHubManifestNotVerifiableError) return "manifest-not-verifiable";
   if (error instanceof GitHubCoordinatedFailureError) return error.failureKind;
   if (error instanceof GitHubPullRequestConflictError) return "pull-request-failure";
@@ -2687,7 +2688,7 @@ export class LazyWorkflowCli {
           repository: unit.repository,
           pullRequest: reconciliation.pullRequest,
           branch: unit.branch,
-          manifestPath: unit.manifestPath,
+          baseBranch: unit.baseBranch!,
           originalCommit: reconciliation.originalCommit,
           baseCommit: reconciliation.baseCommit,
           workingDirectory: unit.path,
@@ -2698,9 +2699,8 @@ export class LazyWorkflowCli {
           await this.githubWorkspaceCheckpoint.write({ ...checkpoint, sessionId: outcome.sessionId }, scope.stateDirectory);
           return 1;
         }
-        const { manifest } = outcome;
         const { push: _push, merge: _merge, ...unitReceipts } = unit.receipts;
-        const reconciledUnit = { ...unit, commit: manifest.commit, phase: "implementation-ready" as const, receipts: { ...unitReceipts, manifest: { verifiedAt: new Date().toISOString() } } };
+        const reconciledUnit = { ...unit, commit: outcome.commit, phase: "implementation-ready" as const, receipts: { ...unitReceipts, verified: { verifiedAt: new Date().toISOString() } } };
         const { [`push:${unit.path}`]: _workspacePush, [`merge:${unit.path}`]: _workspaceMerge, ...workspaceReceipts } = checkpoint.receipts;
         checkpoint = {
           ...checkpoint,
@@ -2807,7 +2807,7 @@ export class LazyWorkflowCli {
     if (checkpoint.phase === "started" && !checkpoint.sessionId) {
       const run = await this.workspacePrompt(options, scope, issue, units);
       const execution = await this.resumeWithoutMarker({
-        execution: await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false),
+        execution: await this.codingAgent.run({ ...options, workingDirectory: scope.parentDirectory, ...run, session: null }, false),
         cli: checkpoint.cli,
         resume: (sessionId) => this.markerResume(sessionId, scope.parentDirectory, { ...getResumeOverrides(options), agent: run.agent }),
         persist: async (sessionId) => {
@@ -2834,26 +2834,21 @@ export class LazyWorkflowCli {
     const delivery = this.githubDelivery;
     if (!delivery) throw new Error("el coordinador GitHub no está habilitado");
     const changed: GitHubWorkspaceUnit[] = [];
-    // El manifest de cada repositorio es lo único que sabe qué se validó y qué se entregó, y el
-    // checkpoint no lo guarda: se conserva aquí para que el PR y el cierre publiquen la evidencia
-    // en vez del texto mínimo. Una recuperación que ya no lee manifests cae en ese texto mínimo.
-    const manifests = new Map<string, GitHubReadyManifest>();
+    // Un repositorio de la entrega transversal cambió si su rama lleva commits sobre la base y su
+    // árbol quedó limpio; uno que no cambió tiene que estar exactamente donde empezó (ADR-0035).
     for (const unit of checkpoint.units) {
       if (checkpoint.receipts[`cleanup:${unit.path}`]) {
         changed.push({ ...unit, changed: unit.changed ?? unit.commit !== null, phase: "cleaning" });
-      } else if (await Bun.file(unit.manifestPath).exists()) {
-        const manifest = await delivery.readManifest(unit.manifestPath, unit.path);
-        if (manifest.issue !== checkpoint.issue || manifest.branch !== unit.branch) throw new Error(`el manifest de ${unit.path} no coincide con el Issue o la rama fijados`);
-        if (!manifest.evidence?.length) throw new Error(`el manifest de ${unit.path} no contiene evidencia verificable`);
-        manifests.set(unit.path, manifest);
-        changed.push({ ...unit, changed: true, commit: manifest.commit, evidence: manifest.evidence, phase: "implementation-ready", receipts: { ...unit.receipts, manifest: { verifiedAt: new Date().toISOString() } } });
-      } else {
-        const status = await this.git(["status", "--porcelain", "--untracked-files=no"], unit.path);
-        if (status.trim()) throw new Error(`OpenCode dejó cambios sin commitear en ${unit.path}`);
-        const head = (await this.git(["rev-parse", "HEAD^{commit}"], unit.path)).trim();
-        if (head !== unit.startingCommit) throw new Error(`el repositorio ${unit.path} cambió sin manifest verificable`);
-        changed.push({ ...unit, changed: false, phase: "cleaning" });
+        continue;
       }
+      const status = await this.git(["status", "--porcelain", "--untracked-files=no"], unit.path);
+      if (status.trim()) throw new Error(`la sesión dejó cambios sin commitear en ${unit.path}`);
+      const head = (await this.git(["rev-parse", "HEAD^{commit}"], unit.path)).trim();
+      if (head === unit.startingCommit) {
+        changed.push({ ...unit, changed: false, phase: "cleaning" });
+        continue;
+      }
+      changed.push({ ...unit, changed: true, commit: head, phase: "implementation-ready", receipts: { ...unit.receipts, verified: { verifiedAt: new Date().toISOString() } } });
     }
     if (!changed.some(({ changed: hasChanges }) => hasChanges)) {
       for (const unit of changed) {
@@ -2918,7 +2913,7 @@ export class LazyWorkflowCli {
             repository: currentUnit.repository,
             pullRequest,
             branch: currentUnit.branch,
-            manifestPath: currentUnit.manifestPath,
+            baseBranch: currentUnit.baseBranch!,
             originalCommit,
             baseCommit,
             workingDirectory: currentUnit.path,
@@ -2930,13 +2925,9 @@ export class LazyWorkflowCli {
             await save();
             return 1;
           }
-          const { manifest } = outcome;
-          // La reconciliación reescribe el manifest de este repositorio, y el cierre publica su
-          // evidencia: dejar el anterior en el mapa publicaba archivos que el commit ya no lleva.
-          manifests.set(currentUnit.path, manifest);
           const { push: _push, merge: _merge, ...unitReceipts } = currentUnit.receipts;
-          currentUnit = { ...currentUnit, commit: manifest.commit, phase: "implementation-ready", receipts: { ...unitReceipts, manifest: { verifiedAt: new Date().toISOString() } } };
-          const reconciledCommit = manifest.commit;
+          currentUnit = { ...currentUnit, commit: outcome.commit, phase: "implementation-ready", receipts: { ...unitReceipts, verified: { verifiedAt: new Date().toISOString() } } };
+          const reconciledCommit = outcome.commit;
           const { [`push:${currentUnit.path}`]: _workspacePush, [`merge:${currentUnit.path}`]: _workspaceMerge, ...workspaceReceipts } = checkpoint.receipts;
           checkpoint = { ...checkpoint, phase: "integrating", sessionId: null, intent: null, reconciliation: null, receipts: workspaceReceipts, units: checkpoint.units.map((candidate) => candidate.path === currentUnit.path ? currentUnit : candidate) };
           await save();
@@ -3291,7 +3282,6 @@ export class LazyWorkflowCli {
           ...options,
           ...run,
           session: null,
-          terminalMarker: IMPLEMENTATION_READY_MARKER,
         }, false);
         execution = await descend(execution);
         execution = await this.resumeWithoutMarker({
@@ -3325,7 +3315,9 @@ export class LazyWorkflowCli {
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
       summary = result.text.trim() || null;
-      const terminal = containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
+      // Que la sesión terminara lo dice su proceso; que entregara lo dice git, y eso lo pregunta
+      // `completeGitHubDelivery` antes de tocar el remoto (ADR-0035).
+      const terminal = !execution.failed;
       await saveCheckpoint(execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), terminal ? null : result.sessionId);
       if (execution.failed) {
         reportFailure(
@@ -3351,15 +3343,6 @@ export class LazyWorkflowCli {
       }
 
       if (this.githubDelivery) {
-        if (!terminal) {
-          reportFailure(
-            "session-failure",
-            "implementation-ready",
-            { issue: issue.number, repository: repository.nameWithOwner, branch },
-            `lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`,
-          );
-          return 1;
-        }
         try {
           await this.completeGitHubDelivery(options, {
             schemaVersion: 2,
@@ -3416,7 +3399,7 @@ export class LazyWorkflowCli {
     manifestPath: string,
     norms: SagContext | null,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
-    return this.prompt({ kind: "github-delivery", issue, repository, branch, manifestPath }, options, norms);
+    return this.prompt({ kind: "github-delivery", issue, repository, branch }, options, norms);
   }
 
   /**
@@ -3440,7 +3423,7 @@ export class LazyWorkflowCli {
   ): Promise<{ execution: AgentExecution; agent: AgentAuthority }> {
     const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
     const run = await this.prompt(
-      { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch, manifestPath: work.manifestPath },
+      { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch },
       handoffOptions,
       work.norms,
       await this.verifiedProgress(options.workingDirectory, "implementing", work.issue.number, work.branch, work.baseBranch, work.manifestPath),
@@ -3451,7 +3434,6 @@ export class LazyWorkflowCli {
         ...handoffOptions,
         ...run,
         session: null,
-        terminalMarker: IMPLEMENTATION_READY_MARKER,
       }, false),
       agent: run.agent,
     };
@@ -3491,11 +3473,6 @@ export class LazyWorkflowCli {
       // absence the section states.
       commit: await readGit(["log", "-1", "--format=%H %s", `${base}..${branch}`]),
       uncommitted: await readGit(["status", "--porcelain", "--untracked-files=no"]) ?? "",
-      // The manifest path is fixed per repository, so one left by an earlier
-      // delivery is only this unit's progress when it names this issue and branch.
-      manifest: await manifestBelongsToDelivery(manifestPath, issue, branch)
-        ? await Bun.file(manifestPath).text().catch(() => null)
-        : null,
     };
   }
 
@@ -3505,7 +3482,6 @@ export class LazyWorkflowCli {
     repository: string,
     pullRequest: number,
     branch: string,
-    manifestPath: string,
     originalCommit: string,
     baseCommit: string,
   ): Promise<{ prompt: string; agent: AgentAuthority }> {
@@ -3515,7 +3491,6 @@ export class LazyWorkflowCli {
         issue,
         repository: { nameWithOwner: repository },
         branch,
-        manifestPath,
         pullRequest,
         originalCommit,
         baseCommit,
@@ -3531,7 +3506,7 @@ export class LazyWorkflowCli {
       repository: string;
       pullRequest: number;
       branch: string;
-      manifestPath: string;
+      baseBranch: string;
       originalCommit: string;
       baseCommit: string;
       workingDirectory: string;
@@ -3552,13 +3527,12 @@ export class LazyWorkflowCli {
       context.repository,
       context.pullRequest,
       context.branch,
-      context.manifestPath,
       context.originalCommit,
       context.baseCommit,
     );
     const started: AgentExecution = sessionId
       ? { result: await this.codingAgent.resume(sessionId, run.prompt, context.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }), azureLoginRequired: false, failed: false }
-      : await this.codingAgent.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false);
+      : await this.codingAgent.run({ ...options, workingDirectory: context.workingDirectory, ...run, session: null }, false);
     // La sesión de reconciliación se reanuda una vez si vuelve sin su marcador (ADR-0032): sin
     // eso la corrida devolvía "pendiente" y esperaba a que el operador la relanzara a mano.
     const execution = await this.resumeWithoutMarker({
@@ -3568,23 +3542,16 @@ export class LazyWorkflowCli {
     });
     const result = execution.result;
     reportOperator(JSON.stringify(result, null, 2));
-    if (execution.failed || !containsMarker(result.text, IMPLEMENTATION_READY_MARKER)) {
-      return { kind: "pending", sessionId: result.sessionId };
-    }
-    const manifest = await this.readGitHubManifest(delivery, context.manifestPath, context.workingDirectory);
-    if (manifest.issue !== context.issue
-      || manifest.branch !== context.branch
-      || (context.requireEvidence && !manifest.evidence?.length)) {
-      throw new GitHubManifestNotVerifiableError(`El manifest reconciliado de ${context.workingDirectory} no es verificable`);
-    }
+    if (execution.failed) return { kind: "pending", sessionId: result.sessionId };
+    const { commit } = await delivery.verifySession(context.branch, context.baseBranch, context.workingDirectory);
     await delivery.verifyPullRequestReconciliation(
       context.branch,
       context.originalCommit,
       context.baseCommit,
-      manifest.commit,
+      commit,
       context.workingDirectory,
     );
-    return { kind: "ready", manifest };
+    return { kind: "ready", commit };
   }
 
   private async completeGitHubDelivery(options: CliOptions, initial: GitHubDeliveryCheckpoint): Promise<void> {
@@ -3622,30 +3589,28 @@ export class LazyWorkflowCli {
       }
     };
 
-    let manifest = await this.readGitHubManifest(delivery, fixedManifestPath, options.workingDirectory);
-    if (manifest.issue !== checkpoint.issue || manifest.branch !== fixedBranch) {
-      throw new GitHubManifestNotVerifiableError("El manifest no coincide con el Issue o la rama fijados");
-    }
-    if (checkpoint.commit !== null && checkpoint.commit !== manifest.commit) {
-      throw new GitHubManifestNotVerifiableError("El commit del manifest cambió respecto al checkpoint fijado");
+    // El commit lo tiene git, no un archivo que la sesión pidió que le escribieran (ADR-0035).
+    let { commit: verifiedCommit } = await delivery.verifySession(fixedBranch, fixedBaseBranch, options.workingDirectory);
+    if (checkpoint.commit !== null && checkpoint.commit !== verifiedCommit) {
+      throw new GitHubSessionNotVerifiedError("el commit verificado cambió respecto al checkpoint fijado");
     }
     checkpoint = {
       ...checkpoint,
-      commit: manifest.commit,
+      commit: verifiedCommit,
       phase: "implementation-ready",
       sessionId: null,
-      receipts: { ...checkpoint.receipts, manifest: { verifiedAt: new Date().toISOString() } },
+      receipts: { ...checkpoint.receipts, verified: { verifiedAt: new Date().toISOString() } },
     };
     await save();
     if (!checkpoint.receipts["push"]) {
-      await effect("push", manifest.commit, () => delivery.pushCommit(checkpoint.branch!, manifest.commit, options.workingDirectory));
+      await effect("push", verifiedCommit, () => delivery.pushCommit(checkpoint.branch!, verifiedCommit, options.workingDirectory));
     }
     checkpoint = { ...checkpoint, phase: "integrating" };
     await save();
     let pullRequest = checkpoint.pullRequest;
     if (!pullRequest) {
       await effect("pull-request", fixedBranch, async () => {
-        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory, true, `#${checkpoint.issue}`, checkpoint.summary ?? undefined);
+        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory, true, `#${checkpoint.issue}`, checkpoint.summary ?? undefined);
         pullRequest = created.number;
         checkpoint = { ...checkpoint, pullRequest };
       });
@@ -3655,7 +3620,7 @@ export class LazyWorkflowCli {
     if (!checkpoint.receipts.merge) {
       try {
         await effect("merge", `${pullRequest}`, async () => {
-          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, checkpoint.branch!, checkpoint.baseBranch!, manifest.commit, options.workingDirectory);
+          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, checkpoint.branch!, checkpoint.baseBranch!, verifiedCommit, options.workingDirectory);
           mergeCommit = merged.mergeCommit;
           checkpoint = { ...checkpoint, pullRequest, mergeCommit };
         });
@@ -3663,7 +3628,7 @@ export class LazyWorkflowCli {
         if (!(error instanceof GitHubPullRequestConflictError)
           || !delivery.preparePullRequestReconciliation
           || !delivery.verifyPullRequestReconciliation) throw error;
-        const originalCommit = manifest.commit;
+        const originalCommit = verifiedCommit;
         const { baseCommit } = await delivery.preparePullRequestReconciliation(fixedBranch, fixedBaseBranch, originalCommit, options.workingDirectory);
         checkpoint = {
           ...checkpoint,
@@ -3677,7 +3642,7 @@ export class LazyWorkflowCli {
           repository: checkpoint.repository,
           pullRequest,
           branch: fixedBranch,
-          manifestPath: fixedManifestPath,
+          baseBranch: fixedBaseBranch,
           originalCommit,
           baseCommit,
           workingDirectory: options.workingDirectory,
@@ -3689,21 +3654,21 @@ export class LazyWorkflowCli {
           await save();
           throw new Error("La reconciliación del PR no terminó con IMPLEMENTATION_READY");
         }
-        manifest = outcome.manifest;
-        const { push: _push, merge: _merge, manifest: _manifest, ...receipts } = checkpoint.receipts;
+        verifiedCommit = outcome.commit;
+        const { push: _push, merge: _merge, verified: _verified, ...receipts } = checkpoint.receipts;
         checkpoint = {
           ...checkpoint,
-          commit: manifest.commit,
+          commit: verifiedCommit,
           phase: "implementation-ready",
           sessionId: null,
           intent: null,
           reconciliation: null,
-          receipts: { ...receipts, manifest: { verifiedAt: new Date().toISOString() } },
+          receipts: { ...receipts, verified: { verifiedAt: new Date().toISOString() } },
         };
         await save();
-        await effect("push", manifest.commit, () => delivery.pushCommit(fixedBranch, manifest.commit, options.workingDirectory));
+        await effect("push", verifiedCommit, () => delivery.pushCommit(fixedBranch, verifiedCommit, options.workingDirectory));
         await effect("merge", `${pullRequest}`, async () => {
-          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory);
+          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory);
           mergeCommit = merged.mergeCommit;
           checkpoint = { ...checkpoint, pullRequest, mergeCommit };
         });
@@ -3718,7 +3683,7 @@ export class LazyWorkflowCli {
     checkpoint = { ...checkpoint, phase: "cleaning" };
     await save();
     if (!checkpoint.receipts.cleanup) {
-      await effect("cleanup", fixedBranch, () => delivery.cleanupBranch(fixedBranch, fixedBaseBranch, manifest.commit, options.workingDirectory));
+      await effect("cleanup", fixedBranch, () => delivery.cleanupBranch(fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory));
     }
     if (this.githubParentReconciliation && !checkpoint.receipts["parent-reconciliation"]) {
       await effect("parent-reconciliation", `${checkpoint.issue}`, () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
@@ -3727,17 +3692,6 @@ export class LazyWorkflowCli {
     await store.clear(options.workingDirectory);
   }
 
-  private async readGitHubManifest(
-    delivery: GitHubDeliveryAdapter,
-    path: string,
-    workingDirectory: string,
-  ): Promise<GitHubReadyManifest> {
-    try {
-      return await delivery.readManifest(path, workingDirectory);
-    } catch (error) {
-      throw new GitHubManifestNotVerifiableError(errorMessage(error), { cause: error });
-    }
-  }
 
   private reportGitHubReconciliationRequired(checkpoint: GitHubDeliveryCheckpoint, emitFailure = true): void {
     console.log(JSON.stringify({
@@ -3868,7 +3822,7 @@ export class LazyWorkflowCli {
         if (options.normasSag && norms === null) return 1;
         const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
         const execution = await this.resumeWithoutMarker({
-          execution: await this.codingAgent.run({ ...options, ...run, session: null, terminalMarker: IMPLEMENTATION_READY_MARKER }, false),
+          execution: await this.codingAgent.run({ ...options, ...run, session: null }, false),
           cli: liveCheckpoint.cli,
           resume: (sessionId) => this.markerResume(sessionId, options.workingDirectory, { ...getResumeOverrides(options), agent: run.agent }),
           persist: (sessionId) => store.write({ ...liveCheckpoint, phase: "implementing", sessionId }, options.workingDirectory),
@@ -3943,7 +3897,7 @@ export class LazyWorkflowCli {
           repository: liveCheckpoint.repository,
           pullRequest: reconciliation.pullRequest,
           branch: liveCheckpoint.branch,
-          manifestPath: liveCheckpoint.manifestPath,
+          baseBranch: liveCheckpoint.baseBranch!,
           originalCommit: reconciliation.originalCommit,
           baseCommit: reconciliation.baseCommit,
           workingDirectory: options.workingDirectory,
@@ -3955,16 +3909,15 @@ export class LazyWorkflowCli {
           this.reportGitHubReconciliationRequired({ ...liveCheckpoint, sessionId: outcome.sessionId });
           return 1;
         }
-        const { manifest } = outcome;
-        const { push: _push, merge: _merge, manifest: _manifest, ...receipts } = liveCheckpoint.receipts;
+        const { push: _push, merge: _merge, verified: _verified, ...receipts } = liveCheckpoint.receipts;
         const readyCheckpoint: GitHubDeliveryCheckpoint = {
           ...liveCheckpoint,
           phase: "implementation-ready",
           sessionId: null,
-          commit: manifest.commit,
+          commit: outcome.commit,
           reconciliation: null,
           intent: null,
-          receipts: { ...receipts, manifest: { verifiedAt: new Date().toISOString() } },
+          receipts: { ...receipts, verified: { verifiedAt: new Date().toISOString() } },
         };
         await store.write(readyCheckpoint, options.workingDirectory);
         await this.completeGitHubDelivery(options, readyCheckpoint);
@@ -4086,7 +4039,6 @@ export class LazyWorkflowCli {
         issue,
         repository,
         branch: liveCheckpoint.branch ?? "",
-        manifestPath: liveCheckpoint.manifestPath ?? "",
       }, activeCli);
       let execution: AgentExecution;
       try {

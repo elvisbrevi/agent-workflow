@@ -68,7 +68,7 @@ const queueServices = (listManagedIssues: () => Promise<never[]>): Deterministic
     checkoutBranch: async () => { throw new Error("not used"); },
     verifyBranch: async () => { throw new Error("not used"); },
     cleanupBranch: async () => { throw new Error("not used"); },
-    readManifest: async () => { throw new Error("not used"); },
+    verifySession: async () => { throw new Error("must not verify"); },
     pushCommit: async () => { throw new Error("not used"); },
     createOrReusePullRequest: async () => { throw new Error("not used"); },
     mergePullRequest: async () => { throw new Error("not used"); },
