@@ -1,0 +1,80 @@
+Issue #298 -- Default --model per coding agent CLI (ADR-0034)
+
+`--model` now defaults to a model resolved from a new AGENT_CLI_PROFILES table
+keyed by --cli (agent/lazy-workflow/src/coding-agent/agent-cli.ts), instead of
+one global `opencode-go/deepseek-v4-pro` constant that was silently wrong for
+`claudecode`. `variantRejection`/`isValidVariant`
+(agent/lazy-workflow/src/cli/parse-cli-options.ts) read the accepted effort
+set from that same table instead of hard-coding `cli !== "claudecode"`. The
+code-review pass on this change (Spec axis) found that recovery adopting a
+different CLI than the one --cli/--model parsed against (no explicit
+--model, no live session yet) kept the stale default instead of the adopted
+CLI's own -- fixed in adoptCheckpointCli
+(agent/lazy-workflow/src/cli/lazy-workflow-cli.ts), with a regression test.
+
+== bun test -- targeted files ==
+$ (cd agent/lazy-workflow && bun test test/parse-cli-options.test.ts)
+
+bun test v1.3.14 (0d9b296a)
+
+ 77 pass
+ 0 fail
+ 195 expect() calls
+Ran 77 tests across 1 file. [594.00ms]
+
+$ (cd agent/lazy-workflow && bun test test/checkpoint-cli-recovery.test.ts)
+
+bun test v1.3.14 (0d9b296a)
+
+ 30 pass
+ 0 fail
+ 90 expect() calls
+Ran 30 tests across 1 file. [1163.00ms]
+
+== regression check: the new adoptCheckpointCli test against the pre-fix source ==
+Reproduced by temporarily swapping src/cli/lazy-workflow-cli.ts for the version
+at commit fada8d3 (the parent of the adoptCheckpointCli fix, c4eb3e2 plus the
+AGENT_CLI_PROFILES table already applied), running only the new test, then
+restoring the fixed file -- without touching git history or the working tree
+otherwise.
+
+$ bun test test/checkpoint-cli-recovery.test.ts -t "adopta el default de modelo"   # PRE-FIX source
+
+(fail) una unidad sin sesion previa adopta el default de modelo del CLI del
+checkpoint, no el de --cli sin declarar (issue #298)
+  Expected: { cli: "claudecode", model: "claude-sonnet-5" }
+  Received: { cli: "claudecode", model: "opencode-go/deepseek-v4-pro" }
+1 fail
+
+$ bun test test/checkpoint-cli-recovery.test.ts -t "adopta el default de modelo"   # FIXED source (HEAD)
+
+1 pass
+0 fail
+
+== bun test (full suite) ==
+$ (cd agent/lazy-workflow && bun test)
+
+ 958 pass
+ 13 fail
+ 3298 expect() calls
+Ran 971 tests across 51 files. [76.61s]
+
+The 13-16 failures (count fluctuates run to run; 0-1 of them additionally
+error) are pre-existing and environmental, not caused by this change: none of
+them are in parse-cli-options.test.ts or checkpoint-cli-recovery.test.ts, the
+two files this change touches or depends on, and none reference --model,
+--cli, --variant, AGENT_CLI_PROFILES or adoptCheckpointCli. The dominant
+failure mode is `ENOENT: no such file or directory, posix_spawn 'git'` inside
+sandboxed subprocess spawns, plus a handful of Azure workspace-checkpoint
+tests racing on shared temp directories. Verified against the parent commit
+(00134a7, before this branch's work) in a throwaway worktree: same class of
+failures, comparable magnitude (15 fail / 2 errors out of 967 tests).
+
+== bunx tsc --noEmit -- errors touching this change's own files ==
+$ (cd agent/lazy-workflow && bunx tsc --noEmit | grep -i "parse-cli-options\|agent-cli\.ts\|lazy-workflow-cli\.ts\|AgentCliProfile\|defaultModel")
+
+(no output -- none of the files this change touches produce a type error)
+
+372 pre-existing type errors elsewhere in test fixtures (AzureBoundary/
+AutocodeCheckpoint shape mismatches unrelated to AgentCli), present before
+this change and outside its scope.
