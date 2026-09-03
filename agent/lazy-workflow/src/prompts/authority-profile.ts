@@ -12,9 +12,11 @@
  * through `OPENCODE_CONFIG`, which merges with — rather than replaces — whatever
  * configuration the target repository already has. Claude Code validates one
  * settings file at a time, so each profile is its own file under `claudecode/`,
- * injected by path with `--settings`.
+ * injected by path with `--settings`. Codex discovers one execpolicy rules file
+ * per profile under the resolved `CODEX_HOME`.
  *
- * Both CLIs run in their auto-approve mode (`--auto`, `bypassPermissions`), so
+ * All CLIs run in their auto-approve mode (`--auto`, `bypassPermissions`, or
+ * Codex's `--ask-for-approval never`), so
  * the deny rules are the whole enforcement surface: they are evaluated before any
  * permission, and everything not denied is approved without a prompt.
  */
@@ -34,7 +36,11 @@ export type AuthorityProfile = typeof AUTHORITY_PROFILES[number];
 
 /** Absolute path to the authority config lazy-workflow injects into the given CLI. */
 export function authorityConfigPath(cli: AgentCli, profile: AuthorityProfile): string {
-  const relative = cli === "claudecode" ? `../../claudecode/${profile}.json` : "../../opencode/authority.json";
+  const relative = cli === "claudecode"
+    ? `../../claudecode/${profile}.json`
+    : cli === "codex"
+      ? `../../codex/${profile}.rules`
+      : "../../opencode/authority.json";
   return Bun.fileURLToPath(new URL(relative, import.meta.url));
 }
 

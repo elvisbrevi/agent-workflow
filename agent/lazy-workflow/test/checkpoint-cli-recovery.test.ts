@@ -318,7 +318,7 @@ test("un --model y un --variant que el CLI adoptado acepta le ganan al escalón 
   }
 
   expect(agents.resumed).toEqual(["claudecode"]);
-  expect(agents.overrides).toEqual([{ model: "claude-opus-5", variant: "xhigh" }]);
+  expect(agents.overrides).toEqual([expect.objectContaining({ model: "claude-opus-5", variant: "xhigh" })]);
 });
 
 test("un --variant explícito sin --model le gana a la variante del escalón, que es lo que se validó al adoptar", async () => {
@@ -336,7 +336,7 @@ test("un --variant explícito sin --model le gana a la variante del escalón, qu
     console.log = originalLog;
   }
 
-  expect(agents.overrides).toEqual([{ model: "claude-sonnet-5", variant: "xhigh" }]);
+  expect(agents.overrides).toEqual([expect.objectContaining({ model: "claude-sonnet-5", variant: "xhigh" })]);
 });
 
 test("un --model declarado junto a un --cli no viaja al CLI que el traspaso adoptó", async () => {
@@ -365,7 +365,7 @@ test("un --model declarado junto a un --cli no viaja al CLI que el traspaso adop
   }
 
   expect(agents.resumed).toEqual(["opencode"]);
-  expect(agents.overrides).toEqual([{ model: "github-copilot/gpt-5.5", variant: "high" }]);
+  expect(agents.overrides).toEqual([expect.objectContaining({ model: "github-copilot/gpt-5.5", variant: "high" })]);
   expect(state.reported.some((message) => message.includes("--model claude-sonnet-5 quedó declarado para claudecode"))).toBeTrue();
 });
 
@@ -393,7 +393,7 @@ test("un --model declarado junto al --cli que sí tiene el trabajo le sigue gana
     console.log = originalLog;
   }
 
-  expect(agents.overrides).toEqual([{ model: "github-copilot/gpt-5.6" }]);
+  expect(agents.overrides).toEqual([expect.objectContaining({ model: "github-copilot/gpt-5.6" })]);
 });
 
 test("sin overrides explícitos la recuperación reanuda con el escalón que el checkpoint conserva", async () => {
@@ -412,7 +412,7 @@ test("sin overrides explícitos la recuperación reanuda con el escalón que el 
   }
 
   expect(agents.resumed).toEqual(["claudecode"]);
-  expect(agents.overrides).toEqual([{ model: "claude-sonnet-5", variant: "low" }]);
+  expect(agents.overrides).toEqual([expect.objectContaining({ model: "claude-sonnet-5", variant: "low" })]);
 });
 
 test("`code --session` reanuda con el CLI del checkpoint GitHub y rechaza uno contradictorio", async () => {

@@ -5,10 +5,11 @@
 
 import type { AgentCli } from "./agent-cli.ts";
 import { ClaudeCodeService } from "../claude-code/claude-code-service.ts";
+import { CodexService } from "../codex/codex-service.ts";
 import { OpenCodeService } from "../opencode/open-code-service.ts";
 import type { CodingAgent } from "./coding-agent.ts";
 
 export type CodingAgentFactory = (cli: AgentCli) => CodingAgent;
 
 export const createCodingAgent: CodingAgentFactory = (cli) =>
-  cli === "claudecode" ? new ClaudeCodeService() : new OpenCodeService();
+  cli === "claudecode" ? new ClaudeCodeService() : cli === "codex" ? new CodexService() : new OpenCodeService();

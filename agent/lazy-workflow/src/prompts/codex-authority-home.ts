@@ -16,7 +16,8 @@
 
 import { mkdir, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import type { AuthorityProfile } from "./authority-profile.ts";
 
 /** Absolute path to the hand-written Codex execpolicy rules for a profile. */
@@ -27,6 +28,16 @@ export function codexRulesPath(profile: AuthorityProfile): string {
 /** The operator's own Codex home, exactly as `codex` itself resolves `CODEX_HOME`. */
 export function resolveOperatorCodexHome(): string {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex");
+}
+
+/**
+ * Stable, repository-scoped state for a Codex session. The path must survive a
+ * later `--session` invocation, while different repositories must not share
+ * transcripts or race while their authority homes are assembled.
+ */
+export function codexAuthorityHomePath(profile: AuthorityProfile, workingDirectory: string): string {
+  const repositoryKey = createHash("sha256").update(resolve(workingDirectory)).digest("hex").slice(0, 16);
+  return join(homedir(), ".local", "state", "lazy-workflow", "codex", repositoryKey, profile);
 }
 
 /**

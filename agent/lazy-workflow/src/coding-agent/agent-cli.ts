@@ -4,9 +4,10 @@
  */
 
 import { CLAUDE_CODE_EFFORTS } from "../claude-code/claude-code-service.ts";
+import { CODEX_EFFORTS } from "../codex/codex-service.ts";
 
 /** The coding agent CLI that executes the session of this run (ADR-0023). */
-export type AgentCli = "opencode" | "claudecode";
+export type AgentCli = "opencode" | "claudecode" | "codex";
 
 /**
  * The per-CLI facts a run needs, resolved once from `--cli` (ADR-0034): the
@@ -23,6 +24,7 @@ export interface AgentCliProfile {
 export const AGENT_CLI_PROFILES: Record<AgentCli, AgentCliProfile> = {
   opencode: { binary: "opencode", defaultModel: "opencode-go/deepseek-v4-pro" },
   claudecode: { binary: "claude", defaultModel: "claude-sonnet-5", efforts: CLAUDE_CODE_EFFORTS },
+  codex: { binary: "codex", defaultModel: "gpt-5.6-sol", efforts: CODEX_EFFORTS },
 };
 
 /** The binary each CLI is invoked through, so a missing one is named as the operator installs it. */

@@ -90,6 +90,7 @@ function planCli(
     agentSource: agent,
     createReporterFn: reporterFn,
     createQuestionChannelFn: factory,
+    git: async () => "",
   });
 }
 
@@ -287,6 +288,7 @@ test("la entrevista de una HU publica el plan que cierra la última ronda", asyn
     agentSource: agent,
     createReporterFn: reporterFn,
     createQuestionChannelFn: () => channel,
+    git: async () => "",
   });
 
   const { value } = await withCapturedStdout(() =>

@@ -36,7 +36,8 @@ fires now when the checkpoint's issue is genuinely still open — no manual
 | `--interview y --quiet son mutuamente excluyentes` | Drop `--quiet`: the channel announces itself through operator output |
 | `--verbose y --quiet son mutuamente excluyentes` | Pick one verbosity |
 | `--variant <v> no es un esfuerzo de claudecode` | Use `low`, `medium`, `high`, `xhigh` or `max` |
-| `--cli <c> requiere el binario <b> en el PATH` | Install `opencode` / `claude`, or drop `--cli` |
+| `--variant <v> no es un esfuerzo de codex` | Use `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
+| `--cli <c> requiere el binario <b> en el PATH` | Install `opencode`, `claude`, or `codex`, or drop `--cli` |
 | `--fallback <r> no tiene la forma <cli>:<modelo>:<variante>` | Three non-empty parts, colon separated |
 | `--fallback <r> repite un escalon ya declarado` | A rung equal to the primary or to another rung is useless |
 | `--fallback-wait-max N no puede ser menor que --fallback-wait M` | The bound must cover at least one interval |

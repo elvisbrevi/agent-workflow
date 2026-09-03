@@ -15,20 +15,22 @@ Contents: [One CLI per run](#one-cli-per-run) · [Authority](#authority-what-a-s
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--cli opencode\|claudecode` | `opencode` | Naming one verifies its binary (`opencode` / `claude`) while parsing, so a missing install is an argument error, not a dead session |
-| `--model <id>` | per `--cli`: `opencode-go/deepseek-v4-pro` for OpenCode, `claude-sonnet-5` for Claude Code | Resolved after `--cli` from the same table as the binary and the accepted efforts (ADR-0034), so naming a CLI without `--model` never opens a session against a model it cannot resolve; an explicit `--model` always overrides the default, including for a recovery that adopts a checkpoint's CLI |
-| `--variant <effort>` | `high` | The effort of the selected CLI, read from that same table; Claude Code accepts `low`, `medium`, `high`, `xhigh`, `max` and rejects anything else before opening a session |
+| `--cli opencode\|claudecode\|codex` | `opencode` | Naming one verifies its binary (`opencode` / `claude` / `codex`) while parsing, so a missing install is an argument error, not a dead session |
+| `--model <id>` | per `--cli`: `opencode-go/deepseek-v4-pro`, `claude-sonnet-5`, or `gpt-5.6-sol` | Resolved after `--cli` from the same table as the binary and the accepted efforts (ADR-0034), so naming a CLI without `--model` never opens a session against a model it cannot resolve; an explicit `--model` always overrides the default, including for a recovery that adopts a checkpoint's CLI |
+| `--variant <effort>` | `high` | The effort of the selected CLI, read from that same table; Claude Code accepts `low`, `medium`, `high`, `xhigh`, `max`, and Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
 ```bash
 lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high --working-directory /repo
 lazy-workflow code --cli opencode --model opencode-go/deepseek-v4-pro --variant high --working-directory /repo
+lazy-workflow plan --cli codex --model gpt-5.6-sol --variant high --working-directory /repo
 ```
 
 Claude Code sessions run non-interactively over its JSON event stream, take the
 session id from the CLI's own initialization event, and never use `--bare`, so
-the operator's login and the target repository's `CLAUDE.md` stay in play. Both
-CLIs' events reach the reporter with the same severities: assistant text as info,
-reasoning and tool calls as debug.
+the operator's login and the target repository's `CLAUDE.md` stay in play. Codex
+uses `codex exec --json`, reads its session id from `thread.started`, and resumes
+with `codex exec resume`. All CLIs' events reach the reporter with the same
+severities: assistant text as info, reasoning and tool calls as debug.
 
 The SAG workflows accept `--cli` too and keep their own rules whichever CLI runs
 them — `architecture-review-sag` is the only one that opens a session, and it

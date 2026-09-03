@@ -68,7 +68,7 @@ test("el plan aplica y verifica ready-for-agent en cada Issue publicado tras la 
     ["issue view 17 --json number,title,state,labels,assignees,createdAt,blockedBy,body,comments", issueDetail(17, ["ready-for-agent"])],
   ], calls));
 
-  const code = await createCli({ agentSource, githubManagedQueue: service })
+  const code = await createCli({ agentSource, githubManagedQueue: service, git: async () => "" })
     .run(["plan", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
@@ -91,7 +91,7 @@ test("el plan no toca los Issues previos a la marca ni los que ya llevan el rol"
     ])],
   ], calls));
 
-  const code = await createCli({ agentSource, githubManagedQueue: service })
+  const code = await createCli({ agentSource, githubManagedQueue: service, git: async () => "" })
     .run(["plan", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
@@ -114,7 +114,7 @@ test("el plan deja fuera epics y specs, que la cola tampoco admite", async () =>
     ["issue view 34 --json number,title,state,labels,assignees,createdAt,blockedBy,body,comments", issueDetail(34, ["ready-for-agent"])],
   ], calls));
 
-  const code = await createCli({ agentSource, githubManagedQueue: service })
+  const code = await createCli({ agentSource, githubManagedQueue: service, git: async () => "" })
     .run(["plan", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);

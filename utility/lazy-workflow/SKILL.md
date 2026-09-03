@@ -1,6 +1,6 @@
 ---
 name: lazy-workflow
-description: Compose and run the right lazy-workflow command — the executable agent that plans and delivers work through OpenCode or Claude Code, on GitHub issues or Azure DevOps HUs. Covers both of its layers: the deterministic tool commands that read or mutate the tracker, the branch and the pull request without opening a session, and the workflow commands that drive a coding agent (plan, code, architecture-review-sag, infra-sag, deploy-sag) with their CLI/model/effort selection, fallback chains, authority profiles, sessions and checkpoints. Use this skill whenever lazy-workflow, autoplan, autocode, `--hu`, `--normas-sag`, an Azure HU or ticket, GitHub issue draining, or an interrupted run comes up — including when the user only asks "how do I run…" or describes the task ("plan this HU and then code it") without naming a single flag.
+description: Compose and run the right lazy-workflow command — the executable agent that plans and delivers work through OpenCode, Claude Code, or Codex, on GitHub issues or Azure DevOps HUs. Covers both of its layers: the deterministic tool commands that read or mutate the tracker, the branch and the pull request without opening a session, and the workflow commands that drive a coding agent (plan, code, architecture-review-sag, infra-sag, deploy-sag) with their CLI/model/effort selection, fallback chains, authority profiles, sessions and checkpoints. Use this skill whenever lazy-workflow, autoplan, autocode, `--hu`, `--normas-sag`, an Azure HU or ticket, GitHub issue draining, or an interrupted run comes up — including when the user only asks "how do I run…" or describes the task ("plan this HU and then code it") without naming a single flag.
 ---
 
 # lazy-workflow
@@ -147,7 +147,8 @@ because they cost nothing to avoid and a full error message to discover.
   belongs to (and is required by) `--interview file`; `--interview-host` and
   `--interview-port` are `http`-only.
 - `--verbose` and `--quiet` are mutually exclusive.
-- With `--cli claudecode`, `--variant` must be `low|medium|high|xhigh|max`.
+- `--cli` accepts `opencode` (`opencode`), `claudecode` (`claude`), and `codex` (`codex`); their default models are `opencode-go/deepseek-v4-pro`, `claude-sonnet-5`, and `gpt-5.6-sol`.
+- With `--cli claudecode`, `--variant` must be `low|medium|high|xhigh|max`; with `--cli codex`, it must be `none|minimal|low|medium|high|xhigh|max`.
 - Every `--fallback <cli>:<model>:<variant>` rung has its binary verified while
   parsing; a repeated rung is an error, and `--fallback-wait-max` may not be
   smaller than `--fallback-wait`.

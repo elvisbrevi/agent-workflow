@@ -324,6 +324,7 @@ test("plan GitHub agrega el commit y reglas SAG al prompt solo cuando se solicit
         resume: async () => result,
       },
       sagNormsService: sag,
+      git: async () => "",
     }).run(["plan", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
@@ -355,6 +356,7 @@ test("plan Azure agrega normas SAG despues de cargar la HU", async () => {
         resume: async () => result,
       },
       sagNormsService: new SagNormsService(source()),
+      git: async () => "",
     }).run(["plan", "--hu", "23438", "--normas-sag", "--working-directory", directory]);
 
     expect(code).toBe(0);
