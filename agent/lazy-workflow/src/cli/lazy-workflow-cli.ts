@@ -1564,12 +1564,32 @@ export class LazyWorkflowCli {
    * back untouched, so the caller decides exactly as it does today (issues #238,
    * #239).
    */
-  private async descendFallbackChain(
-    options: CliOptions,
-    execution: AgentExecution,
+  /**
+   * El descenso de Azure, todavía con reanudación dentro del mismo CLI.
+   *
+   * La entrega GitHub ya abre sesión fresca en cada escalón (ADR-0039); Azure lo
+   * hará en su propia rebanada. Hasta entonces esto adapta sus tres callbacks al
+   * único que el descenso toma ahora, en vez de mantener dos descensos.
+   */
+  private resumingDescent(
+    cli: AgentCli,
+    sessionId: () => string,
     resume: (sessionId: string, overrides: AgentResumeOverrides) => Promise<AgentResult>,
     onDescent: (rung: FallbackRung, sessionId: string) => Promise<void>,
     handOff: (rung: FallbackRung) => Promise<AgentExecution>,
+  ): (rung: FallbackRung) => Promise<AgentExecution> {
+    return async (rung) => {
+      if (rung.cli !== cli) return handOff(rung);
+      const current = sessionId();
+      await onDescent(rung, current);
+      return { result: await resume(current, { model: rung.model, variant: rung.variant }), azureLoginRequired: false, failed: false };
+    };
+  }
+
+  private async descendFallbackChain(
+    options: CliOptions,
+    execution: AgentExecution,
+    handOff: (rung: FallbackRung, reasoning: string[]) => Promise<AgentExecution>,
   ): Promise<AgentExecution> {
     let current = execution;
     let active: FallbackRung = { cli: options.cli, model: options.model, variant: options.variant };
@@ -1589,9 +1609,7 @@ export class LazyWorkflowCli {
       const sessionId = current.result.sessionId;
       const handedOff = next.rung.cli !== active.cli;
       reportOperator(
-        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} ${
-          handedOff ? "traspasando el trabajo a una sesión nueva" : `reanudando la sesión ${sessionId}`
-        }.`,
+        `lazy-workflow: escalón ${describeRung(active)} agotado (${current.exhaustion.cause}); desciendo a ${describeRung(next.rung)} traspasando el trabajo a una sesión nueva.`,
       );
       const descentContext = { hu: options.hu, issue: options.issue, repository: options.workingDirectory, sessionId };
       reportSessionEvent(
@@ -1613,13 +1631,7 @@ export class LazyWorkflowCli {
       active = next.rung;
       index = next.index;
       try {
-        if (handedOff) {
-          current = await handOff(next.rung);
-        } else {
-          await onDescent(next.rung, sessionId);
-          const result = await resume(sessionId, { model: next.rung.model, variant: next.rung.variant });
-          current = { result, azureLoginRequired: false, failed: false };
-        }
+        current = await handOff(next.rung, current.result.reasoning ?? []);
       } catch (error) {
         // Only exhaustion keeps descending; a missing session or any ordinary
         // failure belongs to the caller's own error handling, untouched.
@@ -1943,7 +1955,7 @@ export class LazyWorkflowCli {
             terminalMarker: IMPLEMENTATION_READY_MARKER,
           }, true);
         }
-        execution = await this.descendFallbackChain(options, execution, resumeFn, onDescent, handOff);
+        execution = await this.descendFallbackChain(options, execution, this.resumingDescent(activeCli, () => execution.result.sessionId, resumeFn, onDescent, handOff));
         execution = await this.resumeWithoutMarker({
           execution,
           cli: activeCli,
@@ -1952,7 +1964,7 @@ export class LazyWorkflowCli {
             checkpoint = { ...checkpoint!, phase: "implementing", sessionId };
             await save();
           },
-          descend: (resumed) => this.descendFallbackChain(options, resumed, resumeFn, onDescent, handOff),
+          descend: (resumed) => this.descendFallbackChain(options, resumed, this.resumingDescent(activeCli, () => resumed.result.sessionId, resumeFn, onDescent, handOff)),
         });
         const terminal = !execution.failed && containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
         checkpoint = {
@@ -3253,14 +3265,14 @@ export class LazyWorkflowCli {
         activeRung = rung;
         await saveCheckpoint("implementing", sessionId);
       };
-      const handOff = async (rung: FallbackRung): Promise<AgentExecution> => {
+      const handOff = async (rung: FallbackRung, reasoning: string[]): Promise<AgentExecution> => {
         const handedOff = await this.handOffGitHubDelivery(options, rung, {
           issue,
           repository,
           branch: branch!,
           baseBranch: baseBranch!,
-          manifestPath: manifestPath!,
           norms,
+          reasoning,
         });
         activeRung = rung;
         activeCli = rung.cli;
@@ -3273,7 +3285,7 @@ export class LazyWorkflowCli {
         return handedOff.execution;
       };
       const descend = (attempted: AgentExecution): Promise<AgentExecution> =>
-        this.descendFallbackChain(options, attempted, resumeSession, onDescent, handOff);
+        this.descendFallbackChain(options, attempted, handOff);
       let execution;
       try {
         // En dos pasos: el catch de abajo nombra la sesión que quedó viva, y un descenso que
@@ -3392,11 +3404,12 @@ export class LazyWorkflowCli {
   }
 
   /**
-   * The cross-CLI handoff: a fresh session in the rung's CLI continuing the same
-   * fixed unit of work. It receives the coordinator's own delivery prompt —
-   * same issue, branch, manifest path and marker contract — plus the progress
-   * already verified on disk, and the authority profile in the format the new CLI
-   * enforces. Nothing the exhausted session said travels with it (ADR-0025).
+   * El traspaso: una sesión fresca en el escalón siguiente continuando la misma
+   * unidad fijada, cambie o no de CLI. Recibe el mismo prompt de entrega del
+   * coordinador, la sección de avance —rama, commits y las últimas cadenas de
+   * pensamiento del agente saliente— y el perfil de autoridad en el formato que
+   * el CLI nuevo impone. Nunca se reanuda una sesión: reanudar replayaba una
+   * transcripción entera para cambiar de modelo (ADR-0039).
    */
   private async handOffGitHubDelivery(
     options: CliOptions,
@@ -3404,18 +3417,22 @@ export class LazyWorkflowCli {
     work: {
       issue: SelectedManagedIssue;
       repository: GitHubRepositoryContext;
-      branch: string;
-      baseBranch: string;
-      manifestPath: string;
+      /** `null` cuando el checkpoint todavía no fijó rama: hay traspaso, pero no hay avance que declarar. */
+      branch: string | null;
+      baseBranch: string | null;
       norms: SagContext | null;
+      /** Lo último que pensó el escalón que se agotó, tal cual lo emitió. */
+      reasoning: string[];
     },
   ): Promise<{ execution: AgentExecution; agent: AgentAuthority }> {
     const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
     const run = await this.prompt(
-      { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch },
+      { kind: "github-delivery", issue: work.issue, repository: work.repository, branch: work.branch ?? "" },
       handoffOptions,
       work.norms,
-      await this.verifiedProgress(options.workingDirectory, "implementing", work.issue.number, work.branch, work.baseBranch, work.manifestPath),
+      work.branch && work.baseBranch
+        ? await this.verifiedProgress(options.workingDirectory, work.branch, work.baseBranch, work.reasoning)
+        : null,
     );
     this.resolveAgent(rung.cli);
     return {
@@ -3437,11 +3454,9 @@ export class LazyWorkflowCli {
    */
   private async verifiedProgress(
     workingDirectory: string,
-    phase: GitHubDeliveryPhase,
-    issue: number,
     branch: string,
     baseBranch: string,
-    manifestPath: string,
+    reasoning: string[],
   ): Promise<HandoffProgress> {
     const readGit = async (args: string[]): Promise<string | null> => {
       try {
@@ -3454,14 +3469,12 @@ export class LazyWorkflowCli {
     // the unit's branch from, and the one it has just fetched.
     const base = `refs/remotes/origin/${baseBranch.replace(/^refs\/heads\//, "")}`;
     return {
-      phase,
       branch,
-      // Only what the unit's branch holds over that base is progress of this
-      // delivery; a bare `log -1` would answer the base tip instead. An empty
-      // range — or a branch with no commits yet, which makes `log` fail — is the
-      // absence the section states.
-      commit: await readGit(["log", "-1", "--format=%H %s", `${base}..${branch}`]),
-      uncommitted: await readGit(["status", "--porcelain", "--untracked-files=no"]) ?? "",
+      // Solo lo que la rama lleva sobre esa base es avance de esta entrega; un `log` pelado
+      // respondería la punta de la base. Un rango vacío — o una rama sin commits, que hace fallar
+      // a `log` — es la ausencia que la sección dice.
+      commits: await readGit(["log", "--format=%h %s", `${base}..${branch}`]) ?? "",
+      reasoning,
     };
   }
 
@@ -4059,29 +4072,16 @@ export class LazyWorkflowCli {
       const descend = (attempted: AgentExecution): Promise<AgentExecution> => this.descendFallbackChain(
         options,
         attempted,
-        (descentSessionId, overrides) => this.codingAgent.resume(
-          descentSessionId,
-          "continue",
-          options.workingDirectory,
-          IMPLEMENTATION_READY_MARKER,
-          { ...overrides, agent: activeAuthority },
-        ),
-        async (rung, descentSessionId) => {
-          activeCli = rung.cli;
-          activeRung = rung;
-          await store.write({ ...liveCheckpoint, cli: rung.cli, model: rung.model, variant: rung.variant, sessionId: descentSessionId }, options.workingDirectory);
-        },
-        async (rung) => {
-          if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch || !liveCheckpoint.manifestPath) {
-            throw new Error("el checkpoint GitHub no contiene la rama y el manifest fijados");
-          }
+        async (rung, reasoning) => {
+          // Un checkpoint sin rama fijada todavía puede traspasarse: lo que no puede es
+          // declarar avance, porque no hay rango que consultarle a git.
           const handedOff = await this.handOffGitHubDelivery(options, rung, {
             issue,
             repository,
             branch: liveCheckpoint.branch,
-            baseBranch: liveCheckpoint.baseBranch,
-            manifestPath: liveCheckpoint.manifestPath,
+            baseBranch: liveCheckpoint.baseBranch ?? null,
             norms,
+            reasoning,
           });
           activeCli = rung.cli;
           activeRung = rung;
@@ -4098,19 +4098,10 @@ export class LazyWorkflowCli {
         },
       );
       execution = await descend(execution);
-      // Y una sesión que vuelve sin su marcador se reanuda una vez más sobre el mismo escalón,
-      // que es lo único que hacía la invocación siguiente del operador (ADR-0032).
-      execution = await this.resumeWithoutMarker({
-        execution,
-        cli: activeCli,
-        resume: (sessionId) => resumeSession(sessionId, activeRung ? rungFields() : getRecoveryOverrides(options, liveCheckpoint)),
-        persist: (sessionId) => store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: "implementing", sessionId }, options.workingDirectory),
-        descend,
-      });
       const result = execution.result;
       console.log(JSON.stringify(result, null, 2));
-      const terminal = !execution.failed && containsMarker(result.text, IMPLEMENTATION_READY_MARKER);
-      await store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: execution.failed ? "reconciling" : (terminal ? "implementation-ready" : "implementing"), sessionId: terminal ? null : result.sessionId }, options.workingDirectory);
+      const terminal = !execution.failed;
+      await store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: terminal ? "implementation-ready" : "reconciling", sessionId: terminal ? null : result.sessionId, summary: result.text.trim() || null }, options.workingDirectory);
       if (execution.failed) {
         this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "reconciling", sessionId: result.sessionId }, false);
         reportFailure(
@@ -4124,17 +4115,7 @@ export class LazyWorkflowCli {
       if (this.githubDelivery) {
         if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch) throw new Error("el checkpoint GitHub no contiene la rama fijada");
         await this.githubDelivery.verifyBranch?.(liveCheckpoint.branch, liveCheckpoint.baseBranch, options.workingDirectory);
-        if (!terminal) {
-          reportFailure(
-            "session-failure",
-            "implementing",
-            { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, sessionId: result.sessionId },
-            `lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}; checkpoint conservado.`,
-          );
-          this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: result.sessionId }, false);
-          return 1;
-        }
-        await this.completeGitHubDelivery(options, { ...liveCheckpoint, cli: activeCli, phase: "implementation-ready", sessionId: null });
+        await this.completeGitHubDelivery(options, { ...liveCheckpoint, cli: activeCli, phase: "implementation-ready", sessionId: null, summary: result.text.trim() || null });
         console.log(TICKET_COMPLETED_MARKER);
         console.log(WORKFLOW_STEP_FINISHED_MARKER);
         return 0;
@@ -4144,9 +4125,9 @@ export class LazyWorkflowCli {
           "session-failure",
           "implementing",
           { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, sessionId: result.sessionId },
-          `lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`,
+          "lazy-workflow: la sesión GitHub falló.",
         );
-        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: terminal ? null : result.sessionId }, false);
+        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: result.sessionId }, false);
         return 1;
       }
       await store.clear(options.workingDirectory);
@@ -5329,7 +5310,7 @@ export class LazyWorkflowCli {
               terminalMarker: IMPLEMENTATION_READY_MARKER,
             }, true);
           }
-          return await this.descendFallbackChain(options, started, resumeFn, onDescent, handOff);
+          return await this.descendFallbackChain(options, started, this.resumingDescent(activeCli, () => started.result.sessionId, resumeFn, onDescent, handOff));
         });
         // Same exclusion as the workspace path: the idle watchdog's silent
         // intervals never count as active effort (issue #292).

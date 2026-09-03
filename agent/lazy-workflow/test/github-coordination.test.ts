@@ -206,7 +206,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
     agentSource: { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
       resumes += 1;
       resumeOverrides = overrides;
-      return openCode.resume();
+      throw new Error("la sesión reanudada explotó");
     } },
     githubManagedQueue: queue,
     githubCheckpointStore: state.store,
@@ -218,11 +218,12 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
 
   expect(code).toBe(1);
   expect(selections).toBe(0);
-  // Dos: la reanudación del checkpoint y el único reintento que el coordinador se concede (ADR-0032).
-  expect(resumes).toBe(2);
+  // Una sola: no hay reintento por marcador ausente, porque no hay marcador (ADR-0035).
+  expect(resumes).toBe(1);
   expect(resumeOverrides).toEqual(expect.objectContaining({ model: "openai/gpt-5.6-luna", variant: "high" }));
   expect(state.current?.issue).toBe(178);
-  expect(state.current?.phase).toBe("implementing");
+  // Una reanudación que explota deja la unidad para reconciliar, con su sesión nombrada.
+  expect(state.current?.phase).toBe("reconciling");
 });
 
 test("la recuperación conserva el checkpoint si el checkout seguro falla", async () => {
@@ -425,7 +426,7 @@ for (const phase of GITHUB_DELIVERY_PHASES) {
     let selections = 0;
     const code = await createCli({
       huInfoService: azure,
-      agentSource: openCode,
+      agentSource: { ...openCode, resume: async () => { throw new Error("la sesión reanudada explotó"); } },
       githubManagedQueue: {
         selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
         reconcileClaimedIssue: async () => fakeSelectedIssue(178),
@@ -440,56 +441,5 @@ for (const phase of GITHUB_DELIVERY_PHASES) {
   });
 }
 
-test("la recuperación GitHub reanuda una vez más la sesión que volvió sin el marcador", async () => {
-  // La segunda invocación que el operador hacía a mano era exactamente esta reanudación (ADR-0032).
-  const state = boundaries(checkpoint("ses_178"));
-  const { azure, openCode } = services();
-  const texts = ["still working", "IMPLEMENTATION_READY"];
-  let resumes = 0;
 
-  const code = await createCli({
-    huInfoService: azure,
-    agentSource: {
-      ...openCode,
-      resume: async () => {
-        resumes += 1;
-        return AgentResult.fromJsonLines(JSON.stringify({
-          type: "text", sessionID: "ses_178", part: { type: "text", text: texts.shift() ?? "still working" },
-        }));
-      },
-    },
-    githubManagedQueue: {
-      // Recuperado el issue, la corrida sigue drenando: la cola ya está vacía.
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
-      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
-    },
-    githubCheckpointStore: state.store,
-    githubRepositoryLock: state.lock,
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(0);
-  expect(resumes).toBe(2);
-  expect(state.current).toBeNull();
-});
-
-test("la recuperación GitHub reanuda una sola vez antes de conservar el checkpoint", async () => {
-  const state = boundaries(checkpoint("ses_178"));
-  const { azure, openCode } = services();
-  let resumes = 0;
-
-  const code = await createCli({
-    huInfoService: azure,
-    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
-      reconcileClaimedIssue: async () => fakeSelectedIssue(178),
-    },
-    githubCheckpointStore: state.store,
-    githubRepositoryLock: state.lock,
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(1);
-  expect(resumes).toBe(2);
-  expect(state.current?.phase).toBe("implementing");
-});
 

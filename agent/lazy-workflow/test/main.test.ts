@@ -1953,6 +1953,13 @@ test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en
       // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
       // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
       git: async () => "",
+      // Y sin esto la corrida llega a leer la cola con `gh` de verdad: el rol de triage se
+      // aplica sobre los Issues publicados por encima de la marca de numeración.
+      githubManagedQueue: {
+        selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+        readQueueWatermark: async () => ({ highestIssueNumber: 0 }),
+        applyReadyForAgentRole: async () => [],
+      },
       cliParser: buildCli(() => true),
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
@@ -1985,6 +1992,13 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
       // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
       // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
       git: async () => "",
+      // Y sin esto la corrida llega a leer la cola con `gh` de verdad: el rol de triage se
+      // aplica sobre los Issues publicados por encima de la marca de numeración.
+      githubManagedQueue: {
+        selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
+        readQueueWatermark: async () => ({ highestIssueNumber: 0 }),
+        applyReadyForAgentRole: async () => [],
+      },
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan"]);
 

@@ -458,19 +458,26 @@ test("la unidad siguiente a una recuperación fija el CLI que realmente la ejecu
   expect(written).not.toContain("opencode");
 });
 
-test("un agotamiento al reanudar el Issue GitHub con --session desciende al mismo CLI con el modelo del escalón nuevo", async () => {
+test("un agotamiento al reanudar el Issue GitHub con --session desciende al mismo CLI en una sesión fresca", async () => {
+  // La recuperación reanuda la sesión que el checkpoint fija: eso no cambia. Lo que cambia es
+  // el descenso, que abre sesión fresca aunque el escalón siguiente sea del mismo CLI (ADR-0039).
   const resumed: Array<{ model?: string; variant?: string }> = [];
+  const started: Array<{ model?: string; variant?: string; session: string | null }> = [];
   const agentSource = (): CodingAgent => ({
-    run: async () => { throw new Error("must not start a fresh session: --session recovery must resume"); },
+    run: async (options) => {
+      started.push({ model: options.model, variant: options.variant, session: options.session });
+      return {
+        result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_fresca", part: { type: "text", text: "listo" } })),
+        azureLoginRequired: false,
+        failed: false,
+      };
+    },
     resume: async (sessionId, _prompt, _directory, _marker, overrides = {}) => {
       resumed.push({ model: overrides.model, variant: overrides.variant });
-      if (resumed.length === 1) {
-        throw new AgentExhaustionError(
-          { cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" },
-          AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "agotado" } })),
-        );
-      }
-      return AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "IMPLEMENTATION_READY" } }));
+      throw new AgentExhaustionError(
+        { cli: "OpenCode", model: "opencode-go/deepseek-v4-pro", cause: "rate_limit" },
+        AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text: "agotado" } })),
+      );
     },
   });
   const state = githubDeliveryCli(githubDeliveryCheckpoint("opencode"), { requested: [], resumed: [], overrides: [], source: agentSource });
@@ -487,9 +494,11 @@ test("un agotamiento al reanudar el Issue GitHub con --session desciende al mism
     console.log = originalLog;
   }
 
-  expect(resumed).toHaveLength(2);
-  expect(resumed[1]?.model).toBe("opencode-go/deepseek-v4-cheap");
-  expect(resumed[1]?.variant).toBe("high");
+  expect(resumed).toHaveLength(1);
+  expect(started).toHaveLength(1);
+  expect(started[0]?.session).toBeNull();
+  expect(started[0]?.model).toBe("opencode-go/deepseek-v4-cheap");
+  expect(started[0]?.variant).toBe("high");
   expect(exit).toBe(0);
 });
 

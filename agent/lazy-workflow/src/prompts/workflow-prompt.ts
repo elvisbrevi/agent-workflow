@@ -118,30 +118,30 @@ export interface WorkflowPromptContext {
 }
 
 /**
- * What a cross-CLI handoff can state about the work already done, and only that:
- * the checkpoint phase and everything readable from the repository itself. The
- * outgoing session's own account of what it did never enters here, because an
- * exhausted account cannot be asked and its prose is not verifiable (ADR-0025).
+ * Lo que un traspaso dice del trabajo ya hecho: la rama, los commits que lleva
+ * sobre su base, y las últimas cadenas de pensamiento del agente saliente tal
+ * cual las emitió (ADR-0039). Las cadenas no son un informe que se le pidió a
+ * una cuenta agotada: son lo último que su stream ya había emitido, y viajan
+ * como lo que son. Lo que aterrizó lo dice la lista de commits al lado.
  */
 export interface HandoffProgress {
-  phase: string;
   branch: string;
-  /** The HEAD commit of the fixed branch, or null when nothing was committed yet. */
-  commit: string | null;
-  /** `git status --porcelain` of the worktree, empty when it is clean. */
-  uncommitted: string;
+  /** `git log` de la rama sobre su base, vacío cuando todavía no commiteó nada. */
+  commits: string;
+  /** Las últimas cadenas de pensamiento del agente saliente. */
+  reasoning: string[];
 }
 
-/** The progress section a handed-off session starts from, appended to its own workflow prompt. */
+/** La sección de avance con la que arranca una sesión traspasada, anexada a su propio prompt. */
 export function formatHandoffProgress(progress: HandoffProgress): string {
-  const uncommitted = progress.uncommitted.trim();
+  const commits = progress.commits.trim();
   return [
-    "Traspaso entre agentes: esta unidad de trabajo ya está en curso y el estado siguiente está verificado en el repositorio.",
-    "Continúa desde este estado; no reimplementes lo que ya está hecho ni descartes lo que ya está commiteado.",
-    `Fase del checkpoint: ${progress.phase}`,
-    `Rama fijada: ${progress.branch}`,
-    `Último commit: ${progress.commit ?? "todavía no hay commits en la rama"}`,
-    uncommitted ? `Archivos sin commitear:\n${uncommitted}` : "El árbol de trabajo no tiene cambios sin commitear.",
+    "Este trabajo ya está en curso; continúa desde acá y no reimplementes lo que ya está commiteado.",
+    `Rama: ${progress.branch}`,
+    commits ? `Commits en esta rama:\n${commits}` : "Todavía no hay commits en esta rama.",
+    ...(progress.reasoning.length > 0
+      ? ["Últimas cadenas de pensamiento del agente anterior:", ...progress.reasoning]
+      : []),
   ].join("\n");
 }
 

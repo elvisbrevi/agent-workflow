@@ -47,9 +47,10 @@ interface Resumption {
 }
 
 /**
- * One fake agent per CLI: `run` answers the scripted executions of the primary
- * rung, `resume` the scripted results of each descent, recording what each rung
- * was asked to resume with.
+ * Un agente falso por CLI. `run` responde las ejecuciones guionadas del escalón
+ * primario y, agotadas esas, las del guion de descensos: ningún escalón reanuda,
+ * todos abren sesión fresca (ADR-0039), así que `resumed` registra con qué
+ * modelo y variante arrancó cada descenso.
  */
 function scriptedAgents(script: {
   run: AgentExecution[];
@@ -58,6 +59,8 @@ function scriptedAgents(script: {
   const resumed: Resumption[] = [];
   const requested: AgentCli[] = [];
   const started: string[] = [];
+  /** Con qué arrancó cada sesión: modelo, variante y autoridad del escalón que la abrió. */
+  const startOptions: Array<{ model: string; variant: string; session: string | null; agent?: { profile: string } }> = [];
   const pendingRuns = [...script.run];
   const resumes = [...script.resume];
   let runs = 0;
@@ -65,6 +68,7 @@ function scriptedAgents(script: {
     resumed,
     requested,
     started,
+    startOptions,
     get runs() { return runs; },
     source: (cli: AgentCli): CodingAgent => {
       requested.push(cli);
@@ -72,7 +76,12 @@ function scriptedAgents(script: {
         run: async (options) => {
           runs += 1;
           started.push(options.model);
-          return pendingRuns.shift() ?? { result: terminal(), azureLoginRequired: false, failed: false };
+          startOptions.push(options);
+          const scripted = pendingRuns.shift();
+          if (scripted) return scripted;
+          const next = resumes.shift();
+          if (next instanceof Error) throw next;
+          return { result: next ?? terminal(), azureLoginRequired: false, failed: false };
         },
         resume: async (sessionId, _prompt, _workingDirectory, _marker, overrides = {}) => {
           resumed.push({ sessionId, overrides });
@@ -167,18 +176,21 @@ async function runDelivery(
   }
 }
 
-test("un agotamiento con respaldo del mismo CLI reanuda la sesión con el modelo y la variante nuevos", async () => {
+test("un agotamiento con respaldo del mismo CLI abre sesión fresca con el modelo y la variante nuevos", async () => {
   const agents = scriptedAgents({ run: [exhausted("provider/primario")], resume: [terminal()] });
 
   const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"]);
 
   expect(code).toBe(0);
-  expect(agents.resumed).toHaveLength(1);
-  expect(agents.resumed[0]?.sessionId).toBe(SESSION);
-  expect(agents.resumed[0]?.overrides.model).toBe("provider/respaldo");
-  expect(agents.resumed[0]?.overrides.variant).toBe("medium");
-  // The descended session keeps the delivery authority the run started with.
-  expect(agents.resumed[0]?.overrides.agent?.profile).toBe("lazy-github-code");
+  // Ningún escalón reanuda: reanudar replayaba la transcripción entera para cambiar de
+  // modelo, que es exactamente lo que hacía sentir lento al fallback (ADR-0039).
+  expect(agents.resumed).toEqual([]);
+  expect(agents.startOptions).toHaveLength(2);
+  expect(agents.startOptions[1]?.session).toBeNull();
+  expect(agents.startOptions[1]?.model).toBe("provider/respaldo");
+  expect(agents.startOptions[1]?.variant).toBe("medium");
+  // La sesión descendida conserva la autoridad de entrega con la que arrancó el run.
+  expect(agents.startOptions[1]?.agent?.profile).toBe("lazy-github-code");
 });
 
 test("un agotamiento encadenado continúa hacia el escalón siguiente y nunca hacia atrás", async () => {
@@ -199,7 +211,8 @@ test("un agotamiento encadenado continúa hacia el escalón siguiente y nunca ha
   ]);
 
   expect(code).toBe(0);
-  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual([
+  expect(agents.started).toEqual([
+    "opencode-go/deepseek-v4-pro",
     "provider/respaldo",
     "provider/ultimo",
   ]);
@@ -214,9 +227,6 @@ test("el orden declarado se respeta aunque el escalón siguiente sea de otro CLI
   ]);
 
   expect(code).toBe(0);
-  // El escalón de otro CLI no tiene sesión que reanudar: se alcanza con un
-  // traspaso, y el escalón siguiente ni se toca. El traspaso vive en
-  // fallback-handoff.test.ts.
   expect(agents.resumed).toEqual([]);
   // El último agente resuelto vuelve a ser el primario, listo para la unidad siguiente.
   expect(agents.requested).toEqual(["opencode", "claudecode", "opencode"]);
@@ -245,20 +255,6 @@ test("sin descenso el checkpoint no nombra ningún modelo", async () => {
   expect(store.written.every((checkpoint) => checkpoint.model === undefined)).toBeTrue();
 });
 
-test("una sesión ausente al reanudar detiene el run sin abrir una sesión nueva", async () => {
-  const agents = scriptedAgents({
-    run: [exhausted("provider/primario")],
-    resume: [new AgentSessionNotFoundError(SESSION, `La sesión ${SESSION} ya no existe`)],
-  });
-  const store = checkpointStore();
-
-  const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"], store);
-
-  expect(code).toBe(1);
-  expect(agents.runs).toBe(1);
-  expect(store.written.at(-1)?.phase).toBe("reconciling");
-  expect(store.written.at(-1)?.sessionId).toBeNull();
-});
 
 test("un fallo ordinario de la sesión no desciende la cadena", async () => {
   const agents = scriptedAgents({ run: [ordinaryFailure()], resume: [terminal()] });
@@ -282,8 +278,12 @@ test("la unidad siguiente vuelve a arrancar en el escalón primario", async () =
   expect(code).toBe(0);
   // El descenso es sticky solo dentro de la unidad: la segunda arranca de nuevo
   // en el primario, aunque la primera haya terminado en un respaldo.
-  expect(agents.started).toEqual(["opencode-go/deepseek-v4-pro", "opencode-go/deepseek-v4-pro"]);
-  expect(agents.resumed).toHaveLength(1);
+  expect(agents.started).toEqual([
+    "opencode-go/deepseek-v4-pro",
+    "provider/respaldo",
+    "opencode-go/deepseek-v4-pro",
+  ]);
+  expect(agents.resumed).toEqual([]);
 });
 
 test("cada descenso se reporta con el escalón anterior, el nuevo y la causa", async () => {
@@ -441,7 +441,8 @@ test("con toda la cadena agotada el run espera y reintenta el escalón primario"
   expect(code).toBe(0);
   expect(timers.waits).toEqual([60_000]);
   // Tras la espera el reintento vuelve al primario, no al respaldo ya agotado.
-  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual([
+  expect(agents.started).toEqual([
+    "opencode-go/deepseek-v4-pro",
     "provider/respaldo",
     "opencode-go/deepseek-v4-pro",
   ]);
@@ -532,38 +533,3 @@ test("el checkpoint conserva el escalón completo, modelo y variante, para recup
 });
 
 
-test("la recuperación que desciende reanuda el intento extra en el escalón descendido y lo checkpointea entero", async () => {
-  const agents = scriptedAgents({
-    run: [],
-    resume: [new AgentExhaustionError(agentResult("sin cupo"), { cli: "OpenCode", model: "provider/primario", cause: "rate_limit" }), agentResult("still working"), terminal()],
-  });
-  const store = checkpointStore();
-  await store.write({
-    schemaVersion: 2,
-    cli: "opencode",
-    workflow: "github-code",
-    repository: "owner/repo",
-    issue: 178,
-    phase: "implementing",
-    branch: "refs/heads/issue/178",
-    sessionId: SESSION,
-    commit: null,
-    pullRequest: null,
-    receipts: {},
-    baseBranch: "refs/heads/main",
-    manifestPath: "/tmp/lazy-workflow-fake-manifest-178.json",
-  });
-
-  await runDelivery(agents, ["--session", SESSION, "--fallback", "opencode:provider/respaldo:medium"], store);
-
-  // El intento extra pertenece al escalón en curso, y el checkpoint no puede quedar cruzado:
-  // el CLI descendido con el modelo del primario.
-  expect(agents.resumed.at(-1)?.overrides).toEqual(expect.objectContaining({ model: "provider/respaldo", variant: "medium" }));
-  expect(agents.resumed.at(-1)?.overrides.agent).toEqual({
-    profile: "lazy-github-code",
-    configPath: expect.stringContaining("opencode/authority.json"),
-  });
-  const persisted = store.written.filter(({ sessionId }) => sessionId === SESSION).at(-1);
-  expect(persisted?.model).toBe("provider/respaldo");
-  expect(persisted?.variant).toBe("medium");
-});

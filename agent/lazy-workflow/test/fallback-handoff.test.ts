@@ -145,7 +145,7 @@ test("la sesión traspasada recibe el mismo trabajo fijado que la original", asy
 
   const prompt = agents.started[1]?.options.prompt ?? "";
   expect(prompt).toContain("/implement the issue #178");
-  expect(prompt).toContain("Rama fijada: refs/heads/issue/178");
+  expect(prompt).toContain("Rama: refs/heads/issue/178");
 
 });
 
@@ -155,10 +155,9 @@ test("la sección de avance se arma con estado verificado y no con el texto de l
   await runDelivery(agents, ["--fallback", "claudecode:claude-opus-5:high"]);
 
   const prompt = agents.started[1]?.options.prompt ?? "";
-  expect(prompt).toContain("Fase del checkpoint: implementing");
-  expect(prompt).toContain("Rama fijada: refs/heads/issue/178");
+  expect(prompt).toContain("Rama: refs/heads/issue/178");
+  expect(prompt).toContain("Commits en esta rama:");
   expect(prompt).toContain(COMMIT);
-  expect(prompt).toContain(UNCOMMITTED.trim());
   expect(prompt).not.toContain("lo que dijo la sesión agotada");
 });
 
@@ -179,8 +178,7 @@ test("una rama sin commits todavía se dice como ausencia, no como el commit de 
   );
 
   const prompt = agents.started[1]?.options.prompt ?? "";
-  expect(prompt).toContain("todavía no hay commits en la rama");
-  expect(prompt).toContain("El árbol de trabajo no tiene cambios sin commitear.");
+  expect(prompt).toContain("Todavía no hay commits en esta rama.");
 });
 
 
@@ -202,7 +200,7 @@ test("una rama sin commits propios sobre una base con historia dice la ausencia,
   );
 
   const prompt = agents.started[1]?.options.prompt ?? "";
-  expect(prompt).toContain("todavía no hay commits en la rama");
+  expect(prompt).toContain("Todavía no hay commits en esta rama.");
   expect(prompt).not.toContain(COMMIT);
 });
 
@@ -341,27 +339,36 @@ test("un agotamiento posterior al traspaso reanuda la sesión nueva con la autor
   ]);
 
   expect(code).toBe(0);
-  // Ya hay sesión que reanudar en el CLI nuevo: el escalón siguiente la reanuda
-  // en vez de traspasar otra vez, y con la autoridad del CLI que la tiene.
-  expect(agents.started).toHaveLength(2);
-  expect(agents.resumed[0]?.cli).toBe("claudecode");
-  expect(agents.resumed[0]?.sessionId).toBe("ses_claudecode");
-  expect(agents.resumed[0]?.overrides.model).toBe("claude-sonnet-5");
-  expect(agents.resumed[0]?.overrides.agent?.configPath).toEndWith("claudecode/lazy-github-code.json");
+  // Un escalón más dentro del mismo CLI sigue siendo un traspaso: sesión fresca, mismo prompt,
+  // misma sección de avance (ADR-0039). Reanudar replayaba la transcripción entera.
+  expect(agents.started).toHaveLength(3);
+  expect(agents.resumed).toHaveLength(0);
+  expect(agents.started[2]?.cli).toBe("claudecode");
+  expect(agents.started[2]?.options.session).toBeNull();
+  expect(agents.started[2]?.options.model).toBe("claude-sonnet-5");
+  expect(agents.started[2]?.options.agent?.configPath).toEndWith("claudecode/lazy-github-code.json");
 });
 
 test("un fallo posterior al traspaso conserva la sesión traspasada, no la agotada", async () => {
   const agents = scriptedAgents(
     {
       opencode: [exhausted("provider/primario")],
-      claudecode: [{
-        result: agentResult("el traspaso tampoco tiene cupo", "ses_claudecode"),
-        azureLoginRequired: false,
-        failed: true,
-        exhaustion: { cli: "Claude Code", model: "claude-opus-5", cause: "usage_limit" },
-      }],
+      claudecode: [
+        {
+          result: agentResult("el traspaso tampoco tiene cupo", "ses_claudecode"),
+          azureLoginRequired: false,
+          failed: true,
+          exhaustion: { cli: "Claude Code", model: "claude-opus-5", cause: "usage_limit" },
+        },
+        // El escalón siguiente, también en Claude Code, explota: el checkpoint tiene que quedar
+        // con la sesión que ese CLI abrió, no con la del CLI agotado.
+        {
+          result: agentResult("el escalón siguiente explotó", "ses_claudecode"),
+          azureLoginRequired: false,
+          failed: true,
+        },
+      ],
     },
-    [new Error("el escalón siguiente explotó")],
   );
   const store = checkpointStore();
 
