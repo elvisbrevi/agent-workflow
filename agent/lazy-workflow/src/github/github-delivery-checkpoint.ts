@@ -1,68 +1,33 @@
 import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 
-export const GITHUB_DELIVERY_PHASES = [
-  "selected",
-  "started",
-  "implementing",
-  "implementation-ready",
-  "integrating",
-  "conflict-resolving",
-  "reconciling",
-  "cleaning",
-] as const;
-
-export type GitHubDeliveryPhase = typeof GITHUB_DELIVERY_PHASES[number];
-
-export interface GitHubDeliveryReceipt {
-  verifiedAt: string;
-}
-
-export interface GitHubDeliveryIntent {
-  effect: string;
-  target: string;
-}
-
-export interface GitHubPullRequestReconciliation {
-  pullRequest: number;
-  originalCommit: string;
-  baseCommit: string;
-}
-
+/**
+ * Lo único que git no puede contar por sí solo (ADR-0038).
+ *
+ * Todo lo demás sobre una entrega en vuelo se deriva: qué issue está en curso lo dice el claim,
+ * qué rama lo dice su nombre, si hay trabajo commiteado lo dice `rev-list`, si ya hay pull request
+ * lo dice `gh`. Lo que ninguno de ellos puede responder es si la sesión que la trabajó llegó a
+ * verificarse antes de que la corrida se cortara — una rama con dos commits significa lo mismo si
+ * el agente terminó y el coordinador se cayó abriendo el PR, que si el agente se cayó habiendo
+ * commiteado dos de cinco cosas. `commit` es esa respuesta: presente significa verificada.
+ *
+ * Lo que había acá era una máquina de ocho fases con recibos por efecto, intenciones previas a
+ * cada uno, y el identificador y el CLI de la sesión para poder reanudarla. Los recibos eran
+ * redundantes —cada efecto verifica su propio estado antes de actuar— y ninguna sesión se reanuda
+ * ya en ninguna parte del camino GitHub (ADR-0039).
+ */
 export interface GitHubDeliveryCheckpoint {
-  schemaVersion: 2;
-  /** The coding agent CLI owning `sessionId`, so recovery resumes against it (ADR-0023). */
-  cli: AgentCli;
-  /**
-   * The CLI the run itself declared before a cross-CLI handoff moved the session
-   * off it; absent when no handoff moved it. It is what separates a `--cli` the
-   * run's own descent contradicted from one the operator contradicted, without
-   * inferring it from the chain a later command happens to declare (issue #252).
-   */
-  handoffFrom?: AgentCli;
+  schemaVersion: 3;
   workflow: "github-code";
   repository: string;
   issue: number;
-  phase: GitHubDeliveryPhase;
   branch: string | null;
-  sessionId: string | null;
-  /**
-   * The rung the session is running on, written only once a fallback descent
-   * moves it off the run's own; absent means the primary rung (issue #238).
-   */
-  model?: string | null;
-  variant?: string | null;
-  commit: string | null;
-  pullRequest: number | null;
-  receipts: Partial<Record<string, GitHubDeliveryReceipt>>;
   baseBranch?: string | null;
-  /** The session's closing summary, which becomes the pull-request body (ADR-0037). */
+  /** El commit verificado de la unidad. `null` mientras la sesión no haya pasado su verificación. */
+  commit: string | null;
+  /** El último texto de la sesión, que es el cuerpo del pull request (ADR-0037). */
   summary?: string | null;
-  mergeCommit?: string | null;
-  intent?: GitHubDeliveryIntent | null;
-  reconciliation?: GitHubPullRequestReconciliation | null;
 }
 
 export interface GitHubCheckpointStore {
@@ -89,90 +54,30 @@ function isCommit(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value));
 }
 
-/** The model or variant a descent recorded: absent, or a single-line non-empty name. */
-function isRung(value: unknown): value is string | null | undefined {
-  return value === undefined || value === null
-    || (typeof value === "string" && value.length > 0 && !/[\r\n]/.test(value));
-}
-
-function isReceipt(value: unknown): value is GitHubDeliveryReceipt {
-  return typeof value === "object"
-    && value !== null
-    && Object.keys(value).every((key) => key === "verifiedAt")
-    && typeof (value as GitHubDeliveryReceipt).verifiedAt === "string"
-    && Number.isFinite(Date.parse((value as GitHubDeliveryReceipt).verifiedAt))
-    && (value as GitHubDeliveryReceipt).verifiedAt.length > 0;
-}
-
 export function isGitHubDeliveryCheckpoint(value: unknown): value is GitHubDeliveryCheckpoint {
   if (typeof value !== "object" || value === null) return false;
   const checkpoint = value as Partial<GitHubDeliveryCheckpoint>;
-  const pullRequest = checkpoint.pullRequest;
   const allowedKeys = new Set([
     "schemaVersion",
-    "cli",
-    "handoffFrom",
     "workflow",
     "repository",
     "issue",
-    "phase",
     "branch",
-    "sessionId",
-    "model",
-    "variant",
-    "commit",
-    "pullRequest",
-    "receipts",
     "baseBranch",
+    "commit",
     "summary",
-    "mergeCommit",
-    "intent",
-    "reconciliation",
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
-  return checkpoint.schemaVersion === 2
-    && isAgentCli(checkpoint.cli)
-    && (checkpoint.handoffFrom === undefined || isAgentCli(checkpoint.handoffFrom))
+  return checkpoint.schemaVersion === 3
     && checkpoint.workflow === "github-code"
     && typeof checkpoint.repository === "string"
     && /^[^/\s]+\/[^/\s]+$/.test(checkpoint.repository)
     && Number.isInteger(checkpoint.issue)
     && (checkpoint.issue ?? 0) > 0
-    && GITHUB_DELIVERY_PHASES.includes(checkpoint.phase as GitHubDeliveryPhase)
     && isBranch(checkpoint.branch)
-    && (checkpoint.sessionId === null
-      || (typeof checkpoint.sessionId === "string" && checkpoint.sessionId.length > 0 && !/[\r\n]/.test(checkpoint.sessionId)))
-    && isCommit(checkpoint.commit)
-    && isRung(checkpoint.model)
-    && isRung(checkpoint.variant)
     && (checkpoint.baseBranch === undefined || isBranch(checkpoint.baseBranch))
-    && (checkpoint.summary === undefined || checkpoint.summary === null || typeof checkpoint.summary === "string")
-    && (checkpoint.mergeCommit === undefined || isCommit(checkpoint.mergeCommit))
-    && (checkpoint.intent === undefined || checkpoint.intent === null || (
-      typeof checkpoint.intent === "object"
-      && checkpoint.intent !== null
-      && Object.keys(checkpoint.intent).every((key) => key === "effect" || key === "target")
-      && typeof checkpoint.intent.effect === "string"
-      && typeof checkpoint.intent.target === "string"
-      && checkpoint.intent.effect.length > 0
-      && checkpoint.intent.target.length > 0
-    ))
-    && (checkpoint.reconciliation === undefined || checkpoint.reconciliation === null || (
-      typeof checkpoint.reconciliation === "object"
-      && checkpoint.reconciliation !== null
-      && Object.keys(checkpoint.reconciliation).every((key) => ["pullRequest", "originalCommit", "baseCommit"].includes(key))
-      && Number.isInteger(checkpoint.reconciliation.pullRequest)
-      && checkpoint.reconciliation.pullRequest > 0
-      && isCommit(checkpoint.reconciliation.originalCommit)
-      && checkpoint.reconciliation.originalCommit !== null
-      && isCommit(checkpoint.reconciliation.baseCommit)
-      && checkpoint.reconciliation.baseCommit !== null
-    ))
-    && (pullRequest === null || (typeof pullRequest === "number" && Number.isInteger(pullRequest) && pullRequest > 0))
-    && typeof checkpoint.receipts === "object"
-    && checkpoint.receipts !== null
-    && !Array.isArray(checkpoint.receipts)
-    && Object.values(checkpoint.receipts).every(isReceipt);
+    && isCommit(checkpoint.commit)
+    && (checkpoint.summary === undefined || checkpoint.summary === null || typeof checkpoint.summary === "string");
 }
 
 export class GitHubDeliveryCheckpointStore implements GitHubCheckpointStore {
@@ -182,14 +87,22 @@ export class GitHubDeliveryCheckpointStore implements GitHubCheckpointStore {
     return resolve(workingDirectory, (await this.git(["rev-parse", "--git-path", FILE_NAME], workingDirectory)).trim());
   }
 
+  /**
+   * Un checkpoint de un esquema anterior se descarta en vez de migrarse.
+   *
+   * Los esquemas 1 y 2 guardaban una fase y una sesión que el coordinador ya no sabe continuar, así
+   * que traducirlos sería inventar la única respuesta que importa. Descartarlo deja la unidad
+   * reclamada con su rama, que es exactamente lo que una entrega sin verificar debe dejar.
+   */
   async read(workingDirectory?: string): Promise<GitHubDeliveryCheckpoint | null> {
     const path = await this.path(workingDirectory);
     if (!await Bun.file(path).exists()) return null;
     const stored: unknown = await Bun.file(path).json();
-    const value = withOwnerCli(stored, 1, 2);
-    if (!isGitHubDeliveryCheckpoint(value)) throw new Error("Checkpoint GitHub invalido; no se sobrescribira");
-    if (value !== stored) await this.write(value, workingDirectory);
-    return value;
+    if (!isGitHubDeliveryCheckpoint(stored)) {
+      await this.clear(workingDirectory);
+      return null;
+    }
+    return stored;
   }
 
   async write(checkpoint: GitHubDeliveryCheckpoint, workingDirectory?: string): Promise<void> {

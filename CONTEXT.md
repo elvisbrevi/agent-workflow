@@ -184,11 +184,12 @@ _Avoid_: checklist closure, title-based epic closure
 **GitHub delivery checkpoint**:
 The repository-scoped record of the one fact git cannot supply: that the unit in
 flight passed its session verification before the delivery effects finished. It
-carries the unit, the branch, that verified flag, and the active milliseconds
-accrued so far, and nothing else — phase, receipts, intents, the session
-identifier and the CLI that owned it are all derivable or meaningless now that no
-session is resumed (ADR-0038).
-_Avoid_: a phase machine, a persisted session identifier
+carries the repository, the issue, its branch and base, the verified commit — whose
+presence *is* that fact — and the delivery summary. Nothing else: phase, receipts,
+intents, the session identifier and the CLI that owned it are all derivable or
+meaningless now that no session is resumed (ADR-0038). A checkpoint of an older
+schema is discarded, not migrated.
+_Avoid_: a phase machine, a persisted session identifier, a per-effect receipt
 
 **Queue outcome**:
 A coordinator-owned result distinguishing a drained queue, a queue with nothing

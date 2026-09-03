@@ -39,7 +39,23 @@ touched the remote and what has not are different failures.
 
 The only state persisted across a crash is the one bit git cannot supply: that a
 unit passed its verification (ADR-0035) before the delivery effects finished. The
-checkpoint is `{ unit, branch, verified, activeMs }`. Phases, receipts, intents,
-the session identifier and the session-owning CLI are all removed — the first
-three are derivable from GitHub and git, and the last two are meaningless now
-that no session is ever resumed (ADR-0039).
+GitHub checkpoint is `{ repository, issue, branch, baseBranch, commit, summary }`,
+where a non-null `commit` *is* that bit.
+
+The eight phases, the per-effect receipts, the intent written before each effect,
+the session identifier and the CLI that owned it are all gone. The receipts were
+redundant: every effect already verifies its own state before acting — `pushCommit`
+compares the remote branch against the commit, `createOrReusePullRequest` reuses
+the canonical pull request, `mergePullRequest` returns the merge of an
+already-merged pull request, `closeIssue` returns on an already-closed issue,
+`cleanupBranch` checks both refs before deleting them. A receipt only saved the
+call that answers that, at the price of a state machine that could drift from the
+remote.
+
+The session identifier and its CLI go because nothing resumes a GitHub session any
+more (ADR-0039) — not the fallback chain, and not a later invocation recovering a
+checkpoint. That retires the *session-owning CLI*: a run interrupted before its
+unit verified abandons that session's work in progress, leaving the issue claimed
+and its branch in place, which is what an unverified unit leaves anyway. A
+checkpoint written under an older schema is discarded rather than migrated, since
+translating it would mean inventing the one answer that matters.

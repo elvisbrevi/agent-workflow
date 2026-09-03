@@ -2057,9 +2057,9 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
   });
 });
 
-test("code --cli claudecode entrega la cola gestionada y fija el CLI en el checkpoint", async () => {
+test("code --cli claudecode entrega la cola gestionada con ese CLI", async () => {
   const requested: AgentCli[] = [];
-  const checkpoints: Array<{ cli: string; phase: string }> = [];
+  const checkpoints: Array<Record<string, unknown>> = [];
   const { githubCheckpointStore: store, githubRepositoryLock: lock, githubDelivery: delivery }
     = fakeCoordinatedGitHubDeps();
   const code = await createCli({
@@ -2082,15 +2082,17 @@ test("code --cli claudecode entrega la cola gestionada y fija el CLI en el check
     checkpointStore: emptyCheckpointStore(),
     cliParser: buildCli(() => true),
     githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
-    githubCheckpointStore: { ...store, write: async (checkpoint) => { checkpoints.push({ cli: checkpoint.cli, phase: checkpoint.phase }); await store.write(checkpoint); } },
+    githubCheckpointStore: { ...store, write: async (checkpoint) => { checkpoints.push({ ...checkpoint }); await store.write(checkpoint); } },
     githubRepositoryLock: lock,
     githubDelivery: delivery,
   }).run(["code", "--cli", "claudecode", "--model", "claude-opus-5", "--working-directory", "/repo"]);
 
   expect(code).toBe(0);
   expect(requested).toEqual(["claudecode"]);
-  expect(checkpoints.every(({ cli }) => cli === "claudecode")).toBeTrue();
-  expect(checkpoints.map(({ phase }) => phase)).toContain("implementation-ready");
+  // El checkpoint dejó de nombrar el CLI: ninguna sesión se reanuda desde él (ADR-0038).
+  expect(checkpoints.every((checkpoint) => !("cli" in checkpoint))).toBeTrue();
+  // El commit fijado es el único estado que el checkpoint lleva de la unidad verificada.
+  expect(checkpoints.some(({ commit }) => typeof commit === "string")).toBeTrue();
 });
 
 test("code --cli codex entrega la cola gestionada con autoridad Codex", async () => {

@@ -273,22 +273,17 @@ function drainQueue(next: number) {
   };
 }
 
-test("un run que recupera un checkpoint sessionless drena la cola con el siguiente issue elegible", async () => {
+test("un checkpoint sin verificar no se entrega: queda reclamado y el drenaje sigue", async () => {
   const closed: number[] = [];
   const delivery = drainDelivery(closed);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
-    phase: "started",
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
-    manifestPath: "/nonexistent-179-manifest.json",
-    sessionId: null,
     commit: null,
-    pullRequest: null,
     receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
   };
   const store: GitHubCheckpointStore = {
@@ -306,27 +301,24 @@ test("un run que recupera un checkpoint sessionless drena la cola con el siguien
     githubDelivery: delivery,
   }).run(["code", "--working-directory", "/repo"]);
 
-  expect(code).toBe(0);
-  expect(closed).toEqual([179, 180]);
+  // La #179 nunca se verificó: se la deja reclamada con su rama y se sigue con la #180. El
+  // código de salida dice que algo quedó roto detrás (ADR-0038).
+  expect(code).toBe(1);
+  expect(closed).toEqual([180]);
   expect(current).toBeNull();
 });
 
-test("un run --session que recupera una sesión drena la cola con el siguiente issue elegible", async () => {
+test("un checkpoint sin verificar tampoco se entrega con --session", async () => {
   const closed: number[] = [];
   const delivery = drainDelivery(closed);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
-    phase: "implementing",
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
-    manifestPath: "/nonexistent-179-manifest.json",
-    sessionId: "ses_179",
     commit: null,
-    pullRequest: null,
     receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
   };
   const store: GitHubCheckpointStore = {
@@ -344,8 +336,10 @@ test("un run --session que recupera una sesión drena la cola con el siguiente i
     githubDelivery: delivery,
   }).run(["code", "--session", "ses_179", "--working-directory", "/repo"]);
 
-  expect(code).toBe(0);
-  expect(closed).toEqual([179, 180]);
+  // La #179 nunca se verificó: se la deja reclamada con su rama y se sigue con la #180. El
+  // código de salida dice que algo quedó roto detrás (ADR-0038).
+  expect(code).toBe(1);
+  expect(closed).toEqual([180]);
   expect(current).toBeNull();
 });
 
@@ -388,7 +382,8 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
   });
 
   expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(1);
-  expect(phaseOf(current)).toBe("integrating");
+  // La entrega quedó a medias tras verificarse: el checkpoint la conserva con su commit.
+  expect(current?.commit).toBe("a".repeat(40));
   failMerge = false;
   expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(0);
   expect(openCodeRuns).toBe(1);
@@ -403,25 +398,13 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   const events: string[] = [];
   let reconciled = false;
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
-    phase: "integrating",
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
-    manifestPath: "/manifest.json",
-    sessionId: null,
     commit: originalCommit,
-    pullRequest: 201,
-    mergeCommit: null,
-    receipts: {
-      manifest: { verifiedAt: "2026-08-14T00:00:00.000Z" },
-      push: { verifiedAt: "2026-08-14T00:00:00.000Z" },
-      "pull-request": { verifiedAt: "2026-08-14T00:00:00.000Z" },
-    },
-    intent: { effect: "merge", target: "201" },
   };
   const manifest = (commit: string): GitHubReadyManifest => ({
     issue: 179,
@@ -442,7 +425,8 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
     prepareBranch: async () => { throw new Error("must not prepare"); },
     verifySession: async () => ({ commit: reconciled ? reconciledCommit : originalCommit }),
     pushCommit: async (_branch, commit) => { events.push(`push:${commit}`); },
-    createOrReusePullRequest: async () => { throw new Error("must reuse PR"); },
+    // Sin recibos, el efecto se vuelve a ejecutar y el adaptador reusa el PR canónico (ADR-0038).
+    createOrReusePullRequest: async () => { events.push("pull-request"); return { number: 201 }; },
     preparePullRequestReconciliation: async () => {
       events.push("prepare-reconciliation");
       return { baseCommit };
@@ -481,7 +465,10 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
   expect(prompt).toContain(originalCommit);
   expect(prompt).toContain(baseCommit);
   expect(prompt).toContain("Coordinator-fixed pull request: #201");
+  // Sin recibos, retomar la entrega vuelve a correr push y PR, que son idempotentes.
   expect(events).toEqual([
+    `push:${originalCommit}`,
+    "pull-request",
     "merge",
     "prepare-reconciliation",
     `verify:${originalCommit}:${baseCommit}:${reconciledCommit}`,
@@ -498,22 +485,13 @@ test("retoma una reconciliación conflictiva sin seleccionar un reemplazo y lueg
   const baseCommit = "b".repeat(40);
   const reconciledCommit = "c".repeat(40);
   let current: GitHubDeliveryCheckpoint | null = {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-code",
     repository: "owner/repo",
     issue: 179,
-    phase: "conflict-resolving",
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
-    manifestPath: "/manifest.json",
-    sessionId: "ses_conflict",
     commit: originalCommit,
-    pullRequest: 201,
-    mergeCommit: null,
-    receipts: { "pull-request": { verifiedAt: "2026-08-14T00:00:00.000Z" } },
-    intent: { effect: "reconcile-merge", target: "201" },
-    reconciliation: { pullRequest: 201, originalCommit, baseCommit },
   };
   let reconciled = false;
   let selections = 0;
@@ -530,12 +508,20 @@ test("retoma una reconciliación conflictiva sin seleccionar un reemplazo y lueg
     checkoutBranch: async () => { throw new Error("must preserve expected merge state"); },
     verifyBranch: async () => undefined,
     verifyPendingPullRequestReconciliation: async () => { events.push("verify-pending"); },
+    preparePullRequestReconciliation: async () => { events.push("verify-pending"); return { baseCommit }; },
     prepareBranch: async () => { throw new Error("must not prepare"); },
     verifySession: async () => ({ commit: reconciled ? reconciledCommit : originalCommit }),
     pushCommit: async (_branch, commit) => { events.push(`push:${commit}`); },
-    createOrReusePullRequest: async () => { throw new Error("must reuse PR"); },
+    // Sin recibos, el efecto se vuelve a ejecutar y el adaptador reusa el PR canónico (ADR-0038).
+    createOrReusePullRequest: async () => { events.push("pull-request"); return { number: 201 }; },
     verifyPullRequestReconciliation: async () => { events.push("verify-reconciled"); },
-    mergePullRequest: async () => { events.push("merge"); return { number: 201, mergeCommit: "d".repeat(40) }; },
+    // El conflicto sigue ahí hasta que la sesión de reconciliación lo resuelve: sin estado de
+    // reconciliación en el checkpoint, retomar es volver a chocar y abrir una sesión nueva.
+    mergePullRequest: async () => {
+      events.push("merge");
+      if (!reconciled) throw new GitHubPullRequestConflictError(201);
+      return { number: 201, mergeCommit: "d".repeat(40) };
+    },
     closeIssue: async () => { events.push("close"); },
     cleanupBranch: async () => { events.push("cleanup"); },
   };
@@ -562,11 +548,9 @@ test("retoma una reconciliación conflictiva sin seleccionar un reemplazo y lueg
   // La reconciliación interrumpida se retoma con una sesión nueva, no reanudando la anterior
   // (ADR-0039): el conflicto sigue en el árbol y el prompt vuelve a nombrarlo.
   expect({ selections, runs, resumes }).toEqual({ selections: 1, runs: 1, resumes: 0 });
-  expect(events.filter((event) => event === "verify-pending")).toHaveLength(1);
-  expect(events.indexOf("verify-pending")).toBeLessThan(events.indexOf("verify-reconciled"));
   expect(events.indexOf("verify-reconciled")).toBeLessThan(events.indexOf(`push:${reconciledCommit}`));
-  expect(events.indexOf(`push:${reconciledCommit}`)).toBeLessThan(events.indexOf("merge"));
-  expect(events.indexOf("merge")).toBeLessThan(events.indexOf("close"));
+  expect(events.indexOf(`push:${reconciledCommit}`)).toBeLessThan(events.lastIndexOf("merge"));
+  expect(events.lastIndexOf("merge")).toBeLessThan(events.indexOf("close"));
   expect(events.indexOf("close")).toBeLessThan(events.indexOf("cleanup"));
   expect(current).toBeNull();
 });

@@ -55,7 +55,6 @@ import {
   GitHubDeliveryCheckpointStore,
   type GitHubCheckpointStore,
   type GitHubDeliveryCheckpoint,
-  type GitHubDeliveryPhase,
 } from "../github/github-delivery-checkpoint.ts";
 import {
   GitHubSessionNotVerifiedError,
@@ -187,15 +186,6 @@ type CompletionEffectRunner = (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function oldestReceiptTimestamp(receipts: GitHubDeliveryCheckpoint["receipts"]): string | null {
-  const timestamps = Object.values(receipts)
-    .filter((receipt): receipt is NonNullable<typeof receipt> => receipt !== undefined)
-    .map((receipt) => receipt.verifiedAt);
-  return timestamps.length === 0
-    ? null
-    : timestamps.reduce((oldest, current) => (Date.parse(current) < Date.parse(oldest) ? current : oldest));
 }
 
 function reportAzureFailure(
@@ -400,13 +390,16 @@ function getResumeOverrides(options: CliOptions): AgentResumeOverrides {
  * that will run, and `adoptCheckpointCli` clears it before these options ever
  * reach this function.
  */
-function getRecoveryOverrides(options: CliOptions, checkpoint: Pick<GitHubDeliveryCheckpoint, "model" | "variant">): AgentResumeOverrides {
+/**
+ * Los overrides con los que Azure reanuda desde su checkpoint.
+ *
+ * El checkpoint Azure sí conserva el escalón al que un descenso movió el ticket, así que una
+ * recuperación vuelve con ese modelo y no con el primario que ya se agotó. El de GitHub dejó de
+ * conservarlo: allá ninguna sesión se reanuda (ADR-0038, ADR-0039).
+ */
+function getRecoveryOverrides(options: CliOptions, checkpoint: { model?: string | null; variant?: string | null }): AgentResumeOverrides {
   const overrides = getResumeOverrides(options);
   if (!checkpoint.model || options.hasModel) return overrides;
-  // The declared overrides land last because an explicit one always wins, and an
-  // explicit `--variant` is the value adoption validated against the CLI the
-  // checkpoint imposes — rejecting it there and then ignoring it here would name
-  // two different variants for one session (issue #253).
   return { model: checkpoint.model, ...(checkpoint.variant ? { variant: checkpoint.variant } : {}), ...overrides };
 }
 
@@ -673,7 +666,7 @@ export class LazyWorkflowCli {
     checkpoint: GitHubDeliveryCheckpoint,
     workingDirectory: string,
   ): Promise<SelectedManagedIssue | null> {
-    if (checkpoint.sessionId !== null || checkpoint.pullRequest) return null;
+    if (checkpoint.commit) return null;
     const readIssue = this.githubManagedQueue.readIssueDetail?.bind(this.githubManagedQueue);
     if (!readIssue) return null;
     let issue: SelectedManagedIssue;
@@ -865,7 +858,7 @@ export class LazyWorkflowCli {
         }
         if (this.githubCheckpointStore) {
           const checkpoint = await this.githubCheckpointStore.read(workingDirectory);
-          if (checkpoint) return `github issue ${checkpoint.issue} (phase ${checkpoint.phase})`;
+          if (checkpoint) return `github issue ${checkpoint.issue}`;
         }
         const azureCheckpoint = await this.checkpointStore.read(workingDirectory);
         if (azureCheckpoint) {
@@ -1345,12 +1338,7 @@ export class LazyWorkflowCli {
     }
 
     if (command === "code") {
-      if (githubRecovery) {
-        const adopted = this.adoptCheckpointCli(githubRecovery.cli, options, githubRecovery.handoffFrom);
-        if (!adopted) return 1;
-        const code = await this.runGitHubRecovery(adopted, githubRecovery);
-        return code === 0 ? this.continueQueueAfterRecovery(this.restoreDeclaredCli(options, adopted), false) : code;
-      }
+      if (githubRecovery) return this.runGitHubRecovery(options, githubRecovery);
       if (isAzureHuRun) return this.runAzureCode(options);
       return this.runDefaultWorkflow(command, options);
     }
@@ -3001,10 +2989,8 @@ export class LazyWorkflowCli {
       const resolvedIssue = checkpoint ? await this.githubCheckpointResolvedExternally(checkpoint, options.workingDirectory) : null;
       if (checkpoint && resolvedIssue) {
         await this.releaseOrphanedCheckpointClaim(resolvedIssue, options.workingDirectory);
-        const since = oldestReceiptTimestamp(checkpoint.receipts) ?? "fecha desconocida";
         reportOperator(
-          `lazy-workflow: el Issue #${checkpoint.issue} del checkpoint ya está cerrado sin PR asociado `
-          + `(fase "${checkpoint.phase}", reclamado desde ${since}); `
+          `lazy-workflow: el Issue #${checkpoint.issue} del checkpoint ya está cerrado sin PR asociado; `
           + "checkpoint descartado, continuando con la cola.",
         );
         await store.clear(options.workingDirectory);
@@ -3015,20 +3001,9 @@ export class LazyWorkflowCli {
         }
         return this.runDefaultCodeWorkflowLoop(options, store);
       }
-      if (checkpoint) {
-        const adopted = this.adoptCheckpointCli(checkpoint.cli, options, checkpoint.handoffFrom);
-        if (!adopted) return 1;
-        let code: number;
-        if (checkpoint.sessionId) {
-          code = await this.runGitHubRecovery({ ...adopted, session: checkpoint.sessionId }, checkpoint, true);
-        } else if (this.githubDelivery && ["started", "implementation-ready", "integrating", "conflict-resolving", "reconciling", "cleaning"].includes(checkpoint.phase)) {
-          code = await this.runGitHubRecovery(adopted, checkpoint, true);
-        } else {
-          this.reportGitHubReconciliationRequired(checkpoint);
-          return 1;
-        }
-        return code === 0 ? this.continueQueueAfterRecovery(this.restoreDeclaredCli(options, adopted), true) : code;
-      }
+      // Un checkpoint es una entrega a retomar, y `runGitHubRecovery` decide con la única
+      // pregunta que importa: si la unidad llegó a verificarse (ADR-0038).
+      if (checkpoint) return this.runGitHubRecovery(options, checkpoint, true);
       try {
         await this.githubParentReconciliation?.reconcileOpenParents(options.workingDirectory);
       } catch (error) {
@@ -3081,6 +3056,8 @@ export class LazyWorkflowCli {
   private async runDefaultCodeWorkflowLoop(
     options: CliOptions,
     store: GitHubCheckpointStore | null,
+    /** Unidades que ya fallaron antes de entrar al bucle, como la que una recuperación descartó. */
+    alreadyFailed = 0,
   ): Promise<number> {
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
@@ -3092,7 +3069,7 @@ export class LazyWorkflowCli {
      * vuelta siguiente elige otra y el drenaje termina igual. Lo que el conteo cambia es el código
      * de salida: una corrida que dejó issues rotas detrás no puede reportarse como limpia.
      */
-    let failedUnits = 0;
+    let failedUnits = alreadyFailed;
     /**
      * Dejar la unidad en curso y seguir con la siguiente.
      *
@@ -3102,7 +3079,7 @@ export class LazyWorkflowCli {
      */
     const skipFailedUnit = async (
       kind: FailureKind,
-      phase: GitHubDeliveryPhase,
+      phase: string,
       context: { issue: number; repository: string; branch: string | null; sessionId?: string | null },
       message: string,
     ): Promise<void> => {
@@ -3114,7 +3091,6 @@ export class LazyWorkflowCli {
     while (true) {
       let queueOutcome: ManagedQueueOutcome;
       let checkpointWasWritten = false;
-      let receipts: GitHubDeliveryCheckpoint["receipts"] = { "issue-claim": { verifiedAt: new Date().toISOString() } };
       if (store && queue.selectEligibleIssue && queue.claimSelectedIssue) {
         let selection: Awaited<ReturnType<NonNullable<GitHubManagedQueueAdapter["selectEligibleIssue"]>>>;
         try {
@@ -3129,19 +3105,13 @@ export class LazyWorkflowCli {
           return 1;
         }
         if (selection.kind === "candidate") {
-          receipts = {};
           await store.write({
-            schemaVersion: 2,
-            cli: options.cli,
+            schemaVersion: 3,
             workflow: "github-code",
             repository: selection.repository.nameWithOwner,
             issue: selection.issue.number,
-            phase: "selected",
             branch: null,
-            sessionId: null,
             commit: null,
-            pullRequest: null,
-            receipts,
           }, options.workingDirectory);
           checkpointWasWritten = true;
           try {
@@ -3157,20 +3127,7 @@ export class LazyWorkflowCli {
             );
             return 1;
           }
-          receipts = { "issue-claim": { verifiedAt: new Date().toISOString() } };
-          await store.write({
-            schemaVersion: 2,
-            cli: options.cli,
-            workflow: "github-code",
-            repository: selection.repository.nameWithOwner,
-            issue: selection.issue.number,
-            phase: "selected",
-            branch: null,
-            sessionId: null,
-            commit: null,
-            pullRequest: null,
-            receipts,
-          }, options.workingDirectory);
+
         } else {
           queueOutcome = selection;
         }
@@ -3215,49 +3172,32 @@ export class LazyWorkflowCli {
       /** The session's own closing words, which become the pull-request body (ADR-0037). */
       let summary: string | null = null;
       let commit: string | null = null;
-      let pullRequest: number | null = null;
-      let mergeCommit: string | null = null;
-      let intent: GitHubDeliveryCheckpoint["intent"] = null;
-      /** The rung in course, written only once a descent moves it, so a run on its primary keeps the historical checkpoint shape. */
+      /** El escalón en curso, para que el traspaso siguiente sepa de dónde viene. */
       let activeRung: FallbackRung | null = null;
-      /** The CLI that owns the session in course: the run's own until a handoff moves the work to another one. */
+      /** El CLI que corre la sesión en curso: el del run hasta que un traspaso la mueva. */
       let activeCli = options.cli;
-      /**
-       * Escrito mientras un traspaso tiene el trabajo en otro CLI, y en cada
-       * checkpoint que la unidad deje atrás hasta cerrarla: es lo que deja al
-       * comando original reanudar su propio trabajo (issue #252).
-       */
-      const handoffOrigin = (): { handoffFrom?: AgentCli } => activeCli === options.cli ? {} : { handoffFrom: options.cli };
-      const saveCheckpoint = async (phase: GitHubDeliveryCheckpoint["phase"], sessionId: string | null = null): Promise<void> => {
+      /** El checkpoint de la unidad: lo que git no puede contar, y nada más (ADR-0038). */
+      const saveCheckpoint = async (): Promise<void> => {
         if (store) await store.write({
-          schemaVersion: 2,
-          cli: activeCli,
-          ...handoffOrigin(),
+          schemaVersion: 3,
           workflow: "github-code",
           repository: repository.nameWithOwner,
           issue: issue.number,
-          phase,
           branch,
-          sessionId,
-          commit,
-          pullRequest,
-          receipts,
           baseBranch,
+          commit,
           summary,
-          mergeCommit,
-          intent,
-          ...(activeRung ? { model: activeRung.model, variant: activeRung.variant } : {}),
         }, options.workingDirectory);
       };
-      if (!checkpointWasWritten) await saveCheckpoint("selected");
+      if (!checkpointWasWritten) await saveCheckpoint();
       if (this.githubDelivery) {
         try {
           const prepared = await this.githubDelivery.prepareBranch(issue.number, options.workingDirectory);
           branch = prepared.branch;
           baseBranch = prepared.baseBranch;
-          await saveCheckpoint("started");
+          await saveCheckpoint();
         } catch (error) {
-          await saveCheckpoint("started");
+          await saveCheckpoint();
           reportFailure(
             "branch-preparation-failure",
             "started",
@@ -3300,7 +3240,7 @@ export class LazyWorkflowCli {
         // El CLI nuevo y la sesión nueva quedan en el checkpoint en una sola
         // escritura, en cuanto el CLI nuevo devuelve el identificador: antes
         // de correr la sesión todavía no existe ninguno que registrar.
-        await saveCheckpoint("implementing", activeSessionId);
+        await saveCheckpoint();
         return handedOff.execution;
       };
       const descend = (attempted: AgentExecution): Promise<AgentExecution> =>
@@ -3337,7 +3277,7 @@ export class LazyWorkflowCli {
       // Que el proceso saliera bien es lo único que dice esto; que la unidad se entregara lo dice
       // git, y eso se pregunta abajo antes de tocar el remoto (ADR-0035).
       const processSucceeded = !execution.failed;
-      await saveCheckpoint(processSucceeded ? "implementation-ready" : "reconciling", processSucceeded ? null : result.sessionId);
+      await saveCheckpoint();
       if (!processSucceeded) {
         await skipFailedUnit(
           "session-failure",
@@ -3366,22 +3306,14 @@ export class LazyWorkflowCli {
         }
         try {
           await this.completeGitHubDelivery(options, {
-            schemaVersion: 2,
-            cli: activeCli,
-            ...handoffOrigin(),
+            schemaVersion: 3,
             workflow: "github-code",
             repository: repository.nameWithOwner,
             issue: issue.number,
-            phase: "implementation-ready",
             branch,
-            sessionId: null,
-            commit,
-            pullRequest,
-            receipts,
             baseBranch,
+            commit,
             summary,
-            mergeCommit,
-            intent,
           });
           console.log(TICKET_COMPLETED_MARKER);
           console.log(WORKFLOW_STEP_FINISHED_MARKER);
@@ -3571,6 +3503,17 @@ export class LazyWorkflowCli {
     return { kind: "ready", commit };
   }
 
+  /**
+   * Los efectos deterministas de una unidad ya verificada: push, pull request, merge, cierre,
+   * limpieza y reconciliación de padres.
+   *
+   * No lleva recibos. Los llevaba para no repetir un efecto que ya había ocurrido, y cada uno de
+   * ellos verifica su propio estado antes de actuar: `pushCommit` compara la rama remota con el
+   * commit, `createOrReusePullRequest` reusa el PR canónico, `mergePullRequest` devuelve el merge
+   * si el PR ya está mergeado, `closeIssue` sale si la issue ya está cerrada, `cleanupBranch`
+   * comprueba las dos refs antes de borrarlas. Un recibo solo ahorraba la llamada que responde
+   * eso, al precio de una máquina de estado que podía desincronizarse del remoto (ADR-0038).
+   */
   private async completeGitHubDelivery(options: CliOptions, initial: GitHubDeliveryCheckpoint): Promise<void> {
     const delivery = this.githubDelivery;
     const store = this.githubCheckpointStore;
@@ -3582,19 +3525,10 @@ export class LazyWorkflowCli {
     await delivery.verifyRepository?.(initial.repository, options.workingDirectory);
     let checkpoint = initial;
     const save = async (): Promise<void> => store.write(checkpoint, options.workingDirectory);
-    const effect = async (name: string, target: string, action: () => Promise<void>): Promise<void> => {
-      checkpoint = { ...checkpoint, intent: { effect: name, target } };
-      await save();
+    const effect = async (name: string, action: () => Promise<void>): Promise<void> => {
       try {
         await action();
-        checkpoint = {
-          ...checkpoint,
-          intent: null,
-          receipts: { ...checkpoint.receipts, [name]: { verifiedAt: new Date().toISOString() } },
-        };
-        await save();
       } catch (error) {
-        await save();
         if (error instanceof GitHubPullRequestConflictError) throw error;
         const failureKind: FailureKind = name === "parent-reconciliation"
           ? "parent-reconciliation-failure"
@@ -3606,128 +3540,99 @@ export class LazyWorkflowCli {
     };
 
     // El commit lo tiene git, no un archivo que la sesión pidió que le escribieran (ADR-0035).
-    // Una unidad que el bucle ya verificó llega con su commit fijado; una que se recupera desde el
+    // Una unidad que el bucle ya verificó llega con su commit fijado; una que se retoma desde el
     // checkpoint no, y se verifica acá.
     let verifiedCommit = checkpoint.commit
       ?? (await delivery.verifySession(fixedBranch, fixedBaseBranch, options.workingDirectory)).commit;
-    checkpoint = {
-      ...checkpoint,
-      commit: verifiedCommit,
-      phase: "implementation-ready",
-      sessionId: null,
-      receipts: { ...checkpoint.receipts, verified: { verifiedAt: new Date().toISOString() } },
-    };
+    checkpoint = { ...checkpoint, commit: verifiedCommit };
     await save();
-    if (!checkpoint.receipts["push"]) {
-      await effect("push", verifiedCommit, () => delivery.pushCommit(checkpoint.branch!, verifiedCommit, options.workingDirectory));
-    }
-    checkpoint = { ...checkpoint, phase: "integrating" };
-    await save();
-    let pullRequest = checkpoint.pullRequest;
-    if (!pullRequest) {
-      await effect("pull-request", fixedBranch, async () => {
-        const created = await delivery.createOrReusePullRequest!(checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory, true, `#${checkpoint.issue}`, checkpoint.summary ?? undefined);
-        pullRequest = created.number;
-        checkpoint = { ...checkpoint, pullRequest };
-      });
-    }
+
+    await effect("push", () => delivery.pushCommit(fixedBranch, verifiedCommit, options.workingDirectory));
+    let pullRequest = 0;
+    await effect("pull-request", async () => {
+      pullRequest = (await delivery.createOrReusePullRequest!(
+        checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory,
+        true, `#${checkpoint.issue}`, checkpoint.summary ?? undefined,
+      )).number;
+    });
     if (!pullRequest) throw new Error("No se pudo resolver el PR GitHub");
-    let mergeCommit = checkpoint.mergeCommit;
-    if (!checkpoint.receipts.merge) {
-      try {
-        await effect("merge", `${pullRequest}`, async () => {
-          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, checkpoint.branch!, checkpoint.baseBranch!, verifiedCommit, options.workingDirectory);
-          mergeCommit = merged.mergeCommit;
-          checkpoint = { ...checkpoint, pullRequest, mergeCommit };
-        });
-      } catch (error) {
-        if (!(error instanceof GitHubPullRequestConflictError)
-          || !delivery.preparePullRequestReconciliation
-          || !delivery.verifyPullRequestReconciliation) throw error;
-        const originalCommit = verifiedCommit;
-        const { baseCommit } = await delivery.preparePullRequestReconciliation(fixedBranch, fixedBaseBranch, originalCommit, options.workingDirectory);
-        checkpoint = {
-          ...checkpoint,
-          phase: "conflict-resolving",
-          intent: { effect: "reconcile-merge", target: `${pullRequest}:${originalCommit}:${baseCommit}` },
-          reconciliation: { pullRequest, originalCommit, baseCommit },
-        };
-        await save();
-        const outcome = await this.runGitHubPullRequestReconciliation(options, {
-          issue: checkpoint.issue,
-          repository: checkpoint.repository,
-          pullRequest,
-          branch: fixedBranch,
-          baseBranch: fixedBaseBranch,
-          originalCommit,
-          baseCommit,
-          workingDirectory: options.workingDirectory,
-          issueWorkingDirectory: options.workingDirectory,
-          requireEvidence: false,
-        });
-        if (outcome.kind === "pending") {
-          checkpoint = { ...checkpoint, phase: "conflict-resolving", sessionId: outcome.sessionId };
-          await save();
-          throw new Error("La reconciliación del PR no terminó con IMPLEMENTATION_READY");
-        }
-        verifiedCommit = outcome.commit;
-        const { push: _push, merge: _merge, verified: _verified, ...receipts } = checkpoint.receipts;
-        checkpoint = {
-          ...checkpoint,
-          commit: verifiedCommit,
-          phase: "implementation-ready",
-          sessionId: null,
-          intent: null,
-          reconciliation: null,
-          receipts: { ...receipts, verified: { verifiedAt: new Date().toISOString() } },
-        };
-        await save();
-        await effect("push", verifiedCommit, () => delivery.pushCommit(fixedBranch, verifiedCommit, options.workingDirectory));
-        await effect("merge", `${pullRequest}`, async () => {
-          const merged = await delivery.mergePullRequest!(pullRequest!, checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory);
-          mergeCommit = merged.mergeCommit;
-          checkpoint = { ...checkpoint, pullRequest, mergeCommit };
-        });
-      }
+
+    let mergeCommit = "";
+    const merge = async (): Promise<void> => {
+      await effect("merge", async () => {
+        mergeCommit = (await delivery.mergePullRequest!(
+          pullRequest, checkpoint.issue, fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory,
+        )).mergeCommit;
+      });
+    };
+    try {
+      await merge();
+    } catch (error) {
+      if (!(error instanceof GitHubPullRequestConflictError)
+        || !delivery.preparePullRequestReconciliation
+        || !delivery.verifyPullRequestReconciliation) throw error;
+      const originalCommit = verifiedCommit;
+      const { baseCommit } = await delivery.preparePullRequestReconciliation(fixedBranch, fixedBaseBranch, originalCommit, options.workingDirectory);
+      const outcome = await this.runGitHubPullRequestReconciliation(options, {
+        issue: checkpoint.issue,
+        repository: checkpoint.repository,
+        pullRequest,
+        branch: fixedBranch,
+        baseBranch: fixedBaseBranch,
+        originalCommit,
+        baseCommit,
+        workingDirectory: options.workingDirectory,
+        issueWorkingDirectory: options.workingDirectory,
+        requireEvidence: false,
+      });
+      if (outcome.kind === "pending") throw new Error("La sesión de reconciliación no resolvió el conflicto");
+      verifiedCommit = outcome.commit;
+      checkpoint = { ...checkpoint, commit: verifiedCommit };
+      await save();
+      await effect("push", () => delivery.pushCommit(fixedBranch, verifiedCommit, options.workingDirectory));
+      await merge();
     }
     if (!mergeCommit) throw new Error("No se pudo verificar el commit de merge GitHub");
-    checkpoint = { ...checkpoint, phase: "reconciling", mergeCommit };
-    await save();
-    if (!checkpoint.receipts["issue-closure"]) {
-      await effect("issue-closure", `${checkpoint.issue}`, () => delivery.closeIssue(checkpoint.issue, pullRequest!, mergeCommit!, options.workingDirectory));
-    }
-    checkpoint = { ...checkpoint, phase: "cleaning" };
-    await save();
-    if (!checkpoint.receipts.cleanup) {
-      await effect("cleanup", fixedBranch, () => delivery.cleanupBranch(fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory));
-    }
-    if (this.githubParentReconciliation && !checkpoint.receipts["parent-reconciliation"]) {
-      await effect("parent-reconciliation", `${checkpoint.issue}`, () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
+
+    await effect("issue-closure", () => delivery.closeIssue(checkpoint.issue, pullRequest, mergeCommit, options.workingDirectory));
+    await effect("cleanup", () => delivery.cleanupBranch(fixedBranch, fixedBaseBranch, verifiedCommit, options.workingDirectory));
+    if (this.githubParentReconciliation) {
+      await effect("parent-reconciliation", () => this.githubParentReconciliation!.reconcileParents(checkpoint.issue, options.workingDirectory));
     }
     await store.clear(options.workingDirectory);
   }
-
 
   private reportGitHubReconciliationRequired(checkpoint: GitHubDeliveryCheckpoint, emitFailure = true): void {
     console.log(JSON.stringify({
       outcome: RECONCILIATION_REQUIRED_MARKER,
       issue: checkpoint.issue,
-      phase: checkpoint.phase,
     }, null, 2));
     if (emitFailure) {
       reportFailure(
         "reconciliation-required",
-        checkpoint.phase,
-        { issue: checkpoint.issue, repository: checkpoint.repository, sessionId: checkpoint.sessionId, branch: checkpoint.branch },
-        `lazy-workflow: el Issue #${checkpoint.issue} conserva un checkpoint GitHub en fase ${checkpoint.phase}; requiere reconciliacion.`,
+        "reconciling",
+        { issue: checkpoint.issue, repository: checkpoint.repository, branch: checkpoint.branch },
+        `lazy-workflow: el Issue #${checkpoint.issue} conserva un checkpoint GitHub; requiere reconciliacion.`,
       );
     }
   }
 
+  /**
+   * Retomar una entrega GitHub que quedó a medias, que es una sola pregunta.
+   *
+   * El checkpoint guarda el único bit que git no puede contar por sí solo: si la unidad pasó su
+   * verificación (ADR-0038). Con commit fijado, la entrega ya está hecha del lado del repositorio
+   * y lo que falta son efectos deterministas e idempotentes —push, PR, merge, cierre, limpieza—
+   * que `completeGitHubDelivery` vuelve a intentar sin abrir sesión. Sin commit, la unidad nunca
+   * llegó a tocar el remoto: no hay nada que reconciliar, la issue conserva su claim, y la corrida
+   * sigue drenando.
+   *
+   * Lo que había acá era una máquina de ocho fases con recibos e intenciones por efecto, y toda
+   * ella respondía a que el coordinador no sabía si la sesión había entregado. Ahora lo sabe.
+   */
   private async runGitHubRecovery(options: CliOptions, checkpoint: GitHubDeliveryCheckpoint, lockAlreadyHeld = false): Promise<number> {
     const store = this.githubCheckpointStore;
     const lock = this.githubRepositoryLock;
-    const queue = this.githubManagedQueue;
     if (!store || !lock) {
       this.reportGitHubReconciliationRequired(checkpoint);
       return 1;
@@ -3739,7 +3644,7 @@ export class LazyWorkflowCli {
       } catch (error) {
         reportFailure(
           "lock-unavailable",
-          checkpoint.phase,
+          "reconciling",
           { issue: checkpoint.issue, repository: checkpoint.repository, branch: checkpoint.branch },
           `lazy-workflow: no se pudo adquirir el lock GitHub (${errorMessage(error)}); checkpoint conservado.`,
         );
@@ -3751,418 +3656,54 @@ export class LazyWorkflowCli {
         await release();
       }
     }
+
+    let live: GitHubDeliveryCheckpoint | null;
     try {
-      let recoveryCheckpoint: GitHubDeliveryCheckpoint | null;
-      try {
-        recoveryCheckpoint = await store.read(options.workingDirectory);
-      } catch (error) {
-        throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
-      }
-      if (!recoveryCheckpoint || recoveryCheckpoint.issue !== checkpoint.issue) {
-        this.reportGitHubReconciliationRequired(checkpoint);
-        return 1;
-      }
-      if (this.githubDelivery && recoveryCheckpoint.phase !== "conflict-resolving") {
-        // Una preparación fallida deja la unidad reclamada sin rama fijada. Ese
-        // checkpoint es reconciliable, no un callejón sin salida: la preparación
-        // es idempotente, así que se vuelve a fijar la rama y se persiste antes
-        // de continuar. Solo aplica antes de que exista sesión: con una sesión
-        // viva la rama ya se fijó y su ausencia sí exige reconciliación manual.
-        const branchWasNeverFixed = !recoveryCheckpoint.branch
-          && recoveryCheckpoint.sessionId === null
-          && (recoveryCheckpoint.phase === "selected" || recoveryCheckpoint.phase === "started");
-        if (branchWasNeverFixed) {
-          const prepared = await this.githubDelivery.prepareBranch(recoveryCheckpoint.issue, options.workingDirectory);
-          recoveryCheckpoint = {
-            ...recoveryCheckpoint,
-            phase: "started",
-            branch: prepared.branch,
-            baseBranch: prepared.baseBranch,
-          };
-          await store.write(recoveryCheckpoint, options.workingDirectory);
-          checkpoint = recoveryCheckpoint;
-        }
-        if (!recoveryCheckpoint.branch || !recoveryCheckpoint.baseBranch) {
-          throw new Error("el checkpoint GitHub no contiene la rama fijada");
-        }
-        await this.githubDelivery.verifyRepository?.(recoveryCheckpoint.repository, options.workingDirectory);
-        await this.githubDelivery.checkoutBranch?.(recoveryCheckpoint.branch, recoveryCheckpoint.baseBranch, options.workingDirectory);
-        await this.githubDelivery.verifyBranch?.(recoveryCheckpoint.branch, recoveryCheckpoint.baseBranch, options.workingDirectory);
-      }
+      live = await store.read(options.workingDirectory);
     } catch (error) {
-      const preserved = await store.read(options.workingDirectory).catch(() => checkpoint) ?? checkpoint;
-      this.reportGitHubReconciliationRequired(preserved, false);
+      this.reportGitHubReconciliationRequired(checkpoint, false);
       reportFailure(
-        error instanceof GitHubCoordinatedFailureError ? error.failureKind : "branch-preparation-failure",
-        "started",
+        "checkpoint-unreadable",
+        "reconciling",
         { issue: checkpoint.issue, repository: checkpoint.repository },
-        `lazy-workflow: no se pudo preparar la rama fijada del Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`,
+        `lazy-workflow: no se pudo leer el checkpoint GitHub (${errorMessage(error)}); checkpoint conservado.`,
       );
       return 1;
     }
-    if (this.githubDelivery && checkpoint.sessionId === null && checkpoint.phase === "started") {
-      try {
-        let liveCheckpoint: GitHubDeliveryCheckpoint | null;
-        try {
-          liveCheckpoint = await store.read(options.workingDirectory);
-        } catch (error) {
-          throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
-        }
-        const readIssue = (queue.reconcileClaimedIssue ?? queue.readIssueDetail)?.bind(queue);
-        if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || !readIssue) {
-          this.reportGitHubReconciliationRequired(checkpoint);
-          return 1;
-        }
-        const branch = liveCheckpoint.branch;
-        const baseBranch = liveCheckpoint.baseBranch;
-        if (!branch || !baseBranch) {
-          throw new Error("el checkpoint GitHub no contiene la rama fijada");
-        }
-        let issue: SelectedManagedIssue;
-        try {
-          issue = await readIssue(liveCheckpoint.issue, options.workingDirectory);
-        } catch (error) {
-          throw new GitHubCoordinatedFailureError("claim-verification-failure", errorMessage(error), { cause: error });
-        }
-        const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
-        // Un checkpoint que ya pasó la verificación termina su entrega sin abrir sesión: es el
-        // único bit que git no puede contar por sí solo (ADR-0038).
-        if (liveCheckpoint.commit) {
-          await this.completeGitHubDelivery(options, { ...liveCheckpoint, branch, baseBranch, phase: "implementation-ready", sessionId: null });
-          console.log(TICKET_COMPLETED_MARKER);
-          console.log(WORKFLOW_STEP_FINISHED_MARKER);
-          return 0;
-        }
-        const norms = await this.loadSagNorms(options, "coding");
-        if (options.normasSag && norms === null) return 1;
-        const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, norms);
-        const execution = await this.codingAgent.run({ ...options, ...run, session: null }, false);
-        const terminal = !execution.failed;
-        await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId, summary: execution.result.text.trim() || null }, options.workingDirectory);
-        if (!terminal) {
-          reportFailure(
-            "session-failure",
-            "implementing",
-            { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, branch, sessionId: execution.result.sessionId },
-            `lazy-workflow: la sesión GitHub falló; checkpoint conservado.`,
-          );
-          this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: execution.result.sessionId }, false);
-          return 1;
-        }
-        await this.completeGitHubDelivery(options, { ...liveCheckpoint, phase: "implementation-ready", sessionId: null, summary: execution.result.text.trim() || null });
-        console.log(TICKET_COMPLETED_MARKER);
-        console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        return 0;
-      } catch (error) {
-        const current = await store.read(options.workingDirectory).catch(() => null);
-        const preserved = current ?? { ...checkpoint, phase: "started" as const };
-        await store.write({ ...preserved, phase: "started", sessionId: null }, options.workingDirectory);
-          this.reportGitHubReconciliationRequired({ ...preserved, phase: "started", sessionId: null }, false);
-        reportFailure(
-          githubRecoveryFailureKind(error),
-          "started",
-          { issue: checkpoint.issue, repository: checkpoint.repository },
-          `lazy-workflow: no se pudo reanudar el Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`,
-        );
-        return 1;
-      }
-    }
-    if (this.githubDelivery && checkpoint.phase === "conflict-resolving") {
-      let release: (() => Promise<void>) | null = null;
-      try {
-        if (!lockAlreadyHeld) {
-          try {
-            release = await lock.acquire(options.workingDirectory);
-          } catch (error) {
-            throw new GitHubCoordinatedFailureError("lock-unavailable", errorMessage(error), { cause: error });
-          }
-        }
-        let liveCheckpoint: GitHubDeliveryCheckpoint | null;
-        try {
-          liveCheckpoint = await store.read(options.workingDirectory);
-        } catch (error) {
-          throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
-        }
-        const reconciliation = liveCheckpoint?.reconciliation;
-        if (!liveCheckpoint
-          || liveCheckpoint.issue !== checkpoint.issue
-          || !liveCheckpoint.branch
-          || !liveCheckpoint.pullRequest
-          || !reconciliation
-          || reconciliation.pullRequest !== liveCheckpoint.pullRequest
-          || !this.githubDelivery.verifyPendingPullRequestReconciliation
-          || !this.githubDelivery.verifyPullRequestReconciliation) {
-          throw new Error("el checkpoint no contiene una reconciliación de PR completa");
-        }
-        await this.githubDelivery.verifyRepository?.(liveCheckpoint.repository, options.workingDirectory);
-        await this.githubDelivery.verifyPendingPullRequestReconciliation(
-          liveCheckpoint.branch,
-          reconciliation.originalCommit,
-          reconciliation.baseCommit,
-          options.workingDirectory,
-        );
-        const outcome = await this.runGitHubPullRequestReconciliation(options, {
-          issue: liveCheckpoint.issue,
-          repository: liveCheckpoint.repository,
-          pullRequest: reconciliation.pullRequest,
-          branch: liveCheckpoint.branch,
-          baseBranch: liveCheckpoint.baseBranch!,
-          originalCommit: reconciliation.originalCommit,
-          baseCommit: reconciliation.baseCommit,
-          workingDirectory: options.workingDirectory,
-          issueWorkingDirectory: options.workingDirectory,
-          requireEvidence: false,
-        });
-        if (outcome.kind === "pending") {
-          await store.write({ ...liveCheckpoint, sessionId: outcome.sessionId }, options.workingDirectory);
-          this.reportGitHubReconciliationRequired({ ...liveCheckpoint, sessionId: outcome.sessionId });
-          return 1;
-        }
-        const { push: _push, merge: _merge, verified: _verified, ...receipts } = liveCheckpoint.receipts;
-        const readyCheckpoint: GitHubDeliveryCheckpoint = {
-          ...liveCheckpoint,
-          phase: "implementation-ready",
-          sessionId: null,
-          commit: outcome.commit,
-          reconciliation: null,
-          intent: null,
-          receipts: { ...receipts, verified: { verifiedAt: new Date().toISOString() } },
-        };
-        await store.write(readyCheckpoint, options.workingDirectory);
-        await this.completeGitHubDelivery(options, readyCheckpoint);
-        console.log(TICKET_COMPLETED_MARKER);
-        console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        return 0;
-      } catch (error) {
-        const current = await store.read(options.workingDirectory).catch(() => checkpoint) ?? checkpoint;
-        await store.write({ ...current, phase: "conflict-resolving" }, options.workingDirectory);
-        this.reportGitHubReconciliationRequired({ ...current, phase: "conflict-resolving" }, false);
-        reportFailure(
-          error instanceof GitHubCoordinatedFailureError
-            ? error.failureKind
-            : error instanceof GitHubManifestNotVerifiableError || error instanceof GitHubPullRequestConflictError
-              ? githubCompletionFailureKind(error)
-              : "pull-request-failure",
-          "conflict-resolving",
-          { issue: checkpoint.issue, repository: checkpoint.repository },
-          `lazy-workflow: no se pudo reconciliar el conflicto del Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`,
-        );
-        return 1;
-      } finally {
-        if (release) await release();
-      }
-    }
-    if (this.githubDelivery && checkpoint.sessionId === null && ["implementation-ready", "integrating", "reconciling", "cleaning"].includes(checkpoint.phase)) {
-      try {
-        let liveCheckpoint: GitHubDeliveryCheckpoint | null;
-        try {
-          liveCheckpoint = await store.read(options.workingDirectory);
-        } catch (error) {
-          throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
-        }
-        if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || liveCheckpoint.sessionId !== null) {
-          this.reportGitHubReconciliationRequired(checkpoint);
-          return 1;
-        }
-        await this.completeGitHubDelivery(options, liveCheckpoint);
-        console.log(TICKET_COMPLETED_MARKER);
-        console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        return 0;
-      } catch (error) {
-        const current = await store.read(options.workingDirectory).catch(() => null);
-        const preserved = current ?? { ...checkpoint, phase: "reconciling" as const };
-        await store.write({ ...preserved, phase: "reconciling", sessionId: null }, options.workingDirectory);
-        this.reportGitHubReconciliationRequired({ ...preserved, phase: "reconciling", sessionId: null }, false);
-        reportFailure(
-          githubRecoveryFailureKind(error),
-          "reconciling",
-          { issue: checkpoint.issue, repository: checkpoint.repository },
-          `lazy-workflow: no se pudo reconciliar el Issue #${checkpoint.issue} (${errorMessage(error)}); checkpoint conservado.`,
-        );
-        return 1;
-      }
-    }
-    if (!checkpoint.sessionId || options.session !== checkpoint.sessionId) {
-      if (checkpoint.sessionId !== options.session) {
-        console.log(JSON.stringify({ outcome: RECONCILIATION_REQUIRED_MARKER, issue: checkpoint.issue, phase: checkpoint.phase }, null, 2));
-        reportFailure(
-          "argument-error",
-          checkpoint.phase,
-          { issue: checkpoint.issue, repository: checkpoint.repository, sessionId: options.session },
-          "lazy-workflow: la sesión GitHub no coincide con el checkpoint fijado.",
-        );
-      }
-      else this.reportGitHubReconciliationRequired(checkpoint);
-      return 1;
-    }
-    const reconcileClaimedIssue = queue.reconcileClaimedIssue?.bind(queue);
-    if (!reconcileClaimedIssue) {
+    if (!live || live.issue !== checkpoint.issue) {
       this.reportGitHubReconciliationRequired(checkpoint);
-      reportFailure(
-        "claim-verification-failure",
-        checkpoint.phase,
-        { issue: checkpoint.issue, repository: checkpoint.repository },
-        "lazy-workflow: el coordinador no puede verificar el claim del Issue; checkpoint conservado.",
-      );
       return 1;
     }
 
-    let release: (() => Promise<void>) | null = null;
-    try {
-      if (!lockAlreadyHeld) {
-        try {
-          release = await lock.acquire(options.workingDirectory);
-        } catch (error) {
-          throw new GitHubCoordinatedFailureError("lock-unavailable", errorMessage(error), { cause: error });
-        }
-      }
-      let liveCheckpoint: GitHubDeliveryCheckpoint | null;
-      try {
-        liveCheckpoint = await store.read(options.workingDirectory);
-      } catch (error) {
-        throw new GitHubCoordinatedFailureError("checkpoint-unreadable", errorMessage(error), { cause: error });
-      }
-      if (!liveCheckpoint || liveCheckpoint.issue !== checkpoint.issue || liveCheckpoint.sessionId !== checkpoint.sessionId) {
-        this.reportGitHubReconciliationRequired(checkpoint);
-        return 1;
-      }
-      if (this.githubManagedQueue.verifyRepository) {
-        const repository = await this.githubManagedQueue.verifyRepository(options.workingDirectory);
-        if (repository.nameWithOwner !== liveCheckpoint.repository) {
-          throw new Error(`el checkpoint GitHub pertenece a ${liveCheckpoint.repository}, no a ${repository.nameWithOwner}`);
-        }
-      }
-      let issue: SelectedManagedIssue;
-      try {
-        issue = await reconcileClaimedIssue(liveCheckpoint.issue, options.workingDirectory);
-      } catch (error) {
-        throw new GitHubCoordinatedFailureError("claim-verification-failure", errorMessage(error), { cause: error });
-      }
-      if (issue.number !== liveCheckpoint.issue) throw new Error("el checkpoint GitHub no coincide con el issue recuperado");
-      const norms = await this.loadSagNorms(options, "coding");
-      if (options.normasSag && norms === null) return 1;
-      const repository: GitHubRepositoryContext = { nameWithOwner: liveCheckpoint.repository };
-      let activeCli = liveCheckpoint.cli;
-      let activeAuthority = this.authority({
-        kind: "github-delivery",
-        issue,
-        repository,
-        branch: liveCheckpoint.branch ?? "",
-      }, activeCli);
-      let execution: AgentExecution;
-      try {
-        execution = {
-          result: await this.codingAgent.resume(
-            liveCheckpoint.sessionId,
-            "continue",
-            options.workingDirectory,
-            IMPLEMENTATION_READY_MARKER,
-            { ...getRecoveryOverrides(options, liveCheckpoint), agent: activeAuthority },
-          ),
-          azureLoginRequired: false,
-          failed: false,
-        };
-      } catch (error) {
-        if (!(error instanceof AgentExhaustionError)) throw error;
-        execution = { result: error.result, azureLoginRequired: false, failed: true, exhaustion: error.exhaustion };
-      }
-      // Provider exhaustion descends the declared chain here too (ADR-0024): a resume across
-      // invocations is not exempt from the descent a fresh session gets.
-      /** El escalón en curso, escrito solo cuando un descenso lo mueve, para no nombrar modelo donde el checkpoint no lo tenía. */
-      let activeRung: FallbackRung | null = null;
-      /** Lo que el escalón en curso aporta a cada escritura del checkpoint: nunca un CLI descendido con el modelo del primario. */
-      const rungFields = (): { model?: string; variant?: string } =>
-        activeRung ? { model: activeRung.model, variant: activeRung.variant } : {};
-      const resumeSession = (descentSessionId: string, overrides: AgentResumeOverrides) =>
-        this.codingAgent.resume(
-          descentSessionId,
-          "continue",
-          options.workingDirectory,
-          IMPLEMENTATION_READY_MARKER,
-          { ...overrides, agent: activeAuthority },
-        );
-      const descend = (attempted: AgentExecution): Promise<AgentExecution> => this.descendFallbackChain(
-        options,
-        attempted,
-        async (rung, reasoning) => {
-          // Un checkpoint sin rama fijada todavía puede traspasarse: lo que no puede es
-          // declarar avance, porque no hay rango que consultarle a git.
-          const handedOff = await this.handOffGitHubDelivery(options, rung, {
-            issue,
-            repository,
-            branch: liveCheckpoint.branch,
-            baseBranch: liveCheckpoint.baseBranch ?? null,
-            norms,
-            reasoning,
-          });
-          activeCli = rung.cli;
-          activeRung = rung;
-          activeAuthority = handedOff.agent;
-          await store.write({
-            ...liveCheckpoint,
-            cli: rung.cli,
-            handoffFrom: liveCheckpoint.handoffFrom ?? options.cli,
-            model: rung.model,
-            variant: rung.variant,
-            sessionId: handedOff.execution.result.sessionId,
-          }, options.workingDirectory);
-          return handedOff.execution;
-        },
-      );
-      execution = await descend(execution);
-      const result = execution.result;
-      console.log(JSON.stringify(result, null, 2));
-      const terminal = !execution.failed;
-      await store.write({ ...liveCheckpoint, ...rungFields(), cli: activeCli, phase: terminal ? "implementation-ready" : "reconciling", sessionId: terminal ? null : result.sessionId, summary: result.text.trim() || null }, options.workingDirectory);
-      if (execution.failed) {
-        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "reconciling", sessionId: result.sessionId }, false);
-        reportFailure(
-          "session-failure",
-          "reconciling",
-          { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, sessionId: result.sessionId },
-          `lazy-workflow: no se pudo reanudar el Issue #${liveCheckpoint.issue} (${errorMessage(result.text)}); checkpoint conservado.`,
-        );
-        return 1;
-      }
-      if (this.githubDelivery) {
-        if (!liveCheckpoint.branch || !liveCheckpoint.baseBranch) throw new Error("el checkpoint GitHub no contiene la rama fijada");
-        await this.githubDelivery.verifyBranch?.(liveCheckpoint.branch, liveCheckpoint.baseBranch, options.workingDirectory);
-        await this.completeGitHubDelivery(options, { ...liveCheckpoint, cli: activeCli, phase: "implementation-ready", sessionId: null, summary: result.text.trim() || null });
-        console.log(TICKET_COMPLETED_MARKER);
-        console.log(WORKFLOW_STEP_FINISHED_MARKER);
-        return 0;
-      }
-      if (!terminal) {
-        reportFailure(
-          "session-failure",
-          "implementing",
-          { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, sessionId: result.sessionId },
-          "lazy-workflow: la sesión GitHub falló.",
-        );
-        this.reportGitHubReconciliationRequired({ ...liveCheckpoint, cli: activeCli, phase: "implementing", sessionId: result.sessionId }, false);
-        return 1;
-      }
+    // Una unidad que nunca se verificó no dejó nada en el remoto: se la deja reclamada, con su
+    // rama, y el drenaje sigue con la siguiente.
+    if (!live.commit || !live.branch || !live.baseBranch) {
       await store.clear(options.workingDirectory);
+      reportFailure(
+        "session-failure",
+        "reconciling",
+        { issue: live.issue, repository: live.repository, branch: live.branch },
+        `lazy-workflow: el Issue #${live.issue} quedó sin verificar en una corrida anterior; queda reclamado y su rama se conserva.`,
+      );
+      return this.runDefaultCodeWorkflowLoop(options, store, 1);
+    }
+
+    try {
+      await this.completeGitHubDelivery(options, live);
       console.log(TICKET_COMPLETED_MARKER);
       console.log(WORKFLOW_STEP_FINISHED_MARKER);
-      return 0;
     } catch (error) {
-      const reread = await store.read(options.workingDirectory).catch(() => null);
-      const currentCheckpoint = reread ?? checkpoint;
-      const sessionId = error instanceof AgentSessionNotFoundError ? null : currentCheckpoint.sessionId;
-      const reconciledCheckpoint = { ...currentCheckpoint, phase: "reconciling" as const, sessionId };
-      await store.write(reconciledCheckpoint, options.workingDirectory);
-      this.reportGitHubReconciliationRequired(reconciledCheckpoint, false);
+      const preserved = await store.read(options.workingDirectory).catch(() => live) ?? live;
+      this.reportGitHubReconciliationRequired(preserved, false);
       reportFailure(
-        githubRecoveryFailureKind(error),
-        "reconciling",
-        { issue: currentCheckpoint.issue, repository: currentCheckpoint.repository, sessionId },
-        `lazy-workflow: no se pudo reanudar el Issue #${currentCheckpoint.issue} (${errorMessage(error)}); checkpoint conservado.`,
+        githubCompletionFailureKind(error),
+        "implementation-ready",
+        { issue: live.issue, repository: live.repository, branch: live.branch },
+        `lazy-workflow: no se pudo completar determinísticamente el Issue #${live.issue} (${errorMessage(error)}); checkpoint conservado.`,
       );
       return 1;
-    } finally {
-      if (release) await release();
     }
+    return this.runDefaultCodeWorkflowLoop(options, store);
   }
 
   /**
@@ -5310,7 +4851,7 @@ export class LazyWorkflowCli {
           if (sessionId) {
             try {
               started = {
-                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getRecoveryOverrides(options, checkpoint!), agent: run.agent }),
+                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
                 azureLoginRequired: false,
                 failed: false,
               };
