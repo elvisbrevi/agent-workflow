@@ -1,10 +1,10 @@
 /**
  * What a tool call is doing, read off the input the agent CLI reports.
  *
- * Both adapters stream tool calls, and both name their arguments the way their
+ * Every adapter streams tool calls, and each names its arguments the way its
  * own provider does. Reading them here once means the operator sees the same
- * thing either way — above all *which file* an edit is touching, which is the
- * question a watched run is usually asking (issue: verbose output).
+ * thing whichever CLI ran — above all *which file* an edit is touching, which is
+ * the question a watched run is usually asking (issue: verbose output).
  */
 
 /** Keys that name the artifact a tool acts on, most identifying first. */

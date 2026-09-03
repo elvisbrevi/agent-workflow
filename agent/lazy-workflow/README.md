@@ -1121,8 +1121,8 @@ Claude Code sessions run non-interactively with its JSON event stream, take the
 session identifier from the CLI's own initialization event, and never use
 `--bare`, so the operator's login and the target repository's `CLAUDE.md` stay
 available. Codex sessions run through `codex exec --json`, take the thread ID
-from `thread.started`, and resume through `codex exec resume`. Both adapters'
-events reach the Reporter with the same severities as OpenCode's: assistant text
+from `thread.started`, and resume through `codex exec resume`. All three
+adapters' events reach the Reporter with the same severities: assistant text
 as info, reasoning and tool calls as debug.
 
 The three SAG-scoped workflows accept `--cli` too, and each keeps its own rules
@@ -1139,7 +1139,7 @@ lazy-workflow deploy-sag --issue 157 --environment qa --cli claudecode \
 
 `architecture-review-sag` is the one that opens a session: it runs with the
 `lazy-review` authority in the format of its own CLI, so it cannot modify the
-reviewed tree in either. `infra-sag` and `deploy-sag` verify and deploy through
+reviewed tree in any of them. `infra-sag` and `deploy-sag` verify and deploy through
 their own adapters without opening a session, so `--cli` only names the CLI their
 run resolves — and `deploy-sag` refuses PROD and its aliases before any external
 effect whichever CLI that is.
@@ -1163,8 +1163,8 @@ order they are used:
 ```bash
 lazy-workflow code --working-directory /path/to/repository \
   --model opencode-go/deepseek-v4-pro --variant high \
-  --fallback opencode:openai/gpt-5.6-luna:high \
-  --fallback claudecode:claude-opus-5:high
+  --fallback claudecode:claude-opus-5:high \
+  --fallback codex:gpt-5.6-sol:high
 ```
 
 Every rung's binary is verified while the arguments are parsed, so a typo or a
