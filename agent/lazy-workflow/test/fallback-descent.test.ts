@@ -531,20 +531,6 @@ test("el checkpoint conserva el escalón completo, modelo y variante, para recup
   expect(descended?.variant).toBe("medium");
 });
 
-test("la reanudación sin marcador se queda en el escalón descendido, no vuelve al primario", async () => {
-  // Descender y luego reanudar con el modelo declarado dejaría al escalón agotado
-  // recibiendo el intento extra que ADR-0032 concede al escalón en curso.
-  const agents = scriptedAgents({
-    run: [exhausted("provider/primario")],
-    resume: [agentResult("still working"), terminal()],
-  });
-
-  const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"]);
-
-  expect(code).toBe(0);
-  expect(agents.resumed.map(({ overrides }) => overrides.model)).toEqual(["provider/respaldo", "provider/respaldo"]);
-  expect(agents.resumed.map(({ overrides }) => overrides.variant)).toEqual(["medium", "medium"]);
-});
 
 test("la recuperación que desciende reanuda el intento extra en el escalón descendido y lo checkpointea entero", async () => {
   const agents = scriptedAgents({

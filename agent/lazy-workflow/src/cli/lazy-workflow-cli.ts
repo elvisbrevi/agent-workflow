@@ -3284,17 +3284,6 @@ export class LazyWorkflowCli {
           session: null,
         }, false);
         execution = await descend(execution);
-        execution = await this.resumeWithoutMarker({
-          execution,
-          cli: activeCli,
-          // El intento extra es del escalón en curso: tras un descenso ese ya no es el declarado.
-          resume: (sessionId) => resumeSession(
-            sessionId,
-            activeRung ? { model: activeRung.model, variant: activeRung.variant } : getResumeOverrides(options),
-          ),
-          persist: (sessionId) => saveCheckpoint("implementing", sessionId),
-          descend,
-        });
       } catch (error) {
         // A descent that failed still leaves a live session behind, so the
         // checkpoint keeps it and recovery resumes that one; only a session the
@@ -3381,7 +3370,7 @@ export class LazyWorkflowCli {
           "session-failure",
           "implementation-ready",
           { issue: issue.number, repository: repository.nameWithOwner, branch },
-          `lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}.`,
+          "lazy-workflow: la sesión GitHub falló.",
         );
         return 1;
       }
@@ -3821,25 +3810,20 @@ export class LazyWorkflowCli {
         const norms = await this.loadSagNorms(options, "coding");
         if (options.normasSag && norms === null) return 1;
         const run = await this.buildGitHubDeliveryPrompt(options, issue, repository, branch, manifestPath, norms);
-        const execution = await this.resumeWithoutMarker({
-          execution: await this.codingAgent.run({ ...options, ...run, session: null }, false),
-          cli: liveCheckpoint.cli,
-          resume: (sessionId) => this.markerResume(sessionId, options.workingDirectory, { ...getResumeOverrides(options), agent: run.agent }),
-          persist: (sessionId) => store.write({ ...liveCheckpoint, phase: "implementing", sessionId }, options.workingDirectory),
-        });
-        const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
-        await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId }, options.workingDirectory);
-        if (execution.failed || !terminal) {
+        const execution = await this.codingAgent.run({ ...options, ...run, session: null }, false);
+        const terminal = !execution.failed;
+        await store.write({ ...liveCheckpoint, phase: terminal ? "implementation-ready" : "implementing", sessionId: terminal ? null : execution.result.sessionId, summary: execution.result.text.trim() || null }, options.workingDirectory);
+        if (!terminal) {
           reportFailure(
             "session-failure",
             "implementing",
             { issue: liveCheckpoint.issue, repository: liveCheckpoint.repository, branch, sessionId: execution.result.sessionId },
-            `lazy-workflow: la sesión GitHub terminó sin ${IMPLEMENTATION_READY_MARKER}; checkpoint conservado.`,
+            `lazy-workflow: la sesión GitHub falló; checkpoint conservado.`,
           );
           this.reportGitHubReconciliationRequired({ ...liveCheckpoint, phase: "implementing", sessionId: execution.result.sessionId }, false);
           return 1;
         }
-        await this.completeGitHubDelivery(options, { ...liveCheckpoint, phase: "implementation-ready", sessionId: null });
+        await this.completeGitHubDelivery(options, { ...liveCheckpoint, phase: "implementation-ready", sessionId: null, summary: execution.result.text.trim() || null });
         console.log(TICKET_COMPLETED_MARKER);
         console.log(WORKFLOW_STEP_FINISHED_MARKER);
         return 0;

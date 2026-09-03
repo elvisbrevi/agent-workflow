@@ -675,32 +675,6 @@ test("code sin HU imprime QUEUE_EMPTY y termina sin iniciar OpenCode", async () 
   expect(output[2]).toBe("WORKFLOW_STEP_FINISHED");
 });
 
-test("code sin HU no avanza si la sesion no completa el protocolo GitHub", async () => {
-  let calls = 0;
-  const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text",
-    sessionID: "ses_incomplete",
-    part: { type: "text", text: "TICKET_COMPLETED" },
-  }));
-  const code = await createCli({
-    huInfoService: {
-      getHuInfo: async () => { throw new Error("must not use Azure"); },
-      waitForAccess: async () => undefined,
-    },
-    agentSource: {
-      run: async () => {
-        calls += 1;
-        return { result, azureLoginRequired: false };
-      },
-      resume: async () => { throw new Error("must not resume"); },
-    },
-    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
-    ...fakeCoordinatedGitHubDeps(),
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(1);
-  expect(calls).toBe(1);
-});
 
 test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", async () => {
   const calls: string[] = [];
@@ -733,60 +707,7 @@ test("code sin HU acepta IMPLEMENTATION_READY en un segundo evento de texto", as
   expect(calls).toEqual(["run"]);
 });
 
-test("code sin HU ignora un marcador conversacional dentro de un solo evento de texto", async () => {
-  let calls = 0;
-  const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text",
-    sessionID: "ses_chat",
-    part: { type: "text", text: "He emitido TICKET_COMPLETED al final del trabajo\nWORKFLOW_STEP_FINISHED" },
-  }));
-  const code = await createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => {
-        calls += 1;
-        return { result, azureLoginRequired: false };
-      },
-      resume: async () => { throw new Error("must not resume"); },
-    },
-    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201)]),
-    ...fakeCoordinatedGitHubDeps(),
-  }).run(["code", "--working-directory", "/repo"]);
 
-  expect(code).toBe(1);
-  expect(calls).toBe(1);
-});
-
-test("code sin HU ignora los marcadores de entrega heredados", async () => {
-  const calls: string[] = [];
-  const results = [
-    AgentResult.fromJsonLines(JSON.stringify({
-      type: "text",
-      sessionID: "ses_dup_1",
-      part: { type: "text", text: "TICKET_COMPLETED" },
-    }) + "\n" + JSON.stringify({
-      type: "text",
-      sessionID: "ses_dup_1",
-      part: { type: "text", text: "TICKET_COMPLETED\nWORKFLOW_STEP_FINISHED" },
-    })),
-  ];
-
-  const code = await createCli({
-    huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: {
-      run: async () => {
-        calls.push("run");
-        return { result: results.shift()!, azureLoginRequired: false };
-      },
-      resume: async () => { throw new Error("must not resume"); },
-    },
-    githubManagedQueue: queueAdapter([fakeSelectedOutcome(201), { kind: "empty" }]),
-    ...fakeCoordinatedGitHubDeps(),
-  }).run(["code", "--working-directory", "/repo"]);
-
-  expect(code).toBe(1);
-  expect(calls).toEqual(["run"]);
-});
 
 test("code sin HU falla cerrado cuando falta el adaptador de entrega coordinada", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
