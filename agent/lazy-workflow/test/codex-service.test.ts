@@ -83,10 +83,10 @@ test("Codex construye exec JSON con autoridad, modelo y esfuerzo", async () => {
 
     expect(commands[0]).toEqual([
       "codex",
+      "-s",
+      "danger-full-access",
       "--ask-for-approval",
       "never",
-      "--sandbox",
-      "danger-full-access",
       "exec",
       "--json",
       "--model",
@@ -154,10 +154,10 @@ test("resume usa la forma propia de Codex y solo pasa los overrides declarados",
 
   expect(commands[0]).toEqual([
     "codex",
+    "-s",
+    "danger-full-access",
     "--ask-for-approval",
     "never",
-    "--sandbox",
-    "danger-full-access",
     "exec",
     "resume",
     "thread_resume",
@@ -170,10 +170,10 @@ test("resume usa la forma propia de Codex y solo pasa los overrides declarados",
   ]);
   expect(commands[1]).toEqual([
     "codex",
+    "-s",
+    "danger-full-access",
     "--ask-for-approval",
     "never",
-    "--sandbox",
-    "danger-full-access",
     "exec",
     "resume",
     "thread_resume",

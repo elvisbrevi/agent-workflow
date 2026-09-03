@@ -103,23 +103,27 @@ and PR. It accepts the result only when the new manifest commit contains both
 the original implementation and fixed base; interrupted reconciliation resumes
 from its checkpoint without selecting another Issue.
 
-Sessions run with OpenCode by default. Add `--cli claudecode` to execute the
-same workflow with Claude Code instead:
+Sessions run with OpenCode by default. Add `--cli claudecode` or `--cli codex` to
+execute the same workflow with another coding agent:
 
 ```bash
 bun run main.ts plan --cli claudecode --model claude-opus-5 --variant high --working-directory /path/to/repository
+bun run main.ts plan --cli codex --model gpt-5.6-sol --variant high --working-directory /path/to/repository
 ```
 
 `--variant` is the effort level of the selected CLI (`low`, `medium`, `high`,
-`xhigh`, or `max` for Claude Code), and naming a `--cli` verifies its binary —
-`opencode` or `claude` — while the arguments are parsed. Omitting `--cli` keeps
-the OpenCode behavior unchanged.
+`xhigh`, or `max` for Claude Code; Codex also accepts `none` and `minimal`), and
+naming a `--cli` verifies its binary — `opencode`, `claude`, or `codex` — while
+the arguments are parsed. The model defaults are `opencode-go/deepseek-v4-pro`,
+`claude-sonnet-5`, and `gpt-5.6-sol` respectively. Omitting `--cli` keeps the
+OpenCode behavior unchanged.
 
 Every workflow command accepts `--cli`, including the three SAG-scoped ones, and
 each run resolves it once:
 
 ```bash
 bun run main.ts code --cli claudecode --model claude-opus-5 --working-directory /path/to/repository
+bun run main.ts code --cli codex --model gpt-5.6-sol --working-directory /path/to/repository
 bun run main.ts architecture-review-sag --issue 154 --cli claudecode --working-directory /path/to/repository
 ```
 

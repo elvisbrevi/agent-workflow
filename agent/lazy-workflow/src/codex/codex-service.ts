@@ -329,10 +329,10 @@ export class CodexService implements CodingAgent {
   private command(model: string | undefined, variant: string | undefined, prompt: string, sessionId?: string | null): string[] {
     return [
       "codex",
+      "-s",
+      "danger-full-access",
       "--ask-for-approval",
       "never",
-      "--sandbox",
-      "danger-full-access",
       "exec",
       ...(sessionId ? ["resume", sessionId] : []),
       "--json",

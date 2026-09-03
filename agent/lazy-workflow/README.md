@@ -1096,25 +1096,33 @@ before.
 ```bash
 lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high \
   --working-directory /path/to/repository
+lazy-workflow plan --cli codex --model gpt-5.6-sol --variant high \
+  --working-directory /path/to/repository
 ```
 
 `--model` is the model of the selected CLI, and `--variant` is its effort level:
-Claude Code accepts `low`, `medium`, `high`, `xhigh`, and `max`, and rejects any
+Claude Code accepts `low`, `medium`, `high`, `xhigh`, and `max`; Codex accepts
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Each rejects any
 other value before opening the session. When you name a `--cli`, its binary —
-`opencode` or `claude` — is verified while the arguments are parsed, so a
-missing installation is reported before a session starts.
+`opencode`, `claude`, or `codex` — is verified while the arguments are parsed, so
+a missing installation is reported before a session starts. The per-CLI model
+defaults are `opencode-go/deepseek-v4-pro`, `claude-sonnet-5`, and `gpt-5.6-sol`.
 
 Claude Code sessions run non-interactively with its JSON event stream, take the
 session identifier from the CLI's own initialization event, and never use
 `--bare`, so the operator's login and the target repository's `CLAUDE.md` stay
-available. Its events reach the Reporter with the same severities as OpenCode's:
-assistant text as info, reasoning and tool calls as debug.
+available. Codex sessions run through `codex exec --json`, take the thread ID
+from `thread.started`, and resume through `codex exec resume`. Both adapters'
+events reach the Reporter with the same severities as OpenCode's: assistant text
+as info, reasoning and tool calls as debug.
 
 The three SAG-scoped workflows accept `--cli` too, and each keeps its own rules
 whichever CLI runs it:
 
 ```bash
 lazy-workflow architecture-review-sag --issue 154 --cli claudecode \
+  --working-directory /path/to/repository
+lazy-workflow architecture-review-sag --issue 154 --cli codex \
   --working-directory /path/to/repository
 lazy-workflow deploy-sag --issue 157 --environment qa --cli claudecode \
   --working-directory /path/to/repository
@@ -1354,11 +1362,12 @@ home, which links the operator's `auth.json` and `skills/` but never
 | `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |
 | `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh`, and `az` command |
 
-OpenCode runs with `--auto` and Claude Code with `--permission-mode
-bypassPermissions`, which auto-approve only what is not explicitly denied, so
-these deny rules are the enforcement surface. A denied command fails
-as a permission error rather than relying on the model to obey prose; compound
-commands are matched per sub-command, so `cd x && git push` is denied too.
+OpenCode runs with `--auto`, Claude Code with `--permission-mode
+bypassPermissions`, and Codex with `-s danger-full-access --ask-for-approval
+never`, which auto-approve only what is not explicitly denied, so these deny
+rules are the enforcement surface. A denied command fails as a permission error
+rather than relying on the model to obey prose; compound commands are matched
+per sub-command, so `cd x && git push` is denied too.
 Committing stays allowed in the delivery profiles because the completion
 manifest names a commit the session must produce.
 

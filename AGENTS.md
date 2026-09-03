@@ -32,6 +32,7 @@ inside that directory rather than a skill directory.
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
 | Change how Claude Code is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/claude-code/` |
+| Change how Codex is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/codex/` |
 | Change which CLI a `--cli` value resolves to | `agent/lazy-workflow/src/coding-agent/create-coding-agent.ts` |
 | Change the CLI names, their binaries, or how a checkpoint records its session owner | `agent/lazy-workflow/src/coding-agent/agent-cli.ts` and the checkpoint module of that workflow |
 | Change what the coding agent is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
@@ -39,6 +40,7 @@ inside that directory rather than a skill directory.
 | Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
 | Change what a run is permitted to execute with OpenCode | `agent/lazy-workflow/opencode/authority.json` |
 | Change what a run is permitted to execute with Claude Code | `agent/lazy-workflow/claudecode/<profile>.json` |
+| Change what a run is permitted to execute with Codex | `agent/lazy-workflow/codex/<profile>.rules` and `agent/lazy-workflow/src/prompts/codex-authority-home.ts` |
 | Change which profile a run gets, or where each CLI reads its authority | `agent/lazy-workflow/src/prompts/authority-profile.ts` |
 | Change how a run powers the machine down when it ends (`--off`) | `agent/lazy-workflow/src/system/shutdown-service.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
