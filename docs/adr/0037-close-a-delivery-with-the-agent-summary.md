@@ -28,3 +28,13 @@ until then would leave a subsystem nothing reads.
 
 The nine remaining Azure completion gates stay (ADR-0010). `attached-capture` is
 the only one removed.
+
+On Azure the summary reaches the field through `setSummary`, and
+`ticket-completion-apply` takes `--summary` where it took `--manifest`. The field is
+HTML, so the text is escaped and its line breaks preserved; the same normalisation that
+already decided whether a document had been published answers whether this summary has,
+so republishing one is idempotent rather than a conflict.
+
+`ticket-manifest-set`, the evidence kinds and the attachment upload outlive this
+decision on the Azure workspace path alone, which still writes a manifest per repository
+until its own rebuild. Nothing on the single-repository path reads them.

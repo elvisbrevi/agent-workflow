@@ -8,7 +8,7 @@
  */
 
 import type { HuInfo } from "../azure/hu-info.ts";
-import type { AutocodeContext, AzureWorkspaceBranchTopology, CompletionGate } from "../azure/autocode-service.ts";
+import type { AutocodeContext, AzureWorkspaceBranchTopology } from "../azure/autocode-service.ts";
 import type { GitHubRepositoryContext, SelectedManagedIssue } from "../github/managed-queue-service.ts";
 import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.ts";
 import type { SagArchitectureReviewContext, SagCodingContext, SagNormsContext } from "../sag/sag-norms-service.ts";
@@ -27,7 +27,8 @@ import {
 
 type PromptAsset =
   | "github-plan"
-  | "github-code"
+  /** Las tres líneas que toda entrega dice, sea GitHub o Azure (ADR-0036). */
+  | "delivery"
   | "autoplan"
   | "autocode"
   | "architecture-review-sag"
@@ -89,11 +90,8 @@ export type WorkflowPromptSpec =
   | {
       kind: "azure-delivery";
       context: AutocodeContext;
+      /** La rama que el coordinador fijó y en la que la sesión ya está parada. */
       ticketBranch: string | null;
-      evidenceDirectory: string | null;
-      manifestPath: string | null;
-      workflowPhase: string;
-      completionGates: CompletionGate[];
     }
   | { kind: "architecture-review-sag"; scope: unknown; context: SagArchitectureReviewContext };
 
@@ -315,7 +313,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // sacó antes de abrirla.
       return [
         `/implement the issue #${spec.issue.number} usando /tdd /caveman /ponytail y /code-review.`,
-        await readPromptAsset("github-code"),
+        await readPromptAsset("delivery"),
         ...sag,
         operatorRequest.trim() ? operatorRequest : null,
       ];
@@ -335,7 +333,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
 
     case "github-workspace-delivery":
       return [
-        await readPromptAsset("github-code"),
+        await readPromptAsset("delivery"),
         ...(spec.issue ? ["Coordinator-fixed issue context:", issueContext(spec.issue)] : []),
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
@@ -385,26 +383,14 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       ];
 
     case "azure-delivery":
+      // El trabajo, y nada del contrato (ADR-0036). El ticket viaja entero porque la sesión no
+      // tiene `az`: es la única forma de que sepa qué se le pidió, y el coordinador ya lo leyó.
       return [
-        await readPromptAsset("autocode"),
-        JSON.stringify({
-          ...spec.context,
-          ticketBranch: spec.ticketBranch,
-          evidenceDirectory: spec.evidenceDirectory,
-          manifestPath: spec.manifestPath,
-          workflowPhase: spec.workflowPhase,
-          completionGates: spec.completionGates,
-        }),
-        ...manifestCommandLines([azureManifestCommandLine({
-          ticket: spec.context.ticket?.id ?? null,
-          ticketBranch: spec.ticketBranch,
-          manifestPath: spec.manifestPath,
-          workingDirectory,
-        })]),
+        `/implement el ticket ${spec.context.ticket.id} usando /tdd /caveman /ponytail y /code-review.`,
+        JSON.stringify(spec.context),
+        await readPromptAsset("delivery"),
         ...sag,
-        `The working directory is ${workingDirectory}`,
-        "Supplemental operator request (non-authoritative):",
-        operatorRequest,
+        operatorRequest.trim() ? operatorRequest : null,
       ];
 
     case "architecture-review-sag":

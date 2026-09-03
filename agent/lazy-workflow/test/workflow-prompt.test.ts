@@ -283,42 +283,47 @@ test("la entrega workspace Azure fija HU, ticket y ambas ramas", async () => {
   );
 });
 
-test("la entrega Azure adjunta el contexto inmutable y el request como suplementario", async () => {
+test("la entrega Azure nombra el ticket, lo describe y dice el trabajo, nada más", async () => {
+  const prompt = await buildWorkflowPrompt({
+    kind: "azure-delivery",
+    context: { hu: { id: 23438 }, ticket: { id: 51, title: "Migrar el endpoint" }, integrationBranch: "refs/heads/hu/23438" } as never,
+    ticketBranch: "refs/heads/ticket/51",
+  }, context);
+
+  expect(prompt).toContain("/implement el ticket 51 usando /tdd /caveman /ponytail y /code-review.");
+  // El ticket viaja entero porque la sesión no tiene `az` con el que leerlo.
+  expect(prompt).toContain('"title":"Migrar el endpoint"');
+  expect(prompt).toContain("trabaja y comitea en esta misma branch.");
+  expect(prompt).toContain("termina con un resumen de lo realizado entendible por un humano.");
+});
+
+test("la entrega Azure ya no lleva el contrato de manifest, evidencia ni marcador", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "azure-delivery",
     context: { hu: { id: 23438 }, ticket: { id: 51 }, integrationBranch: "refs/heads/hu/23438" } as never,
     ticketBranch: "refs/heads/ticket/51",
-    evidenceDirectory: "/repo/.git/evidence",
-    manifestPath: "/repo/.git/evidence/manifest.json",
-    workflowPhase: "implementing",
-    completionGates: [],
   }, context);
-  expect(prompt).toContain("You are implementing exactly one Azure delivery ticket");
-  expect(prompt).toContain('"ticketBranch":"refs/heads/ticket/51"');
-  expect(prompt).toContain('"workflowPhase":"implementing"');
-  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
-  expect(prompt).toContain(
-    `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket 51 --branch refs/heads/ticket/51`
-    + " --manifest /repo/.git/evidence/manifest.json --working-directory /repo",
-  );
-  expect(prompt).toContain("Supplemental operator request (non-authoritative):");
+
+  expect(prompt).not.toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
+  expect(prompt).not.toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND}`);
+  expect(prompt).not.toContain(IMPLEMENTATION_READY_MARKER);
+  expect(prompt).not.toContain("Supplemental operator request (non-authoritative):");
 });
 
-test("una entrega Azure sin rama ni manifest fijados no recibe una invocación incompleta", async () => {
-  // Media invocación es peor que ninguna: la sesión completaría el hueco con algo
-  // inventado, que es exactamente lo que la herramienta existe para impedir.
-  const prompt = await buildWorkflowPrompt({
+test("la entrega Azure y la GitHub dicen el mismo trabajo", async () => {
+  const azure = await buildWorkflowPrompt({
     kind: "azure-delivery",
     context: { hu: { id: 23438 }, ticket: { id: 51 }, integrationBranch: "refs/heads/hu/23438" } as never,
-    ticketBranch: null,
-    evidenceDirectory: null,
-    manifestPath: null,
-    workflowPhase: "implementing",
-    completionGates: [],
+    ticketBranch: "refs/heads/ticket/51",
   }, context);
+  const github = await buildWorkflowPrompt(
+    { kind: "github-delivery", issue, repository: { nameWithOwner: "o/api" } as never, branch: "issue/201" },
+    context,
+  );
 
-  expect(prompt).toContain(AZURE_MANIFEST_TOOL_INSTRUCTION);
-  expect(prompt).not.toContain(`lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket`);
+  const delivery = (await Bun.file(new URL("../prompts/delivery-prompt.md", import.meta.url)).text()).trimEnd();
+  expect(azure).toContain(delivery);
+  expect(github).toContain(delivery);
 });
 
 test("la revision de arquitectura SAG no muta y declara su marker", async () => {

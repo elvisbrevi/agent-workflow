@@ -85,6 +85,7 @@ export interface AzureToolBoundary {
   createOrReusePullRequest?(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<{ pullRequest: number; mergeCommit: string }>;
   pushTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   checkoutTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
+  verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
   writeCompletionManifest?(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
 }
 
@@ -110,7 +111,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 export function deterministicFailureKind(command: DeterministicToolCommand) {
   if (command.includes("manifest")) return "manifest-not-verifiable" as const;
   if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
-  if (command === "github-session-verify") return "session-not-verified" as const;
+  if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
   if (command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
   if (command === "github-issue-claim") return "claim-verification-failure" as const;
@@ -263,6 +264,12 @@ async function runAzureTool(
     const branch = requireText(options.branch, "--branch <name>", command);
     await requireOperation(azure, "pushTicketBranch", command)(branch, options.workingDirectory);
     return { branch, pushed: true };
+  }
+  if (command === "ticket-session-verify") {
+    const branch = requireBranchRef(options.branch, "--branch <name>", command);
+    const baseBranch = requireBranchRef(options.baseBranch, "--base-branch <name>", command);
+    const { commit } = await requireOperation(azure, "verifySession", command)(branch, baseBranch, options.workingDirectory);
+    return { branch, baseBranch, commit };
   }
   if (command === "ticket-manifest-set") {
     const ticket = requirePositive(options.ticket, "--ticket <id>", command);

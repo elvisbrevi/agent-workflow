@@ -41,15 +41,7 @@ const specs: Array<[WorkflowPromptSpec, string]> = [
     ticketTopology: topology as never,
     manifestPaths: [],
   }, "lazy-azure-code"],
-  [{
-    kind: "azure-delivery",
-    context: {} as never,
-    ticketBranch: null,
-    evidenceDirectory: null,
-    manifestPath: null,
-    workflowPhase: "implementing",
-    completionGates: [],
-  }, "lazy-azure-code"],
+  [{ kind: "azure-delivery", context: {} as never, ticketBranch: null }, "lazy-azure-code"],
   [{ kind: "architecture-review-sag", scope: {}, context: {} as never }, "lazy-review"],
 ];
 

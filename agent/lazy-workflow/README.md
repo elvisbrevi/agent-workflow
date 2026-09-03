@@ -171,7 +171,7 @@ lazy-workflow ticket-commit-link --ticket 23459 --pr 123
 lazy-workflow ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json
 lazy-workflow ticket-evidence-set --ticket 23459 --evidence-file completion.html
 lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 \
-  --manifest /path/to/completion.json
+  --summary "Migré el endpoint y corrí la suite: 18 passed."
 ```
 
 `--file` and `--kind` accept `--evidence-file` and `--evidence-kind` as aliases,
@@ -888,7 +888,7 @@ bun run main.ts ticket-evidence-info --ticket 23459
 bun run main.ts ticket-description-set --ticket 23459 --description-file ./description.html
 bun run main.ts ticket-state-set --ticket 23459 --state "En progreso" --expected-state New
 bun run main.ts ticket-effort-set --ticket 23459 --real-effort 6 --real-effort-hh 6 --expected-rev 12
-bun run main.ts ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 --manifest /path/to/completion.json
+bun run main.ts ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 --summary "18 passed."
 bun run main.ts ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 bun run main.ts ticket-commit-link --ticket 23459 --pr 123
 bun run main.ts ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json

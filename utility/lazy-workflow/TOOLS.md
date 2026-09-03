@@ -98,7 +98,7 @@ lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>
 lazy-workflow ticket-commit-link --ticket <id> --pr <id>
 lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
 lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>
-lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>
+lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto de la sesión>
 lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] \
   --validation <command> --validation-result <outcome> \
   --evidence <http-json|screen|command-output>:<path> --working-directory <path>

@@ -139,7 +139,6 @@ const GATE = {
   realEffort: "real-effort",
   realEffortHours: "real-effort-hours",
   commitUrl: "commit-url",
-  attachedCapture: "attached-capture",
   huIntegrationBranch: "hu-integration-branch",
   completedHuPullRequest: "completed-hu-targeted-pr",
   nativePullRequestAssociation: "native-pr-association",
@@ -344,18 +343,17 @@ function namesEveryDigest(existing: string, digests: readonly string[]): boolean
   return digests.every((digest) => text.includes(shortDigest(digest)));
 }
 
+/** El resumen tal cual lo dijo la sesión, con lo mínimo para que el campo conserve sus líneas. */
+function summaryHtml(summary: string): string {
+  return summary.trim()
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r?\n/g, "<br>");
+}
+
 const alreadyPublished = (existing: string, rendered: string, content: string, digests: readonly string[]): boolean =>
   publishedAlready(existing, rendered, content) || namesEveryDigest(existing, digests);
-
-function hasEvidenceCapture(item: WorkItem): boolean {
-  return (item.relations ?? []).some(({ rel, url, attributes }) =>
-    rel === "AttachedFile"
-      && typeof url === "string"
-      && url.trim().length > 0
-      && attachmentKind(attributes?.comment) !== undefined
-      && attachmentDigest(attributes?.comment) !== undefined
-  );
-}
 
 /**
  * Where an already-attached capture can be displayed from inside the field.
@@ -1681,6 +1679,42 @@ export class AzureTicketInfoService {
   }
 
   /**
+   * La completion-evidence de una entrega: lo último que dijo la sesión (ADR-0037).
+   *
+   * No hay archivo que leer, digest que fijar ni documento que armar — el texto va al campo tal
+   * cual salió de la sesión. Solo se le pone el marcado mínimo que el campo necesita para
+   * conservar sus saltos de línea, y la comparación de idempotencia lo deshace, así que el mismo
+   * resumen vuelto a publicar se reconoce como publicado en vez de leerse como conflicto.
+   */
+  async validateSummary(ticket: number, summary: string): Promise<void> {
+    positiveId(ticket, "El ticket");
+    if (!summary.trim()) throw new Error("El resumen de la sesión está vacío");
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
+    if (existing && !publishedAlready(existing, summary)) {
+      throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+    }
+  }
+
+  async setSummary(ticket: number, summary: string): Promise<{ ticket: number; completionEvidence: string }> {
+    positiveId(ticket, "El ticket");
+    if (!summary.trim()) throw new Error("El resumen de la sesión está vacío");
+    const item = await this.readWorkItemValidated(ticket);
+    await this.readDirectParent(ticket, item);
+    const fieldName = await this.resolveCompletionField(item);
+    const existing = text(item, fieldName);
+    if (existing && publishedAlready(existing, summary)) return { ticket, completionEvidence: existing };
+    if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
+    await this.patchWorkItem(item, [{
+      op: "test", path: "/rev", value: item.rev,
+    }, { op: "add", path: `/fields/${fieldName}`, value: summaryHtml(summary) }]);
+    const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
+    if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
+    return { ticket, completionEvidence };
+  }
+
+  /**
    * The digests this call is about: the manifest's, or the one file it was handed.
    *
    * `ticket-evidence-set` runs without a manifest, so all it knows is the file, and the file's own
@@ -2298,7 +2332,6 @@ export class AzureTicketInfoService {
     if (realEffort === undefined || realEffort <= 0) unmet.push(GATE.realEffort);
     if (realEffortHours === undefined || realEffortHours <= 0) unmet.push(GATE.realEffortHours);
     if (!text(item, "Custom.URLCommit")) unmet.push(GATE.commitUrl);
-    if (!hasEvidenceCapture(item)) unmet.push(GATE.attachedCapture);
     if (!integrationBranch) unmet.push(GATE.huIntegrationBranch);
     const validPrs = pullRequests.filter((pr) => integratedPullRequest(pr, integrationBranch) && pr.source === ticketBranch);
     const validPr = validPrs.find((pr) => pr.id === canonical);

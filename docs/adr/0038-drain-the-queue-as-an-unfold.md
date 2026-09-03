@@ -20,11 +20,17 @@ calls them in a loop rather than once.
 
 An ordinary failure — a non-zero exit, a branch with no commits, a dirty tree, or
 a session silent past the idle timeout on every rung — does not release the unit. On GitHub the claim stays,
-and `evaluateEligibility` already rejects assigned issues; on Azure the state
-stays `En progreso`. The unit leaves the frontier through the predicate that was
-already there, so a failure needs no new state and cannot be selected again in a
-loop that re-asks. A person unassigns the issue, or reverts the state, to retry
+and `evaluateEligibility` already rejects assigned issues, so the unit leaves the
+frontier through the predicate that was already there: a failure needs no new state and
+cannot be selected again in a loop that re-asks. A person unassigns the issue to retry
 it. The branch and any commits survive for inspection.
+
+On Azure the state stays `En progreso` and the branch likewise survives, but the drain
+stops on that unit rather than continuing with the next. `getAutocodeState` only
+excludes the completed states, so `En progreso` is still eligible and re-asking would
+hand the loop the same ticket. Widening that predicate belongs to the Azure queue's own
+change; until then stopping is the honest behaviour, and it is already the improvement
+over what the marker justified there — a session resumed every ten seconds, forever.
 
 Failing the whole run instead was rejected: one badly written issue in the middle
 of a queue would stop the ten behind it, which defeats an unattended drain. The

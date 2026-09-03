@@ -12,7 +12,7 @@ export interface AutocodeCheckpoint {
 
 export type AutocodePhase = "preflight-hu" | "selected" | "started" | "implementing" | "implementation-ready" | "integrating" | "evidencing" | "completing" | "cleaning" | "reconciling";
 
-export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "ticket-branch-checkout" | "ticket-branch-push" | "pull-request" | "pr-association" | "merge-commit" | "attachment" | "evidence" | "ticket-effort" | "ticket-done" | "ticket-completion";
+export type AutocodeEffect = "hu-integration-branch" | "ticket-selected" | "ticket-state" | "ticket-branch" | "ticket-branch-checkout" | "ticket-branch-push" | "pull-request" | "pr-association" | "merge-commit" | "evidence" | "ticket-effort" | "ticket-done" | "ticket-completion";
 
 export interface VersionedAutocodeCheckpoint {
   schemaVersion: 3;
@@ -42,11 +42,17 @@ export interface VersionedAutocodeCheckpoint {
   variant?: string | null;
   intent: { effect: AutocodeEffect; target: string } | null;
   receipts: Partial<Record<AutocodeEffect, { verifiedAt: string }>>;
-  manifestPath?: string | null;
   pullRequest?: number | null;
+  /**
+   * El commit verificado de la unidad (ADR-0035). Ausente mientras la sesión no haya pasado su
+   * verificación por git, que es lo único que el coordinador no puede volver a derivar: una rama
+   * con dos commits significa lo mismo si la sesión terminó y la corrida se cortó integrando, que
+   * si la sesión se cayó habiendo commiteado dos de cinco cosas.
+   */
   localCommit?: string | null;
   mergeCommit?: string | null;
-  manifestDigests?: string[];
+  /** Lo último que dijo la sesión, que es la completion-evidence del ticket (ADR-0037). */
+  summary?: string | null;
 }
 
 
@@ -59,7 +65,7 @@ export interface AutocodeCheckpointStore {
 }
 
 const FILE_NAME = "lazy-workflow/autocode-checkpoint.json";
-const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch", "ticket-branch-checkout", "ticket-branch-push", "pull-request", "pr-association", "merge-commit", "attachment", "evidence", "ticket-effort", "ticket-done", "ticket-completion"];
+const EFFECTS: readonly AutocodeEffect[] = ["hu-integration-branch", "ticket-selected", "ticket-state", "ticket-branch", "ticket-branch-checkout", "ticket-branch-push", "pull-request", "pr-association", "merge-commit", "evidence", "ticket-effort", "ticket-done", "ticket-completion"];
 
 function validBranch(value: string | null): boolean {
   return value === null || (/^refs\/heads\/[^\s]+$/.test(value) && !value.includes("//"));

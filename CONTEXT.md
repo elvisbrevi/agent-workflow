@@ -97,10 +97,10 @@ A line a planning session prints alone to hand control back to the coordinator:
 wants answered, and `QUESTIONS_ANSWERED`, which the coordinator prints when it
 resumes that session with the operator's replies.
 
-A GitHub delivery session prints none: it is finished when its process exits, and
-it succeeded when git says so (ADR-0035). An Azure delivery session still prints
-`IMPLEMENTATION_READY`, until its own slice retires it.
-_Avoid_: a marker for GitHub delivery, provider text as a completion signal
+A delivery session prints none, on either provider: it is finished when its process
+exits, and it succeeded when git says so (ADR-0035). Only the Azure workspace paths
+still print `IMPLEMENTATION_READY`, until the workspace mode is rebuilt.
+_Avoid_: a marker for delivery, provider text as a completion signal
 
 **Run outcome line**:
 What the coordinator itself prints on stdout when a run ends —
@@ -147,11 +147,15 @@ _Avoid_: trusting the exit code alone, reading a completion claim out of the tex
 **Unit failure**:
 Any outcome that is not a verified session: a non-zero exit, a branch with no
 commits, a dirty tree, or a chain spent by idle timeout. The unit keeps its claim
-on GitHub and its `En progreso` state on Azure, which is what removes it from the
-frontier through the eligibility predicate that already existed. The branch and
-its commits survive for inspection, the drain continues, and the run exits
-non-zero because it left work broken behind it. A person unassigns the issue, or
-reverts the state, to retry it.
+on GitHub and its `En progreso` state on Azure, and its branch and commits survive
+for inspection.
+
+On GitHub the claim is what removes it from the frontier through the eligibility
+predicate that already existed, so the drain continues with the next unit and the
+run exits non-zero because it left work broken behind it; a person unassigns the
+issue to retry it. On Azure the drain still stops there instead: `En progreso` is
+not yet part of the eligibility predicate, so continuing would re-select the same
+ticket. That gap closes when the Azure queue gets its own drain.
 
 A unit that fails *after* verification — pushing, opening the pull request,
 merging — is not this: it is a half-finished delivery, it keeps its checkpoint,

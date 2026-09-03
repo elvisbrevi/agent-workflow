@@ -15,11 +15,20 @@ is gone: no prompt asks for it, no gate reads it, and the marker resume it justi
 stdout, for whatever reads a run's output — those were never a session's to emit, and
 retiring them is a separate change to that output contract.
 
-Azure delivery, the workspace paths and the `terminalMarker` plumbing in the CLI
-adapters still carry the marker, and the idle nudge still re-injects it in OpenCode.
-That is deliberate sequencing, not an oversight: Azure has its own slice, and until it
-runs the two providers gate differently. A reader comparing this ADR against
-`lazy-workflow-cli.ts` will find both mechanisms, and the Azure one is the older.
+The single-repository Azure delivery gates the same way: when the session's process
+exits, `verifySession` asks git whether the ticket branch is ahead of the HU
+integration branch with a clean tree, and the answer is the commit the delivery
+pushes. `verifySessionWithGit` is one function both providers call, because the
+question is the same and only what follows it differs. With the marker gone from that
+path, so is the retry loop it justified — nothing resumes a session toward a marker it
+was never asked to print, so a session that exits without a verifiable branch is an
+ordinary unit failure and leaves the ticket `En progreso` with its branch in place.
+
+The Azure workspace paths and the `terminalMarker` plumbing in the CLI adapters still
+carry the marker, and the idle nudge still re-injects it in OpenCode. That is deliberate
+sequencing, not an oversight: the workspace mode is rebuilt in its own slice, and until
+then a reader comparing this ADR against `lazy-workflow-cli.ts` will find both
+mechanisms, and the workspace one is the older.
 
 The markers were a control plane made of provider text, which ADR-0020 had
 already rejected for queue outcomes. They survived for completion because the

@@ -110,6 +110,9 @@ class StatefulAzureBoundary implements AzureToolBoundary {
   checkoutTicketBranch(): Promise<void> {
     return this.record("checkoutTicketBranch", undefined);
   }
+  verifySession(): Promise<{ commit: string }> {
+    return this.record("verifySession", { commit: this.delegate.commit });
+  }
   writeCompletionManifest(): Promise<any> {
     return this.record("writeCompletionManifest", {
       ticket: this.delegate.ticket,
@@ -133,6 +136,10 @@ const AZURE_TOOL_INVOCATIONS: Array<{ args: string[]; operation: string }> = [
   { args: ["ticket-pr-create", "--hu", "23438", "--ticket", "51"], operation: "createOrReusePullRequest" },
   { args: ["ticket-branch-push", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "pushTicketBranch" },
   { args: ["ticket-branch-checkout", "--branch", "ticket/51", "--working-directory", "/repo"], operation: "checkoutTicketBranch" },
+  {
+    args: ["ticket-session-verify", "--branch", "ticket/51", "--base-branch", "hu/23438", "--working-directory", "/repo"],
+    operation: "verifySession",
+  },
   {
     args: [
       "ticket-manifest-set", "--ticket", "51", "--branch", "ticket/51", "--manifest", "/repo/.git/m.json",
@@ -214,6 +221,7 @@ describe("herramientas deterministas como comandos", () => {
       "ticket-pr-create": "pull-request-failure",
       "ticket-branch-push": "deterministic-completion-failure",
       "ticket-branch-checkout": "branch-preparation-failure",
+      "ticket-session-verify": "session-not-verified",
       "ticket-manifest-set": "manifest-not-verifiable",
       "github-auth-info": "tracker-read-failure",
       "github-repo-info": "tracker-read-failure",

@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, unlink } from "node:fs/promises";
 import { HuInfoService } from "../azure/hu-info-service.ts";
@@ -56,8 +56,8 @@ import {
   type GitHubCheckpointStore,
   type GitHubDeliveryCheckpoint,
 } from "../github/github-delivery-checkpoint.ts";
+import { SessionNotVerifiedError } from "../git/session-verification.ts";
 import {
-  GitHubSessionNotVerifiedError,
   GitHubDeliveryService,
   GitHubManifestNotVerifiableError,
   GitHubPullRequestConflictError,
@@ -168,6 +168,9 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence?(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown>;
+  validateSummary?(ticket: number, summary: string): Promise<void>;
+  setSummary?(ticket: number, summary: string): Promise<unknown>;
+  verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
   publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
   publishInfrastructureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
@@ -284,11 +287,12 @@ class AzureCoordinatedFailureError extends Error {
 }
 
 function azureFailureKind(error: unknown, fallback: FailureKind): FailureKind {
+  if (error instanceof SessionNotVerifiedError) return "session-not-verified";
   return error instanceof AzureCoordinatedFailureError ? error.failureKind : fallback;
 }
 
 function githubCompletionFailureKind(error: unknown): FailureKind {
-  if (error instanceof GitHubSessionNotVerifiedError) return "session-not-verified";
+  if (error instanceof SessionNotVerifiedError) return "session-not-verified";
   if (error instanceof GitHubManifestNotVerifiableError) return "manifest-not-verifiable";
   if (error instanceof GitHubCoordinatedFailureError) return error.failureKind;
   if (error instanceof GitHubPullRequestConflictError) return "pull-request-failure";
@@ -477,7 +481,6 @@ const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
   "real-effort": "falta el valor requerido de Real Effort",
   "real-effort-hours": "falta el valor requerido de Real Effort HH",
   "commit-url": "falta la URL del commit",
-  "attached-capture": "falta una captura adjunta",
   "hu-integration-branch": "falta la rama de integracion de la HU o no coincide",
   "completed-hu-targeted-pr": "falta un PR completado dirigido a la rama de integracion de la HU",
   "native-pr-association": "falta la asociacion nativa del PR con el ticket",
@@ -1072,8 +1075,8 @@ export class LazyWorkflowCli {
       if (!isPositiveId(options.pullRequest)) {
         return azureArgumentError(options, "ticket-completion-apply requiere --pr <id> con un entero positivo");
       }
-      if (!options.manifest?.trim()) {
-        return azureArgumentError(options, "ticket-completion-apply requiere --manifest <path>");
+      if (!options.summary?.trim()) {
+        return azureArgumentError(options, "ticket-completion-apply requiere --summary <texto>");
       }
       try {
         console.log(JSON.stringify(await this.applyTicketCompletion(options), null, 2));
@@ -4298,26 +4301,23 @@ export class LazyWorkflowCli {
     }
   }
 
+  /**
+   * El cierre determinista de un ticket, con el resumen de la sesión como su completion-evidence
+   * (ADR-0037). Lo que llegaba acá como un manifest —el commit, los digests, los adjuntos y el
+   * documento renderizado— o lo responde git antes de llamar (ADR-0035), o dejó de existir.
+   */
   private async applyTicketCompletion(options: CliOptions, runEffect: CompletionEffectRunner = async (_effect, _target, action) => action()): Promise<unknown> {
-    if (!this.huInfoService.getTicketInfo || !this.huInfoService.validateDirectTicketContext
-      || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
+    if (!this.huInfoService.getTicketInfo || !this.huInfoService.validateDirectTicketContext) {
       throw new Error("El servicio Azure no soporta ticket-completion-apply");
     }
-    if (!this.huInfoService.linkPullRequest || !this.huInfoService.linkCommit || !this.huInfoService.addAttachment
-      || !this.huInfoService.setEvidence || !this.huInfoService.setState
-      || !this.huInfoService.validateEvidenceFile || !this.huInfoService.validateEvidence) {
+    if (!this.huInfoService.linkPullRequest || !this.huInfoService.linkCommit
+      || !this.huInfoService.setSummary || !this.huInfoService.setState || !this.huInfoService.validateSummary) {
       throw new Error("El servicio Azure no expone todas las primitivas de completion");
     }
 
+    const summary = options.summary?.trim() ?? "";
     await this.huInfoService.validateDirectTicketContext(options.hu!, options.ticket!);
     let info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    let manifest: CompletionManifest;
-    try {
-      manifest = await this.huInfoService.readCompletionManifest(options.manifest!, options.workingDirectory);
-      await this.huInfoService.validateCompletionManifest(manifest, info, options.ticket!, options.workingDirectory);
-    } catch (error) {
-      throw new AzureCoordinatedFailureError("manifest-not-verifiable", errorMessage(error), { cause: error });
-    }
 
     const unreconcilableGates = info.gates.unmet.filter((gate) =>
       gate === COMPLETION_GATE.realEffort
@@ -4327,26 +4327,15 @@ export class LazyWorkflowCli {
       throw new Error(`No se puede completar el ticket ${options.ticket}; faltan datos previos: ${unreconcilableGates.join(", ")}`);
     }
 
-    for (const evidence of manifest.evidence) {
-      try {
-        await this.huInfoService.validateEvidenceFile(evidence.path, evidence.kind);
-      } catch (error) {
-        throw new AzureCoordinatedFailureError("evidence-not-verifiable", errorMessage(error), { cause: error });
-      }
-    }
-    const textEvidence = manifest.evidence.find(({ kind }) => kind !== "screen");
+    // Un ticket que ya carga completion-evidence no necesita otra, así que una entrega retomada
+    // sin el resumen de su sesión todavía cierra; una que no la carga y no lo tiene, no.
     const completionEvidenceMissing = !info.completionEvidence;
-    if (!textEvidence && completionEvidenceMissing) {
-      throw new Error("El manifest no contiene evidencia textual para completion-evidence");
+    if (!summary && completionEvidenceMissing) {
+      throw new Error("La sesión no dejó un resumen para la completion-evidence del ticket");
     }
-    const evidenceReport: CompletionEvidenceReport = {
-      ticketBranch: manifest.ticketBranch,
-      validation: manifest.validation,
-      evidence: manifest.evidence,
-    };
-    if (textEvidence) {
+    if (summary) {
       try {
-        await this.huInfoService.validateEvidence(options.ticket!, textEvidence.path, evidenceReport);
+        await this.huInfoService.validateSummary(options.ticket!, summary);
       } catch (error) {
         throw new AzureCoordinatedFailureError("evidence-not-verifiable", errorMessage(error), { cause: error });
       }
@@ -4365,19 +4354,8 @@ export class LazyWorkflowCli {
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
-    for (const evidence of manifest.evidence) {
-      if (info.attachments.some((attachment) =>
-        typeof attachment.url === "string"
-        && attachment.url.trim().length > 0
-        && attachment.digest?.toLowerCase() === evidence.sha256.toLowerCase()
-        && attachment.evidenceKind === evidence.kind
-      )) continue;
-      await runEffect("attachment", evidence.sha256, () => this.huInfoService!.addAttachment!(options.ticket!, evidence.path, evidence.kind).then(() => undefined));
-       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
-    }
-
-    if (textEvidence && completionEvidenceMissing) {
-      await runEffect("evidence", textEvidence.path, () => this.huInfoService!.setEvidence!(options.ticket!, textEvidence.path, evidenceReport).then(() => undefined));
+    if (summary && completionEvidenceMissing) {
+      await runEffect("evidence", "resumen de la sesión", () => this.huInfoService!.setSummary!(options.ticket!, summary).then(() => undefined));
       info = await this.huInfoService.getTicketInfo(options.hu!, options.ticket!);
     }
 
@@ -4393,28 +4371,7 @@ export class LazyWorkflowCli {
     if (info.ticket.state !== "Done" || info.gates.unmet.length > 0) {
       throw new Error(`No se pudo verificar la finalización del ticket ${options.ticket}`);
     }
-    return { hu: options.hu, ticket: options.ticket, pullRequest: options.pullRequest, manifest: options.manifest, state: "Done", gates: info.gates };
-  }
-
-  private async validateReadyManifest(
-    hu: number,
-    ticket: number,
-    manifestPath: string,
-    workingDirectory: string,
-  ): Promise<CompletionManifest> {
-    if (!this.huInfoService.validateDirectTicketContext || !this.huInfoService.getTicketInfo
-      || !this.huInfoService.readCompletionManifest || !this.huInfoService.validateCompletionManifest) {
-      throw new Error("El servicio Azure no soporta la validación del manifest de implementación");
-    }
-    await this.huInfoService.validateDirectTicketContext(hu, ticket);
-    const info = await this.huInfoService.getTicketInfo(hu, ticket);
-    try {
-      const manifest = await this.huInfoService.readCompletionManifest(manifestPath, workingDirectory);
-      await this.huInfoService.validateCompletionManifest(manifest, info, ticket, workingDirectory);
-      return manifest;
-    } catch (error) {
-      throw new AzureCoordinatedFailureError("manifest-not-verifiable", errorMessage(error), { cause: error });
-    }
+    return { hu: options.hu, ticket: options.ticket, pullRequest: options.pullRequest, state: "Done", gates: info.gates };
   }
 
   private async runAzureCode(options: CliOptions): Promise<number> {
@@ -4542,8 +4499,8 @@ export class LazyWorkflowCli {
             pullRequest: live.canonicalPullRequest,
           };
           await save();
-          if (!checkpoint.manifestPath) {
-            reportAzureFailure("manifest-not-verifiable", "reconciling", options, `lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero falta su manifest; checkpoint sessionless conservado.`, { ticket: checkpoint.ticket }, "preserved");
+          if (!checkpoint.localCommit) {
+            reportAzureFailure("session-not-verified", "reconciling", options, `lazy-workflow: el ticket ${checkpoint.ticket} tiene un PR canónico, pero su sesión nunca quedó verificada; checkpoint sessionless conservado.`, { ticket: checkpoint.ticket }, "preserved");
             return 1;
           }
         }
@@ -4553,7 +4510,7 @@ export class LazyWorkflowCli {
       }
     }
 
-    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null && !checkpoint.manifestPath) {
+    if ((checkpoint.phase === "implementing" || checkpoint.phase === "reconciling") && checkpoint.ticket !== null && checkpoint.sessionId === null && !checkpoint.localCommit) {
       if (!this.huInfoService.getAutocodeContextForTicket) {
         reportAzureFailure("claim-verification-failure", "reconciling", options, `lazy-workflow: no se puede reconstruir el ticket ${checkpoint.ticket} fijado; ejecución detenida.`, { ticket: checkpoint.ticket }, "preserved");
         return 1;
@@ -4587,7 +4544,7 @@ export class LazyWorkflowCli {
       return 0;
     }
 
-    if (checkpoint.ticket !== null && checkpoint.sessionId === null && checkpoint.manifestPath
+    if (checkpoint.ticket !== null && checkpoint.sessionId === null && checkpoint.localCommit
       && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort
       && this.huInfoService.getAutocodeContextForTicket && checkpoint.ticketBranch) {
       const context = await this.huInfoService.getAutocodeContextForTicket(hu, checkpoint.ticket, integrationBranch);
@@ -4596,13 +4553,6 @@ export class LazyWorkflowCli {
         return 1;
       }
       try {
-        const manifest = await this.validateReadyManifest(hu, checkpoint.ticket, checkpoint.manifestPath, options.workingDirectory);
-        checkpoint = {
-          ...checkpoint,
-          localCommit: manifest.commit,
-          manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
-        };
-        await save();
         const runRecoveryEffect: CompletionEffectRunner = async (effect, target, action) => {
           const started = now();
           checkpoint = { ...checkpoint, intent: { effect, target } };
@@ -4666,7 +4616,7 @@ export class LazyWorkflowCli {
             }
             await runRecoveryEffect(effect, target, action);
           };
-          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, manifest: checkpoint.manifestPath! }, runEffect);
+          await this.applyTicketCompletion({ ...options, pullRequest: pullRequest.pullRequest, summary: checkpoint.summary ?? null }, runEffect);
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
         }
@@ -4775,12 +4725,6 @@ export class LazyWorkflowCli {
     }
     await markPhase("implementing", { ticketBranch, sessionId: checkpoint.sessionId });
 
-    let manifestPath = checkpoint.manifestPath ?? null;
-    if (!manifestPath && this.huInfoService.getCompletionManifestPath) {
-      manifestPath = await this.huInfoService.getCompletionManifestPath(options.workingDirectory);
-      checkpoint = { ...checkpoint, manifestPath };
-      await save();
-    }
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
     let sessionId = options.session ?? checkpoint.sessionId;
@@ -4789,15 +4733,7 @@ export class LazyWorkflowCli {
     while (true) {
       try {
         const authoritativeResumePrompt = buildResumePrompt(resumePrompt, norms);
-        const run = await this.prompt({
-          kind: "azure-delivery",
-          context,
-          ticketBranch,
-          manifestPath,
-          evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
-          workflowPhase: checkpoint.phase,
-          completionGates: Object.values(COMPLETION_GATE),
-        }, options, norms);
+        const run = await this.prompt({ kind: "azure-delivery", context, ticketBranch }, options, norms);
         let activeAuthority = run.agent;
         const execution = await track(null, async () => {
           // Both a fresh session and a resume of a checkpointed one descend the same declared
@@ -4808,7 +4744,7 @@ export class LazyWorkflowCli {
               descentSessionId,
               authoritativeResumePrompt,
               options.workingDirectory,
-              IMPLEMENTATION_READY_MARKER,
+              undefined,
               { ...overrides, agent: activeAuthority },
             );
           const onDescent = async (rung: FallbackRung, descentSessionId: string) => {
@@ -4818,21 +4754,12 @@ export class LazyWorkflowCli {
           };
           const handOff = async (rung: FallbackRung) => {
             const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-            const handoffRun = await this.prompt({
-              kind: "azure-delivery",
-              context,
-              ticketBranch,
-              manifestPath,
-              evidenceDirectory: manifestPath ? dirname(manifestPath) : null,
-              workflowPhase: checkpoint.phase,
-              completionGates: Object.values(COMPLETION_GATE),
-            }, handoffOptions, norms);
+            const handoffRun = await this.prompt({ kind: "azure-delivery", context, ticketBranch }, handoffOptions, norms);
             this.resolveAgent(rung.cli);
             const handedOff = await this.codingAgent.run({
               ...handoffOptions,
               ...handoffRun,
               session: null,
-              terminalMarker: IMPLEMENTATION_READY_MARKER,
             }, false);
             activeCli = rung.cli;
             activeAuthority = handoffRun.agent;
@@ -4851,7 +4778,7 @@ export class LazyWorkflowCli {
           if (sessionId) {
             try {
               started = {
-                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, IMPLEMENTATION_READY_MARKER, { ...getResumeOverrides(options), agent: run.agent }),
+                result: await this.codingAgent.resume(sessionId, authoritativeResumePrompt, options.workingDirectory, undefined, { ...getResumeOverrides(options), agent: run.agent }),
                 azureLoginRequired: false,
                 failed: false,
               };
@@ -4864,7 +4791,6 @@ export class LazyWorkflowCli {
               ...options,
               ...run,
               session: null,
-              terminalMarker: IMPLEMENTATION_READY_MARKER,
             }, true);
           }
           return await this.descendFallbackChain(options, started, this.resumingDescent(activeCli, () => started.result.sessionId, resumeFn, onDescent, handOff));
@@ -4876,84 +4802,92 @@ export class LazyWorkflowCli {
           await save();
         }
         sessionId = execution.result.sessionId;
-        checkpoint = { ...checkpoint, cli: activeCli };
-        const terminal = containsMarker(execution.result.text, IMPLEMENTATION_READY_MARKER);
-        checkpoint = { ...checkpoint, sessionId: terminal ? null : sessionId };
+        // Una sesión que espera el login Azure sigue viva y se reanuda; cualquier otra ya terminó,
+        // y lo que decide si entregó es git, no ella.
+        checkpoint = { ...checkpoint, cli: activeCli, sessionId: execution.azureLoginRequired ? sessionId : null };
         await save();
         if (execution.azureLoginRequired) {
           await this.huInfoService.waitForAccess(hu);
           resumePrompt = "continue";
           continue;
         }
-        if (terminal) {
-          if (manifestPath && this.huInfoService.checkoutTicketBranch && this.huInfoService.pushTicketBranch && this.huInfoService.createOrReusePullRequest && this.huInfoService.getTicketInfo && this.huInfoService.setEffort) {
-            try {
-              const manifest = await this.validateReadyManifest(hu, ticket, manifestPath, options.workingDirectory);
-              checkpoint = {
-                ...checkpoint,
-                localCommit: manifest.commit,
-                manifestDigests: manifest.evidence.map(({ sha256 }) => sha256.toLowerCase()),
-              };
-              await save();
-              await markPhase("implementation-ready", { manifestPath, sessionId: null });
-              await markPhase("integrating", { manifestPath, sessionId: null });
-              if (!checkpoint.receipts["ticket-branch-checkout"]) {
-                await track(
-                  "ticket-branch-checkout",
-                  () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
-                  ticketBranch,
-                );
-              }
-              await track(
-                "ticket-branch-push",
-                () => this.huInfoService!.pushTicketBranch!(ticketBranch!, options.workingDirectory),
-                ticketBranch,
-              );
-              const pullRequest = await track(
-                "pull-request",
-                () => this.huInfoService!.createOrReusePullRequest!(hu, ticket),
-                `${ticket}`,
-              );
-              checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
-              await save();
-
-              const currentState = await this.huInfoService.getState!(ticket);
-              const activeHours = activeEffortHours(checkpoint.activeDurationMs);
-              const targetReal = effortBaseline.real + activeHours;
-              const targetRealHours = effortBaseline.realHours + activeHours;
-              if (!checkpoint.receipts["ticket-effort"]) {
-                await track(
-                  "ticket-effort",
-                  () => this.huInfoService!.setEffort!(ticket, targetReal, targetRealHours, currentState.revision ?? azureRevision ?? 0).then(() => undefined),
-                  `${targetReal}/${targetRealHours}`,
-                );
-              }
-
-              await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
-              await this.applyTicketCompletion(
-                { ...options, pullRequest: pullRequest.pullRequest, manifest: manifestPath },
-                async (effect, target, action) => {
-                  if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
-                  await track(effect, action, target);
-                },
-              );
-              checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
-              await save();
-              await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
-              await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
-              await this.checkpointStore.clear(options.workingDirectory);
-              return this.runVersionedAzureCode({ ...options, session: null }, null);
-            } catch (error) {
-              reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "reconciling", options, `lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} después del marcador (${errorMessage(error)}); checkpoint conservado.`, { ticket }, "preserved");
-              return 1;
-            }
-          }
+        if (execution.failed) {
+          reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${activeCli} del ticket ${ticket} terminó con error; checkpoint conservado.`, { ticket, sessionId }, "preserved");
+          return 1;
+        }
+        if (!this.huInfoService.verifySession || !this.huInfoService.checkoutTicketBranch || !this.huInfoService.pushTicketBranch
+          || !this.huInfoService.createOrReusePullRequest || !this.huInfoService.getTicketInfo || !this.huInfoService.setEffort) {
           reportAzureFailure("deterministic-completion-failure", "completing", options, `lazy-workflow: el coordinador no expone todas las primitivas de completion para el ticket ${ticket}; ejecución detenida.`, { ticket }, "preserved");
           return 1;
         }
-        if (execution.failed) throw new Error(`la sesión ${options.cli} termino con error`);
-        await this.retryTimer.wait(10_000);
-        resumePrompt = options.prompt;
+        // La compuerta de la unidad, antes de tocar el remoto: la rama activa es la fijada, el
+        // árbol está limpio y lleva commits sobre la de integración (ADR-0035). Lo que no pasa
+        // por acá deja el ticket en `En progreso` con su rama en pie, para que alguien mire.
+        const summary = execution.result.text.trim() || null;
+        let verifiedCommit: string;
+        try {
+          verifiedCommit = (await this.huInfoService.verifySession(ticketBranch!, integrationBranch, options.workingDirectory)).commit;
+        } catch (error) {
+          reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "implementation-ready", options, `lazy-workflow: el ticket ${ticket} no quedó verificado (${errorMessage(error)}); checkpoint conservado y su rama se conserva.`, { ticket }, "preserved");
+          return 1;
+        }
+        try {
+          // El commit y el resumen son lo único que git y Azure no responden por sí solos: que
+          // la sesión llegó a verificarse, y lo último que dijo (ADR-0037, ADR-0038).
+          checkpoint = { ...checkpoint, localCommit: verifiedCommit, summary };
+          await save();
+          await markPhase("implementation-ready", { sessionId: null });
+          await markPhase("integrating", { sessionId: null });
+          if (!checkpoint.receipts["ticket-branch-checkout"]) {
+            await track(
+              "ticket-branch-checkout",
+              () => this.huInfoService!.checkoutTicketBranch!(ticketBranch!, options.workingDirectory),
+              ticketBranch,
+            );
+          }
+          await track(
+            "ticket-branch-push",
+            () => this.huInfoService!.pushTicketBranch!(ticketBranch!, options.workingDirectory),
+            ticketBranch,
+          );
+          const pullRequest = await track(
+            "pull-request",
+            () => this.huInfoService!.createOrReusePullRequest!(hu, ticket),
+            `${ticket}`,
+          );
+          checkpoint = { ...checkpoint, pullRequest: pullRequest.pullRequest, mergeCommit: pullRequest.mergeCommit };
+          await save();
+
+          const currentState = await this.huInfoService.getState!(ticket);
+          const activeHours = activeEffortHours(checkpoint.activeDurationMs);
+          const targetReal = effortBaseline.real + activeHours;
+          const targetRealHours = effortBaseline.realHours + activeHours;
+          if (!checkpoint.receipts["ticket-effort"]) {
+            await track(
+              "ticket-effort",
+              () => this.huInfoService!.setEffort!(ticket, targetReal, targetRealHours, currentState.revision ?? azureRevision ?? 0).then(() => undefined),
+              `${targetReal}/${targetRealHours}`,
+            );
+          }
+
+          await markPhase("evidencing", { pullRequest: pullRequest.pullRequest });
+          await this.applyTicketCompletion(
+            { ...options, pullRequest: pullRequest.pullRequest, summary },
+            async (effect, target, action) => {
+              if (effect === "ticket-done") await markPhase("completing", { pullRequest: pullRequest.pullRequest });
+              await track(effect, action, target);
+            },
+          );
+          checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
+          await save();
+          await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
+          await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
+          await this.checkpointStore.clear(options.workingDirectory);
+          return this.runVersionedAzureCode({ ...options, session: null }, null);
+        } catch (error) {
+          reportAzureFailure(azureFailureKind(error, "deterministic-completion-failure"), "reconciling", options, `lazy-workflow: no se pudo completar determinísticamente el ticket ${ticket} ya verificado (${errorMessage(error)}); checkpoint conservado.`, { ticket }, "preserved");
+          return 1;
+        }
       } catch (error) {
         if (error instanceof AgentSessionNotFoundError || error instanceof AgentSessionCloseError) {
           checkpoint = { ...checkpoint, phase: "reconciling", sessionId: null, activeSince: null, intent: null };
@@ -4961,9 +4895,10 @@ export class LazyWorkflowCli {
           reportAzureFailure("session-failure", "reconciling", options, `lazy-workflow: la sesión ${error.sessionId} no está disponible; checkpoint sessionless conservado para reconciliación.`, { ticket, sessionId: error.sessionId }, "preserved");
           return 1;
         }
-        reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); conservaré el checkpoint y reintentaré en 10s.`, { ticket }, "preserved");
-        await this.retryTimer.wait(10_000);
-        resumePrompt = options.prompt;
+        // Sin marcador que esperar no queda nada que reintentar: la sesión salió, y lo que dejó en
+        // la rama ya no va a cambiar por relanzarla. El ticket queda `En progreso` con su rama.
+        reportAzureFailure("session-failure", "implementing", options, `lazy-workflow: la sesión ${options.cli} falló (${errorMessage(error)}); checkpoint conservado.`, { ticket }, "preserved");
+        return 1;
       }
     }
   }

@@ -20,6 +20,7 @@ import type { AutocodeCheckpointStore } from "../src/azure/autocode-checkpoint.t
 import { operatorLine, setDefaultReporter } from "../src/output/operator-output.ts";
 import { createReporter, type Reporter } from "../src/output/reporter.ts";
 import { GitTicketBranchCleaner, checkoutGitBranch } from "../src/git/git-ticket-branch-cleaner.ts";
+import { SessionNotVerifiedError } from "../src/git/session-verification.ts";
 import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts";
 import { fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
@@ -236,7 +237,6 @@ test("Azure acumula todos los gates determinables de una verificacion incompleta
       COMPLETION_GATE.realEffort,
       COMPLETION_GATE.realEffortHours,
       COMPLETION_GATE.commitUrl,
-      COMPLETION_GATE.attachedCapture,
       COMPLETION_GATE.huIntegrationBranch,
       COMPLETION_GATE.completedHuPullRequest,
     ],
@@ -1247,7 +1247,7 @@ test("resume usa una sola invocacion simple con continue", async () => {
   ]]);
 });
 
-test("el prompt Azure conserva solo el contrato semántico de implementación", async () => {
+test("el prompt Azure de workspace conserva solo el contrato semántico de implementación", async () => {
   const prompt = await Bun.file(new URL("../prompts/autocode-prompt.md", import.meta.url)).text();
 
   expect(prompt).toContain("IMPLEMENTATION_READY");
@@ -1329,7 +1329,7 @@ test("code rechaza una HU explícita distinta de la fijada sin tocar Azure ni Op
   expect(calls).toBe(0);
 });
 
-test("code versionado detiene la entrega si falta el manifest del coordinador", async () => {
+test("code versionado detiene la entrega si falta una primitiva de completion", async () => {
   const phases: string[] = [];
   const events: string[] = [];
   const checkpoints: Array<{ phase: string; ticket: number | null; activeDurationMs: number; receipts: string[] }> = [];
@@ -1376,29 +1376,21 @@ test("code versionado detiene la entrega si falta el manifest del coordinador", 
   expect(checkpoints.at(-1)?.activeDurationMs).toBe(400);
 });
 
-test("code versionado completa el ticket después de IMPLEMENTATION_READY", async () => {
+test("code versionado completa el ticket después de que git verifica la sesión", async () => {
   const events: string[] = [];
   let openCodePrompt = "";
   let state = "En progreso";
   let canonical: number | null = null;
-  let attached = false;
   let evidence = false;
   let commit = false;
   let queueHasTicket = true;
   let infoReads = 0;
-  const manifest = {
-    ticket: 51,
-    ticketBranch: "refs/heads/ticket/51",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "pass" }],
-    evidence: [{ path: "/tmp/evidence.json", kind: "http-json" as const, sha256: "b".repeat(64) }],
-  };
+  const summary = "Migré el endpoint de pagos y corrí la suite: 18 passed.";
   const info = async () => {
     infoReads += 1;
     const unmet: CompletionGate[] = state === "Done" ? [] : [
       COMPLETION_GATE.ticketState,
       ...(evidence ? [] : [COMPLETION_GATE.completionEvidence]),
-      ...(attached ? [] : [COMPLETION_GATE.attachedCapture]),
       ...(canonical === null ? [COMPLETION_GATE.completedHuPullRequest, COMPLETION_GATE.nativePullRequestAssociation] : []),
       ...(commit ? [] : [COMPLETION_GATE.commitUrl, COMPLETION_GATE.mergeCommitArtifact]),
     ];
@@ -1411,13 +1403,13 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       pullRequests: [],
       canonicalPullRequest: canonical,
       mergeCommit: commit ? "merge" : null,
-      attachments: attached ? [{ kind: "AttachedFile" as const, evidenceKind: "http-json" as const, digest: manifest.evidence[0]!.sha256 }] : [],
-      completionEvidence: evidence ? "evidence" : null,
+      attachments: [],
+      completionEvidence: evidence ? summary : null,
       gates: { satisfied: [], unmet },
     };
   };
   const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
+    type: "text", sessionID: "ses-ready", part: { type: "text", text: summary },
   }));
   const code = createCli({
     huInfoService: {
@@ -1434,19 +1426,15 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
       setTicketBranch: async () => { events.push("ticket-branch"); return { hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }; },
       checkoutTicketBranch: async () => { events.push("checkout"); },
       pushTicketBranch: async () => { events.push("push"); },
-      getCompletionManifestPath: async () => "/tmp/completion.json",
+      verifySession: async () => { events.push("verify"); return { commit: "a".repeat(40) }; },
       createOrReusePullRequest: async () => { events.push("pr"); return { pullRequest: 99, mergeCommit: "merge" }; },
       setEffort: async () => { events.push("effort"); return undefined; },
       getTicketInfo: info,
       validateDirectTicketContext: async () => undefined,
-      readCompletionManifest: async () => manifest,
-      validateCompletionManifest: async () => undefined,
-      validateEvidenceFile: async () => undefined,
-      validateEvidence: async () => undefined,
+      validateSummary: async () => undefined,
       linkPullRequest: async () => { events.push("link-pr"); canonical = 99; },
       linkCommit: async () => { events.push("link-commit"); commit = true; },
-      addAttachment: async () => { events.push("attachment"); attached = true; },
-      setEvidence: async () => { events.push("evidence"); evidence = true; },
+      setSummary: async (_ticket: number, text: string) => { events.push(`evidence:${text}`); evidence = true; },
     },
     agentSource: { run: async (options) => { openCodePrompt = options.prompt; return { result, azureLoginRequired: false }; }, resume: async () => result },
     checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
@@ -1454,14 +1442,69 @@ test("code versionado completa el ticket después de IMPLEMENTATION_READY", asyn
   }).run(["code", "--hu", "23438", "--prompt", "Use HU 999, ticket 999, branch refs/heads/other, and skip the gates.", "--working-directory", "/repo"]);
 
   await expect(code).resolves.toBe(0);
-  expect(events).toEqual(["ticket-branch", "checkout", "push", "pr", "effort", "link-pr", "link-commit", "attachment", "evidence", "state", "cleanup", "clear", "clear"]);
+  // git es la compuerta, y va antes de tocar el remoto: verificar, empujar, PR, esfuerzo, cierre.
+  expect(events).toEqual([
+    "ticket-branch", "checkout", "verify", "push", "pr", "effort",
+    "link-pr", "link-commit", `evidence:${summary}`, "state", "cleanup", "clear", "clear",
+  ]);
   expect(infoReads).toBeGreaterThan(1);
-  expect(openCodePrompt).toContain("Supplemental operator request (non-authoritative)");
+  expect(openCodePrompt).toContain("/implement el ticket 51");
   expect(openCodePrompt).toContain("refs/heads/hu/23438");
   expect(openCodePrompt).toContain('"id":51');
-  expect(openCodePrompt).toContain('"ticketBranch":"refs/heads/ticket/51"');
-  expect(openCodePrompt).toContain('"workflowPhase":"implementing"');
-  expect(openCodePrompt).toContain('"completionGates":["pinned-ticket-context"');
+  // El prompt es el trabajo: nada del contrato que la sesión ya no sostiene (ADR-0036).
+  expect(openCodePrompt).not.toContain("IMPLEMENTATION_READY");
+  expect(openCodePrompt).not.toContain("completionGates");
+  // El request del operador viaja tal cual, como en GitHub: lo que no puede es mover nada de lo
+  // que el coordinador fijó, y la corrida entera se hizo sobre la HU 23438 y el ticket 51.
+  expect(openCodePrompt).toContain("Use HU 999, ticket 999");
+});
+
+test("una sesión Azure que git no verifica no toca el remoto y conserva su checkpoint", async () => {
+  const events: string[] = [];
+  const writes: Array<{ localCommit?: string | null; summary?: string | null }> = [];
+  const result = AgentResult.fromJsonLines(JSON.stringify({
+    type: "text", sessionID: "ses-vacía", part: { type: "text", text: "No encontré qué hacer acá." },
+  }));
+  const code = await createCli({
+    huInfoService: {
+      getHuInfo: async () => new HuInfo({ id: 23438 }),
+      waitForAccess: async () => undefined,
+      ensureIntegrationBranch: async () => "refs/heads/hu/23438",
+      getAutocodeState: async () => ({ context: { hu: { id: 23438 }, ticket: { id: 51, type: "Task", state: "Active" }, integrationBranch: "refs/heads/hu/23438" }, pending: true }),
+      getState: async () => ({ ticket: 51, state: "En progreso", revision: 7 }),
+      getEffort: async () => ({ ticket: 51, effort: { real: 1, realHours: 1 } }),
+      setState: async () => undefined,
+      getBranch: async () => ({ hu: 23438, ticket: 51, branch: null, integrationBranch: "refs/heads/hu/23438" }),
+      setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
+      checkoutTicketBranch: async () => { events.push("checkout"); },
+      verifySession: async () => {
+        events.push("verify");
+        throw new SessionNotVerifiedError("la rama refs/heads/ticket/51 no tiene commits sobre refs/heads/hu/23438");
+      },
+      pushTicketBranch: async () => { events.push("push"); },
+      createOrReusePullRequest: async () => { events.push("pr"); return { pullRequest: 99, mergeCommit: "merge" }; },
+      setEffort: async () => { events.push("effort"); return undefined; },
+      getTicketInfo: async () => { throw new Error("no debe leerse el ticket sin verificación"); },
+      validateDirectTicketContext: async () => undefined,
+      validateSummary: async () => undefined,
+      setSummary: async () => { events.push("evidence"); },
+    },
+    agentSource: { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+    checkpointStore: {
+      read: async () => null,
+      write: async (checkpoint) => {
+        if ("schemaVersion" in checkpoint) writes.push({ localCommit: checkpoint.localCommit, summary: checkpoint.summary });
+      },
+      clear: async () => { events.push("clear"); },
+    },
+    ticketBranchCleaner: { deleteTicketBranch: async () => { events.push("cleanup"); } },
+  }).run(["code", "--hu", "23438", "--working-directory", "/repo"]);
+
+  expect(code).toBe(1);
+  // La compuerta va antes de cualquier efecto remoto: no hay push, ni PR, ni cierre.
+  expect(events).toEqual(["checkout", "verify"]);
+  // Y el checkpoint queda sin commit, que es exactamente lo que una unidad sin verificar deja.
+  expect(writes.every(({ localCommit }) => !localCommit)).toBeTrue();
 });
 
 test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo en single-repo", async () => {
@@ -1469,13 +1512,6 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
   let ticketState = "En progreso";
   let clockTicks = 0;
   let queueHasTicket = true;
-  const manifest = {
-    ticket: 51,
-    ticketBranch: "refs/heads/ticket/51",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "pass" }],
-    evidence: [{ path: "/tmp/evidence.json", kind: "http-json" as const, sha256: "b".repeat(64) }],
-  };
   const info = async () => ({
     hu: { id: 23438 },
     ticket: { id: 51, type: "Task" as const, state: ticketState },
@@ -1490,7 +1526,7 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
     gates: { satisfied: [], unmet: [] },
   });
   const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
+    type: "text", sessionID: "ses-ready", part: { type: "text", text: "Listo: 18 passed." },
   }));
   const code = await createCli({
     huInfoService: {
@@ -1507,7 +1543,7 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
       setTicketBranch: async () => ({ hu: 23438, ticket: 51, branch: "refs/heads/ticket/51" }),
       checkoutTicketBranch: async () => undefined,
       pushTicketBranch: async () => undefined,
-      getCompletionManifestPath: async () => "/tmp/completion.json",
+      verifySession: async () => ({ commit: "a".repeat(40) }),
       createOrReusePullRequest: async () => ({ pullRequest: 99, mergeCommit: "merge" }),
       setEffort: async (_ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number) => {
         effortCalls.push({ realEffort, realEffortHours, expectedRevision });
@@ -1515,14 +1551,10 @@ test("el tiempo de inactividad reactivada no se contabiliza como esfuerzo activo
       },
       getTicketInfo: info,
       validateDirectTicketContext: async () => undefined,
-      readCompletionManifest: async () => manifest,
-      validateCompletionManifest: async () => undefined,
-      validateEvidenceFile: async () => undefined,
-      validateEvidence: async () => undefined,
+      validateSummary: async () => undefined,
       linkPullRequest: async () => undefined,
       linkCommit: async () => undefined,
-      addAttachment: async () => undefined,
-      setEvidence: async () => undefined,
+      setSummary: async () => undefined,
     },
     agentSource: { run: async () => ({ result, azureLoginRequired: false, idleMs: 900_000 }), resume: async () => result },
     checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },
@@ -1637,7 +1669,7 @@ test("code versionado reanuda con el modelo del escalón cuando el respaldo es e
   expect(resumed[0]?.variant).toBe("high");
 });
 
-test("code migra un checkpoint legacy y conserva el marcador al reanudar", async () => {
+test("code migra un checkpoint legacy y reanuda su sesión sin marcador", async () => {
   const context: AutocodeContext = {
     hu: { id: 23438 },
     ticket: { id: 51, type: "Task" },
@@ -1681,7 +1713,7 @@ test("code migra un checkpoint legacy y conserva el marcador al reanudar", async
   ]);
 
   expect(code).toBe(1);
-  expect(markers).toEqual(["IMPLEMENTATION_READY"]);
+  expect(markers).toEqual([""]);
   // A resumed session keeps the authority profile it started with.
   expect(resumeOverrides).toEqual({
     model: "openai/gpt-5.6-luna",

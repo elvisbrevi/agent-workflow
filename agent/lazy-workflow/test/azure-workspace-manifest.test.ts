@@ -92,17 +92,10 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
     const pathA = await seedRepo(root, repoA, remoteUrlA);
     let state = "En progreso";
     let canonical: number | null = null;
-    let attached = false;
     let evidence = false;
     let merged = false;
     let queueHasTicket = true;
-    const manifest = {
-      ticket,
-      ticketBranch,
-      commit: "a".repeat(40),
-      validation: [{ command: "bun test", result: "pass" }],
-      evidence: [{ path: "/tmp/evidence.json", kind: "http-json" as const, sha256: "b".repeat(64) }],
-    };
+    const summary = "Entregado: 18 passed.";
     const info = async () => ({
       hu: { id: hu },
       ticket: { id: ticket, type: "Task" as const, state },
@@ -112,21 +105,20 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
       pullRequests: [],
       canonicalPullRequest: canonical,
       mergeCommit: merged ? "merge" : null,
-      attachments: attached ? [{ kind: "AttachedFile" as const, evidenceKind: "http-json" as const, digest: manifest.evidence[0]!.sha256 }] : [],
-      completionEvidence: evidence ? "evidence" : null,
+      attachments: [],
+      completionEvidence: evidence ? summary : null,
       gates: {
         satisfied: [],
         unmet: state === "Done" ? [] : [
           COMPLETION_GATE.ticketState,
           ...(evidence ? [] : [COMPLETION_GATE.completionEvidence]),
-          ...(attached ? [] : [COMPLETION_GATE.attachedCapture]),
           ...(canonical === null ? [COMPLETION_GATE.completedHuPullRequest, COMPLETION_GATE.nativePullRequestAssociation] : []),
           ...(merged ? [] : [COMPLETION_GATE.commitUrl, COMPLETION_GATE.mergeCommitArtifact]),
         ] as CompletionGate[],
       },
     });
     const result = AgentResult.fromJsonLines(JSON.stringify({
-      type: "text", sessionID: "ses-ready", part: { type: "text", text: "IMPLEMENTATION_READY" },
+      type: "text", sessionID: "ses-ready", part: { type: "text", text: summary },
     }));
     const cli = createCli({
       huInfoService: {
@@ -143,19 +135,15 @@ test("la entrega Azure de un ticket single-repo se completa sin escribir manifes
         setTicketBranch: async () => ({ hu, ticket, branch: ticketBranch }),
         checkoutTicketBranch: async () => undefined,
         pushTicketBranch: async () => undefined,
-        getCompletionManifestPath: async () => join(pathA, "lazy-workflow/completion-manifest.json"),
+        verifySession: async () => ({ commit: "a".repeat(40) }),
         createOrReusePullRequest: async () => ({ pullRequest: 99, mergeCommit: "merge" }),
         setEffort: async () => undefined,
         getTicketInfo: info,
         validateDirectTicketContext: async () => undefined,
-        readCompletionManifest: async () => manifest,
-        validateCompletionManifest: async () => undefined,
-        validateEvidenceFile: async () => undefined,
-        validateEvidence: async () => undefined,
+        validateSummary: async () => undefined,
         linkPullRequest: async () => { canonical = 99; },
         linkCommit: async () => { merged = true; },
-        addAttachment: async () => { attached = true; },
-        setEvidence: async () => { evidence = true; },
+        setSummary: async () => { evidence = true; },
       } as unknown as AzureBoundary,
       agentSource: { run: async () => ({ result, azureLoginRequired: false }) as never, resume: async () => result as never },
       checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => undefined },

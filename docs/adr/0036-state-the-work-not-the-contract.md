@@ -10,6 +10,14 @@ instruction, no evidence specification, and no prose restating what the
 authority profile already denies. The GitHub delivery prompt went from 4926
 characters of fixed text to 231.
 
+The Azure delivery prompt is the same three lines, preceded by the ticket. The ticket
+travels whole rather than as its number, which is the one asymmetry with GitHub and the
+reason for it: a delivery session has `gh` and can read an issue itself, but it has no
+`az`, so the coordinator's own read is the only way the session learns what was asked.
+What went with the rest of the fixed text is what the manifest and the evidence system
+had put there — the manifest invocation, the evidence specification, the workflow phase,
+the completion gates and the marker — none of which the session decides.
+
 Everything removed had the same shape: a rule the coordinator could enforce,
 written instead as a request the model was asked to honour. The manifest
 described a file the coordinator could compute; the evidence specification

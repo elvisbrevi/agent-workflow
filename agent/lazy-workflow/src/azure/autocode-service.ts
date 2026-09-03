@@ -112,7 +112,6 @@ export const COMPLETION_GATE = {
   realEffort: "real-effort",
   realEffortHours: "real-effort-hours",
   commitUrl: "commit-url",
-  attachedCapture: "attached-capture",
   huIntegrationBranch: "hu-integration-branch",
   completedHuPullRequest: "completed-hu-targeted-pr",
   nativePullRequestAssociation: "native-pr-association",
@@ -186,6 +185,9 @@ export interface AutocodeAzureService {
   linkCommit(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   addAttachment(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
   setEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown>;
+  /** La completion-evidence de una entrega de repositorio único: el resumen de la sesión (ADR-0037). */
+  validateSummary(ticket: number, summary: string): Promise<void>;
+  setSummary(ticket: number, summary: string): Promise<unknown>;
   waitForAccess(hu: number): Promise<void>;
   publishInfrastructureFindings(hu: number, specification: { title: string; body: string }, tickets: Array<{ title: string; body: string }>): Promise<InfrastructurePublication>;
 }
@@ -513,6 +515,14 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   setEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown> {
     return this.ticketInfoService.setEvidence(ticket, filePath, report);
+  }
+
+  validateSummary(ticket: number, summary: string): Promise<void> {
+    return this.ticketInfoService.validateSummary(ticket, summary);
+  }
+
+  setSummary(ticket: number, summary: string): Promise<unknown> {
+    return this.ticketInfoService.setSummary(ticket, summary);
   }
 
   async getIntegrationBranchInfo(hu: number): Promise<IntegrationBranchInfo> {
@@ -1375,13 +1385,6 @@ export class AzureAutocodeService implements AutocodeAzureService {
     if (!positiveNumberField(item, "Custom.EsfuerzoReal")) unmetGates.push(COMPLETION_GATE.realEffort);
     if (!positiveNumberField(item, "Custom.EsfuerzoRealHH")) unmetGates.push(COMPLETION_GATE.realEffortHours);
     if (!field(item, "Custom.URLCommit")?.trim()) unmetGates.push(COMPLETION_GATE.commitUrl);
-    if (!(item.relations ?? []).some((relation) =>
-      relation.rel === "AttachedFile"
-      && ["http-json", "screen", "command-output"].includes(relation.attributes?.comment ?? "")
-      && /^[0-9a-f]{64}$/i.test(relation.attributes?.digest ?? "")
-    )) {
-      unmetGates.push(COMPLETION_GATE.attachedCapture);
-    }
     if (integrationBranchFrom(parent) !== context.integrationBranch) {
       unmetGates.push(COMPLETION_GATE.huIntegrationBranch);
     }

@@ -391,7 +391,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       requiresArg: true,
       describe: "Evidencia del manifest; repetible. Azure: <kind>:<ruta>. GitHub: ruta dentro del repositorio.",
     })
-    .option("summary", stringOption("--summary", "Resumen de la entrega para el manifest GitHub."))
+    .option("summary", stringOption("--summary", "Resumen de la entrega, tal como lo dejó la sesión."))
     .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
     .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
     .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket."))
@@ -777,7 +777,7 @@ const COMMAND_FORMS = [
   "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
   "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
   "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
-  "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --manifest <path>",
+  "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto>",
   "  lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <titulo> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<valor>]",
   "  lazy-workflow ticket-link-parent --parent <id> --child <id>",
   "  lazy-workflow ticket-link-predecessor --blocker <id> --blocked <id>",

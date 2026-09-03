@@ -1321,8 +1321,7 @@ test("ticket field mutation commands validate their explicit contracts", async (
   expect(output).toHaveLength(3);
 });
 
-test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and working directory", async () => {
-  const calls: unknown[][] = [];
+test("ticket-completion-apply cierra un ticket ya completo sin repetir ningún efecto", async () => {
   const output: string[] = [];
   const originalLog = console.log;
   const info = {
@@ -1335,29 +1334,18 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
     canonicalPullRequest: 99,
     mergeCommit: "merge",
     attachments: [],
-    completionEvidence: "evidence",
+    completionEvidence: "lo que la sesión dijo",
     gates: { satisfied: [], unmet: [] },
-  };
-  const manifest = {
-    ticket: 51,
-    ticketBranch: "refs/heads/ticket/51",
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "pass" }],
-    evidence: [],
   };
   const service = {
     getHuInfo: async () => { throw new Error("must not use generic HU read"); },
     waitForAccess: async () => undefined,
     getTicketInfo: async () => info,
     validateDirectTicketContext: async () => undefined,
-    readCompletionManifest: async (path: string) => { calls.push(["manifest", path]); return manifest; },
-    validateCompletionManifest: async (...args: [unknown, unknown, number, string]) => { calls.push(["validate", ...args.slice(2)]); },
-    validateEvidenceFile: async () => undefined,
-    validateEvidence: async () => undefined,
+    validateSummary: async () => undefined,
     linkPullRequest: async () => { throw new Error("must not link an existing PR"); },
     linkCommit: async () => { throw new Error("must not link an existing commit"); },
-    addAttachment: async () => { throw new Error("must not add an existing attachment"); },
-    setEvidence: async () => { throw new Error("must not set existing evidence"); },
+    setSummary: async () => { throw new Error("must not set existing evidence"); },
     setState: async () => { throw new Error("must not set an existing state"); },
   };
 
@@ -1368,164 +1356,79 @@ test("ticket-completion-apply passes the explicit HU, ticket, PR, manifest, and 
       "--hu", "23438",
       "--ticket", "51",
       "--pr", "99",
-      "--manifest", "/tmp/completion.json",
+      "--summary", "lo que la sesión dijo",
       "--working-directory", "/repo",
     ])).toBe(0);
   } finally {
     console.log = originalLog;
   }
 
-  expect(calls).toEqual([
-    ["manifest", "/tmp/completion.json"],
-    ["validate", 51, "/repo"],
-  ]);
   expect(JSON.parse(output[0]!)).toEqual({
     hu: 23438,
     ticket: 51,
     pullRequest: 99,
-    manifest: "/tmp/completion.json",
     state: "Done",
     gates: { satisfied: [], unmet: [] },
   });
 });
 
-test("completion apply reconciles missing effects before moving the ticket to Done", async () => {
-  // La captura se empareja por nombre de archivo dentro de su directorio, así que la evidencia
-  // HTTP y la pantalla que nombra viven juntas, como el prompt le pide a la sesión.
-  const evidenceRoot = mkdtempSync(join(tmpdir(), "lazy-workflow-capture-"));
-  const evidencePath = join(evidenceRoot, "pago-endpoint.json");
-  const screenshotPath = join(evidenceRoot, SCREENSHOT_NAME);
-  const manifestPath = `/tmp/lazy-workflow-manifest-${crypto.randomUUID()}.json`;
-  const commit = "a".repeat(40);
-  const evidence = HTTP_CAPTURE_BODY;
-  const hex = (bytes: ArrayBuffer): string =>
-    [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const digest = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(evidence)));
-  // La captura que el http-json nombra viaja en el mismo manifest: sin ella la evidencia publica
-  // un intercambio del que nadie puede ver el navegador que lo hizo.
-  const screenshotDigest = hex(await crypto.subtle.digest("SHA-256", SCREENSHOT_BYTES));
-  await Bun.write(evidencePath, evidence);
-  await Bun.write(screenshotPath, SCREENSHOT_BYTES);
-  const manifestEvidence = [
-    { path: evidencePath, kind: "http-json", sha256: digest },
-    { path: screenshotPath, kind: "screen", sha256: screenshotDigest },
-  ];
-  await Bun.write(manifestPath, JSON.stringify({
-    ticket: 51,
-    ticketBranch: "refs/heads/ticket/51",
-    commit,
-    validation: [{ command: "bun test", result: "18 passed" }],
-    evidence: manifestEvidence,
-  }));
+test("ticket-completion-apply exige el resumen de la sesión", async () => {
+  const service = {
+    getHuInfo: async () => { throw new Error("must not touch Azure"); },
+    waitForAccess: async () => undefined,
+    getTicketInfo: async () => { throw new Error("must not touch Azure"); },
+  };
 
+  expect(await createCli({ huInfoService: service }).run([
+    "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99", "--working-directory", "/repo",
+  ])).toBe(1);
+});
+
+test("completion apply reconciles missing effects before moving the ticket to Done", async () => {
+  const summary = "Migré el endpoint y corrí la suite: 18 passed.";
   const calls: string[] = [];
   let state = "Active";
   let canonicalPullRequest: number | null = null;
   let hasCommit = false;
-  let hasAttachment = false;
   let completionEvidence: string | null = null;
-  try {
-    const base = new class extends AzureTicketInfoService {
-      constructor() {
-        super(async () => "", async (args) =>
-          args[0] === "rev-parse" ? commit : args[0] === "status" ? "" : "ticket/51\n");
-      }
 
-      override async getTicketInfo(): Promise<any> {
-        const unmet = state === "Done" ? [] : [
-          "ticket-state",
-          ...(completionEvidence ? [] : ["completion-evidence"]),
-          ...(hasCommit ? [] : ["merge-commit-artifact-link"]),
-        ];
-        return {
-          hu: { id: 23438 },
-          ticket: { id: 51, type: "Task", state },
-          branch: "refs/heads/ticket/51",
-          integrationBranch: "refs/heads/hu/23438",
-          effort: { real: 1, realHours: 1 },
-          pullRequests: [],
-          canonicalPullRequest,
-          mergeCommit: hasCommit ? "merge" : null,
-          attachments: hasAttachment ? [{ kind: "AttachedFile", evidenceKind: "http-json", digest }] : [],
-          completionEvidence,
-          gates: { satisfied: [], unmet },
-        };
-      }
+  const service = {
+    getHuInfo: async () => new HuInfo({ id: 23438 }),
+    waitForAccess: async () => undefined,
+    getTicketInfo: async () => {
+      const unmet = state === "Done" ? [] : [
+        "ticket-state",
+        ...(completionEvidence ? [] : ["completion-evidence"]),
+        ...(hasCommit ? [] : ["merge-commit-artifact-link"]),
+      ];
+      return {
+        hu: { id: 23438 },
+        ticket: { id: 51, type: "Task", state },
+        branch: "refs/heads/ticket/51",
+        integrationBranch: "refs/heads/hu/23438",
+        effort: { real: 1, realHours: 1 },
+        pullRequests: [],
+        canonicalPullRequest,
+        mergeCommit: hasCommit ? "merge" : null,
+        attachments: [],
+        completionEvidence,
+        gates: { satisfied: [], unmet },
+      } as any;
+    },
+    validateDirectTicketContext: async () => undefined,
+    validateSummary: async () => undefined,
+    linkPullRequest: async () => { calls.push("pr"); canonicalPullRequest = 99; return {}; },
+    linkCommit: async () => { calls.push("commit"); hasCommit = true; return {}; },
+    setSummary: async (_ticket: number, text: string) => { calls.push(`evidence:${text}`); completionEvidence = text; return {}; },
+    setState: async () => { calls.push("state"); state = "Done"; return {}; },
+  };
 
-      override async validateDirectTicketContext(): Promise<void> {}
-
-      override async readCompletionManifest(): Promise<any> {
-        return {
-          ticket: 51,
-          ticketBranch: "refs/heads/ticket/51",
-          commit,
-          validation: [{ command: "bun test", result: "18 passed" }],
-          evidence: manifestEvidence,
-        };
-      }
-
-      override async validateCompletionManifest(manifest: any, info: any, ticket: number, workingDirectory: string): Promise<void> {
-        return super.validateCompletionManifest(manifest, info, ticket, workingDirectory);
-      }
-
-      override async validateEvidence(): Promise<void> {}
-
-      override async linkPullRequest(): Promise<any> {
-        calls.push("pr");
-        canonicalPullRequest = 99;
-        return {};
-      }
-
-      override async linkCommit(): Promise<any> {
-        calls.push("commit");
-        hasCommit = true;
-        return {};
-      }
-
-      override async addAttachment(): Promise<any> {
-        calls.push("attachment");
-        hasAttachment = true;
-        return {};
-      }
-
-      override async setEvidence(): Promise<any> {
-        calls.push("evidence");
-        completionEvidence = evidence;
-        return {};
-      }
-
-      override async setState(): Promise<any> {
-        calls.push("state");
-        state = "Done";
-        return {};
-      }
-    }();
-    const service = {
-      getHuInfo: async () => new HuInfo({ id: 23438 }),
-      waitForAccess: async () => undefined,
-      getTicketInfo: base.getTicketInfo.bind(base),
-      validateDirectTicketContext: base.validateDirectTicketContext.bind(base),
-      readCompletionManifest: base.readCompletionManifest.bind(base),
-      validateCompletionManifest: base.validateCompletionManifest.bind(base),
-      validateEvidenceFile: base.validateEvidenceFile.bind(base),
-      validateEvidence: base.validateEvidence.bind(base),
-      linkPullRequest: base.linkPullRequest.bind(base),
-      linkCommit: base.linkCommit.bind(base),
-      addAttachment: base.addAttachment.bind(base),
-      setEvidence: base.setEvidence.bind(base),
-      setState: base.setState.bind(base),
-    };
-
-    await expect(createCli({ huInfoService: service }).run([
-      "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
-      "--manifest", manifestPath, "--working-directory", process.cwd(),
-    ])).resolves.toBe(0);
-    // Una por evidencia: la captura HTTP y la pantalla del navegador que la respalda.
-    expect(calls).toEqual(["pr", "commit", "attachment", "attachment", "evidence", "state"]);
-  } finally {
-    await unlink(manifestPath);
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  }
+  await expect(createCli({ huInfoService: service }).run([
+    "ticket-completion-apply", "--hu", "23438", "--ticket", "51", "--pr", "99",
+    "--summary", summary, "--working-directory", process.cwd(),
+  ])).resolves.toBe(0);
+  // La completion-evidence del ticket es lo último que dijo la sesión, y nada más (ADR-0037).
+  expect(calls).toEqual(["pr", "commit", `evidence:${summary}`, "state"]);
 });
 
 test("un archivo sin trackear que el agente dejó para validar no invalida el completion manifest", async () => {
@@ -1992,6 +1895,42 @@ test("completion-evidence se escribe en el campo que el proyecto define, no en e
   } finally {
     await unlink(path).catch(() => undefined);
   }
+});
+
+test("el resumen de la sesión se publica escapado y conservando sus líneas", async () => {
+  const patches: unknown[][] = [];
+  const service = completionEvidenceService({
+    definedFields: ["Custom.CompletionEvidence"],
+    onPatch: (body) => patches.push(body),
+  });
+
+  await expect(service.setSummary(51, "Migré <Pago> & corrí la suite.\n18 passed."))
+    .resolves.toMatchObject({ ticket: 51 });
+
+  const operations = patches[0] as Array<{ op: string; path: string; value?: unknown }>;
+  const written = operations.find(({ path: target }) => target === "/fields/Custom.CompletionEvidence")?.value;
+  // El campo es HTML: sin escapar, `<Pago>` desaparece; sin `<br>`, el texto se lee como una sola línea.
+  expect(written).toBe("Migré &lt;Pago&gt; &amp; corrí la suite.<br>18 passed.");
+});
+
+test("republicar el mismo resumen no es un conflicto, y otro sí lo es", async () => {
+  const summary = "Migré el endpoint y corrí la suite: 18 passed.";
+  const service = completionEvidenceService({ definedFields: ["Custom.CompletionEvidence"] });
+
+  await service.setSummary(51, summary);
+
+  // El campo guardó HTML y el resumen es texto plano: la comparación deshace el marcado, así que
+  // una entrega retomada reconoce lo suyo en vez de chocar contra ello.
+  await expect(service.setSummary(51, summary)).resolves.toMatchObject({ ticket: 51 });
+  await expect(service.validateSummary(51, summary)).resolves.toBeUndefined();
+  await expect(service.setSummary(51, "Otra cosa distinta.")).rejects.toThrow("conflicto");
+  await expect(service.validateSummary(51, "Otra cosa distinta.")).rejects.toThrow("conflicto");
+});
+
+test("un resumen vacío no puede cerrar un ticket", async () => {
+  const service = completionEvidenceService({ definedFields: ["Custom.CompletionEvidence"] });
+
+  await expect(service.setSummary(51, "   ")).rejects.toThrow("resumen de la sesión está vacío");
 });
 
 test("completion-evidence falla claro si el proyecto no define ningún campo candidato", async () => {
