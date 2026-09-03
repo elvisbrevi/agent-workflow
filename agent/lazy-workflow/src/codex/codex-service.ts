@@ -6,7 +6,7 @@
 
 import { spawnAgentProcess, type AgentProcess, type AgentSpawner } from "../coding-agent/agent-process.ts";
 import { join } from "node:path";
-import { AgentResult, type AgentTokens } from "../coding-agent/agent-result.ts";
+import { AgentResult, lastReasoning, type AgentTokens } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
   AgentExhaustionError,
@@ -254,6 +254,9 @@ function decodeStream(events: CodexEventData[]): AgentResult {
   return new AgentResult({
     sessionId,
     text: messageText(events),
+    reasoning: lastReasoning(events
+      .filter((event) => event.item?.type === "reasoning")
+      .map((event) => event.item?.text ?? "")),
     reason: finalEvent?.reason ?? finalEvent?.stop_reason ?? finalEvent?.status,
     tokens: decodeTokens(finalEvent?.usage),
   });

@@ -17,7 +17,7 @@ import {
   type AgentProcess,
   type AgentSpawner,
 } from "../coding-agent/agent-process.ts";
-import { AgentResult, type AgentTokens, type AgentToolInput } from "../coding-agent/agent-result.ts";
+import { AgentResult, lastReasoning, type AgentTokens, type AgentToolInput } from "../coding-agent/agent-result.ts";
 import { asksForAzureLogin, runsAzureLogin } from "../coding-agent/azure-login.ts";
 import {
   AgentExhaustionError,
@@ -221,6 +221,9 @@ function decodeStream(events: ClaudeCodeEventData[]): AgentResult {
 
   return new AgentResult({
     sessionId,
+    reasoning: lastReasoning(events.flatMap((event) => blocks(event)
+      .filter((block) => block.type === "thinking")
+      .map((block) => block.thinking ?? ""))),
     // The final answer is what the coordinator reads; only a stream that never
     // reached its result event falls back to the assistant messages themselves.
     text: finalEvent?.result ?? streamedText.join("\n"),

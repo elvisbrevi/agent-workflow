@@ -666,3 +666,25 @@ describe("ClaudeCodeService enrutado por el Reporter", () => {
     expect(captured.trace.some((line) => line.startsWith("Claude Code evento crudo: {"))).toBeTrue();
   });
 });
+
+/**
+ * Las últimas cadenas de pensamiento (ADR-0039): un traspaso a otro escalón las
+ * lleva tal cual, así que el resultado tiene que conservarlas en vez de
+ * mostrarlas al operador y tirarlas.
+ */
+test("el resultado conserva las últimas tres cadenas de pensamiento, en orden", async () => {
+  const thinking = (text: string) =>
+    jsonEvent({ type: "assistant", session_id: "ses_think", message: { content: [{ type: "thinking", thinking: text }] } });
+  const output = [
+    initEvent("ses_think"),
+    thinking("primera"),
+    thinking("segunda"),
+    thinking("tercera"),
+    thinking("cuarta"),
+    jsonEvent({ type: "result", subtype: "success", result: "listo", session_id: "ses_think" }),
+  ].join("\n");
+
+  const { result } = await new ClaudeCodeService(() => stubProcess(output)).run(standardOptions);
+
+  expect(result.reasoning).toEqual(["segunda", "tercera", "cuarta"]);
+});
