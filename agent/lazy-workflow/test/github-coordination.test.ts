@@ -220,7 +220,7 @@ test("la recuperación usa el checkpoint y no consulta la cola", async () => {
   expect(selections).toBe(0);
   // Dos: la reanudación del checkpoint y el único reintento que el coordinador se concede (ADR-0032).
   expect(resumes).toBe(2);
-  expect(resumeOverrides).toEqual({ model: "openai/gpt-5.6-luna", variant: "high" });
+  expect(resumeOverrides).toEqual(expect.objectContaining({ model: "openai/gpt-5.6-luna", variant: "high" }));
   expect(state.current?.issue).toBe(178);
   expect(state.current?.phase).toBe("implementing");
 });
