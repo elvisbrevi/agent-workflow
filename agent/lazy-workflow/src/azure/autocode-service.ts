@@ -9,7 +9,11 @@ import {
   type IntegratedPullRequest,
   type AzurePullRequestTarget,
 } from "./ticket-info-service.ts";
-import type { InfrastructurePublication } from "../sag/infrastructure-service.ts";
+
+interface InfrastructurePublication {
+  specification: number;
+  tickets: number[];
+}
 
 const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";

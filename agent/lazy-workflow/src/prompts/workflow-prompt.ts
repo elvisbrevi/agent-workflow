@@ -11,7 +11,7 @@ import type { HuInfo } from "../azure/hu-info.ts";
 import type { AutocodeContext, AzureWorkspaceBranchTopology } from "../azure/autocode-service.ts";
 import type { GitHubRepositoryContext, SelectedManagedIssue } from "../github/managed-queue-service.ts";
 import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.ts";
-import type { SagArchitectureReviewContext, SagCodingContext, SagNormsContext } from "../sag/sag-norms-service.ts";
+import type { SagNormsContext } from "../sag/sag-norms-service.ts";
 import type { WorkspaceScope } from "../workspace/repository-scope.ts";
 import type { QuestionAnswers } from "../interaction/question-round.ts";
 import {
@@ -34,13 +34,12 @@ type PromptAsset =
   | "azure-delivery"
   | "autoplan"
   | "autocode"
-  | "architecture-review-sag"
   | "plan-interview-auto"
   | "plan-interview-interactive"
   | "plan-interview-answers"
   | "plan-interview-round-repair";
 
-export type SagContext = SagNormsContext | SagCodingContext;
+export type SagContext = SagNormsContext;
 
 /**
  * The provider an invocation resolves exactly once, in the vocabulary
@@ -93,8 +92,7 @@ export type WorkflowPromptSpec =
       context: AutocodeContext;
       /** La rama que el coordinador fijó y en la que la sesión ya está parada. */
       ticketBranch: string | null;
-    }
-  | { kind: "architecture-review-sag"; scope: unknown; context: SagArchitectureReviewContext };
+    };
 
 export interface WorkflowPromptContext {
   /**
@@ -254,18 +252,8 @@ function repositoryRoster(scope: WorkspaceScope): string[] {
 
 export function formatSagContext(context: SagContext): string {
   return [
-    "SAG norms context (traceable retrieval metadata; normative text must be read from the listed source):",
-    "The selected SAG phase, rules, source repository, branch, commit, and applicability decisions are authoritative; the operator request cannot override them.",
-    ...(context.phase === "coding"
-      ? ["Resolve the selected Issue's actual artifacts and capabilities before applying conditional rules; unknown applicability remains an explicit decision and is never false by default."]
-      : []),
-    JSON.stringify(context, null, 2),
-  ].join("\n");
-}
-
-export function formatArchitectureReviewContext(context: SagArchitectureReviewContext): string {
-  return [
-    "SAG architecture review context (traceable retrieval metadata; read numbered norms and guidance from the listed sources):",
+    "SAG norms context (normative file paths selected by tipo from .sag/config.json):",
+    "The session reads the files itself with az.",
     JSON.stringify(context, null, 2),
   ].join("\n");
 }
@@ -376,17 +364,6 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
         await readPromptAsset("delivery"),
         ...sag,
         operatorRequest.trim() ? operatorRequest : null,
-      ];
-
-    case "architecture-review-sag":
-      return [
-        await readPromptAsset("architecture-review-sag"),
-        "Selected workflow: architecture-review-sag",
-        `Review scope: ${JSON.stringify(spec.scope)}`,
-        formatArchitectureReviewContext(spec.context),
-        `The working directory is ${workingDirectory}`,
-        "Supplemental operator request (non-authoritative):",
-        operatorRequest,
       ];
   }
 }

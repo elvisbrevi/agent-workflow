@@ -1,8 +1,8 @@
 /**
  * El único sitio que conoce el orden de las fronteras del `LazyWorkflowCli`.
  *
- * El CLI recibe sus 23 fronteras por posición, así que un test que solo quiere
- * sustituir el coordinador de la cola tenía que contar las trece anteriores y
+ * El CLI recibe sus fronteras por posición, así que un test que solo quiere
+ * sustituir el coordinador de la cola tenía que contar las anteriores y
  * escribirlas como `undefined`. Ese conteo no dice nada sobre lo que el test
  * verifica y se rehace en cada sitio de construcción, de modo que agregar una
  * frontera nueva obligaba a revisarlos todos.
@@ -30,21 +30,18 @@ export interface CliBoundaries {
   clock?: Boundary[5];
   sagNormsService?: Boundary[6];
   git?: Boundary[7];
-  githubTracker?: Boundary[8];
-  deploymentService?: Boundary[9];
-  infrastructureService?: Boundary[10];
-  cliParser?: Boundary[11];
-  createReporterFn?: Boundary[12];
-  githubManagedQueue?: Boundary[13];
-  githubCheckpointStore?: Boundary[14];
-  githubRepositoryLock?: Boundary[15];
-  githubDelivery?: Boundary[16];
-  githubParentReconciliation?: Boundary[17];
-  azureWorkspaceCheckpoint?: Boundary[18];
-  deterministicToolServices?: Boundary[19];
-  createQuestionChannelFn?: Boundary[20];
-  processSignals?: Boundary[21];
-  systemShutdown?: Boundary[22];
+  cliParser?: Boundary[8];
+  createReporterFn?: Boundary[9];
+  githubManagedQueue?: Boundary[10];
+  githubCheckpointStore?: Boundary[11];
+  githubRepositoryLock?: Boundary[12];
+  githubDelivery?: Boundary[13];
+  githubParentReconciliation?: Boundary[14];
+  azureWorkspaceCheckpoint?: Boundary[15];
+  deterministicToolServices?: Boundary[16];
+  createQuestionChannelFn?: Boundary[17];
+  processSignals?: Boundary[18];
+  systemShutdown?: Boundary[19];
 }
 
 /**
@@ -69,9 +66,6 @@ export function createCli(boundaries: CliBoundaries = {}): LazyWorkflowCli {
     boundaries.clock,
     boundaries.sagNormsService,
     boundaries.git ?? inertGit,
-    boundaries.githubTracker,
-    boundaries.deploymentService,
-    boundaries.infrastructureService,
     boundaries.cliParser,
     boundaries.createReporterFn,
     boundaries.githubManagedQueue,
