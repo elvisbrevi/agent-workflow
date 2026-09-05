@@ -28,6 +28,10 @@ type PromptAsset =
   | "github-plan"
   /** Las tres líneas que toda entrega dice, sea GitHub o Azure (ADR-0036). */
   | "delivery"
+  /** La línea que nombra la unidad de trabajo GitHub (issue). */
+  | "github-delivery"
+  /** La línea que nombra la unidad de trabajo Azure (ticket). */
+  | "azure-delivery"
   | "autoplan"
   | "autocode"
   | "architecture-review-sag"
@@ -149,8 +153,11 @@ async function readAsset(name: PromptAsset): Promise<string> {
 }
 
 /** Load a prompt asset and resolve its contract placeholders. */
-export async function readPromptAsset(name: PromptAsset): Promise<string> {
-  return renderContract(await readAsset(name));
+export async function readPromptAsset(
+  name: PromptAsset,
+  runtimeBindings?: Record<string, string>,
+): Promise<string> {
+  return renderContract(await readAsset(name), runtimeBindings);
 }
 
 /**
@@ -309,7 +316,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // número porque la sesión tiene `gh` y lee el cuerpo fresco, no la foto que el coordinador
       // sacó antes de abrirla.
       return [
-        `/implement the issue #${spec.issue.number} usando /tdd /caveman /ponytail y /code-review.`,
+        await readPromptAsset("github-delivery", { UNIT_ID: `#${spec.issue.number}` }),
         await readPromptAsset("delivery"),
         ...sag,
         operatorRequest.trim() ? operatorRequest : null,
@@ -348,7 +355,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // en lugar de un solo directorio (ADR-0036). El ticket viaja entero por la misma razón que
       // en el repositorio único — la sesión no tiene `az`.
       return [
-        `/implement el ticket ${spec.ticket} usando /tdd /caveman /ponytail y /code-review.`,
+        await readPromptAsset("azure-delivery", { UNIT_ID: String(spec.ticket) }),
         JSON.stringify(spec.context),
         ...(spec.description ? ["Descripción del ticket:", spec.description] : []),
         `Rama de integración: ${spec.topology.integrationBranch}`,
@@ -364,7 +371,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // El trabajo, y nada del contrato (ADR-0036). El ticket viaja entero porque la sesión no
       // tiene `az`: es la única forma de que sepa qué se le pidió, y el coordinador ya lo leyó.
       return [
-        `/implement el ticket ${spec.context.ticket.id} usando /tdd /caveman /ponytail y /code-review.`,
+        await readPromptAsset("azure-delivery", { UNIT_ID: String(spec.context.ticket.id) }),
         JSON.stringify(spec.context),
         await readPromptAsset("delivery"),
         ...sag,

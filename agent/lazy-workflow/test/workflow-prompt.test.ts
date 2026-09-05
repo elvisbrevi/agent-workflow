@@ -66,6 +66,14 @@ test("renderContract falla cerrado ante un placeholder desconocido", () => {
   expect(() => renderContract("{{NO_EXISTE}}")).toThrow(UnknownContractPlaceholderError);
 });
 
+test("renderContract resuelve bindings de runtime", () => {
+  expect(renderContract("trabajo {{UNIT_ID}}", { UNIT_ID: "#42" })).toBe("trabajo #42");
+});
+
+test("renderContract falla cerrado ante un binding de runtime desconocido", () => {
+  expect(() => renderContract("{{DESCONOCIDO}}", { UNIT_ID: "#42" })).toThrow(UnknownContractPlaceholderError);
+});
+
 test("ningun asset de prompt fija un literal del contrato", async () => {
   const directory = new URL("../prompts/", import.meta.url);
   const assets = (await readdir(directory)).filter((name) => name.endsWith(".md"));

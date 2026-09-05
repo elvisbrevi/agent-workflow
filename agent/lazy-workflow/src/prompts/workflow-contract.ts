@@ -62,10 +62,22 @@ export class UnknownContractPlaceholderError extends Error {
   }
 }
 
-/** Resolve every `{{PLACEHOLDER}}` in a prompt asset. Unknown names fail closed. */
-export function renderContract(asset: string): string {
+/**
+ * Resolve every `{{PLACEHOLDER}}` in a prompt asset. Unknown names fail closed.
+ *
+ * `runtimeBindings` provides values injected at render time (e.g. the unit
+ * identifier for delivery prompts).  They are merged with the contract values
+ * and subject to the same fail-closed check.
+ */
+export function renderContract(
+  asset: string,
+  runtimeBindings?: Record<string, string>,
+): string {
+  const all: Record<string, string> = runtimeBindings
+    ? { ...CONTRACT_VALUES, ...runtimeBindings }
+    : CONTRACT_VALUES;
   return asset.replace(PLACEHOLDER, (_match, name: string) => {
-    const value = CONTRACT_VALUES[name];
+    const value = all[name];
     if (value === undefined) throw new UnknownContractPlaceholderError(name);
     return value;
   });
