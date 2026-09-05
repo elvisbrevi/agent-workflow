@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { basename } from "node:path";
-import { parseCompletionManifest, type EvidenceKind } from "../src/azure/completion-manifest.ts";
 import { type AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import { createCli } from "./_helpers/create-cli.ts";
 import { createReporter, type ReporterOptions, type ReporterStream } from "../src/output/reporter.ts";
@@ -54,18 +53,6 @@ test("deliverAzureWorkspaceTicket associates every changed-repository PR and mer
   expect(harness.huStateCalls).toHaveLength(1);
   expect(harness.huStateCalls[0]).toEqual({ desiredState: "Desarrollo Terminado", expectedState: "En Desarrollo" });
 });
-
-
-/** Un manifest válido con la evidencia que se le declare, en el orden en que se le declare. */
-const manifestWith = (evidence: Array<{ path: string; kind: EvidenceKind; sha256: string }>) =>
-  parseCompletionManifest({
-    ticket,
-    ticketBranch,
-    commit: "a".repeat(40),
-    validation: [{ command: "bun test", result: "passed" }],
-    evidence,
-  });
-
 
 
 test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket antes de la sesión", async () => {
@@ -360,25 +347,10 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
     }),
     validateDirectTicketContext: async () => undefined,
     getCompletionInfo: async () => ({ hu, ticket, gates: { satisfied: [], unmet: [] } }),
-    readCompletionManifest: async () => ({
-      ticket,
-      ticketBranch,
-      commit: "a".repeat(40),
-      validation: [{ command: "bun test", result: "passed" }],
-      evidence: [{
-        path: "/tmp/evidence.json",
-        kind: "command-output",
-        sha256: "a".repeat(64),
-      }],
-    }),
-    validateCompletionManifest: async () => undefined,
-    getCompletionManifestPath: async (workingDirectory: string) => join(workingDirectory, "lazy-workflow/completion-manifest.json"),
     createOrReusePullRequest: async () => {
       events.push("single-repo-pr");
       return { pullRequest: 1, mergeCommit: "merge-1" };
     },
-    validateEvidenceFile: async () => undefined,
-    validateEvidence: async () => undefined,
     getBranch: async () => ({ hu, ticket, branch: ticketBranch, integrationBranch }),
     getTicket: async (id: number) => ({ id, type: "Task" as const }),
     getDescription: async () => ({ ticket, description: null }),
@@ -388,15 +360,11 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
       throw new Error(`unexpected state for ${id}`);
     },
     getEffort: async () => ({ ticket, effort: { estimated: 1, real: 1, realHours: 1 } }),
-    getAttachments: async () => ({ ticket, attachments: [] }),
-    getEvidence: async () => ({ ticket, completionEvidence: null }),
     setDescription: async () => undefined,
     setState: async () => ({ ticket, state: "Done", revision: 5 }),
     setEffort: async () => undefined,
     linkPullRequest: async () => ({ hu, ticket, pullRequest: 1, mergeCommit: "merge-1" }),
     linkCommit: async () => ({ ticket, pullRequest: 1, mergeCommit: "merge-1", artifactLink: "vstfs:///Git/Commit/x" }),
-    addAttachment: async () => ({ ticket, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
-    setEvidence: async () => undefined,
     setHuState: async () => ({ hu: 1, state: "Desarrollo Terminado", revision: 8 }),
     getHuChildren: async () => [],
     hasOpenDeliveryChildren: async () => false,
@@ -414,7 +382,6 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
     agentSource: {
       run: async () => {
         events.push("opencode:run");
-        await Bun.write(join(pathA, "lazy-workflow/completion-manifest.json"), "{}");
         return {
           result: { text: "IMPLEMENTATION_READY", sessionId: "ses", failed: false } as never,
           azureLoginRequired: false,

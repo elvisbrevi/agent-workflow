@@ -14,8 +14,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import { findTextEvidence } from "../azure/ticket-info-service.ts";
-import type { CompletionEvidenceReport, CompletionManifest, CompletionManifestEvidence, CompletionManifestInput, TicketInfo, TicketAttachment, EvidenceKind } from "../azure/ticket-info-service.ts";
+import type { TicketInfo } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
@@ -136,15 +135,9 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   verifyTicketCompletion(context: AutocodeContext): Promise<TicketCompletionVerification | null>;
   getCompletedTicketBranch(context: AutocodeContext): Promise<string | null>;
   getTicketInfo?(hu: number, ticket: number): Promise<TicketInfo>;
-  getCompletionManifestPath?(workingDirectory: string): Promise<string>;
   createOrReusePullRequest?(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<{ pullRequest: number; mergeCommit: string }>;
   validateDirectTicketContext?(hu: number, ticket: number): Promise<void>;
   getCompletionInfo?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
-  readCompletionManifest?(path: string, workingDirectory: string): Promise<CompletionManifest>;
-  writeCompletionManifest?(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
-  validateCompletionManifest?(manifest: CompletionManifest, info: TicketInfo, ticket: number, workingDirectory: string): Promise<void>;
-  validateEvidenceFile?(filePath: string, kind: EvidenceKind): Promise<void>;
-  validateEvidence?(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void>;
   prepareWorkspaceBranches?(options: { hu: number; repositories: readonly AzureWorkspaceRepositoryInput[]; baseBranch?: string | null; integrationBranch?: string }): Promise<AzureWorkspaceBranchTopology>;
   prepareWorkspaceTicketBranches?(options: { hu: number; ticket: number; integrationBranch: string; repositories: readonly AzureWorkspaceRepositoryInput[]; ticketBranch?: string; ticketBranchAnchor?: string | null }): Promise<AzureWorkspaceBranchTopology>;
   linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, candidates: readonly string[]): Promise<unknown>;
@@ -154,8 +147,6 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   getState?(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
   getHuState?(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }>;
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
-  getAttachments?(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }>;
-  getEvidence?(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }>;
   setDescription?(ticket: number, filePath: string): Promise<unknown>;
   setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
   setEffort?(ticket: number, realEffort: number, realEffortHours: number, expectedRevision: number): Promise<unknown>;
@@ -164,8 +155,6 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   hasOpenDeliveryChildren?(hu: number): Promise<boolean>;
   linkPullRequest?(hu: number, ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
   linkCommit?(ticket: number, pullRequest: number, participant?: AzurePullRequestTarget): Promise<unknown>;
-  addAttachment?(ticket: number, filePath: string, kind: EvidenceKind): Promise<unknown>;
-  setEvidence?(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<unknown>;
   validateSummary?(ticket: number, summary: string): Promise<void>;
   setSummary?(ticket: number, summary: string): Promise<unknown>;
   verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
@@ -520,8 +509,6 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-effort-info",
   "ticket-branch-info",
   "ticket-pr-info",
-  "ticket-attachment-info",
-  "ticket-evidence-info",
   "ticket-completion-info",
 ]);
 const INFRASTRUCTURE_FLAGS = new Set([
@@ -1173,37 +1160,24 @@ export class LazyWorkflowCli {
       }
     }
 
-    if (command === "ticket-pr-link" || command === "ticket-commit-link" || command === "ticket-attachment-add" || command === "ticket-evidence-set") {
+    if (command === "ticket-pr-link" || command === "ticket-commit-link") {
       if (command === "ticket-pr-link" && !isPositiveId(options.hu)) {
         return azureArgumentError(options, "ticket-pr-link requiere --hu <id>");
       }
       if (!isPositiveId(options.ticket)) {
         return azureArgumentError(options, `${command} requiere --ticket <id> con un entero positivo`);
       }
-      if ((command === "ticket-pr-link" || command === "ticket-commit-link")
-        && !isPositiveId(options.pullRequest)) {
+      if (!isPositiveId(options.pullRequest)) {
         return azureArgumentError(options, `${command} requiere --pr <id> con un entero positivo`);
-      }
-      if ((command === "ticket-attachment-add" || command === "ticket-evidence-set") && !options.file?.trim()) {
-        return azureArgumentError(options, `${command} requiere --file <path>`);
-      }
-      if (command === "ticket-attachment-add" && !options.evidenceKind) {
-        return azureArgumentError(options, "ticket-attachment-add requiere --kind <http-json|screen|command-output>");
       }
       try {
         let result: unknown;
         if (command === "ticket-pr-link") {
           if (!this.huInfoService.linkPullRequest) throw new Error("El servicio Azure no soporta ticket-pr-link");
           result = await this.huInfoService.linkPullRequest(options.hu!, options.ticket, options.pullRequest!);
-        } else if (command === "ticket-commit-link") {
+        } else {
           if (!this.huInfoService.linkCommit) throw new Error("El servicio Azure no soporta ticket-commit-link");
           result = await this.huInfoService.linkCommit(options.ticket, options.pullRequest!);
-        } else if (command === "ticket-attachment-add") {
-          if (!this.huInfoService.addAttachment) throw new Error("El servicio Azure no soporta ticket-attachment-add");
-          result = await this.huInfoService.addAttachment(options.ticket, options.file!, options.evidenceKind!);
-        } else {
-          if (!this.huInfoService.setEvidence) throw new Error("El servicio Azure no soporta ticket-evidence-set");
-          result = await this.huInfoService.setEvidence(options.ticket, options.file!);
         }
         console.log(JSON.stringify(result, null, 2));
         return 0;
@@ -1687,8 +1661,7 @@ export class LazyWorkflowCli {
       || !this.huInfoService.setHuState || !this.huInfoService.hasOpenDeliveryChildren
       || !this.huInfoService.getHuState
       || !this.huInfoService.getAutocodeContextForTicket || !this.huInfoService.getTicket
-      || !this.huInfoService.getDescription || !this.huInfoService.getAttachments
-      || !this.huInfoService.getEvidence || !this.huInfoService.validateDirectTicketContext
+      || !this.huInfoService.getDescription || !this.huInfoService.validateDirectTicketContext
       || !this.huInfoService.linkTicketBranch) {
       reportAzureFailure("delivery-failure", "preparing", options, "El servicio Azure no expone todas las primitivas de entrega workspace");
       return 1;
@@ -4090,12 +4063,6 @@ export class LazyWorkflowCli {
       } else if (command === "ticket-effort-info") {
         if (!this.huInfoService.getEffort) throw new Error("El servicio Azure no soporta ticket-effort-info");
         result = await this.huInfoService.getEffort(ticket);
-      } else if (command === "ticket-attachment-info") {
-        if (!this.huInfoService.getAttachments) throw new Error("El servicio Azure no soporta ticket-attachment-info");
-        result = await this.huInfoService.getAttachments(ticket);
-      } else if (command === "ticket-evidence-info") {
-        if (!this.huInfoService.getEvidence) throw new Error("El servicio Azure no soporta ticket-evidence-info");
-        result = await this.huInfoService.getEvidence(ticket);
       } else if (command === "ticket-branch-info") {
         if (!this.huInfoService.getBranch) throw new Error("El servicio Azure no soporta ticket-branch-info");
         result = await this.huInfoService.getBranch(options.hu!, ticket);

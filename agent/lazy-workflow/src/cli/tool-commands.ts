@@ -21,7 +21,6 @@ export const AZURE_TOOL_COMMANDS = [
   "ticket-branch-push",
   "ticket-branch-checkout",
   "ticket-session-verify",
-  "ticket-manifest-set",
 ] as const;
 
 /** GitHub operations the workflow performs through `gh`. */
@@ -71,7 +70,6 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lazy-workflow ticket-branch-push --branch <name> --working-directory <path>",
   "  lazy-workflow ticket-branch-checkout --branch <name> --working-directory <path>",
   "  lazy-workflow ticket-session-verify --branch <name> --base-branch <name> --working-directory <path>",
-  "  lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] --validation <command> --validation-result <text> --evidence <kind>:<path> --working-directory <path>",
   "  lazy-workflow github-auth-info --working-directory <path>",
   "  lazy-workflow github-repo-info --working-directory <path>",
   "  lazy-workflow github-issue-list --working-directory <path>",

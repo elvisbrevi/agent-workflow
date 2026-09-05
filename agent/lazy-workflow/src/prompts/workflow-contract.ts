@@ -1,15 +1,12 @@
 /**
  * The coordinator/OpenCode contract vocabulary.
  *
- * These are the only definitions of the terminal protocol markers and of the
- * completion-manifest shape. Prompt assets under `prompts/` reference them
- * through placeholders (see `renderContract`) instead of restating them, so a
- * change to the contract cannot leave a prompt behind. `workflow-prompt.test.ts`
- * fails if a prompt asset hardcodes one of these literals.
+ * These are the only definitions of the terminal protocol markers. Prompt
+ * assets under `prompts/` reference them through placeholders (see
+ * `renderContract`) instead of restating them, so a change to the contract
+ * cannot leave a prompt behind. `workflow-prompt.test.ts` fails if a prompt
+ * asset hardcodes one of these literals.
  */
-
-import { EVIDENCE_KINDS, TEXT_EVIDENCE_KINDS } from "../azure/completion-manifest.ts";
-import { AZURE_TOOL_COMMANDS } from "../cli/tool-commands.ts";
 
 export const TICKET_COMPLETED_MARKER = "TICKET_COMPLETED";
 export const IMPLEMENTATION_READY_MARKER = "IMPLEMENTATION_READY";
@@ -39,76 +36,6 @@ export const markerResumePrompt = (marker: string): string => [
   `Si queda trabajo por hacer, termínalo y cierra con ${marker} en su propia línea.`,
 ].join(" ");
 
-/**
- * The manifest is written by a tool, never by the session.
- *
- * A prompt that described the JSON shape is what produced manifests with the
- * ticket as a string, `currentCommit` instead of `commit`, and evidence kinds
- * that were never in the enum: a description invites reproduction, and a
- * reproduction drifts. So the prompts name the command instead of the shape, and
- * the command names come from `tool-commands.ts` — the annotations below fail to
- * compile if either tool is renamed, and `CONTRACT_LITERALS` makes a prompt asset
- * that spells one out by hand fail its test.
- */
-export const AZURE_MANIFEST_COMMAND: typeof AZURE_TOOL_COMMANDS[number] = "ticket-manifest-set";
-
-/**
- * How a session proves an endpoint, spelled once.
- *
- * "Sanitized endpoint/parameters/headers/response evidence" was as far as the instruction went, and
- * a session satisfied it with whatever a terminal had printed: a pasted `curl` transcript, a body
- * with no endpoint above it, a response nobody could tell from a request. None of that can be laid
- * out, so the ticket published a wall of monospace and no picture of the browser that performed the
- * exchange. The shape and its provenance are stated here because the coordinator renders from them.
- */
-const HTTP_EVIDENCE_KIND: typeof EVIDENCE_KINDS[number] = "http-json";
-const SCREEN_EVIDENCE_KIND: typeof EVIDENCE_KINDS[number] = "screen";
-
-export const HTTP_EVIDENCE_INSTRUCTION = [
-  "Capture HTTP evidence through the Chrome MCP browser rather than pasting a terminal transcript:",
-  "drive the request in the browser Chrome MCP opens, screenshot the exchange it shows, and save that screenshot",
-  `as ${SCREEN_EVIDENCE_KIND} evidence.`,
-  `Write one ${HTTP_EVIDENCE_KIND} file per exchange, pretty-printed with two-space indentation, as a JSON object with`,
-  "`title`, `screenshot` (the file name of that screenshot, with no directory),",
-  "`request` (`method`, `url`, `headers`, and `body` when the request carries one) and",
-  "`response` (`status`, `statusText`, `headers`, and `body` when the response carries one);",
-  "put several exchanges in one file under a `captures` array when they belong together.",
-  "The coordinator publishes those fields as the endpoint, header tables and pretty-printed bodies of the ticket,",
-  "with the screenshot shown beside them; a file in any other shape publishes as a plain JSON blob nobody can read.",
-  `The screenshot a capture names must travel in the same manifest as ${SCREEN_EVIDENCE_KIND} evidence,`,
-  "written beside the capture file itself: the two are paired by file name within their directory,",
-  "so a screenshot somewhere else is a screenshot no capture can show.",
-  "Never persist credentials, tokens, cookies, authorization header values, or other secrets: name the header and redact its value.",
-].join(" ");
-
-const VALIDATION_FLAGS =
-  'one --validation "<command you ran>" with its --validation-result "<the outcome>" per validation, paired in the order you pass them';
-
-export const AZURE_MANIFEST_TOOL_INSTRUCTION = [
-  `Create the completion manifest only by running \`lazy-workflow ${AZURE_MANIFEST_COMMAND}\`; never write, edit, or repair that JSON file yourself.`,
-  `It takes --ticket, --branch, --manifest, ${VALIDATION_FLAGS}, and one --evidence <kind>:<path> per evidence file, where <kind> is exactly ${EVIDENCE_KINDS.join(", ")}.`,
-  // Only a text field can carry the ticket's completion-evidence, so a manifest of screenshots
-  // alone can never close the delivery. Saying it here is what stops a session from finding out at
-  // the last gate, once its pull requests have already merged.
-  `At least one --evidence must be ${TEXT_EVIDENCE_KINDS.join(" or ")}: screenshots alone cannot satisfy the ticket's completion-evidence field.`,
-  "It resolves the commit from HEAD and computes every SHA-256 digest itself, and it refuses to write a manifest the coordinator would reject.",
-  `It also refuses an ${HTTP_EVIDENCE_KIND} file that is not a browser capture, or a capture whose screenshot is not declared beside it.`,
-  "If it fails, fix exactly what its message names and run it again.",
-].join(" ");
-
-/** The exact invocation for one coordinator-fixed unit, with its identities already filled in. */
-export function azureManifestCommandLine(fixed: {
-  ticket: number | null;
-  ticketBranch: string | null;
-  manifestPath: string | null;
-  workingDirectory: string;
-}): string | null {
-  if (fixed.ticket === null || !fixed.ticketBranch || !fixed.manifestPath) return null;
-  return `lazy-workflow ${AZURE_MANIFEST_COMMAND} --ticket ${fixed.ticket} --branch ${fixed.ticketBranch}`
-    + ` --manifest ${fixed.manifestPath} --working-directory ${fixed.workingDirectory}`
-    + ` --validation "<command>" --validation-result "<outcome>" --evidence command-output:<path>`;
-}
-
 /** Every placeholder a prompt asset may use, and the text it resolves to. */
 const CONTRACT_VALUES: Record<string, string> = {
   TICKET_COMPLETED: TICKET_COMPLETED_MARKER,
@@ -121,9 +48,6 @@ const CONTRACT_VALUES: Record<string, string> = {
   PLAN_READY: PLAN_READY_MARKER,
   QUESTIONS_PENDING: QUESTIONS_PENDING_MARKER,
   QUESTIONS_ANSWERED: QUESTIONS_ANSWERED_MARKER,
-  AZURE_MANIFEST_COMMAND,
-  AZURE_MANIFEST_TOOL: AZURE_MANIFEST_TOOL_INSTRUCTION,
-  HTTP_EVIDENCE: HTTP_EVIDENCE_INSTRUCTION,
 };
 
 /** Marker literals that must never appear hardcoded in a prompt asset. */

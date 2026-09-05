@@ -1,0 +1,82 @@
+Issue #307 -- Borrar la evidencia y el completion manifest del dominio
+
+The evidence-writing and completion-manifest subsystem is retired from the
+tree, on both the GitHub and Azure delivery routes: nothing in the delivery
+flow has read a manifest or an evidence file since the earlier redesign
+(ADR-0035 to ADR-0041) replaced it with the session's own delivery summary
+(the pull-request body on GitHub, the ticket's completion-evidence field on
+Azure, ADR-0037). This issue removes the modules and commands that redesign
+left behind.
+
+Deleted: src/evidence/ (evidence-report.ts, evidence-safety.ts,
+http-capture.ts), src/azure/completion-manifest.ts, src/manifest/
+(verified-write.ts, dead once completion-manifest.ts was gone), and
+prompts/autocode-prompt.md (unread since Azure delivery moved to the shared
+delivery-prompt.md asset). The `ticket-manifest-set` deterministic tool
+command and the four ticket commands left without a flow --
+ticket-attachment-add, ticket-evidence-set, ticket-attachment-info,
+ticket-evidence-info -- are gone from tool-commands.ts, parse-cli-options.ts,
+deterministic-tools.ts and lazy-workflow-cli.ts, along with the
+AzureTicketInfoService/AzureAutocodeService methods that backed them
+(addAttachment, setEvidence, validateEvidence, validateEvidenceFile,
+getAttachments, getEvidence, writeCompletionManifest, readCompletionManifest,
+validateCompletionManifest, getCompletionManifestPath) and every private
+helper that existed only to support them. `setSummary`/`validateSummary`
+(the ADR-0037 path) keep the field-resolution and idempotency logic they
+share with the removed writer, rewritten to read the field back directly
+instead of through the deleted `getEvidence`.
+
+The `HTTP_EVIDENCE` and `AZURE_MANIFEST_TOOL` placeholders, and the
+`AZURE_MANIFEST_COMMAND`/`HTTP_EVIDENCE_INSTRUCTION`/
+`AZURE_MANIFEST_TOOL_INSTRUCTION`/`azureManifestCommandLine` definitions
+behind them, are gone from workflow-contract.ts; `renderContract` still
+throws `UnknownContractPlaceholderError` for an unrecognized placeholder
+(test/workflow-prompt.test.ts: "renderContract falla cerrado ante un
+placeholder desconocido").
+
+TicketAttachment/TicketInfo.attachments keep their plain `kind`/`name`/`url`
+fields (attachments a ticket already carries are still listed); the
+`evidenceKind`/`digest` decoding that only existed for the deleted write path
+is gone with it.
+
+Untouched, on purpose: the unrelated GitHub/Azure workspace-checkpoint
+manifest system (AzureWorkspaceManifest, GitHubWorkspaceManifest, the
+`manifest-not-verifiable`/`manifest-mismatch` failure kinds, checkpoint
+`manifestPath` fields) -- a different concept that tracks multi-repository
+delivery state and was never part of this issue.
+
+CONTEXT.md was already clean: its "Delivery summary" glossary entry documents
+the ADR-0037 completion-evidence field and already lists "_Avoid_: completion
+manifest, rendered evidence document" -- no dedicated glossary entry for the
+retired system existed to remove.
+
+A code-review pass (Standards + Spec axes, run in parallel) found one
+actionable finding on the Standards axis: three Node imports
+(`mkdtempSync`, `rmSync` from "node:fs", `tmpdir` from "node:os") left behind
+in test/ticket-info.test.ts after every test that used them was deleted.
+Fixed. The Spec axis found no missing requirements, no scope creep, and no
+misimplementation.
+
+== bunx tsc --noEmit -- src/ ==
+$ bunx tsc --noEmit -p tsconfig.json | grep '^src/'
+(no output; zero errors in src/)
+
+== bun test (full suite) ==
+$ bun test
+
+ 852 pass
+ 1 fail
+ 1 error
+ 2926 expect() calls
+Ran 853 tests across 52 files. [15.51s]
+
+The 1 fail / 1 error are the same pre-existing timing-sensitive interruption
+tests (test/run-interruption.test.ts, test/run-log-interruption-cli.test.ts)
+reproduced identically on this branch's parent commit before this change:
+neither file was touched by this change, both pass in isolation
+(`bun test test/run-log-interruption-cli.test.ts test/run-interruption.test.ts`
+-> 9 pass, 0 fail), and they only flake under full-suite load.
+
+== git diff --check ==
+$ git diff --check
+(no output; exit 0)

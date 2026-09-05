@@ -23,10 +23,10 @@ The detailed setup, commands, and login-continuation behavior are documented
 in `README.md`.
 
 Azure delivery keeps OpenCode semantic: it implements, validates, reviews,
-commits, and produces the completion manifest with `ticket-manifest-set` rather
-than by writing that JSON itself. The coordinator owns branches,
-pull requests, Azure fields, evidence, effort, completion gates, recovery, and
-cleanup. `IMPLEMENTATION_READY` is the only Azure model-completion marker.
+commits, and leaves the session's summary as the ticket's completion-evidence.
+The coordinator owns branches, pull requests, Azure fields, effort, completion
+gates, recovery, and cleanup. `IMPLEMENTATION_READY` is the only Azure
+model-completion marker.
 
 Azure planning is semantic in the same way: OpenCode decides how to slice the
 User Story and returns a delivery plan behind `PLAN_READY`, and the coordinator

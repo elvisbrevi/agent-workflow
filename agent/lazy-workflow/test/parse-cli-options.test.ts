@@ -43,20 +43,6 @@ describe("buildCli parser", () => {
   });
 
   describe("alias de flags", () => {
-    test("--evidence-file es alias de --file", () => {
-      const result = parse(["ticket-evidence-set", "--ticket", "1", "--evidence-file", "/path/ev.json"]);
-      expect(result.kind).toBe("options");
-      if (result.kind !== "options") return;
-      expect(result.options.file).toBe("/path/ev.json");
-    });
-
-    test("--kind es alias de --evidence-kind", () => {
-      const result = parse(["ticket-attachment-add", "--ticket", "1", "--file", "/p.json", "--kind", "http-json"]);
-      expect(result.kind).toBe("options");
-      if (result.kind !== "options") return;
-      expect(result.options.evidenceKind).toBe("http-json");
-    });
-
     test("--real-effort-hh y --expected-rev parsean como numeros", () => {
       const result = parse(["ticket-effort-set", "--ticket", "1", "--real-effort", "8", "--real-effort-hh", "8", "--expected-rev", "3"]);
       expect(result.kind).toBe("options");
@@ -64,33 +50,6 @@ describe("buildCli parser", () => {
       expect(result.options.realEffort).toBe(8);
       expect(result.options.realEffortHours).toBe(8);
       expect(result.options.expectedRevision).toBe(3);
-    });
-
-    test("--validation y --validation-result conservan el orden de declaracion", () => {
-      // El emparejamiento es por posicion, asi que el orden es el contrato: si el
-      // parser lo reordenara, cada validacion quedaria con el resultado de otra.
-      const result = parse([
-        "ticket-manifest-set",
-        "--validation", "bun test", "--validation-result", "198 pass",
-        "--validation", "dotnet test --filter A::B /p:X=Y", "--validation-result", "Passed!",
-      ]);
-      expect(result.kind).toBe("options");
-      if (result.kind !== "options") return;
-      expect(result.options.validationCommands).toEqual(["bun test", "dotnet test --filter A::B /p:X=Y"]);
-      expect(result.options.validationResults).toEqual(["198 pass", "Passed!"]);
-    });
-
-    test("--evidence es repetible y llega verbatim para que cada familia lo interprete", () => {
-      const result = parse([
-        "ticket-manifest-set",
-        "--evidence", "http-json:/tmp/ev/api.json",
-        "--evidence", "screen:/tmp/ev/pantalla.png",
-      ]);
-      expect(result.kind).toBe("options");
-      if (result.kind !== "options") return;
-      expect(result.options.evidence).toEqual(["http-json:/tmp/ev/api.json", "screen:/tmp/ev/pantalla.png"]);
-      // El `--kind` escalar de ticket-attachment-add sigue siendo escalar.
-      expect(result.options.evidenceKind).toBeNull();
     });
 
     test("--number-of-questions acepta enteros", () => {
@@ -508,8 +467,6 @@ describe("buildCli parser", () => {
         "--base-branch", "main",
         "--ticket", "51",
         "--pr", "99",
-        "--manifest", "/path/manifest.json",
-        "--evidence-file", "/path/file.json",
         "--description-file", "/path/desc.md",
         "--state", "Done",
         "--expected-state", "Active",
@@ -517,7 +474,6 @@ describe("buildCli parser", () => {
         "--real-effort", "4",
         "--real-effort-hh", "4",
         "--expected-rev", "2",
-        "--evidence-kind", "http-json",
         "--number-of-questions", "2",
         "--normas-sag",
         "--working-directory", "/repo",
@@ -540,8 +496,6 @@ describe("buildCli parser", () => {
         baseBranch: "main",
         ticket: 51,
         pullRequest: 99,
-        manifest: "/path/manifest.json",
-        file: "/path/file.json",
         descriptionFile: "/path/desc.md",
         state: "Done",
         expectedState: "Active",
@@ -549,7 +503,6 @@ describe("buildCli parser", () => {
         realEffort: 4,
         realEffortHours: 4,
         expectedRevision: 2,
-        evidenceKind: "http-json",
         numberOfQuestions: 2,
         normasSag: true,
         workingDirectory: "/repo",

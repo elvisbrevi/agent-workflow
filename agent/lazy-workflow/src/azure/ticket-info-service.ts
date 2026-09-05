@@ -1,50 +1,11 @@
 import { $ } from "bun";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { mkdir, realpath } from "node:fs/promises";
+import { resolve } from "node:path";
+import { realpath } from "node:fs/promises";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
-import { writeVerifiedManifest } from "../manifest/verified-write.ts";
-import {
-  EVIDENCE_KINDS,
-  buildCompletionManifest,
-  isEvidenceKind,
-  parseCompletionManifest,
-  sha256,
-  type CompletionManifest,
-  type CompletionManifestEvidence,
-  type CompletionManifestInput,
-  type EvidenceKind,
-} from "./completion-manifest.ts";
-import { renderEvidenceHtml, shortDigest, type EvidenceFile } from "../evidence/evidence-report.ts";
-import { assertEvidenceIsPublishable } from "../evidence/evidence-safety.ts";
-import { parseHttpCaptures, readHttpCaptures } from "../evidence/http-capture.ts";
-
-export {
-  EVIDENCE_KINDS,
-  type CompletionManifest,
-  type CompletionManifestEvidence,
-  type CompletionManifestInput,
-  type EvidenceKind,
-};
-export { TEXT_EVIDENCE_KINDS, findTextEvidence } from "./completion-manifest.ts";
-
-/**
- * What the coordinator knows about a delivery when it publishes the evidence.
- *
- * The completion-evidence field used to receive one file's bytes, because one file is all the
- * publishing call was given. The rest of the proof — the other captures, the validations that ran,
- * the branch and commit they ran against — was already in the manifest the coordinator had just
- * verified, so passing it through is what turns the field from a paste into a document.
- */
-export interface CompletionEvidenceReport {
-  ticketBranch?: string;
-  validation: ReadonlyArray<{ command: string; result: string }>;
-  evidence: ReadonlyArray<CompletionManifestEvidence>;
-}
 
 const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /** Cuánto se espera a que Azure materialice el merge que acaba de encolar. */
 const PULL_REQUEST_MERGE_ATTEMPTS = 15;
@@ -192,8 +153,6 @@ export interface TicketAttachment {
   name?: string;
   url?: string;
   kind: "AttachedFile";
-  evidenceKind?: EvidenceKind;
-  digest?: string;
 }
 
 export interface TicketInfo {
@@ -213,7 +172,7 @@ export interface TicketInfo {
 interface Relation {
   rel?: string;
   url?: string;
-  attributes?: { name?: string; comment?: string; digest?: string };
+  attributes?: { name?: string; comment?: string };
 }
 
 interface WorkItem {
@@ -246,12 +205,6 @@ interface FixedCommitLink {
   commit: string;
 }
 
-interface ValidatedEvidenceFile {
-  name: string;
-  bytes: Uint8Array;
-  digest: string;
-}
-
 export type AzRunner = (args: string[]) => Promise<string>;
 
 function positiveId(value: number, name: string): void {
@@ -261,32 +214,6 @@ function positiveId(value: number, name: string): void {
 function text(item: WorkItem, name: string): string | undefined {
   const value = item.fields?.[name];
   return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function evidenceKind(value: string | undefined): EvidenceKind | undefined {
-  return typeof value === "string" && isEvidenceKind(value) ? value : undefined;
-}
-
-/**
- * Azure persists only its own relation attributes and silently drops unknown ones, so a `digest`
- * attribute never survives the round trip: evidence written that way reads back undigested, which
- * left the attachment unverifiable and the evidence gate unsatisfiable. The digest travels inside
- * `comment`, which Azure does keep, alongside the evidence kind it already carried.
- */
-const ATTACHMENT_DIGEST_PREFIX = "sha256:";
-
-function attachmentComment(kind: EvidenceKind, digest: string): string {
-  return `${kind} ${ATTACHMENT_DIGEST_PREFIX}${digest.toLowerCase()}`;
-}
-
-function attachmentKind(comment: string | undefined): EvidenceKind | undefined {
-  return evidenceKind(comment?.trim().split(/\s+/)[0]);
-}
-
-function attachmentDigest(comment: string | undefined): string | undefined {
-  const token = comment?.trim().split(/\s+/).find((part) => part.startsWith(ATTACHMENT_DIGEST_PREFIX));
-  const digest = token?.slice(ATTACHMENT_DIGEST_PREFIX.length).toLowerCase();
-  return digest && /^[0-9a-f]{64}$/.test(digest) ? digest : undefined;
 }
 
 /**
@@ -326,23 +253,6 @@ function publishedAlready(existing: string, ...candidates: string[]): boolean {
   return candidates.some((candidate) => evidenceTextContent(candidate) === stored);
 }
 
-/**
- * Whether a document already published was made from this evidence.
- *
- * Equality answers for a field this same path published, and for nothing else. A transversal
- * delivery publishes every repository's evidence at once while the repair command that follows it
- * reads a single manifest, so the two render different documents over the same proof; comparing
- * their text -- which the rendering transforms, into tables, into stripped colour, into clamped
- * blocks -- can only say they differ. Asked as equals, the second reports a conflict against
- * evidence that is already there, at a gate reached with the pull requests merged. So the question
- * is put to the one thing rendering does not touch: the digests the document names.
- */
-function namesEveryDigest(existing: string, digests: readonly string[]): boolean {
-  if (digests.length === 0) return false;
-  const text = evidenceTextContent(existing).toLowerCase();
-  return digests.every((digest) => text.includes(shortDigest(digest)));
-}
-
 /** El resumen tal cual lo dijo la sesión, con lo mínimo para que el campo conserve sus líneas. */
 function summaryHtml(summary: string): string {
   return summary.trim()
@@ -350,26 +260,6 @@ function summaryHtml(summary: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/\r?\n/g, "<br>");
-}
-
-const alreadyPublished = (existing: string, rendered: string, content: string, digests: readonly string[]): boolean =>
-  publishedAlready(existing, rendered, content) || namesEveryDigest(existing, digests);
-
-/**
- * Where an already-attached capture can be displayed from inside the field.
- *
- * Azure serves a work-item attachment from the relation's own URL, and the web UI appends the file
- * name so the browser knows what it is receiving. An `<img>` pointing at the bare URL renders as a
- * broken image in some viewers, which is the whole difference between a ticket that shows its
- * screenshots and one that merely lists them.
- */
-function attachmentImageUrl(item: WorkItem, digest: string, name: string): string | null {
-  const relation = (item.relations ?? []).find(({ rel, url, attributes }) =>
-    rel === "AttachedFile" && typeof url === "string" && url.trim().length > 0
-    && attachmentDigest(attributes?.comment) === digest.toLowerCase());
-  const url = relation?.url?.trim();
-  if (!url) return null;
-  return url.includes("?") ? url : `${url}?fileName=${encodeURIComponent(relation?.attributes?.name ?? name)}`;
 }
 
 function number(item: WorkItem, names: readonly string[]): number | undefined {
@@ -575,117 +465,6 @@ export function commandError(error: unknown): Error {
   return new Error(`Azure command failed: ${detail}`, { cause: error });
 }
 
-/**
- * Where completion evidence may live: anywhere the commit cannot carry it.
- *
- * The rule is that evidence never becomes source, so the worktree is closed to
- * it — but the Git common directory is not the worktree, and it is exactly where
- * the coordinator points a session (`evidenceDirectory` is the manifest's own
- * directory, `<git-common-dir>/lazy-workflow/`). Reading the rule as "outside the
- * repository directory" made every manifest that followed the coordinator's own
- * instruction unverifiable. Returns the resolved real path.
- */
-async function requireEvidenceOutsideWorktree(
-  path: string,
-  root: string,
-  commonDirectory: () => Promise<string>,
-  declaredPath: string,
-): Promise<string> {
-  const realPath = await realpath(path).catch(() => {
-    throw new Error(`El archivo de evidencia no existe: ${declaredPath}`);
-  });
-  // Evidence outside the repository directory settles it without asking Git
-  // anything, which is the path every manifest took before the common directory
-  // was admitted, and the one that must stay free of extra calls.
-  if (isOutside(root, realPath)) return realPath;
-  if (isOutside(await commonDirectory(), realPath)) {
-    throw new Error("La evidencia del manifest debe estar fuera del repositorio fuente");
-  }
-  return realPath;
-}
-
-/** Whether `path` falls outside `directory`, `directory` itself counting as inside. */
-function isOutside(directory: string, path: string): boolean {
-  const relativePath = relative(directory, path);
-  return !!relativePath && (relativePath === ".." || relativePath.startsWith(`..${sep}`));
-}
-
-function validateEvidenceKind(kind: string): asserts kind is EvidenceKind {
-  if (!isEvidenceKind(kind)) {
-    throw new Error(`Tipo de evidencia no soportado: ${kind}`);
-  }
-}
-
-function validateEvidenceContent(content: string, kind: EvidenceKind): void {
-  assertEvidenceIsPublishable(content);
-  if (kind === "http-json") {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      throw new Error("La evidencia JSON no es válida");
-    }
-    if (content.trim() !== JSON.stringify(parsed, null, 2)) {
-      throw new Error("La evidencia JSON debe estar pretty-printed con indentación estable");
-    }
-  }
-}
-
-/**
- * The shape every capture must have, demanded where a session can still rewrite the file.
- *
- * A ticket shows the endpoint, the headers, the body and the response in tables of their own, and
- * it can only do that if the file says which is which: free-form JSON -- a pasted `curl`
- * transcript, a body with no endpoint -- has nothing to lay out. The demand belongs to the writing
- * gate and to nothing else. Made a condition of publication too, it would strand every delivery
- * whose manifest predates the shape at a gate reached with the pull requests already merged, which
- * is the failure this contract exists to prevent; those publish as plain JSON instead.
- */
-async function requireCaptureShape(
-  evidence: ReadonlyArray<{ path: string; kind: EvidenceKind }>,
-): Promise<void> {
-  for (const entry of evidence) {
-    if (entry.kind !== "http-json") continue;
-    // Every file here already passed `validateEvidenceContent`, so its JSON is known to parse.
-    parseHttpCaptures(JSON.parse(await readUtf8File(resolve(entry.path))));
-  }
-  await requireCaptureScreenshots(evidence);
-}
-
-const fileName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
-
-
-/**
- * Every browser capture names the screenshot it was taken from, and that screenshot has to be
- * evidence of this same delivery. Checking it across the manifest -- rather than inside the one
- * file that names it -- is what keeps an `http-json` capture from pointing at an image nobody
- * attached, which would publish an exchange with no picture of the browser that performed it.
- */
-async function requireCaptureScreenshots(
-  evidence: ReadonlyArray<{ path: string; kind: EvidenceKind }>,
-): Promise<void> {
-  // A capture names its screenshot by bare file name, so the pair is only unambiguous where they
-  // live together: two repositories of one transversal delivery both call theirs `pantalla.png`.
-  const beside = (directory: string, name: string): string => `${directory}/${name}`.toLowerCase();
-  const screens = new Set(evidence
-    .filter(({ kind }) => kind === "screen")
-    .map(({ path }) => beside(dirname(resolve(path)), fileName(path))));
-  for (const entry of evidence) {
-    if (entry.kind !== "http-json") continue;
-    // The manifest is validated before its files' content is, so a file that is not a capture at
-    // all still reaches here; it has no screenshot to cross-check and is left to that later gate.
-    for (const { screenshot } of readHttpCaptures(await readUtf8File(resolve(entry.path))) ?? []) {
-      if (!screens.has(beside(dirname(resolve(entry.path)), screenshot))) {
-        throw new Error(
-          `La captura ${screenshot} que nombra ${fileName(entry.path)}`
-          + " no está declarada como evidencia screen junto a ella",
-        );
-      }
-    }
-  }
-}
-
-
 async function readUtf8File(filePath: string): Promise<string> {
   const file = Bun.file(filePath);
   if (!await file.exists()) throw new Error(`El archivo no existe: ${filePath}`);
@@ -717,17 +496,6 @@ function isRevisionConflict(error: unknown): boolean {
   return /\b409\b|revision|precondition|conflict|condition.*(?:failed|not met)/i.test(message);
 }
 
-function validateScreenEvidence(name: string, bytes: Uint8Array): void {
-  const lowerName = name.toLowerCase();
-  const png = lowerName.endsWith(".png") && bytes.length >= 8 && bytes.slice(0, 8).every((byte, index) => byte === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]);
-  const jpeg = (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg"))
-    && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const webp = lowerName.endsWith(".webp")
-    && new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF"
-    && new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP";
-  if (!png && !jpeg && !webp) throw new Error("La evidencia screen debe ser una captura PNG, JPEG o WebP válida");
-}
-
 export async function runAzureCommand(args: string[]): Promise<string> {
   try {
     return await $`az ${args}`.text();
@@ -752,11 +520,6 @@ export class AzureTicketInfoService {
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
     return this.toSummary(await this.readWorkItem(ticket));
-  }
-
-  async getCompletionManifestPath(workingDirectory: string): Promise<string> {
-    const commonDirectory = await realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
-    return resolve(commonDirectory, "lazy-workflow/completion-manifest.json");
   }
 
   async createOrReusePullRequest(hu: number, ticket: number, participant?: AzurePullRequestTarget): Promise<IntegratedPullRequest> {
@@ -926,8 +689,6 @@ export class AzureTicketInfoService {
           kind: "AttachedFile" as const,
           name: attributes?.name,
           url,
-          evidenceKind: attachmentKind(attributes?.comment),
-          digest: attachmentDigest(attributes?.comment),
         })),
       completionEvidence,
       gates: {
@@ -1005,27 +766,6 @@ export class AzureTicketInfoService {
         realHours: number(item, ["Custom.EsfuerzoRealHH"]),
       },
     };
-  }
-
-  async getAttachments(ticket: number): Promise<{ ticket: number; attachments: TicketAttachment[] }> {
-    const item = await this.readWorkItemValidated(ticket);
-    return {
-      ticket,
-      attachments: (item.relations ?? [])
-        .filter(({ rel }) => rel === "AttachedFile")
-        .map(({ url, attributes }) => ({
-          kind: "AttachedFile" as const,
-          name: attributes?.name,
-          url,
-          evidenceKind: attachmentKind(attributes?.comment),
-          digest: attachmentDigest(attributes?.comment),
-        })),
-    };
-  }
-
-  async getEvidence(ticket: number): Promise<{ ticket: number; completionEvidence: string | null }> {
-    const item = await this.readWorkItemValidated(ticket);
-    return { ticket, completionEvidence: COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean) ?? null };
   }
 
   async setDescription(ticket: number, filePath: string): Promise<{ ticket: number; description: string; revision: number }> {
@@ -1268,134 +1008,6 @@ export class AzureTicketInfoService {
     );
   }
 
-  /** The Git common directory of `workingDirectory`, resolved as both manifest gates read it. */
-  private async gitCommonDirectory(workingDirectory: string): Promise<string> {
-    return realpath(resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim()));
-  }
-
-  private async requireManifestUnderCommonDirectory(path: string, workingDirectory: string): Promise<string> {
-    const commonDirectory = await this.gitCommonDirectory(workingDirectory);
-    const manifestPath = resolve(path);
-    if (isOutside(commonDirectory, await realpath(manifestPath))) {
-      throw new Error("El manifest de completion debe estar bajo el directorio Git común");
-    }
-    return manifestPath;
-  }
-
-  async readCompletionManifest(path: string, workingDirectory: string): Promise<CompletionManifest> {
-    const manifestPath = await this.requireManifestUnderCommonDirectory(path, workingDirectory);
-    const content = await readUtf8File(manifestPath);
-    let value: unknown;
-    try {
-      value = JSON.parse(content);
-    } catch (error) {
-      throw new Error(`El manifest de completion no es JSON válido: ${path}`, { cause: error });
-    }
-    return parseCompletionManifest(value);
-  }
-
-  /**
-   * Writes the manifest a delivery session must leave behind, already valid.
-   *
-   * The shape is never the session's to reproduce: the digests are read off the
-   * evidence files, and the assembled object goes through `parseCompletionManifest`
-   * — the same check `readCompletionManifest` applies — before anything is
-   * written, so an invalid manifest never reaches disk and a manifest on disk was
-   * never hand-written. A rejected write leaves whatever was already there.
-   */
-  async writeCompletionManifest(
-    path: string,
-    input: CompletionManifestInput,
-    workingDirectory: string,
-  ): Promise<CompletionManifest> {
-    const commonDirectory = await this.gitCommonDirectory(workingDirectory);
-    // The file may not exist yet, so the directory is what gets resolved: every
-    // other path here is a real path, and comparing a symlinked one against them
-    // would reject a manifest that is exactly where it belongs.
-    const declaredPath = resolve(path);
-    await mkdir(dirname(declaredPath), { recursive: true });
-    const manifestPath = join(await realpath(dirname(declaredPath)), basename(declaredPath));
-    if (isOutside(commonDirectory, manifestPath)) {
-      throw new Error("El manifest de completion debe estar bajo el directorio Git común");
-    }
-    const root = await realpath(workingDirectory);
-    for (const evidence of input.evidence) {
-      await requireEvidenceOutsideWorktree(resolve(evidence.path), root, async () => commonDirectory, evidence.path);
-      // Judge the file's content here, where the session can still fix it. Only the digest and the
-      // path were checked before, so evidence the delivery would refuse -- a secret, a JSON that is
-      // not in canonical form -- was accepted into the manifest and only rejected at the last gate,
-      // by which point the pull requests had already merged and there was nothing cheap left to do.
-      await this.validateEvidenceFile(resolve(evidence.path), evidence.kind);
-    }
-    await requireCaptureShape(input.evidence);
-    // A session that types the commit types the wrong one, and the manifest must
-    // name what it validated: HEAD is read here unless a commit is pinned.
-    const commit = input.commit ?? (await this.git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-    const manifest = await buildCompletionManifest({
-      ...input,
-      commit,
-      evidence: input.evidence.map((evidence) => ({ ...evidence, path: resolve(evidence.path) })),
-    });
-    // Read it back through the gate the coordinator itself uses: what this tool
-    // accepts and what the delivery requires can only ever be the same thing.
-    return writeVerifiedManifest(manifestPath, manifest, (written) => this.readCompletionManifest(written, workingDirectory));
-  }
-
-  async validateCompletionManifest(
-    manifest: CompletionManifest,
-    info: TicketInfo,
-    ticket: number,
-    workingDirectory: string,
-  ): Promise<void> {
-    const manifestTicket = manifest.ticket as number;
-    if (manifestTicket !== ticket) throw new Error(`El manifest pertenece al ticket ${manifestTicket}, no al ticket ${ticket}`);
-    if (info.branch !== manifest.ticketBranch) throw new Error("La rama del manifest no coincide con la rama del ticket");
-    if (!manifest.ticketBranch.startsWith("refs/heads/")) {
-      throw new Error("La rama activa no coincide con la rama del manifest");
-    }
-    const expectedBranch = manifest.ticketBranch.slice("refs/heads/".length);
-    const head = (await this.git(["rev-parse", "HEAD"], workingDirectory)).trim();
-    if (head !== manifest.commit) {
-      // Entregar mueve la rama: al completarse el PR, Azure adelanta la rama del
-      // ticket hasta el merge y el checkout la alcanza, así que HEAD deja de ser
-      // el commit declarado aunque lo contenga. Exigir la igualdad volvía el
-      // manifest inverificable para siempre en cuanto la entrega se interrumpía
-      // después de ese avance. Solo se acepta lo que el remoto ya tiene: HEAD en
-      // la punta remota de la rama del ticket, con el commit declarado contenido
-      // ahí. Ningún commit local que nadie revisó puede colarse por esa puerta.
-      const remoteTip = await this.readCommit(`refs/remotes/origin/${expectedBranch}^{commit}`, workingDirectory);
-      if (remoteTip !== head || !await this.contains(head, manifest.commit, workingDirectory)) {
-        throw new Error("El commit del manifest no coincide con HEAD");
-      }
-    }
-    // Tracked changes only. A coding agent routinely leaves untracked scratch
-    // behind to reach its own validation — a .env.test to run the suite, a
-    // coverage directory, a throwaway script — and none of it is unsaved work:
-    // it never enters a commit and survives every branch move this flow makes.
-    // Counting it as a dirty tree rejected manifests whose commit was already
-    // in place, so the gate watches what the commit could have lost instead.
-    const status = await this.git(["status", "--porcelain", "--untracked-files=no"], workingDirectory);
-    if (status.trim()) throw new Error("El repositorio tiene cambios sin guardar; no se aplicará el completion manifest");
-    const branch = (await this.git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-    if (branch !== expectedBranch) throw new Error("La rama activa no coincide con la rama del manifest");
-
-    const root = await realpath(workingDirectory);
-    let commonDirectory: Promise<string> | null = null;
-    const gitCommonDirectory = () => (commonDirectory ??= this.gitCommonDirectory(workingDirectory));
-    const seen = new Set<string>();
-    for (const evidence of manifest.evidence) {
-      const path = await requireEvidenceOutsideWorktree(resolve(evidence.path), root, gitCommonDirectory, evidence.path);
-      const expectedDigest = evidence.sha256.toLowerCase();
-      if (seen.has(expectedDigest)) throw new Error(`El digest de evidencia está duplicado: ${evidence.sha256}`);
-      seen.add(expectedDigest);
-      const file = Bun.file(path);
-      if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${evidence.path}`);
-      const digest = await sha256(new Uint8Array(await file.arrayBuffer()));
-      if (digest !== expectedDigest) throw new Error(`El digest de evidencia no coincide: ${evidence.path}`);
-    }
-    await requireCaptureScreenshots(manifest.evidence);
-  }
-
   /** Un ref ausente no es un fallo que deba propagarse: es la respuesta "no lo tengo". */
   private async readCommit(ref: string, workingDirectory: string): Promise<string | null> {
     try {
@@ -1584,100 +1196,6 @@ export class AzureTicketInfoService {
     return { ticket, pullRequest: pullRequestId, mergeCommit, artifactLink };
   }
 
-  async addAttachment(
-    ticket: number,
-    filePath: string,
-    kind: EvidenceKind,
-  ): Promise<{ ticket: number; name: string; kind: EvidenceKind; digest: string; url: string }> {
-    positiveId(ticket, "El ticket");
-    const item = await this.readWorkItemValidated(ticket);
-    await this.readDirectParent(ticket, item);
-    const { name, digest } = await this.readEvidenceFile(filePath, kind);
-    const existing = (item.relations ?? [])
-      .filter(({ rel }) => rel === "AttachedFile")
-      .find(({ attributes }) => attachmentDigest(attributes?.comment) === digest);
-    if (existing?.url) {
-      const existingKind = attachmentKind(existing.attributes?.comment);
-      if (existingKind && existingKind !== kind) {
-        throw new Error(`El digest ${digest} ya está asociado a otra clase de evidencia`);
-      }
-      return { ticket, name: existing.attributes?.name ?? name, kind, digest, url: existing.url };
-    }
-
-    const upload = await this.uploadAttachment(name, filePath);
-    const current = await this.readWorkItem(ticket);
-    try {
-      await this.patchWorkItem(current, [{
-        op: "test", path: "/rev", value: current.rev,
-      }, {
-        op: "add",
-        path: "/relations/-",
-        value: {
-          rel: "AttachedFile",
-          url: upload,
-          attributes: { name, comment: attachmentComment(kind, digest) },
-        },
-      }]);
-    } catch (error) {
-      const recovered = await this.readWorkItem(ticket).catch(() => null);
-      const relation = recovered?.relations?.find(({ rel, attributes }) =>
-        rel === "AttachedFile" && attachmentDigest(attributes?.comment) === digest
-      );
-      if (!relation?.url) throw error;
-      return { ticket, name: relation.attributes?.name ?? name, kind, digest, url: relation.url };
-    }
-    const verified = (await this.readWorkItem(ticket)).relations?.find(({ rel, attributes }) =>
-      rel === "AttachedFile" && attachmentDigest(attributes?.comment) === digest
-    );
-    if (!verified?.url) throw new Error(`No se pudo verificar el adjunto ${name}`);
-    return { ticket, name, kind, digest, url: verified.url };
-  }
-
-  async validateEvidenceFile(filePath: string, kind: EvidenceKind): Promise<void> {
-    await this.readEvidenceFile(filePath, kind);
-  }
-
-  async validateEvidence(ticket: number, filePath: string, report?: CompletionEvidenceReport): Promise<void> {
-    positiveId(ticket, "El ticket");
-    const content = await readUtf8File(filePath);
-    if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
-    validateEvidenceContent(content, "command-output");
-    const item = await this.readWorkItemValidated(ticket);
-    await this.readDirectParent(ticket, item);
-    const existing = COMPLETION_FIELDS.map((name) => text(item, name)).find(Boolean);
-    const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && !alreadyPublished(existing, rendered, content, await this.evidenceDigests(content, report))) {
-      throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
-    }
-  }
-
-  async setEvidence(
-    ticket: number,
-    filePath: string,
-    report?: CompletionEvidenceReport,
-  ): Promise<{ ticket: number; completionEvidence: string }> {
-    positiveId(ticket, "El ticket");
-    const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if (!content.trim()) throw new Error("El archivo de completion-evidence está vacío");
-    validateEvidenceContent(content, "command-output");
-    const item = await this.readWorkItemValidated(ticket);
-    await this.readDirectParent(ticket, item);
-    const fieldName = await this.resolveCompletionField(item);
-    const existing = text(item, fieldName);
-    const rendered = await this.renderCompletionEvidence(ticket, item, filePath, content, report);
-    if (existing && alreadyPublished(existing, rendered, content, await this.evidenceDigests(content, report))) {
-      return { ticket, completionEvidence: existing };
-    }
-    if (existing) throw new Error(`El ticket ${ticket} ya tiene completion-evidence distinta; conflicto`);
-    await this.patchWorkItem(item, [{
-      op: "test", path: "/rev", value: item.rev,
-    }, { op: "add", path: `/fields/${fieldName}`, value: rendered }]);
-    const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
-    if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
-    return { ticket, completionEvidence };
-  }
-
   /**
    * La completion-evidence de una entrega: lo último que dijo la sesión (ADR-0037).
    *
@@ -1709,66 +1227,9 @@ export class AzureTicketInfoService {
     await this.patchWorkItem(item, [{
       op: "test", path: "/rev", value: item.rev,
     }, { op: "add", path: `/fields/${fieldName}`, value: summaryHtml(summary) }]);
-    const completionEvidence = (await this.getEvidence(ticket)).completionEvidence;
+    const completionEvidence = text(await this.readWorkItem(ticket), fieldName);
     if (!completionEvidence) throw new Error(`No se pudo verificar completion-evidence del ticket ${ticket}`);
     return { ticket, completionEvidence };
-  }
-
-  /**
-   * The digests this call is about: the manifest's, or the one file it was handed.
-   *
-   * `ticket-evidence-set` runs without a manifest, so all it knows is the file, and the file's own
-   * digest is exactly what a document rendered from it would have named.
-   */
-  private async evidenceDigests(content: string, report?: CompletionEvidenceReport): Promise<string[]> {
-    if (report) return report.evidence.map(({ sha256: digest }) => digest);
-    return [await sha256(new TextEncoder().encode(content))];
-  }
-
-  /**
-   * The whole delivery as one readable document, ready for the field.
-   *
-   * The manifest is what makes it whole: the file the caller points at is only the entry that may
-   * populate the field, while the captures, the outputs and the screenshots around it are the rest
-   * of the proof. Screenshots are matched to the attachments already uploaded for this ticket, by
-   * the digest the attachment comment carries, so the field shows the images instead of naming
-   * files a reader cannot open.
-   */
-  private async renderCompletionEvidence(
-    ticket: number,
-    item: WorkItem,
-    filePath: string,
-    content: string,
-    report?: CompletionEvidenceReport,
-  ): Promise<string> {
-    // Without a manifest there is nothing to lay out and no attachment to resolve. The file is
-    // published as it was written, which is what `ticket-evidence-set` has always done for an
-    // operator repairing a delivery by hand with HTML or Markdown source of their own.
-    if (!report) return content;
-    const files: EvidenceFile[] = [];
-    for (const entry of report.evidence) {
-      const name = fileName(entry.path);
-      if (entry.kind === "screen") {
-        files.push({ name, path: entry.path, digest: entry.sha256, kind: "screen", imageUrl: attachmentImageUrl(item, entry.sha256, name) });
-        continue;
-      }
-      // A file the manifest names but this run cannot read must not cost the delivery its evidence:
-      // the entry the caller already read is always available, and the rest is best effort.
-      const decoded = resolve(entry.path) === resolve(filePath) ? content : await readUtf8File(entry.path).catch(() => "");
-      if (decoded.trim()) files.push({ name, path: entry.path, digest: entry.sha256, kind: entry.kind, content: decoded });
-    }
-    return renderEvidenceHtml({
-      subject: `Ticket ${ticket}`,
-      // The commit is deliberately not among them. A transversal delivery has one per repository
-      // and a single-repository one has exactly one, so naming it here made the same ticket render
-      // two different documents depending on which path published it -- and the second one to run
-      // would then read the first one's evidence as a conflict it could never clear. The ticket
-      // already carries every merge commit natively, as the artifact link a completion gate
-      // requires, so the field loses nothing by not repeating it.
-      facts: [{ label: "Rama del ticket", value: report.ticketBranch ?? "" }],
-      validation: [...report.validation],
-      files,
-    });
   }
 
   /**
@@ -1828,25 +1289,6 @@ export class AzureTicketInfoService {
     } catch {
       return false;
     }
-  }
-
-  private async readEvidenceFile(filePath: string, kind: EvidenceKind): Promise<ValidatedEvidenceFile> {
-    validateEvidenceKind(kind);
-    const file = Bun.file(filePath);
-    const name = filePath.split(/[\\/]/).pop() ?? "";
-    if (!name || name === "." || name === "..") throw new Error(`El archivo de evidencia no tiene un nombre válido: ${filePath}`);
-    if (!await file.exists()) throw new Error(`El archivo de evidencia no existe: ${filePath}`);
-    if (file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`El archivo de evidencia debe tener entre 1 y ${MAX_ATTACHMENT_BYTES} bytes`);
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (kind === "screen") {
-      validateScreenEvidence(name, bytes);
-    } else {
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      validateEvidenceContent(content, kind);
-    }
-    return { name, bytes, digest: await sha256(bytes) };
   }
 
   private async readWorkItemValidated(ticket: number): Promise<WorkItem> {
@@ -2078,20 +1520,6 @@ export class AzureTicketInfoService {
       } catch (fallbackError) {
         throw new Error(`No se pudo asociar el PR ${id} al ticket ${ticket}: ${sanitizeError(fallbackError)}`, { cause: fallbackError });
       }
-    }
-  }
-
-  private async uploadAttachment(name: string, filePath: string): Promise<string> {
-    const uri = `${ORGANIZATION}/_apis/wit/attachments?fileName=${encodeURIComponent(name)}&api-version=${API_VERSION}`;
-    try {
-      const payload = JSON.parse(await this.az([
-        "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post", "--uri", uri,
-        "--headers", "Content-Type=application/octet-stream", "--body", `@${filePath}`, "--output", "json",
-      ])) as { url?: unknown };
-      if (typeof payload.url !== "string" || !payload.url) throw new Error("respuesta de adjunto sin URL");
-      return payload.url;
-    } catch (error) {
-      throw new Error(`No se pudo subir el adjunto ${name}: ${sanitizeError(error)}`, { cause: error });
     }
   }
 

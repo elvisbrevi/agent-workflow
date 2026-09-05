@@ -204,8 +204,6 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           events.push(`pr:${pullRequest}`);
           return { pullRequest, mergeCommit: `merge-${pullRequest}` };
         },
-        validateEvidenceFile: async () => undefined,
-        validateEvidence: async () => undefined,
         getBranch: async () => ({ hu, ticket, branch: ticketBranch, integrationBranch }),
         getTicket: async (id: number) => ({ id, type: "Task" as const }),
         getDescription: async () => ({ ticket, description: null }),
@@ -218,8 +216,6 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           throw new Error(`unexpected hu state for ${id}`);
         },
         getEffort: async () => ({ ticket, effort: { estimated: 1, real: 1, realHours: 1 } }),
-        getAttachments: async () => ({ ticket, attachments: [] }),
-        getEvidence: async () => ({ ticket, completionEvidence: null }),
         setDescription: async () => undefined,
         setState: async (id: number, desiredState: string) => {
           if (id === ticket) {
@@ -249,8 +245,6 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
           commitLinkCalls.push({ pullRequest, target });
           return { ticket: ticketId, pullRequest, mergeCommit: `merge-${pullRequest}`, artifactLink: "vstfs:///Git/Commit/x" };
         },
-        addAttachment: async (id: number) => ({ ticket: id, name: "evidence.json", kind: "command-output" as const, digest: "a".repeat(64), url: "https://example.test/evidence" }),
-        setEvidence: async () => undefined,
         setHuState: async (id: number, desiredState: string, expectedState: string) => {
           events.push(`hu-transition:${desiredState}`);
           huStateCalls.push({ desiredState, expectedState });
