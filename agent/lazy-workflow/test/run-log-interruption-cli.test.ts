@@ -6,6 +6,10 @@ import { createCli } from "./_helpers/create-cli.ts";
 import type { InterruptionProcess } from "../src/output/run-interruption.ts";
 import type { DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
 
+// Shared state: see comment in run-interruption.test.ts. The unhandledRejection
+// test triggers `console.error` via the production handler; capturing it prevents
+// Bun from counting it as a test error under parallelism.
+
 const readLines = (path: string): Array<Record<string, unknown>> =>
   readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
@@ -135,20 +139,28 @@ describe("LazyWorkflowCli interruption handling", () => {
 
       const cli = createCli({ deterministicToolServices: deterministicToolServices, processSignals: proc });
 
-      void cli.run(["github-issue-list", "--working-directory", "/tmp", "--log-file", logFile]);
-      await reached;
+      const errors: unknown[] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => { errors.push(args.length === 1 ? args[0] : args); };
+      try {
+        void cli.run(["github-issue-list", "--working-directory", "/tmp", "--log-file", logFile]);
+        await reached;
 
-      // Simulates a rejection that truly escapes every catch, delivered directly
-      // to the handler exactly as Bun would deliver it to `process`.
-      proc.emit("unhandledRejection", new Error("escaped rejection") as never);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+        // Simulates a rejection that truly escapes every catch, delivered directly
+        // to the handler exactly as Bun would deliver it to `process`.
+        proc.emit("unhandledRejection", new Error("escaped rejection") as never);
+        await new Promise((resolve) => setTimeout(resolve, 20));
 
-      const lines = readLines(logFile);
-      const finished = lines.filter((line) => line["event"] === "run.finished" && line["outcome"] === "interrupted");
-      expect(finished).toHaveLength(1);
-      expect(finished[0]).toMatchObject({ failure_kind: "run-interrupted-failure" });
-      expect(String(finished[0]!["message"])).toContain("escaped rejection");
-      expect(proc.exitCode).toBe(1);
+        const lines = readLines(logFile);
+        const finished = lines.filter((line) => line["event"] === "run.finished" && line["outcome"] === "interrupted");
+        expect(finished).toHaveLength(1);
+        expect(finished[0]).toMatchObject({ failure_kind: "run-interrupted-failure" });
+        expect(String(finished[0]!["message"])).toContain("escaped rejection");
+        expect(proc.exitCode).toBe(1);
+        expect(errors.some((e) => e instanceof Error && e.message === "escaped rejection")).toBeTrue();
+      } finally {
+        console.error = originalError;
+      }
     });
   });
 });

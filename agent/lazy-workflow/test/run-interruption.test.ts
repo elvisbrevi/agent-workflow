@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { registerInterruptionHandlers, type InterruptionProcess } from "../src/output/run-interruption.ts";
 import type { RunLogRecordInput, RunLogSink } from "../src/output/run-log.ts";
 
+// Shared state: `console.error` is the global console method. The production
+// `run-interruption.ts` handlers call `console.error(error)` on uncaughtException
+// and unhandledRejection (to reproduce Bun's default report). Under bun test
+// parallelism, that output leaks into the test runner and is counted as errors.
+// The tests that emit those events must capture `console.error` to prevent
+// cross-file interference.
+
 const base: Parameters<typeof registerInterruptionHandlers>[0]["base"] = {
   command: "code",
   workflow: "code",
@@ -126,43 +133,61 @@ describe("registerInterruptionHandlers", () => {
   test("uncaughtException escribe el mensaje del error y sale con el mismo codigo que hoy (1)", async () => {
     const proc = new FakeProcess();
     const runLog = new RecordingRunLogSink();
-    registerInterruptionHandlers({
-      runLog,
-      base,
-      startedAt: Date.now(),
-      describeCheckpoint: async () => null,
-      errorMessage: (error) => (error instanceof Error ? error.message : String(error)),
-      process: proc,
-    });
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.length === 1 ? args[0] : args); };
+    try {
+      registerInterruptionHandlers({
+        runLog,
+        base,
+        startedAt: Date.now(),
+        describeCheckpoint: async () => null,
+        errorMessage: (error) => (error instanceof Error ? error.message : String(error)),
+        process: proc,
+      });
 
-    proc.emit("uncaughtException", new Error("boom") as never);
-    await flush();
+      proc.emit("uncaughtException", new Error("boom") as never);
+      await flush();
 
-    expect(runLog.records).toHaveLength(1);
-    expect(runLog.records[0]).toMatchObject({ event: "run.finished", outcome: "interrupted", failureKind: "run-interrupted-failure" });
-    expect(runLog.records[0]?.message).toContain("boom");
-    expect(proc.exitCodes).toEqual([1]);
+      expect(runLog.records).toHaveLength(1);
+      expect(runLog.records[0]).toMatchObject({ event: "run.finished", outcome: "interrupted", failureKind: "run-interrupted-failure" });
+      expect(runLog.records[0]?.message).toContain("boom");
+      expect(proc.exitCodes).toEqual([1]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(Error);
+    } finally {
+      console.error = originalError;
+    }
   });
 
   test("unhandledRejection escribe el motivo y sale con el mismo codigo que hoy (1)", async () => {
     const proc = new FakeProcess();
     const runLog = new RecordingRunLogSink();
-    registerInterruptionHandlers({
-      runLog,
-      base,
-      startedAt: Date.now(),
-      describeCheckpoint: async () => null,
-      errorMessage: (error) => (error instanceof Error ? error.message : String(error)),
-      process: proc,
-    });
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.length === 1 ? args[0] : args); };
+    try {
+      registerInterruptionHandlers({
+        runLog,
+        base,
+        startedAt: Date.now(),
+        describeCheckpoint: async () => null,
+        errorMessage: (error) => (error instanceof Error ? error.message : String(error)),
+        process: proc,
+      });
 
-    proc.emit("unhandledRejection", new Error("rejected") as never);
-    await flush();
+      proc.emit("unhandledRejection", new Error("rejected") as never);
+      await flush();
 
-    expect(runLog.records).toHaveLength(1);
-    expect(runLog.records[0]).toMatchObject({ event: "run.finished", outcome: "interrupted", failureKind: "run-interrupted-failure" });
-    expect(runLog.records[0]?.message).toContain("rejected");
-    expect(proc.exitCodes).toEqual([1]);
+      expect(runLog.records).toHaveLength(1);
+      expect(runLog.records[0]).toMatchObject({ event: "run.finished", outcome: "interrupted", failureKind: "run-interrupted-failure" });
+      expect(runLog.records[0]?.message).toContain("rejected");
+      expect(proc.exitCodes).toEqual([1]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(Error);
+    } finally {
+      console.error = originalError;
+    }
   });
 
   test("una senal que tarda en confirmar el checkpoint no cuelga el registro (timeout del probe)", async () => {
