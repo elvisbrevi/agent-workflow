@@ -1,13 +1,10 @@
 import { expect, test } from "bun:test";
 import { unlink } from "node:fs/promises";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AzureTicketInfoService, commandError } from "../src/azure/ticket-info-service.ts";
 import { AzureAutocodeService } from "../src/azure/autocode-service.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import { createCli } from "./_helpers/create-cli.ts";
-import { HTTP_CAPTURE_BODY, SCREENSHOT_BYTES, SCREENSHOT_NAME } from "./_helpers/evidence-fixtures.ts";
 
 const branch = "vstfs:///Git/Ref/project-id%2Frepository-id%2FGBhu%2F23438";
 
@@ -552,60 +549,6 @@ test("linking a participant merge commit is idempotent and keeps the primary Fix
   expect(patches).toBe(1);
 });
 
-test("attachment validation records a digest and retries by digest", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-evidence-${crypto.randomUUID()}.json`;
-  await Bun.write(path, HTTP_CAPTURE_BODY);
-  let attached = false;
-  let uploads = 0;
-  // Azure keeps only its own relation attributes, so the fake persists name and comment and drops
-  // everything else — a digest written anywhere but the comment must not survive here either.
-  let comment = "";
-  let patchFailures = 1;
-  try {
-    const service = new AzureTicketInfoService(async (args) => {
-      if (args[0] === "boards" && args.includes("23438")) return JSON.stringify({
-        id: 23438,
-        fields: { "System.WorkItemType": "User Story" },
-        relations: [{ rel: "System.LinkTypes.Hierarchy-Forward", url: "https://example.test/workItems/51" }],
-      });
-      if (args[0] === "boards") return JSON.stringify({
-        id: 51,
-        rev: 4,
-        fields: { "System.WorkItemType": "Task" },
-        relations: [
-          { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
-          ...(attached ? [{
-          rel: "AttachedFile",
-          url: "https://example.test/evidence.json",
-          attributes: { name: "evidence.json", comment },
-          }] : []),
-        ],
-      });
-      if (args[0] === "rest" && args.some((value) => value.includes("attachments?"))) {
-        uploads += 1;
-        return JSON.stringify({ url: "https://example.test/evidence.json" });
-      }
-      if (args[0] === "rest" && args.includes("patch")) {
-        attached = true;
-        const patch = JSON.parse(args[args.indexOf("--body") + 1]!);
-        comment = patch[1].value.attributes.comment;
-        if (patchFailures-- > 0) throw new Error("response lost after Azure applied relation");
-        return "{}";
-      }
-      throw new Error(`unexpected command: ${args.join(" ")}`);
-    });
-
-    const first = await service.addAttachment(51, path, "http-json");
-    const second = await service.addAttachment(51, path, "http-json");
-    expect(first.url).toBe(second.url);
-    expect(uploads).toBe(1);
-    expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(comment).toBe(`http-json sha256:${first.digest}`);
-  } finally {
-    await unlink(path);
-  }
-});
-
 test("ticket-info falls back to the authenticated Azure REST read boundary", async () => {
   const commands: string[][] = [];
   const service = new AzureTicketInfoService(async (args) => {
@@ -699,8 +642,6 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
     getDescription: async (ticket: number) => ({ ticket, description: "text" }),
     getState: async (ticket: number) => ({ ticket, state: "Active", revision: 4 }),
     getEffort: async (ticket: number) => ({ ticket, effort: { real: 1 } }),
-    getAttachments: async (ticket: number) => ({ ticket, attachments: [] }),
-    getEvidence: async (ticket: number) => ({ ticket, completionEvidence: null }),
   };
 
   try {
@@ -712,8 +653,6 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
       ["ticket-effort-info", "--ticket", "51"],
       ["ticket-branch-info", "--hu", "23438", "--ticket", "51"],
       ["ticket-pr-info", "--hu", "23438", "--ticket", "51"],
-      ["ticket-attachment-info", "--ticket", "51"],
-      ["ticket-evidence-info", "--ticket", "51"],
       ["ticket-completion-info", "--hu", "23438", "--ticket", "51"],
     ]) {
       expect(await createCli({ huInfoService: service }).run(args)).toBe(0);
@@ -722,12 +661,12 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
     console.log = originalLog;
   }
 
-  expect(output).toHaveLength(9);
+  expect(output).toHaveLength(7);
   expect(JSON.parse(output[0]!)).toEqual(info);
-  expect(JSON.parse(output[8]!)).toEqual({ hu: 23438, ticket: 51, gates: info.gates });
+  expect(JSON.parse(output[6]!)).toEqual({ hu: 23438, ticket: 51, gates: info.gates });
 });
 
-test("ticket mutation commands pass explicit identities and evidence files", async () => {
+test("ticket mutation commands pass explicit identities", async () => {
   const output: string[] = [];
   const calls: unknown[][] = [];
   const originalLog = console.log;
@@ -736,16 +675,12 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
     waitForAccess: async () => undefined,
     linkPullRequest: async (...args: [number, number, number]) => { calls.push(args); return { pullRequest: args[2] }; },
     linkCommit: async (...args: [number, number]) => { calls.push(args); return { commit: args[1] }; },
-    addAttachment: async (...args: [number, string, "http-json"]) => { calls.push(args); return { file: args[1] }; },
-    setEvidence: async (...args: [number, string]) => { calls.push(args); return { file: args[1] }; },
   };
 
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     expect(await createCli({ huInfoService: service }).run(["ticket-pr-link", "--hu", "23438", "--ticket", "51", "--pr", "99"])).toBe(0);
     expect(await createCli({ huInfoService: service }).run(["ticket-commit-link", "--ticket", "51", "--pr", "99"])).toBe(0);
-    expect(await createCli({ huInfoService: service }).run(["ticket-attachment-add", "--ticket", "51", "--file", "/tmp/evidence.json", "--kind", "http-json"])).toBe(0);
-    expect(await createCli({ huInfoService: service }).run(["ticket-evidence-set", "--ticket", "51", "--evidence-file", "/tmp/evidence.html"])).toBe(0);
   } finally {
     console.log = originalLog;
   }
@@ -753,10 +688,8 @@ test("ticket mutation commands pass explicit identities and evidence files", asy
   expect(calls).toEqual([
     [23438, 51, 99],
     [51, 99],
-    [51, "/tmp/evidence.json", "http-json"],
-    [51, "/tmp/evidence.html"],
   ]);
-  expect(output).toHaveLength(4);
+  expect(output).toHaveLength(2);
 });
 
 test("ticket publication commands reach the required Azure boundary operations", async () => {
@@ -1431,160 +1364,6 @@ test("completion apply reconciles missing effects before moving the ticket to Do
   expect(calls).toEqual(["pr", "commit", `evidence:${summary}`, "state"]);
 });
 
-test("un archivo sin trackear que el agente dejó para validar no invalida el completion manifest", async () => {
-  // El agente escribe .env.test para poder correr la suite; eso no es trabajo sin
-  // guardar y no puede rechazar un manifest cuyo commit ya está en la rama.
-  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const statuses: string[][] = [];
-  const service = new AzureTicketInfoService(async () => "", async (args) => {
-    if (args[0] === "rev-parse") return `${commit}\n`;
-    if (args[0] === "symbolic-ref") return "ticket/23574\n";
-    if (args[0] === "status") {
-      statuses.push(args);
-      return args.includes("--untracked-files=no") ? "" : "?? .env.test\n";
-    }
-    return "";
-  });
-
-  await expect(service.validateCompletionManifest(
-    {
-      ticket: 23574,
-      ticketBranch: "refs/heads/ticket/23574",
-      commit,
-      validation: [{ command: "bun test", result: "59 passed" }],
-      evidence: [],
-    } as any,
-    { branch: "refs/heads/ticket/23574" } as any,
-    23574,
-    process.cwd(),
-  )).resolves.toBeUndefined();
-  expect(statuses).not.toBeEmpty();
-});
-
-test("la evidencia del directorio que indica el coordinador es verificable; la del árbol de trabajo no", async () => {
-  // El coordinador manda la evidencia a `<git-common-dir>/lazy-workflow/`, que es
-  // parte del repositorio en ruta pero no del árbol que un commit puede llevarse.
-  // Leer la regla como "fuera del directorio del repositorio" volvía inverificable
-  // todo manifest que siguiera la instrucción del propio coordinador.
-  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-"));
-  const service = new AzureTicketInfoService(async () => "", async (args) => {
-    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return ".git\n";
-    if (args[0] === "rev-parse") return `${commit}\n`;
-    if (args[0] === "symbolic-ref") return "ticket/23574\n";
-    return "";
-  });
-  const digestOf = async (path: string): Promise<string> =>
-    [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
-      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const manifestWith = async (path: string) => ({
-    ticket: 23574,
-    ticketBranch: "refs/heads/ticket/23574",
-    commit,
-    validation: [{ command: "bun test", result: "59 passed" }],
-    evidence: [{ path, kind: "http-json", sha256: await digestOf(path) }],
-  } as any);
-
-  try {
-    const insideGitDirectory = join(root, ".git/lazy-workflow/pago.json");
-    const insideWorktree = join(root, "docs/pago.json");
-    await Bun.write(insideGitDirectory, '{ "ok": true }');
-    await Bun.write(insideWorktree, '{ "ok": true }');
-
-    await expect(service.validateCompletionManifest(
-      await manifestWith(insideGitDirectory), { branch: "refs/heads/ticket/23574" } as any, 23574, root,
-    )).resolves.toBeUndefined();
-    await expect(service.validateCompletionManifest(
-      await manifestWith(insideWorktree), { branch: "refs/heads/ticket/23574" } as any, 23574, root,
-    )).rejects.toThrow("La evidencia del manifest debe estar fuera del repositorio fuente");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-function manifestVerificationService(head: string, remoteTip: string | null, contains: boolean) {
-  return new AzureTicketInfoService(async () => "", async (args) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD") return `${head}\n`;
-    if (args[0] === "rev-parse") {
-      if (remoteTip === null) throw new Error("unknown revision");
-      return `${remoteTip}\n`;
-    }
-    if (args[0] === "merge-base") {
-      if (!contains) throw new Error("not an ancestor");
-      return "";
-    }
-    if (args[0] === "symbolic-ref") return "ticket/23574\n";
-    if (args[0] === "status") return "";
-    return "";
-  });
-}
-
-function completionManifest(commit: string) {
-  return {
-    ticket: 23574,
-    ticketBranch: "refs/heads/ticket/23574",
-    commit,
-    validation: [{ command: "bun test", result: "59 passed" }],
-    evidence: [],
-  } as any;
-}
-
-const ticketInfoForManifest = { branch: "refs/heads/ticket/23574" } as any;
-
-test("el manifest sigue siendo verificable cuando la entrega ya adelantó la rama hasta el merge", async () => {
-  // Completado el PR, Azure adelanta la rama del ticket y el checkout la alcanza:
-  // HEAD pasa a ser el merge que contiene el commit declarado. Exigir la igualdad
-  // dejaba el manifest inverificable para siempre tras una entrega interrumpida.
-  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const merge = "1faa46968a4fd05d63979fdf84f6327a8bf17ac8";
-  const service = manifestVerificationService(merge, merge, true);
-
-  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
-    .resolves.toBeUndefined();
-});
-
-test("un commit local más allá del manifest no pasa por la puerta del avance", async () => {
-  // HEAD contiene el commit declarado pero el remoto no lo tiene: es trabajo local
-  // que nadie revisó y que el manifest no describe.
-  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const service = manifestVerificationService("a".repeat(40), "1faa46968a4fd05d63979fdf84f6327a8bf17ac8", true);
-
-  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
-    .rejects.toThrow("El commit del manifest no coincide con HEAD");
-});
-
-test("una rama remota que no contiene el commit declarado no verifica el manifest", async () => {
-  const declared = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const merge = "1faa46968a4fd05d63979fdf84f6327a8bf17ac8";
-  const service = manifestVerificationService(merge, merge, false);
-
-  await expect(service.validateCompletionManifest(completionManifest(declared), ticketInfoForManifest, 23574, process.cwd()))
-    .rejects.toThrow("El commit del manifest no coincide con HEAD");
-});
-
-test("un cambio sin commitear en un archivo trackeado sí invalida el completion manifest", async () => {
-  const commit = "6d5d5d1424c39be97cead49dd5a9b9641f71575b";
-  const service = new AzureTicketInfoService(async () => "", async (args) => {
-    if (args[0] === "rev-parse") return `${commit}\n`;
-    if (args[0] === "symbolic-ref") return "ticket/23574\n";
-    if (args[0] === "status") return " M app/models/payment_attempt.ts\n";
-    return "";
-  });
-
-  await expect(service.validateCompletionManifest(
-    {
-      ticket: 23574,
-      ticketBranch: "refs/heads/ticket/23574",
-      commit,
-      validation: [{ command: "bun test", result: "59 passed" }],
-      evidence: [],
-    } as any,
-    { branch: "refs/heads/ticket/23574" } as any,
-    23574,
-    process.cwd(),
-  )).rejects.toThrow("cambios sin guardar");
-});
-
 test("un fallo de az explica la razón que Azure dio en stderr, no solo el exit code", () => {
   // Bun shell leaves the thrown message as a bare exit code, so an unread stderr is the difference
   // between "refresh your multi-factor authentication" and an operator with nothing to act on.
@@ -1803,35 +1582,6 @@ test("un PR activo no reporta el commit fuente como si hubiera entregado algo", 
   expect(pullRequest!.lastMergeSourceCommit).toBe("d".repeat(40));
 });
 
-test("la compuerta de evidencia lee el digest del comment, no de un atributo que Azure descarta", async () => {
-  const attachment = (attributes: Record<string, string>) => ({
-    id: 51,
-    rev: 4,
-    fields: { "System.WorkItemType": "Task", "System.State": "En progreso" },
-    relations: [
-      { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://example.test/workItems/23438" },
-      { rel: "AttachedFile", url: "https://example.test/evidence.md", attributes },
-    ],
-  });
-  const digest = "a".repeat(64);
-  const read = async (attributes: Record<string, string>) => {
-    const service = new AzureTicketInfoService(async (args) => {
-      if (args[0] === "boards") return JSON.stringify(attachment(attributes));
-      throw new Error(`unexpected command: ${args.join(" ")}`);
-    });
-    return (await service.getAttachments(51)).attachments[0]!;
-  };
-
-  const carried = await read({ name: "evidence.md", comment: `command-output sha256:${digest}` });
-  expect(carried.evidenceKind).toBe("command-output");
-  expect(carried.digest).toBe(digest);
-
-  // The shape Azure actually stores when the digest was written as its own attribute: gone.
-  const dropped = await read({ name: "evidence.md", comment: "command-output" });
-  expect(dropped.evidenceKind).toBe("command-output");
-  expect(dropped.digest).toBeUndefined();
-});
-
 function completionEvidenceService(options: {
   definedFields: string[];
   existing?: string;
@@ -1880,21 +1630,15 @@ function completionEvidenceService(options: {
 }
 
 test("completion-evidence se escribe en el campo que el proyecto define, no en el primero de la lista", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test, npm run build.\n");
   const guid = "Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71";
   const patches: unknown[][] = [];
-  try {
-    const service = completionEvidenceService({ definedFields: [guid], onPatch: (body) => patches.push(body) });
+  const service = completionEvidenceService({ definedFields: [guid], onPatch: (body) => patches.push(body) });
 
-    // The read-back reports the field the project defines, so the write has to have landed there.
-    await expect(service.setEvidence(51, path)).resolves.toMatchObject({ ticket: 51 });
-    const operations = patches[0] as Array<{ op: string; path: string }>;
-    expect(operations.some(({ op, path: target }) => op === "add" && target === `/fields/${guid}`)).toBeTrue();
-    expect(operations.some(({ path: target }) => target === "/fields/Custom.CompletionEvidence")).toBeFalse();
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
+  // The read-back reports the field the project defines, so the write has to have landed there.
+  await expect(service.setSummary(51, "Validaciones ejecutadas: npm test, npm run build.")).resolves.toMatchObject({ ticket: 51 });
+  const operations = patches[0] as Array<{ op: string; path: string }>;
+  expect(operations.some(({ op, path: target }) => op === "add" && target === `/fields/${guid}`)).toBeTrue();
+  expect(operations.some(({ path: target }) => target === "/fields/Custom.CompletionEvidence")).toBeFalse();
 });
 
 test("el resumen de la sesión se publica escapado y conservando sus líneas", async () => {
@@ -1934,363 +1678,8 @@ test("un resumen vacío no puede cerrar un ticket", async () => {
 });
 
 test("completion-evidence falla claro si el proyecto no define ningún campo candidato", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
-  try {
-    const service = completionEvidenceService({ definedFields: [] });
-    await expect(service.setEvidence(51, path)).rejects.toThrow("no define ningún campo de completion-evidence");
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-/**
- * What Azure hands back after storing a document in an html field: the same text, with the markup
- * normalized to its own — attributes dropped, newlines turned into breaks. Equality is judged on
- * the text, so a round trip through this must not read as a different value.
- */
-const azureNormalized = (value: string): string =>
-  value.replace(/ style="[^"]*"/g, "").replace(/\n/g, "<br>").replace(/<\/td><td>/g, "</td> <td>");
-
-/** The document `setEvidence` publishes for a delivery, read off the write it performed. */
-async function publishedEvidence(path: string): Promise<string> {
-  const patches: Array<Array<{ op: string; path: string; value?: unknown }>> = [];
-  const service = completionEvidenceService({
-    definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-    onPatch: (body) => patches.push(body as Array<{ op: string; path: string; value?: unknown }>),
-  });
-  await service.setEvidence(51, path);
-  const written = patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value;
-  return String(written);
-}
-
-test("completion-evidence ya escrita en un campo html no se lee como conflicto", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test & npm run build.\n");
-  const patches: unknown[][] = [];
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: azureNormalized(await publishedEvidence(path)),
-      onPatch: (body) => patches.push(body),
-    });
-
-    await expect(service.setEvidence(51, path)).resolves.toMatchObject({ ticket: 51 });
-    expect(patches).toHaveLength(0);
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("ticket-evidence-set sin manifest publica el archivo tal como se escribió", async () => {
-  // La reparación manual sigue siendo la fuente HTML que un operador escribió: sin manifest no hay
-  // nada que maquetar ni adjunto que resolver, y escapar ese HTML lo volvería texto.
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.html`;
-  const source = "<div><b>Validaciones</b>: npm test.</div>\n";
-  await Bun.write(path, source);
-  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-
-    await service.setEvidence(51, path);
-
-    expect(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value).toBe(source);
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("la evidencia que una versión anterior dejó en crudo se reconoce como propia, no como conflicto", async () => {
-  // El campo lleva ahora un documento, pero un ticket completado antes lleva los bytes del archivo.
-  // Juzgar solo contra el documento volvía cada repetición sobre ese ticket un conflicto que nadie
-  // podía limpiar, en una compuerta a la que se llega con los PR ya mergeados.
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.txt`;
-  const crudo = "Validaciones ejecutadas: npm test.\n";
-  await Bun.write(path, crudo);
-  const patches: unknown[][] = [];
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: crudo,
-      onPatch: (body) => patches.push(body),
-    });
-    const report = {
-      ticketBranch: "refs/heads/ticket/51",
-      validation: [{ command: "bun test", result: "198 pass" }],
-      evidence: [{ path, kind: "command-output" as const, sha256: "a".repeat(64) }],
-    };
-
-    await expect(service.validateEvidence(51, path, report)).resolves.toBeUndefined();
-    await expect(service.setEvidence(51, path, report)).resolves.toMatchObject({ ticket: 51 });
-    expect(patches).toHaveLength(0);
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("ticket-evidence-set sigue siendo repetible sobre un ticket que ya publicó su documento", async () => {
-  // La herramienta de reparación corre sin manifest, así que solo puede rendir el archivo que le
-  // pasaron, nunca el documento que el coordinador armó con la entrega entera. Compararlos como
-  // iguales la volvía un conflicto duro sobre un ticket que ya lleva exactamente esa evidencia,
-  // que es lo único que esa herramienta existe para poder repetir sin miedo.
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-repair-"));
-  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
-  try {
-    const salida = join(root, "bun-test.txt");
-    // Con color y larga: el documento le quita los escapes y recorta el bloque, así que su texto
-    // crudo tampoco está ahí -- lo que queda para reconocerla es el digest que el documento nombra.
-    await Bun.write(salida, `\u001b[32mbun test\u001b[0m\n${"detalle de la corrida\n".repeat(600)}198 pass, 0 fail\n`);
-    const digest = async (path: string): Promise<string> =>
-      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
-        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const publicado = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-    await publicado.setEvidence(51, salida, {
-      ticketBranch: "refs/heads/ticket/51",
-      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
-      evidence: [{ path: salida, kind: "command-output", sha256: await digest(salida) }],
-    });
-    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
-
-    const reparacion = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: documento,
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-
-    await expect(reparacion.validateEvidence(51, salida)).resolves.toBeUndefined();
-    await expect(reparacion.setEvidence(51, salida)).resolves.toMatchObject({ ticket: 51 });
-    expect(patches).toHaveLength(1);
-
-    // Y lo mismo cuando Azure devuelve su propia normalización del documento: un documento hecho
-    // casi entero de tablas se comparaba con sus celdas pegadas, así que cualquier espacio que
-    // Azure metiera entre ellas volvía cada repetición un conflicto que no se limpiaba nunca.
-    const normalizado = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: azureNormalized(documento),
-    });
-    await expect(normalizado.validateEvidence(51, salida)).resolves.toBeUndefined();
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("la reparación de un ticket transversal no lee como conflicto lo que ella misma publicó", async () => {
-  // La entrega transversal publica la evidencia de todos los repositorios de una vez, y el comando
-  // de reparación que la sigue lee un solo manifest: rinden documentos distintos sobre la misma
-  // prueba, y preguntados como iguales el segundo reporta conflicto contra lo que ya está ahí.
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-transversal-"));
-  const patches: Array<Array<{ path: string; value?: unknown }>> = [];
-  try {
-    const digest = async (path: string): Promise<string> =>
-      [...new Uint8Array(await crypto.subtle.digest("SHA-256", await Bun.file(path).arrayBuffer()))]
-        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    // Una captura, no una salida suelta: el renderizado la vuelve tablas y cuerpos, así que su
-    // texto crudo no aparece en el documento y solo el digest puede reconocerla.
-    const api = join(root, "pago-endpoint.json");
-    const web = join(root, "web.txt");
-    await Bun.write(api, HTTP_CAPTURE_BODY);
-    await Bun.write(web, "web: 78 pass, 0 fail\n");
-
-    const transversal = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-    await transversal.setEvidence(51, api, {
-      ticketBranch: "refs/heads/ticket/51",
-      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
-      evidence: [
-        { path: api, kind: "http-json", sha256: await digest(api) },
-        { path: web, kind: "command-output", sha256: await digest(web) },
-      ],
-    });
-    const documento = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
-
-    const reparacion = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: documento,
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-    const unSoloManifest = {
-      ticketBranch: "refs/heads/ticket/51",
-      validation: [{ command: "bun test", result: "120 pass" }],
-      evidence: [{ path: api, kind: "http-json" as const, sha256: await digest(api) }],
-    };
-
-    await expect(reparacion.validateEvidence(51, api, unSoloManifest)).resolves.toBeUndefined();
-    await expect(reparacion.setEvidence(51, api, unSoloManifest)).resolves.toMatchObject({ ticket: 51 });
-    expect(patches).toHaveLength(1);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("completion-evidence publica un documento con las secciones que un lector busca", async () => {
-  // El campo llevaba los bytes del archivo tal cual: un muro de monoespaciado sin endpoint, sin
-  // estado y sin la imagen del navegador, aunque las capturas ya estuvieran adjuntas al ticket.
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-evidence-html-"));
-  try {
-    const capture = join(root, "pago-endpoint.json");
-    const screenshot = join(root, SCREENSHOT_NAME);
-    await Bun.write(capture, HTTP_CAPTURE_BODY);
-    await Bun.write(screenshot, SCREENSHOT_BYTES);
-    const digest = async (bytes: ArrayBuffer): Promise<string> =>
-      [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
-        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const screenshotDigest = await digest(await Bun.file(screenshot).arrayBuffer());
-    const patches: Array<Array<{ path: string; value?: unknown }>> = [];
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      attachments: [{
-        rel: "AttachedFile",
-        url: "https://example.test/_apis/wit/attachments/abc",
-        attributes: { name: SCREENSHOT_NAME, comment: `screen sha256:${screenshotDigest}` },
-      }],
-      onPatch: (body) => patches.push(body as Array<{ path: string; value?: unknown }>),
-    });
-
-    await service.setEvidence(51, capture, {
-      ticketBranch: "refs/heads/ticket/51",
-      validation: [{ command: "bun test", result: "198 pass, 0 fail" }],
-      evidence: [
-        { path: capture, kind: "http-json", sha256: await digest(await Bun.file(capture).arrayBuffer()) },
-        { path: screenshot, kind: "screen", sha256: screenshotDigest },
-      ],
-    });
-
-    const published = String(patches[0]?.find(({ path: target }) => target.startsWith("/fields/"))?.value);
-    expect(published).toContain("Validaciones ejecutadas");
-    expect(published).toContain("bun test");
-    expect(published).toContain("https://api.test/payment-attempts/42/reconcile");
-    expect(published).toContain("200 OK");
-    expect(published).toContain("Cabecera de la respuesta");
-    expect(published).toContain("refs/heads/ticket/51");
-    // El commit no: una entrega transversal tiene uno por repositorio y una de repositorio único
-    // tiene exactamente uno, así que nombrarlo hacía que el mismo ticket rindiera dos documentos
-    // distintos según qué ruta publicara, y la segunda leía a la primera como conflicto.
-    expect(published).not.toContain("a".repeat(40));
-    // La captura del navegador se muestra desde el adjunto que el ticket ya tiene, no se nombra.
-    expect(published).toContain(`<img src="https://example.test/_apis/wit/attachments/abc?fileName=${SCREENSHOT_NAME}"`);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("completion-evidence distinta sigue siendo un conflicto", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: "<div>Otra evidencia completamente distinta.</div>",
-    });
-    await expect(service.setEvidence(51, path)).rejects.toThrow("conflicto");
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("validateEvidence no confunde el re-serializado html de Azure con un conflicto", async () => {
-  // The coordinator calls validateEvidence on every rerun, including one where setEvidence
-  // already landed successfully in an earlier session: Azure hands the same text back with
-  // markup the writer never sent, and that must not read as a distinct conflicting value.
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test & npm run build.\n");
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: azureNormalized(await publishedEvidence(path)),
-    });
-    await expect(service.validateEvidence(51, path)).resolves.toBeUndefined();
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("validateEvidence sigue rechazando una completion-evidence realmente distinta", async () => {
-  const path = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-completion-${crypto.randomUUID()}.md`;
-  await Bun.write(path, "Validaciones ejecutadas: npm test.\n");
-  try {
-    const service = completionEvidenceService({
-      definedFields: ["Custom.b505c83e-3745-4d8b-b76b-b3086a0c4c71"],
-      existing: "<div>Otra evidencia completamente distinta.</div>",
-    });
-    await expect(service.validateEvidence(51, path)).rejects.toThrow("conflicto");
-  } finally {
-    await unlink(path).catch(() => undefined);
-  }
-});
-
-test("la evidencia que redacta un secreto pasa; la que lo publica no", async () => {
-  // Juzgar la clave y no el valor rechazaba `"authorization": "[REDACTED - Bearer ...]"`, con lo
-  // que ninguna evidencia HTTP de un endpoint autenticado podía aprobarse por prolija que fuera
-  // su redacción: la entrega quedaba trabada en su última compuerta con el PR ya mergeado.
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-secret-"));
-  const service = new AzureTicketInfoService(async () => "", async () => "");
-  const accepts = async (content: string): Promise<void> => {
-    const path = join(root, `ok-${Bun.hash(content).toString(16)}.txt`);
-    await Bun.write(path, content);
-    await expect(service.validateEvidenceFile(path, "command-output")).resolves.toBeUndefined();
-  };
-  const rejects = async (content: string): Promise<void> => {
-    const path = join(root, `leak-${Bun.hash(content).toString(16)}.txt`);
-    await Bun.write(path, content);
-    await expect(service.validateEvidenceFile(path, "command-output"))
-      .rejects.toThrow("La evidencia contiene credenciales o secretos");
-  };
-
-  try {
-    await accepts('"authorization": "[REDACTED - Bearer ADMIN_API_TOKEN]"');
-    await accepts('"headers": { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" }');
-    await accepts('"providerToken": "nunca expuesto por este endpoint (ver sanitize)"');
-    await accepts('"token": "<TOKEN>"');
-    await accepts('"password": "***"');
-    await accepts('"cookie": "[REDACTED]"');
-    // Prosa, no filtración: un esquema nombra su secreto por posición y el español pone palabras
-    // en esa posición. Rechazarla volvía irrechazable cualquier evidencia que explicara el endpoint.
-    await accepts("El endpoint exige Basic authentication para responder.");
-    await accepts("Se envía Bearer token obtenido del flujo de login.");
-
-    await rejects('"authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"');
-    await rejects("Authorization: Basic dXNlcjpwYXNzd29yZA==");
-    await rejects("AZURE_DEVOPS_EXT_PAT=abcd1234efgh5678");
-    await rejects("az repos pr list --token ghp_realtokenvalue123");
-    await rejects('"password": "hunter2correcthorse"');
-    await rejects('"accessToken": "s3cr3t-de-verdad-largo"');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("la evidencia HTTP del ticket 23579 vuelve a ser verificable", async () => {
-  // Regresión del bloqueo real: cada línea de abajo hacía saltar al detector anterior.
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-23579-"));
-  const service = new AzureTicketInfoService(async () => "", async () => "");
-  const evidence = {
-    title: "Reconciliación de un intento de pago",
-    screenshot: "pantalla.png",
-    capturedWith: "chrome-devtools-mcp",
-    providerToken: "nunca expuesto por este endpoint (ver `PaymentAttemptsController.sanitize`)",
-    request: {
-      method: "POST",
-      url: "https://api.test/payment-attempts/42/reconcile",
-      headers: { "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" },
-    },
-    response: { status: 200, headers: { authorization: "[REDACTED - Bearer ADMIN_API_TOKEN]" } },
-  };
-
-  try {
-    const path = join(root, "ticket-23579-payment-reconciliation-http.json");
-    await Bun.write(path, JSON.stringify(evidence, null, 2));
-    await expect(service.validateEvidenceFile(path, "http-json")).resolves.toBeUndefined();
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  const service = completionEvidenceService({ definedFields: [] });
+  await expect(service.setSummary(51, "Validaciones ejecutadas: npm test.")).rejects.toThrow("no define ningún campo de completion-evidence");
 });
 
 test("ticket-info lee la rama del ticket del PR que la integró cuando el merge ya la borró", async () => {

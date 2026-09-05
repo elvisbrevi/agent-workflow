@@ -1,6 +1,5 @@
 import yargs from "yargs";
 import type { Argv } from "yargs";
-import type { EvidenceKind } from "../azure/ticket-info-service.ts";
 import { AGENT_CLI_BINARIES, AGENT_CLI_PROFILES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { DEFAULT_IDLE_TIMEOUT_MINUTES } from "../coding-agent/idle-watchdog.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
@@ -42,14 +41,7 @@ export interface CliOptions {
   pullRequest: number | null;
   /** The commit a deterministic tool is pinned to; always a full object name. */
   commit: string | null;
-  manifest: string | null;
-  /** `--validation` and `--validation-result`, paired by position by the tool that reads them. */
-  validationCommands: string[];
-  validationResults: string[];
-  /** `--evidence`, verbatim; each family parses its own form (`<kind>:<path>` for Azure). */
-  evidence: string[];
   summary: string | null;
-  file: string | null;
   descriptionFile: string | null;
   state: string | null;
   expectedState: string | null;
@@ -60,7 +52,6 @@ export interface CliOptions {
   hasRealEffort: boolean;
   hasRealEffortHours: boolean;
   hasExpectedRevision: boolean;
-  evidenceKind: EvidenceKind | null;
   type: string | null;
   title: string | null;
   estimate: number | null;
@@ -142,8 +133,6 @@ const SUPPORTED_COMMANDS = new Set([
   "ticket-effort-info",
   "ticket-branch-info",
   "ticket-pr-info",
-  "ticket-attachment-info",
-  "ticket-evidence-info",
   "ticket-completion-info",
   "ticket-description-set",
   "ticket-state-set",
@@ -151,16 +140,12 @@ const SUPPORTED_COMMANDS = new Set([
   "ticket-branch-set",
   "ticket-pr-link",
   "ticket-commit-link",
-  "ticket-attachment-add",
-  "ticket-evidence-set",
   "ticket-completion-apply",
   "ticket-create",
   "ticket-link-parent",
   "ticket-link-predecessor",
   ...DETERMINISTIC_TOOL_COMMANDS,
 ]);
-
-const EVIDENCE_KINDS = new Set<EvidenceKind>(["http-json", "screen", "command-output"]);
 
 type StringCoerce = (value: unknown) => string | null;
 
@@ -200,12 +185,6 @@ const commitCoerce = (value: unknown): string => {
     throw new Error(`--commit requiere el nombre de objeto completo del commit (recibido: ${text})`);
   }
   return text;
-};
-
-const evidenceKindCoerce = (value: unknown): EvidenceKind | null => {
-  const text = String(value ?? "");
-  if (text.length === 0) return null;
-  return EVIDENCE_KINDS.has(text as EvidenceKind) ? (text as EvidenceKind) : null;
 };
 
 const stringOption = (flag: string, describe: string) => ({
@@ -333,10 +312,9 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     })
     .group(["hu", "issue", "environment"], "Alcance:")
     .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "idle-timeout", "prompt"], "Agente de codificacion:")
-    .group(["branch", "base-branch", "ticket", "pr", "commit", "manifest"], "Tickets Azure:")
-    .group(["validation", "validation-result", "evidence", "summary"], "Manifest de entrega:")
-    .group(["file", "description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
-    .group(["real-effort", "real-effort-hh", "expected-rev", "kind", "number-of-questions"], "Tickets Azure (datos):")
+    .group(["branch", "base-branch", "ticket", "pr", "commit", "summary"], "Tickets Azure:")
+    .group(["description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
+    .group(["real-effort", "real-effort-hh", "expected-rev", "number-of-questions"], "Tickets Azure (datos):")
     .group(
       ["interview", "interview-timeout", "interview-rounds", "interview-host", "interview-port", "interview-dir"],
       "Entrevista de planificacion (solo plan):",
@@ -375,25 +353,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("ticket", positiveIntegerOption("--ticket", "Identificador del ticket Azure."))
     .option("pr", positiveIntegerOption("--pr", "Identificador del pull request."))
     .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
-    .option("manifest", stringOption("--manifest", "Ruta al manifest de completion."))
-    .option("validation", {
-      type: "array",
-      requiresArg: true,
-      describe: "Comando de validacion ejecutado; repetible y emparejado por posicion con --validation-result.",
-    })
-    .option("validation-result", {
-      type: "array",
-      requiresArg: true,
-      describe: "Resultado del comando de validacion en la misma posicion de --validation; repetible.",
-    })
-    .option("evidence", {
-      type: "array",
-      requiresArg: true,
-      describe: "Evidencia del manifest; repetible. Azure: <kind>:<ruta>. GitHub: ruta dentro del repositorio.",
-    })
     .option("summary", stringOption("--summary", "Resumen de la entrega, tal como lo dejó la sesión."))
-    .option("file", { type: "string", alias: "evidence-file", requiresArg: true, describe: "Archivo de evidencia.", coerce: stringCoerce("--file") })
-    .option("evidence-file", { type: "string", requiresArg: true, describe: "Alias de --file.", coerce: stringCoerce("--evidence-file") })
     .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket."))
     .option("state", stringOption("--state", "Estado destino del ticket."))
     .option("expected-state", stringOption("--expected-state", "Estado actual esperado antes de la transicion."))
@@ -401,8 +361,6 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("real-effort", nonNegativeNumberOption("--real-effort", "Real Effort en horas."))
     .option("real-effort-hh", nonNegativeNumberOption("--real-effort-hh", "Real Effort HH."))
     .option("expected-rev", positiveIntegerOption("--expected-rev", "Revision esperada del ticket."))
-    .option("kind", { type: "string", alias: "evidence-kind", requiresArg: true, describe: "Tipo de evidencia.", coerce: evidenceKindCoerce })
-    .option("evidence-kind", { type: "string", requiresArg: true, describe: "Alias de --kind.", coerce: evidenceKindCoerce })
     .option("number-of-questions", positiveIntegerOption("--number-of-questions", "Cantidad de preguntas para el modo plan.", DEFAULT_NUMBER_OF_QUESTIONS))
     .option("interview", {
       type: "string",
@@ -538,20 +496,6 @@ function parseFallbackChain(value: unknown, primary: FallbackRung, binaryPresent
   return chain;
 }
 
-/**
- * A repeatable text flag, in declaration order. Order is the contract for
- * `--validation` and `--validation-result`, which pair by position, so an entry
- * that is not text at all is an argument error rather than a silent gap that
- * would shift every pair after it.
- */
-function parseTextList(value: unknown, flag: string): string[] {
-  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
-  return entries.map((entry) => {
-    if (typeof entry !== "string" || !entry.trim()) throw new Error(`${flag} requiere un valor`);
-    return entry;
-  });
-}
-
 /** `--field <referenceName>=<value>`; the value may contain `=`. */
 function parseFields(value: unknown): Array<{ referenceName: string; value: string }> {
   const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
@@ -613,12 +557,7 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     ticket: asNumber("ticket"),
     pullRequest: asNumber("pr"),
     commit: asString("commit"),
-    manifest: asString("manifest"),
-    validationCommands: parseTextList(parsed["validation"], "--validation"),
-    validationResults: parseTextList(parsed["validation-result"], "--validation-result"),
-    evidence: parseTextList(parsed["evidence"], "--evidence"),
     summary: asString("summary"),
-    file: asString("file") ?? asString("evidence-file"),
     descriptionFile: asString("description-file"),
     state: asString("state"),
     expectedState: asString("expected-state"),
@@ -629,7 +568,6 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     hasRealEffort: parsed["real-effort"] !== undefined,
     hasRealEffortHours: parsed["real-effort-hh"] !== undefined,
     hasExpectedRevision: parsed["expected-rev"] !== undefined,
-    evidenceKind: (parsed["kind"] as EvidenceKind | null | undefined) ?? (parsed["evidence-kind"] as EvidenceKind | null | undefined) ?? null,
     type: asString("type"),
     title: asString("title"),
     estimate: asNumber("estimate"),
@@ -737,7 +675,7 @@ function renderHelp(parser: YargsInstance): string {
     "  code: --base-branch solo aplica al crear hu/<HU> por primera vez; sin declararla se usa master o main de cada repositorio",
     "  code: --working-directory CSV acepta --hu para preparar la topología multi-repositorio Azure",
     "  code: --ticket fija una unica unidad de entrega; omitirlo drena los Task y Bug hijos elegibles de la HU",
-    "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y genera el manifest",
+    "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y deja el resumen de la sesion",
     "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
     "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
     "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
@@ -767,7 +705,7 @@ const COMMAND_FORMS = [
   "  lazy-workflow hu-branch-info --hu <id>",
   "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",
   "  lazy-workflow ticket-info --hu <id> --ticket <id>",
-  "  lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>",
+  "  lazy-workflow ticket-{description,state,effort}-info --ticket <id>",
   "  lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>",
   "  lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>",
   "  lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>",
@@ -775,8 +713,6 @@ const COMMAND_FORMS = [
   "  lazy-workflow ticket-description-set --ticket <id> --description-file <path>",
   "  lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>",
   "  lazy-workflow ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>",
-  "  lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>",
-  "  lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>",
   "  lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto>",
   "  lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <titulo> --description-file <path> [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<valor>]",
   "  lazy-workflow ticket-link-parent --parent <id> --child <id>",

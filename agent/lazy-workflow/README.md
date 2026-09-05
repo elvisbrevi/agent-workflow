@@ -134,8 +134,6 @@ lazy-workflow ticket-info --hu 23438 --ticket 23459
 lazy-workflow ticket-description-info --ticket 23459
 lazy-workflow ticket-state-info --ticket 23459
 lazy-workflow ticket-effort-info --ticket 23459
-lazy-workflow ticket-attachment-info --ticket 23459
-lazy-workflow ticket-evidence-info --ticket 23459
 lazy-workflow ticket-branch-info --hu 23438 --ticket 23459
 lazy-workflow ticket-pr-info --hu 23438 --ticket 23459
 lazy-workflow ticket-completion-info --hu 23438 --ticket 23459
@@ -165,72 +163,21 @@ lazy-workflow ticket-state-set --ticket 23459 --state "En progreso" --expected-s
 lazy-workflow ticket-effort-set --ticket 23459 \
   --real-effort 6 --real-effort-hh 6 --expected-rev 12
 
-# Completion evidence
+# Completion
 lazy-workflow ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 lazy-workflow ticket-commit-link --ticket 23459 --pr 123
-lazy-workflow ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json
-lazy-workflow ticket-evidence-set --ticket 23459 --evidence-file completion.html
 lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 \
   --summary "Migré el endpoint y corrí la suite: 18 passed."
 ```
 
-`--file` and `--kind` accept `--evidence-file` and `--evidence-kind` as aliases,
-and `--field <referenceName>=<value>` is repeatable — Azure reference names are
+`--field <referenceName>=<value>` is repeatable — Azure reference names are
 never inferred from display labels.
 
-Evidence is published as a document, not as the bytes of a file. From the
-verified manifest the coordinator renders one HTML page into the ticket's
-completion-evidence field: the ticket branch and commit, the validations that
-ran, every HTTP exchange as its endpoint, header tables and pretty-printed
-bodies, every command output, and every screenshot shown inline from the
-attachment uploaded for it. A GitHub delivery renders the same document as
-Markdown into the pull-request body and into the comment that closes the issue,
-with the screenshots shown from the commit that carries them.
-
-An `http-json` evidence file is therefore a browser capture with a shape, taken
-by driving the request in the browser Chrome MCP opens:
-
-```json
-{
-  "title": "Reconciliación de un intento de pago",
-  "screenshot": "pantalla.png",
-  "capturedWith": "chrome-devtools-mcp",
-  "request": {
-    "method": "POST",
-    "url": "https://api.example/payment-attempts/42/reconcile",
-    "headers": { "content-type": "application/json", "x-api-key": "[REDACTED - ADMIN_API_TOKEN]" },
-    "body": { "reason": "manual" }
-  },
-  "response": {
-    "status": 200,
-    "statusText": "OK",
-    "headers": { "content-type": "application/json" },
-    "body": { "reconciled": true, "attempt": 42 }
-  }
-}
-```
-
-Several exchanges may share one file under a `captures` array, and the screenshot
-a capture names must travel in the same manifest as `screen` evidence, written
-beside the capture file: the two are paired by file name within their directory,
-so two repositories of one delivery can both call theirs `pantalla.png`. The
-shape is checked by `ticket-manifest-set`, where the session that wrote the file
-is still alive to fix it; evidence written before the shape existed still
-publishes, as plain JSON, so a manifest already on disk never becomes
-unpublishable.
-
-Both documents end by naming the evidence files they were rendered from, with the
-first twelve characters of each file's SHA-256. That is how a rerun recognises
-evidence it published itself: the same proof renders differently depending on how
-much of it the publishing path could see, so the digests answer where the text
-cannot.
-
-A GitHub delivery keeps its evidence in the repository and `github-manifest-set`
-requires every evidence file to be in the commit it names, because the published
-document shows each screenshot from that commit and a file nobody committed
-would be a broken image on an issue already closed. It refuses evidence carrying
-a credential for the same reason the Azure ticket does: the pull-request body and
-the closing comment now carry that file's own text.
+There is no separate evidence step. The delivery summary a session leaves
+behind is the only narrative artifact a delivery produces (ADR-0037): the
+coordinator writes it verbatim into the ticket's completion-evidence field on
+Azure, and into the pull-request body and the comment that closes the issue on
+GitHub.
 
 The two mutations that move a ticket are optimistic: `ticket-state-set` requires
 the `--expected-state` it will find and refuses a transition the board does not
@@ -313,18 +260,12 @@ lazy-workflow github-issue-info --issue 201 --working-directory /path/to/reposit
 lazy-workflow github-issue-claim --issue 201 --working-directory /path/to/repository
 lazy-workflow github-issue-release --issue 201 --working-directory /path/to/repository
 
-# GitHub delivery: the branch, the manifest, the commit, the PR, the closure
+# GitHub delivery: the branch, the commit, the PR, the closure
 lazy-workflow github-branch-prepare --issue 201 --working-directory /path/to/repository
 lazy-workflow github-branch-checkout --branch issue/201 --base-branch main \
   --working-directory /path/to/repository
 lazy-workflow github-branch-verify --branch issue/201 --base-branch main \
   --working-directory /path/to/repository
-lazy-workflow github-manifest-info --manifest /path/to/github-completion-manifest.json \
-  --working-directory /path/to/repository
-lazy-workflow github-manifest-set --issue 201 --branch issue/201 \
-  --manifest /path/to/github-completion-manifest.json --summary "Adds the thing" \
-  --validation "bun test" --validation-result "198 pass" \
-  --evidence docs/evidence/run.json --working-directory /path/to/repository
 lazy-workflow github-commit-push --branch issue/201 --commit <sha> \
   --working-directory /path/to/repository
 lazy-workflow github-pr-create --issue 201 --branch issue/201 --base-branch main \
@@ -344,11 +285,6 @@ lazy-workflow ticket-type-info --ticket 23459
 lazy-workflow ticket-pr-create --hu 23438 --ticket 23459
 lazy-workflow ticket-branch-checkout --branch ticket/23459 --working-directory /path/to/repository
 lazy-workflow ticket-branch-push --branch ticket/23459 --working-directory /path/to/repository
-lazy-workflow ticket-manifest-set --ticket 23459 --branch ticket/23459 \
-  --manifest /path/to/repository/.git/lazy-workflow/completion-manifest.json \
-  --validation "bun test" --validation-result "198 pass" \
-  --evidence http-json:/path/to/repository/.git/lazy-workflow/api.json \
-  --working-directory /path/to/repository
 
 # git
 lazy-workflow git-branch-delete --branch ticket/23459 --base-branch hu/23438 \
@@ -883,16 +819,12 @@ bun run main.ts ticket-info --hu 23438 --ticket 23459
 bun run main.ts ticket-description-info --ticket 23459
 bun run main.ts ticket-state-info --ticket 23459
 bun run main.ts ticket-effort-info --ticket 23459
-bun run main.ts ticket-attachment-info --ticket 23459
-bun run main.ts ticket-evidence-info --ticket 23459
 bun run main.ts ticket-description-set --ticket 23459 --description-file ./description.html
 bun run main.ts ticket-state-set --ticket 23459 --state "En progreso" --expected-state New
 bun run main.ts ticket-effort-set --ticket 23459 --real-effort 6 --real-effort-hh 6 --expected-rev 12
 bun run main.ts ticket-completion-apply --hu 23438 --ticket 23459 --pr 123 --summary "18 passed."
 bun run main.ts ticket-pr-link --hu 23438 --ticket 23459 --pr 123
 bun run main.ts ticket-commit-link --ticket 23459 --pr 123
-bun run main.ts ticket-attachment-add --ticket 23459 --file evidence.json --kind http-json
-bun run main.ts ticket-evidence-set --ticket 23459 --evidence-file completion.html
 bun run main.ts ticket-branch-info --hu 23438 --ticket 23459
 bun run main.ts ticket-branch-set --hu 23438 --ticket 23459 \
   --branch ticket/23459 --working-directory /path/to/repository
@@ -951,15 +883,14 @@ Omit `--base-branch` when the HU is already linked, when the expected remote
 pass it to branch from anything else. A branch preflight failure stops once,
 without selecting a ticket, writing a checkpoint, or starting OpenCode.
 
-The session produces that manifest with `ticket-manifest-set`, never by writing
-the JSON itself: the tool resolves the commit, computes every evidence digest and
-validates the result with the coordinator's own code, so the shape is not
-something a session has to reproduce from a description.
+The session's last words are its delivery summary; the coordinator writes it
+verbatim into the ticket's completion-evidence field, never rendering or
+reproducing it (ADR-0037).
 
-After `IMPLEMENTATION_READY`, the coordinator closes OpenCode, validates the
-manifest from Git common metadata, creates or reuses exactly one HU-targeted
-pull request, publishes effort and evidence through typed idempotent commands,
-verifies every completion gate, and only then moves the ticket to `Done`.
+After `IMPLEMENTATION_READY`, the coordinator closes OpenCode, creates or
+reuses exactly one HU-targeted pull request, publishes effort and the delivery
+summary through typed idempotent commands, verifies every completion gate, and
+only then moves the ticket to `Done`.
 An already absent session is safe; any other closure failure stops the run with
 the pinned ticket in a sessionless checkpoint. A later invocation resumes the
 coordinator phase without asking OpenCode to repair Azure metadata, switches to

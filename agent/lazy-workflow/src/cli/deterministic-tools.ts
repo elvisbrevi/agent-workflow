@@ -19,13 +19,6 @@ import {
   type GitHubPullRequest,
 } from "../github/github-delivery-service.ts";
 import {
-  isEvidenceKind,
-  EVIDENCE_KINDS,
-  type CompletionManifest,
-  type CompletionManifestInput,
-  type EvidenceKind,
-} from "../azure/completion-manifest.ts";
-import {
   GitHubManagedQueueService,
   classifyQueueIssues,
   evaluateEligibility,
@@ -86,7 +79,6 @@ export interface AzureToolBoundary {
   pushTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   checkoutTicketBranch?(branch: string, workingDirectory: string): Promise<void>;
   verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
-  writeCompletionManifest?(path: string, input: CompletionManifestInput, workingDirectory: string): Promise<CompletionManifest>;
 }
 
 export interface DeterministicToolServices {
@@ -109,7 +101,6 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export function deterministicFailureKind(command: DeterministicToolCommand) {
-  if (command.includes("manifest")) return "manifest-not-verifiable" as const;
   if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
@@ -145,50 +136,6 @@ function requireText(value: string | null, flag: string, command: string): strin
 
 function requireBranchRef(value: string | null, flag: string, command: string): string {
   return toBranchRef(requireText(value, flag, command));
-}
-
-/**
- * The validations a manifest declares, as `{command, result}` pairs.
- *
- * They arrive as two repeatable flags paired by position rather than one flag
- * with a separator, because a real validation command carries whatever
- * characters a separator would claim (`dotnet test --filter A::B /p:X=Y`), and a
- * manifest that mis-splits its own evidence of having been validated is exactly
- * what this tool exists to prevent. A count mismatch names both flags.
- */
-function requireValidation(options: CliOptions, command: string): Array<{ command: string; result: string }> {
-  const commands = options.validationCommands;
-  const results = options.validationResults;
-  if (commands.length === 0) {
-    throw new MissingArgument(`${command} requiere al menos un par --validation <comando> --validation-result <resultado>`);
-  }
-  if (commands.length !== results.length) {
-    throw new MissingArgument(
-      `${command} recibió ${commands.length} --validation y ${results.length} --validation-result; cada validación necesita su resultado en la misma posición`,
-    );
-  }
-  return commands.map((entry, index) => ({ command: entry, result: results[index]! }));
-}
-
-/**
- * `--evidence <kind>:<path>` for the Azure manifest. The kind is a closed set,
- * so splitting on the first `:` is unambiguous, and an invented kind — the exact
- * failure this tool replaces — is rejected here naming the accepted ones.
- */
-function requireAzureEvidence(options: CliOptions, command: string): Array<{ path: string; kind: EvidenceKind }> {
-  if (options.evidence.length === 0) {
-    throw new MissingArgument(`${command} requiere al menos un --evidence <${EVIDENCE_KINDS.join("|")}>:<ruta>`);
-  }
-  return options.evidence.map((entry) => {
-    const separator = entry.indexOf(":");
-    const kind = separator > 0 ? entry.slice(0, separator) : "";
-    const path = separator > 0 ? entry.slice(separator + 1).trim() : "";
-    if (!path) throw new MissingArgument(`--evidence ${entry} no tiene la forma <${EVIDENCE_KINDS.join("|")}>:<ruta>`);
-    if (!isEvidenceKind(kind)) {
-      throw new MissingArgument(`--evidence ${entry} nombra un tipo desconocido: ${kind} (usa ${EVIDENCE_KINDS.join("|")})`);
-    }
-    return { path, kind };
-  });
 }
 
 /**
@@ -270,18 +217,6 @@ async function runAzureTool(
     const baseBranch = requireBranchRef(options.baseBranch, "--base-branch <name>", command);
     const { commit } = await requireOperation(azure, "verifySession", command)(branch, baseBranch, options.workingDirectory);
     return { branch, baseBranch, commit };
-  }
-  if (command === "ticket-manifest-set") {
-    const ticket = requirePositive(options.ticket, "--ticket <id>", command);
-    const ticketBranch = requireBranchRef(options.branch, "--branch <name>", command);
-    const manifest = requireText(options.manifest, "--manifest <path>", command);
-    const validation = requireValidation(options, command);
-    const evidence = requireAzureEvidence(options, command);
-    return requireOperation(azure, "writeCompletionManifest", command)(
-      manifest,
-      { ticket, ticketBranch, ...(options.commit ? { commit: options.commit } : {}), validation, evidence },
-      options.workingDirectory,
-    );
   }
   // ticket-branch-checkout
   const branch = requireText(options.branch, "--branch <name>", command);

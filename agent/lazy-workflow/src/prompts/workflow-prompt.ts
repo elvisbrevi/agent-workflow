@@ -21,7 +21,6 @@ import {
   QUEUE_EMPTY_MARKER,
   TICKET_COMPLETED_MARKER,
   WORKFLOW_STEP_FINISHED_MARKER,
-  azureManifestCommandLine,
   renderContract,
 } from "./workflow-contract.ts";
 

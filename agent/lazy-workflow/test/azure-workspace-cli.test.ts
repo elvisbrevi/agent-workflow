@@ -47,7 +47,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => {
@@ -140,8 +140,6 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
     }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
     getDescription: async () => ({ ticket: 51, description: null }),
-    getAttachments: async () => ({ ticket: 51, attachments: [] }),
-    getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
@@ -198,7 +196,7 @@ async function setupWorkspaceFallbackFixture() {
   const ticketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let currentHuState = "En Desarrollo";
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getTicket" | "getDescription" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => ({
@@ -274,8 +272,6 @@ async function setupWorkspaceFallbackFixture() {
     }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
     getDescription: async () => ({ ticket: 51, description: null }),
-    getAttachments: async () => ({ ticket: 51, attachments: [] }),
-    getEvidence: async () => ({ ticket: 51, completionEvidence: null }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
@@ -351,7 +347,7 @@ async function setupWorkspaceDrainFixture() {
   let currentTicketBranch = `refs/heads/ticket/51`;
   let currentTicketState = "En progreso";
   let autocodeCalls = 0;
-  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getAutocodeState" | "getTicket" | "getDescription" | "getAttachments" | "getEvidence" | "validateDirectTicketContext" | "linkTicketBranch"> = {
+  const azureBoundary: Pick<AzureBoundary, "getHuInfo" | "waitForAccess" | "prepareWorkspaceBranches" | "prepareWorkspaceTicketBranches" | "createOrReusePullRequest" | "checkoutTicketBranch" | "pushTicketBranch" | "linkPullRequest" | "linkCommit" | "getTicketInfo" | "setEffort" | "setState" | "verifySession" | "validateSummary" | "setSummary" | "getBranch" | "getState" | "getHuState" | "getEffort" | "setHuState" | "hasOpenDeliveryChildren" | "getAutocodeContextForTicket" | "getAutocodeState" | "getTicket" | "getDescription" | "validateDirectTicketContext" | "linkTicketBranch"> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     prepareWorkspaceBranches: async (options) => ({
@@ -430,8 +426,6 @@ async function setupWorkspaceDrainFixture() {
     },
     getTicket: async () => ({ id: currentTicket, type: "Task" as const }),
     getDescription: async () => ({ ticket: currentTicket, description: null }),
-    getAttachments: async () => ({ ticket: currentTicket, attachments: [] }),
-    getEvidence: async () => ({ ticket: currentTicket, completionEvidence: null }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };

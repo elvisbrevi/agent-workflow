@@ -37,13 +37,6 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       createOrReusePullRequest: record("createOrReusePullRequest", { pullRequest: 7, mergeCommit: COMMIT }),
       pushTicketBranch: record("pushTicketBranch", undefined),
       checkoutTicketBranch: record("checkoutTicketBranch", undefined),
-      writeCompletionManifest: record("writeCompletionManifest", {
-        ticket: 51,
-        ticketBranch: "refs/heads/ticket/51",
-        commit: COMMIT,
-        validation: [{ command: "bun test", result: "18 passed" }],
-        evidence: [],
-      }),
     },
     queue: {
       verifyAuthentication: record("verifyAuthentication", { login: "elvis" }),
@@ -113,15 +106,6 @@ class StatefulAzureBoundary implements AzureToolBoundary {
   verifySession(): Promise<{ commit: string }> {
     return this.record("verifySession", { commit: this.delegate.commit });
   }
-  writeCompletionManifest(): Promise<any> {
-    return this.record("writeCompletionManifest", {
-      ticket: this.delegate.ticket,
-      ticketBranch: `refs/heads/ticket/${this.delegate.ticket}`,
-      commit: this.delegate.commit,
-      validation: [{ command: "bun test", result: "18 passed" }],
-      evidence: [],
-    });
-  }
 }
 
 /** Every Azure tool command, with the boundary operation it must reach. */
@@ -139,14 +123,6 @@ const AZURE_TOOL_INVOCATIONS: Array<{ args: string[]; operation: string }> = [
   {
     args: ["ticket-session-verify", "--branch", "ticket/51", "--base-branch", "hu/23438", "--working-directory", "/repo"],
     operation: "verifySession",
-  },
-  {
-    args: [
-      "ticket-manifest-set", "--ticket", "51", "--branch", "ticket/51", "--manifest", "/repo/.git/m.json",
-      "--validation", "bun test", "--validation-result", "18 passed",
-      "--evidence", "http-json:/repo/.git/lazy-workflow/api.json", "--working-directory", "/repo",
-    ],
-    operation: "writeCompletionManifest",
   },
 ];
 
@@ -222,7 +198,6 @@ describe("herramientas deterministas como comandos", () => {
       "ticket-branch-push": "deterministic-completion-failure",
       "ticket-branch-checkout": "branch-preparation-failure",
       "ticket-session-verify": "session-not-verified",
-      "ticket-manifest-set": "manifest-not-verifiable",
       "github-auth-info": "tracker-read-failure",
       "github-repo-info": "tracker-read-failure",
       "github-issue-list": "tracker-read-failure",
@@ -408,31 +383,6 @@ describe("herramientas deterministas como comandos", () => {
 
       expect(code).toBe(0);
       expect(parsed(printed)).toEqual({ hu: 23438, ticket: 51, pullRequest: 7, mergeCommit: COMMIT });
-    });
-
-    test("ticket-manifest-set entrega la declaración estructurada, con el commit sin fijar", async () => {
-      const { code, calls } = await runTool([
-        "ticket-manifest-set", "--ticket", "23575", "--branch", "ticket/23575",
-        "--manifest", "/repo/.git/lazy-workflow/completion-manifest.json",
-        "--validation", "bun test", "--validation-result", "198 pass",
-        "--evidence", "screen:/repo/.git/lazy-workflow/pago.png", "--working-directory", "/repo",
-      ]);
-
-      expect(code).toBe(0);
-      // Sin `--commit` la declaración no lo lleva: lo resuelve el escritor desde HEAD.
-      expect(calls).toEqual([{
-        operation: "writeCompletionManifest",
-        args: [
-          "/repo/.git/lazy-workflow/completion-manifest.json",
-          {
-            ticket: 23575,
-            ticketBranch: "refs/heads/ticket/23575",
-            validation: [{ command: "bun test", result: "198 pass" }],
-            evidence: [{ path: "/repo/.git/lazy-workflow/pago.png", kind: "screen" }],
-          },
-          "/repo",
-        ],
-      }]);
     });
 
     test("ticket-branch-checkout y ticket-branch-push operan sobre la rama declarada", async () => {

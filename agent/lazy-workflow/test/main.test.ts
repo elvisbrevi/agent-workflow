@@ -1247,18 +1247,6 @@ test("resume usa una sola invocacion simple con continue", async () => {
   ]]);
 });
 
-test("el prompt Azure de workspace conserva solo el contrato semántico de implementación", async () => {
-  const prompt = await Bun.file(new URL("../prompts/autocode-prompt.md", import.meta.url)).text();
-
-  expect(prompt).toContain("IMPLEMENTATION_READY");
-  expect(prompt).toContain("non-authoritative");
-  expect(prompt).not.toContain("TICKET_COMPLETED");
-  expect(prompt).not.toContain("Create exactly one Azure Repos pull request");
-  expect(prompt).not.toContain("Move the ticket to `Done`");
-  expect(prompt).not.toContain("upload attachments");
-  expect(prompt).toContain("Do not select another ticket");
-});
-
 test("code --session rechaza un checkpoint de otra sesion sin tocar Azure", async () => {
   const store: AutocodeCheckpointStore = {
     read: async () => ({ workflow: "autocode", hu: 23438, ticket: 51, sessionId: "ses-real" }),
