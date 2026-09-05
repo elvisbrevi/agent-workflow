@@ -15,7 +15,6 @@ import type { SagNormsContext } from "../sag/sag-norms-service.ts";
 import type { WorkspaceScope } from "../workspace/repository-scope.ts";
 import type { QuestionAnswers } from "../interaction/question-round.ts";
 import {
-  IMPLEMENTATION_READY_MARKER,
   QUESTIONS_ANSWERED_MARKER,
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,

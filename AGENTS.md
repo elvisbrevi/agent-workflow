@@ -27,8 +27,6 @@ inside that directory rather than a skill directory.
 | Change how SAG norms are resolved, or what infra-sag and deploy-sag verify | `agent/lazy-workflow/src/sag/` |
 | Change how a multi-repository workspace is scoped, or how its checkpoint is read and written | `agent/lazy-workflow/src/workspace/` |
 | Change how a delivered ticket branch is cleaned up | `agent/lazy-workflow/src/git/` |
-| Change how a file is written and re-read before it counts as verified | `agent/lazy-workflow/src/manifest/` |
-| Change how completion evidence is laid out, the shape of a browser HTTP capture, or what evidence may never publish | `agent/lazy-workflow/src/evidence/` |
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |
 | Change how OpenCode is invoked, streamed, or its sessions closed | `agent/lazy-workflow/src/opencode/` |
 | Change how Claude Code is invoked, streamed, or its stream decoded | `agent/lazy-workflow/src/claude-code/` |

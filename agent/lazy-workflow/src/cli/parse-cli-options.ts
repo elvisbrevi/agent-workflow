@@ -117,7 +117,8 @@ const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
 const DEFAULT_OFF_DELAY_SECONDS = 15;
 /** Where the sudo password comes from when `--off` is declared without a value, so it never reaches `ps` or the shell history. */
 const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
-const SUPPORTED_COMMANDS = new Set([
+/** Los comandos que el CLI acepta; el README se verifica contra esta lista. */
+export const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
   "hu-info",

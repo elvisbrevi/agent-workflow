@@ -8,8 +8,7 @@ description: Run GitHub workflows by default or plan, deliver, and query an Azur
 Use the Bun entrypoint in this directory. Without `--hu`, `plan` runs the
 default GitHub-only prompt once, while `code` delivers each eligible GitHub
 issue in its own fresh OpenCode session, then re-selects the next eligible issue
-in the same run until the queue is empty or blocked. The coordinator emits the
-completion markers only after each verified delivery. Neither uses Azure tools.
+in the same run until the queue is empty or blocked. The coordinator prints its outcome lines only after each verified delivery. Neither uses Azure tools.
 For an Azure HU planning run, use
 `plan --hu <ID>` and `--working-directory <path>`. Use `code --hu <ID> [--base-branch <name>]` to
 deliver eligible tickets sequentially; a fresh run prepares the HU branch before
@@ -25,8 +24,8 @@ in `README.md`.
 Azure delivery keeps OpenCode semantic: it implements, validates, reviews,
 commits, and leaves the session's summary as the ticket's completion-evidence.
 The coordinator owns branches, pull requests, Azure fields, effort, completion
-gates, recovery, and cleanup. `IMPLEMENTATION_READY` is the only Azure
-model-completion marker.
+gates, recovery, and cleanup. No delivery session prints a marker on either
+provider: git decides whether the session delivered (ADR-0035).
 
 Planning is semantic in the same way, and in both trackers: the session decides
 how to slice the work and returns the slices behind `PLAN_READY`, and the
@@ -34,7 +33,7 @@ coordinator creates and links the items — Azure work items, or GitHub issues
 already carrying the `ready-for-agent` label.
 
 Planning answers its own clarifying questions by default. With
-`--interview <off|http|terminal|file>` it stops instead, states the decisions it
+`--interview <off|http>` it stops instead, states the decisions it
 cannot settle alone, and the coordinator carries them to the operator and
 resumes that same session with the answers. An expired round takes the answers
 the session recommended, so an unattended run behaves exactly as it always did.
