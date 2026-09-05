@@ -45,7 +45,6 @@ import {
   type GitHubRepositoryContext,
   type SelectedManagedIssue,
   type ManagedQueueOutcome,
-  type ManagedQueueWatermark,
 } from "../github/managed-queue-service.ts";
 import {
   GitHubDeliveryCheckpointStore,
@@ -94,7 +93,9 @@ import { createQuestionChannel, type QuestionChannelFactory } from "../interacti
 import type { QuestionChannel } from "../interaction/question-channel.ts";
 import { readPlanTurn, recommendedAnswers, type PlanTurn, type QuestionAnswers } from "../interaction/question-round.ts";
 import { authorityConfigPath, authorityProfile } from "../prompts/authority-profile.ts";
-import { AzurePlanPublicationService, parsePlan } from "../azure/plan-publication-service.ts";
+import { AzurePlanPublicationService } from "../azure/plan-publication-service.ts";
+import { parsePlan } from "../prompts/plan-contract.ts";
+import { publishPlanIssues } from "../github/plan-publication-service.ts";
 import {
   buildCli,
   variantRejection,
@@ -1460,10 +1461,6 @@ export class LazyWorkflowCli {
     if (command === "plan") {
       const norms = await this.loadSagNorms(options, "planning");
       if (options.normasSag && norms === null) return 1;
-      // Leida antes de abrir la sesion: fija el corte de numeracion desde el que
-      // los Issues publicados por esta corrida reciben el rol de triage.
-      const watermark = await this.readTriageWatermark(options.workingDirectory);
-      if (watermark === undefined) return 1;
       const { result, failed } = await this.runPlanningSession(
         { kind: "github-plan" },
         // A GitHub planning run has never resumed a session of its own; the
@@ -1476,7 +1473,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       if (failed) return 1;
       if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
-      return await this.applyTriageRole(watermark, options.workingDirectory) ? 0 : 1;
+      return this.publishGitHubPlan(result.text, options.workingDirectory, options);
     }
 
     return this.runDefaultCodeWorkflow(options);
@@ -2245,16 +2242,6 @@ export class LazyWorkflowCli {
           return 1;
         }
       }
-      // Un plan workspace GitHub publica en cualquiera de sus repositorios, asi
-      // que cada uno lleva su propia marca y su propia reconciliacion de rol.
-      const watermarks = new Map<string, ManagedQueueWatermark | null>();
-      if (provider.kind === "github-repository-run") {
-        for (const repository of scope.repositories) {
-          const watermark = await this.readTriageWatermark(repository.path);
-          if (watermark === undefined) return 1;
-          watermarks.set(repository.path, watermark);
-        }
-      }
       const { result, failed } = await this.runPlanningSession(
         { kind: "workspace-plan", scope, run: provider, huInfo },
         { ...options, session: null },
@@ -2272,10 +2259,9 @@ export class LazyWorkflowCli {
       // repository count is the session's scope, never a reason to leave a plan
       // stranded in stdout.
       if (provider.kind === "azure-hu-run") return this.publishAzurePlan(provider.hu, result.text, options);
-      for (const [path, watermark] of watermarks) {
-        if (!await this.applyTriageRole(watermark, path)) return 1;
-      }
-      return 0;
+      // Un plan workspace GitHub publica en el repositorio ancla, que es el unico
+      // donde `code` busca la cola gestionada.
+      return this.publishGitHubPlan(result.text, scope.repositories[0]!.path, options);
     } catch (error) {
       reportFailure(
         resolveWorkflowRun(options.hu).kind === "azure-hu-run" ? "workspace-scope-failure" : "delivery-failure",
@@ -3309,29 +3295,6 @@ export class LazyWorkflowCli {
    * is final (ADR-0027).
    */
   /**
-   * El corte de numeracion previo a una sesion de planificacion GitHub.
-   *
-   * `null` cuando la frontera de cola no ofrece la marca — no hay coordinacion
-   * GitHub inyectada y no hay rol que aplicar. `undefined` cuando la lectura
-   * fallo: la corrida se detiene antes de gastar sesion.
-   */
-  private async readTriageWatermark(workingDirectory: string): Promise<ManagedQueueWatermark | null | undefined> {
-    const read = this.githubManagedQueue.readQueueWatermark?.bind(this.githubManagedQueue);
-    if (!read) return null;
-    try {
-      return await read(workingDirectory);
-    } catch (error) {
-      reportFailure(
-        "tracker-read-failure",
-        "planning",
-        { repository: workingDirectory },
-        `lazy-workflow: no se pudo leer la numeracion de Issues GitHub (${errorMessage(error)}); ejecucion detenida.`,
-      );
-      return undefined;
-    }
-  }
-
-  /**
    * A planning session may create or update documentation as its own
    * deliverable (ADR-0021: committing stays allowed in planning profiles for
    * exactly this). The coordinator commits it mechanically once the session
@@ -3363,34 +3326,44 @@ export class LazyWorkflowCli {
   }
 
   /**
-   * El rol `ready-for-agent` lo escribe el coordinador, nunca la sesion.
+   * Publica el plan que la sesion devolvio: un Issue por rebanada, con su rol de
+   * triage puesto en la misma llamada que lo crea, y despues las aristas de
+   * bloqueo declaradas.
    *
-   * Una sesion de planificacion publica los Issues; el rol de triage que los
-   * hace elegibles para `code` se aplica y se verifica aqui, de modo que el
-   * nombre de la etiqueta no dependa de lo que el prompt haya interpretado.
+   * Es el gemelo GitHub de `publishAzurePlan` (ADR-0040): el coordinador crea el
+   * trabajo porque es el unico que sabe cual es suyo. Antes lo deducia leyendo
+   * la numeracion mas alta previa a la sesion, y esa deduccion etiquetaba como
+   * del plan cualquier Issue que alguien abriera a mano mientras corria.
    */
-  private async applyTriageRole(
-    watermark: ManagedQueueWatermark | null,
-    workingDirectory: string,
-  ): Promise<boolean> {
-    const apply = this.githubManagedQueue.applyReadyForAgentRole?.bind(this.githubManagedQueue);
-    if (!watermark || !apply) return true;
+  private async publishGitHubPlan(text: string, workingDirectory: string, options: CliOptions): Promise<number> {
     try {
-      const labeled = await apply(watermark, workingDirectory);
-      if (labeled.length > 0) {
-        reportOperator(
-          `lazy-workflow: rol ready-for-agent aplicado a ${labeled.map((number) => `#${number}`).join(", ")}.`,
-        );
+      const tickets = parsePlan(text);
+      if (tickets.length === 0) {
+        reportOperator("lazy-workflow: el plan no requiere Issues de entrega.");
+        return 0;
       }
-      return true;
+      const { createReadyIssue, linkBlockedBy } = this.githubManagedQueue;
+      if (!createReadyIssue || !linkBlockedBy) {
+        throw new Error("la frontera de cola GitHub no expone las primitivas de publicacion");
+      }
+      const publication = await publishPlanIssues(
+        {
+          createReadyIssue: createReadyIssue.bind(this.githubManagedQueue),
+          linkBlockedBy: linkBlockedBy.bind(this.githubManagedQueue),
+        },
+        tickets,
+        workingDirectory,
+      );
+      console.log(JSON.stringify(publication, null, 2));
+      return 0;
     } catch (error) {
       reportFailure(
-        "delivery-failure",
-        "planning",
-        { repository: workingDirectory },
-        `lazy-workflow: no se pudo aplicar el rol ready-for-agent a los Issues publicados (${errorMessage(error)}); ejecucion detenida.`,
+        "deterministic-completion-failure",
+        "publishing",
+        { issue: options.issue, repository: workingDirectory },
+        `lazy-workflow: no se pudo publicar el plan en GitHub (${errorMessage(error)}); ejecucion detenida.`,
       );
-      return false;
+      return 1;
     }
   }
 

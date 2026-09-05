@@ -1,11 +1,11 @@
 import { test, expect } from "bun:test";
+import { AzurePlanPublicationService } from "../src/azure/plan-publication-service.ts";
 import {
-  AzurePlanPublicationService,
   PlanParseError,
   parsePlan,
   publicationOrder,
   type PlannedTicket,
-} from "../src/azure/plan-publication-service.ts";
+} from "../src/prompts/plan-contract.ts";
 
 const ticket = (title: string, blockedBy: string[] = []): PlannedTicket => ({
   type: "Task",

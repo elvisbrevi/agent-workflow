@@ -8,7 +8,7 @@ The supervisor validates this document against the repository's Git remote befor
 
 The adapter treats an issue as eligible only when it is open, unassigned, labeled `ready-for-agent`, not an Epic issue type, not labeled `epic`, not titled `[Epic]...`, and has no open native dependency. Ambiguous remotes, missing documentation, missing `gh`, and unavailable authentication fail before any worker or repository mutation starts.
 
-The adapter also owns the triage role a planning run publishes. A `plan` run reads the repository's highest issue number before the session opens, and after the session applies and verifies the literal `ready-for-agent` label on every issue published above that mark, creating the label if the repository lacks it. Epics and specifications are skipped by the same rule that excludes them from the queue. The planning session never names the label, so a prompt cannot leave the queue empty by inventing a variant.
+The adapter also owns publication. A planning run's session creates nothing: it returns its slices behind `PLAN_READY`, and the coordinator creates one issue per slice with the literal `ready-for-agent` label applied in the same call that creates it, creating the label first if the repository lacks it. It then wires each declared blocking edge with GitHub's native dependency relation. An issue is the plan's because this code created it, so an issue somebody opens by hand while the session runs is never labelled (ADR-0040).
 
 - Create an issue with `gh issue create`.
 - Read an issue and its discussion with `gh issue view <number> --comments`.

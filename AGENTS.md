@@ -23,7 +23,7 @@ inside that directory rather than a skill directory.
 | Change the run log's record contract, its path resolution, or its rotation | `agent/lazy-workflow/src/output/run-log.ts` |
 | Change what a tool call reports about the artifact it touches | `agent/lazy-workflow/src/output/agent-tool-detail.ts` |
 | Change Azure HU lookup or login polling | `agent/lazy-workflow/src/azure/` |
-| Change GitHub queue selection, delivery, the repository lock, or parent reconciliation | `agent/lazy-workflow/src/github/` |
+| Change GitHub queue selection, plan publication, delivery, the repository lock, or parent reconciliation | `agent/lazy-workflow/src/github/` |
 | Change how SAG norms are resolved, or what infra-sag and deploy-sag verify | `agent/lazy-workflow/src/sag/` |
 | Change how a multi-repository workspace is scoped, or how its checkpoint is read and written | `agent/lazy-workflow/src/workspace/` |
 | Change how a delivered ticket branch is cleaned up | `agent/lazy-workflow/src/git/` |
@@ -38,6 +38,7 @@ inside that directory rather than a skill directory.
 | Change what the coding agent is told for a run | `agent/lazy-workflow/src/prompts/workflow-prompt.ts` and the assets in `agent/lazy-workflow/prompts/` |
 | Change how the operator answers a planning interview, or add a channel | `agent/lazy-workflow/src/interaction/` |
 | Change a marker or the completion-manifest contract | `agent/lazy-workflow/src/prompts/workflow-contract.ts` (the only definition; prompt assets use `{{PLACEHOLDER}}`) |
+| Change the shape of the plan a session returns behind `PLAN_READY`, or the order it is published in | `agent/lazy-workflow/src/prompts/plan-contract.ts` (shared by both trackers) |
 | Change what a run is permitted to execute with OpenCode | `agent/lazy-workflow/opencode/authority.json` |
 | Change what a run is permitted to execute with Claude Code | `agent/lazy-workflow/claudecode/<profile>.json` |
 | Change what a run is permitted to execute with Codex | `agent/lazy-workflow/codex/<profile>.rules` and `agent/lazy-workflow/src/prompts/codex-authority-home.ts` |

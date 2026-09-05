@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { createCli } from "./_helpers/create-cli.ts";
-import { planTriageQueue } from "./_helpers/plan-triage-queue.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import {
   AzureAutocodeService,
@@ -25,6 +24,10 @@ import type { ManagedQueueOutcome } from "../src/github/managed-queue-service.ts
 import { fakeSelectedOutcome, queueAdapter } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeCoordinatedGitHubDeps, fakeGitHubCheckpointStore, fakeGitHubRepositoryLock } from "./_helpers/github-delivery-fixtures.ts";
 import { authorityConfigPath } from "../src/prompts/authority-profile.ts";
+import { PLAN_READY_MARKER } from "../src/prompts/workflow-contract.ts";
+
+/** Una sesión de planificación cierra con su plan; sin rebanadas no hay nada que publicar. */
+const PLAN_TEXT = `plan\n${PLAN_READY_MARKER}\n{"tickets":[]}`;
 
 const emptyCheckpointStore = (): AutocodeCheckpointStore => ({
   read: async () => null,
@@ -449,7 +452,7 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_plan",
-    part: { type: "text", text: "plan" },
+    part: { type: "text", text: PLAN_TEXT },
   }));
   const huInfoService = {
     getHuInfo: async (hu: number) => {
@@ -508,11 +511,10 @@ test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   const result = AgentResult.fromJsonLines(JSON.stringify({
     type: "text",
     sessionID: "ses_plan",
-    part: { type: "text", text: "plan" },
+    part: { type: "text", text: PLAN_TEXT },
   }));
 
   const code = await createCli({
-    githubManagedQueue: planTriageQueue(),
     git: async () => "",
     huInfoService: {
       getHuInfo: async () => { azureCalls += 1; throw new Error("must not use Azure"); },
@@ -1733,13 +1735,12 @@ type VerbosityOptions = { verbose: boolean; quiet: boolean; noColor: boolean };
 test("--verbose enrutado al Reportador conserva los errores y emite debug", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: PLAN_TEXT },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
     const code = await createCli({
-    githubManagedQueue: planTriageQueue(),
       git: async () => "",
       huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
       agentSource: {
@@ -1766,13 +1767,12 @@ test("--verbose enrutado al Reportador conserva los errores y emite debug", asyn
 test("--quiet filtra info y warn pero conserva errores del Reportador", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: PLAN_TEXT },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
 
   try {
     const code = await createCli({
-    githubManagedQueue: planTriageQueue(),
       git: async () => "",
       huInfoService: { getHuInfo: async () => { throw new Error("unexpected"); }, waitForAccess: async () => undefined },
       agentSource: {
@@ -1799,7 +1799,7 @@ test("--no-color produce Reportador sin codigos ANSI", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   setDefaultReporter(createReporter({ verbose: false, noColor: false }));
   const result = AgentResult.fromJsonLines(JSON.stringify({
-    type: "text", sessionID: "ses_plan", part: { type: "text", text: "plan" },
+    type: "text", sessionID: "ses_plan", part: { type: "text", text: PLAN_TEXT },
   }));
   const captured: { value: VerbosityOptions | null } = { value: null };
 
@@ -1889,7 +1889,7 @@ test("createCodingAgent construye el adaptador de cada CLI soportado", () => {
 
 test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", async () => {
   const requested: AgentCli[] = [];
-  const result = new AgentResult({ sessionId: "ses_cli", text: "plan" });
+  const result = new AgentResult({ sessionId: "ses_cli", text: PLAN_TEXT });
   const planWith = (args: string[]) => createCli({
     huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
@@ -1903,10 +1903,6 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
       };
     },
     git: async () => "",
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      readQueueWatermark: async () => ({ latestIssue: 0 }),
-    },
     cliParser: buildCli(() => true),
   }).run(args);
 
@@ -1926,7 +1922,7 @@ test("plan resuelve el agente segun --cli y sin el flag sigue usando OpenCode", 
 test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en orden", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   const { reporter, info } = captureReporter();
-  const result = new AgentResult({ sessionId: "ses_fallback", text: "plan" });
+  const result = new AgentResult({ sessionId: "ses_fallback", text: PLAN_TEXT });
 
   try {
     const code = await createCli({
@@ -1938,13 +1934,6 @@ test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en
       // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
       // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
       git: async () => "",
-      // Y sin esto la corrida llega a leer la cola con `gh` de verdad: el rol de triage se
-      // aplica sobre los Issues publicados por encima de la marca de numeración.
-      githubManagedQueue: {
-        selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
-        readQueueWatermark: async () => ({ highestIssueNumber: 0 }),
-        applyReadyForAgentRole: async () => [],
-      },
       cliParser: buildCli(() => true),
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan", "--fallback", "opencode:model-b:medium", "--fallback", "claudecode:model-c:high"]);
@@ -1965,7 +1954,7 @@ test("--fallback reporta la cadena resuelta al arrancar, primario y respaldos en
 test("sin --fallback no se reporta ninguna cadena", async () => {
   const previous = (await import("../src/output/operator-output.ts")).getDefaultReporter();
   const { reporter, info } = captureReporter();
-  const result = new AgentResult({ sessionId: "ses_no_fallback", text: "plan" });
+  const result = new AgentResult({ sessionId: "ses_no_fallback", text: PLAN_TEXT });
 
   try {
     const code = await createCli({
@@ -1977,13 +1966,6 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
       // Sin esto el flujo de planificación commitea el repositorio real: la corrida cae en
       // `process.cwd()` y `commitPlanningEdits` hace `git add -A` sobre él.
       git: async () => "",
-      // Y sin esto la corrida llega a leer la cola con `gh` de verdad: el rol de triage se
-      // aplica sobre los Issues publicados por encima de la marca de numeración.
-      githubManagedQueue: {
-        selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
-        readQueueWatermark: async () => ({ highestIssueNumber: 0 }),
-        applyReadyForAgentRole: async () => [],
-      },
       createReporterFn: (() => reporter) as typeof createReporter,
     }).run(["plan"]);
 
@@ -1997,7 +1979,7 @@ test("sin --fallback no se reporta ninguna cadena", async () => {
 
 test("cada run recibe la autoridad de su perfil en el formato de su propio CLI", async () => {
   const authorities: Array<{ profile: string; configPath: string } | undefined> = [];
-  const result = new AgentResult({ sessionId: "ses_auth", text: "plan" });
+  const result = new AgentResult({ sessionId: "ses_auth", text: PLAN_TEXT });
   const planWith = (args: string[]) => createCli({
     huInfoService: {
       getHuInfo: async () => { throw new Error("must not use Azure"); },
@@ -2011,10 +1993,6 @@ test("cada run recibe la autoridad de su perfil en el formato de su propio CLI",
       resume: async () => { throw new Error("must not resume"); },
     }),
     git: async () => "",
-    githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => ({ kind: "empty" }),
-      readQueueWatermark: async () => ({ latestIssue: 0 }),
-    },
     cliParser: buildCli(() => true),
   }).run(args);
 

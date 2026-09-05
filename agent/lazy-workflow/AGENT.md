@@ -28,9 +28,10 @@ The coordinator owns branches, pull requests, Azure fields, effort, completion
 gates, recovery, and cleanup. `IMPLEMENTATION_READY` is the only Azure
 model-completion marker.
 
-Azure planning is semantic in the same way: OpenCode decides how to slice the
-User Story and returns a delivery plan behind `PLAN_READY`, and the coordinator
-creates and links the work items.
+Planning is semantic in the same way, and in both trackers: the session decides
+how to slice the work and returns the slices behind `PLAN_READY`, and the
+coordinator creates and links the items — Azure work items, or GitHub issues
+already carrying the `ready-for-agent` label.
 
 Planning answers its own clarifying questions by default. With
 `--interview <off|http|terminal|file>` it stops instead, states the decisions it

@@ -33,6 +33,8 @@ type PromptAsset =
   /** La línea que nombra la unidad de trabajo Azure (ticket). */
   | "azure-delivery"
   | "autoplan"
+  /** La forma del plan que toda sesion de planificacion devuelve, en cualquier tracker. */
+  | "plan-tickets"
   | "autocode"
   | "plan-interview-auto"
   | "plan-interview-interactive"
@@ -213,6 +215,7 @@ async function azureHuPlanningSections(
   return [
     JSON.stringify(huInfo),
     await readPromptAsset("autoplan"),
+    await readPromptAsset("plan-tickets"),
     `The number of questions must be ${questions}`,
     await planInterviewSection(interview),
   ];
@@ -252,6 +255,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
     case "github-plan":
       return [
         await readPromptAsset("github-plan"),
+        await readPromptAsset("plan-tickets"),
         ...sag,
         `The number of questions must be ${questions}`,
         await planInterviewSection(interview),
@@ -275,7 +279,11 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       return [
         ...(spec.run.kind === "azure-hu-run"
           ? await azureHuPlanningSections(spec.huInfo!, questions, interview)
-          : [await readPromptAsset("github-plan"), await planInterviewSection(interview)]),
+          : [
+            await readPromptAsset("github-plan"),
+            await readPromptAsset("plan-tickets"),
+            await planInterviewSection(interview),
+          ]),
         ...sag,
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),

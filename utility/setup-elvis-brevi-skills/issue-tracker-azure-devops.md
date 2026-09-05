@@ -88,7 +88,7 @@ The inverse blocking view is `Predecessor` from B to A. Check `az boards work-it
 ## `to-spec` and `to-tickets`
 
 - `to-spec` creates one work item using the configured spec type.
-- `to-tickets` creates work items using the configured executable-ticket type.
+- `to-tickets` slices the work; whoever publishes its slices creates the work items using the configured executable-ticket type.
 - Link each executable ticket to the spec with Parent/Child.
 - Publish in dependency order, then add Successor relations from each blocker to the work it unlocks.
 - Never encode dependency order only in prose when native relations are available.

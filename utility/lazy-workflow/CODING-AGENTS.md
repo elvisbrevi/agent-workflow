@@ -45,7 +45,7 @@ compound commands are matched per sub-command, so `cd x && git push` is denied t
 
 | Profile | Used by | Denies |
 |---|---|---|
-| `lazy-github-plan` | `plan` without `--hu` | pushes, branch/remote mutation, `gh pr`, `gh repo`, `gh api`, all `az` |
+| `lazy-github-plan` | `plan` without `--hu` | pushes, branch/remote mutation, `gh issue create`, `gh issue edit`, `gh pr`, `gh repo`, `gh api`, all `az` |
 | `lazy-github-code` | `code` without `--hu` | the above plus every `gh issue` mutation |
 | `lazy-azure-plan` | `plan --hu` | pushes, branch/remote mutation, all `az` and all `gh` |
 | `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |

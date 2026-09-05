@@ -386,13 +386,15 @@ session as a decision the operator made.
 _Avoid_: default answer, fallback answer
 
 **Delivery plan**:
-The machine-readable result of an Azure HU planning run: the tracer-bullet
-tickets to publish, each with its type, exact title, body, optional estimate,
-and the titles that block it. Titles are the plan's only identity, because
-work-item ids do not exist yet. Duplicate titles, unknown blockers, and blocking
-cycles are rejected before anything is created, so a malformed plan publishes
-nothing.
-_Avoid_: prose ticket list, work-item ids in a plan
+The machine-readable result of a planning run, in either tracker: the
+tracer-bullet tickets to publish, each with its type, exact title, body,
+optional estimate, and the titles that block it. Titles are the plan's only
+identity, because tracker ids do not exist yet. Duplicate titles, unknown
+blockers, and blocking cycles are rejected before anything is created, so a
+malformed plan publishes nothing. One shape serves both trackers because a
+session does not choose its answer by where the plan will be published; GitHub
+simply has nowhere to put the type or the estimate.
+_Avoid_: prose ticket list, tracker ids in a plan, a per-tracker plan shape
 
 **Plan publication**:
 The deterministic half of a planning run, in both trackers. The session decides

@@ -1,6 +1,6 @@
 ---
 name: to-tickets
-description: Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker — edges as text in one file per ticket locally, or native blocking links on a real tracker.
+description: Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, and emit them for whoever publishes — the coordinator of a planning run, or one file per ticket locally when nobody does.
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into a set of **tickets** — tracer-bullet vertical slices, each declaring the tickets that **block** it.
 
-The issue tracker and triage role vocabulary should have been provided to you — run `/setup-elvis-brevi-skills` if not. Read `docs/agents/issue-tracker.md` before publishing; it defines tracker-specific item types, hierarchy, blocking relations, and role representation.
+The issue tracker vocabulary should have been provided to you — run `/setup-elvis-brevi-skills` if not. Read `docs/agents/issue-tracker.md` before you slice; it defines tracker-specific item types, hierarchy, and blocking relations.
 
 ## Process
 
@@ -55,16 +55,12 @@ Ask the user:
 
 Iterate until the user approves the breakdown.
 
-### 5. Publish the tickets to the configured tracker
+### 5. Emit the tickets
 
-Publish the approved tickets. **How** depends on the tracker `/setup-elvis-brevi-skills` configured — the tickets are the same either way, only the shape of the blocking edges changes:
+Emit the approved breakdown in dependency order, blockers first, each ticket naming by title the tickets that block it. **Do not publish it yourself** — creating the items, applying the triage role, and wiring the blocking relations is derivable work, and it belongs to whoever is publishing.
 
-- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
-- **A real issue tracker (GitHub, GitLab, Azure Boards, Linear, …)** → publish one item per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / child relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking items. Apply the `ready-for-agent` triage role so the tickets are agent-grabbable by construction. On GitHub the role is the literal label `ready-for-agent` — never a variant name; on any other tracker use the configured representation.
-
-For Azure Boards, create every work item first, link each ticket to its parent with Parent/Child, then add Successor relations from each blocker to the work it unlocks. Use the configured ticket work-item type and preserve unrelated Tags.
-
-Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
+- **A coordinator asked for the tickets** — a planning run that named the machine-readable result it expects → return them in exactly that shape, and create, update, label, or link nothing on the tracker. The coordinator creates every item with its triage role already applied and wires the blocking relations from the edges you declared.
+- **Nobody named a result shape** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first), so whoever publishes has them. Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
 
 Do NOT close or modify any parent issue.
 
@@ -84,6 +80,8 @@ Do NOT close or modify any parent issue.
 </local-ticket-template>
 
 <issue-template>
+
+The body of each emitted ticket:
 
 ## Parent
 

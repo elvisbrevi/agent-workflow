@@ -637,7 +637,17 @@ branches, enforce Azure completion gates, or clean Azure ticket branches.
 `--branch` and `--base-branch` are rejected in this GitHub scope.
 
 `plan` remains a planning-only workflow, one-shot unless `--interview` asks it to
-stop and consult the operator (see [Planning interview](#planning-interview)). `code` refreshes GitHub,
+stop and consult the operator (see [Planning interview](#planning-interview)).
+The session decides how to slice the work and returns the slices behind a
+`PLAN_READY` marker; it creates no issues. The coordinator validates the whole
+plan first — duplicate titles, unknown blockers and blocking cycles are rejected
+before anything is created — then creates one issue per slice in dependency
+order, each with its `ready-for-agent` label applied in the same call that
+creates it, and wires the declared blocking edges with GitHub's native
+dependency relation. An empty plan publishes nothing, and an issue somebody
+opens by hand while the session runs is never labelled. A workspace plan
+publishes into the anchor repository, the one whose queue `code` drains.
+`code` refreshes GitHub,
 delivers each eligible issue in its own fresh OpenCode session, and coordinates
 delivery from `IMPLEMENTATION_READY` through verified merge, issue closure,
 parent reconciliation, and branch cleanup. After each verified delivery it
@@ -1275,7 +1285,7 @@ home, which links the operator's `auth.json` and `skills/` but never
 
 | Profile | Used by | Denies |
 |---|---|---|
-| `lazy-github-plan` | `plan` without `--hu` | pushes, branch and remote mutation, `gh pr`/`gh api`, all `az` |
+| `lazy-github-plan` | `plan` without `--hu` | pushes, branch and remote mutation, `gh issue create`/`gh issue edit`, `gh pr`/`gh api`, all `az` |
 | `lazy-github-code` | `code` without `--hu` | the above plus every `gh issue` mutation |
 | `lazy-azure-plan` | `plan --hu` | pushes, branch and remote mutation, all `az` and `gh` |
 | `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |

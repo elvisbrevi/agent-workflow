@@ -398,3 +398,18 @@ test("un ticket sin descripción no deja el encabezado colgando", async () => {
   expect(prompt).toContain("Conciliar el intento de pago");
   expect(prompt).not.toContain("Ticket description:");
 });
+
+test("un plan GitHub pide las rebanadas detrás de PLAN_READY y prohíbe publicarlas", async () => {
+  const monoRepo = await buildWorkflowPrompt({ kind: "github-plan" }, context);
+  const workspace = await buildWorkflowPrompt(
+    { kind: "workspace-plan", scope, run: { kind: "github-repository-run" }, huInfo: null },
+    context,
+  );
+
+  for (const prompt of [monoRepo, workspace]) {
+    expect(prompt).toContain("PLAN_READY");
+    expect(prompt).toContain("`blockedBy`");
+    expect(prompt).toContain("gh issue create");
+    expect(prompt).toContain("Do not create, update, label, or link GitHub issues yourself");
+  }
+});

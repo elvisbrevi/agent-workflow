@@ -1,6 +1,8 @@
-# lazy-workflow GitHub planning authority: documents and tracker work, no delivery effects.
+# lazy-workflow GitHub planning authority: documents and slices, no tracker or delivery effects.
 # Hand-written from ADR-0021; not generated from opencode/authority.json or claudecode/*.json.
 
+prefix_rule(pattern=["gh", "issue", "create"], decision="forbidden")
+prefix_rule(pattern=["gh", "issue", "edit"], decision="forbidden")
 prefix_rule(pattern=["git", "push"], decision="forbidden")
 prefix_rule(pattern=["git", "branch"], decision="forbidden")
 prefix_rule(pattern=["git", "checkout", "-b"], decision="forbidden")

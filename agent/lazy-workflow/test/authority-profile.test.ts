@@ -133,6 +133,9 @@ test("ningun perfil de planificacion puede mutar el tracker", async () => {
   for (const profile of ["lazy-azure-plan", "lazy-github-plan"]) {
     expect(`${profile}: ${config.agent[profile].permission.bash["git push*"]}`).toBe(`${profile}: deny`);
   }
+  // El coordinador publica los Issues del plan, asi que la sesion tampoco los crea ni los etiqueta.
+  expect(config.agent["lazy-github-plan"].permission.bash["gh issue create*"]).toBe("deny");
+  expect(config.agent["lazy-github-plan"].permission.bash["gh issue edit*"]).toBe("deny");
 });
 
 test("el perfil de revision no puede editar", async () => {
