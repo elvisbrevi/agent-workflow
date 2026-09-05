@@ -3629,9 +3629,9 @@ export class LazyWorkflowCli {
   ): Promise<{ result: AgentResult; failed: boolean }> {
     const prompted = await this.prompt(spec, options, norms);
 
-    // Built before the session opens: an unusable port, a missing terminal or an
-    // unwritable directory is then an argument-shaped failure that costs no model
-    // usage, and the channel's address is already printed while the agent thinks.
+    // Built before the session opens: an unusable port is then an
+    // argument-shaped failure that costs no model usage, and the channel's
+    // address is already printed while the agent thinks.
     let channel: QuestionChannel | null;
     try {
       channel = this.createQuestionChannelFn(options.interview, getDefaultReporter());

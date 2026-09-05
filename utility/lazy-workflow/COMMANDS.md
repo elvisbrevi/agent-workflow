@@ -57,12 +57,11 @@ behaviour behind each: [CODING-AGENTS.md](CODING-AGENTS.md).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--interview <off\|http\|terminal\|file>` | `off` | Who answers the clarifying questions |
+| `--interview <off\|http>` | `off` | Who answers the clarifying questions |
 | `--interview-timeout <s>` | `900` | Per round; once spent, the session's own recommendations are taken and the run continues |
 | `--interview-rounds <n>` | `8` | Bound on round trips; the last round is told to deliver the plan |
 | `--interview-host <host>` | `127.0.0.1` | `http` only; outside loopback the URL and its token are the only credential |
 | `--interview-port <n>` | `0` (ephemeral) | `http` only, so two runs never collide |
-| `--interview-dir <path>` | — | `file` only, and required for it |
 
 A planning run answers its own questions by default — it takes the recommendation
 it would have offered and continues, which is what an unattended run needs.
@@ -71,17 +70,12 @@ it would have offered and continues, which is what an unattended run needs.
 - **`http`** serves a page on loopback and prints its URL, with every
   recommendation prefilled, so submitting it unchanged equals not answering.
   Answerable from a browser or with `curl` against `<url>/round` and `<url>/answers`.
-- **`terminal`** asks in the launching terminal, reading `/dev/tty`, so it still
-  works when the JSON result is piped. An empty line accepts the recommendation.
-- **`file`** writes `ronda-<n>.preguntas.json` and waits for
-  `ronda-<n>.respuestas.json` in `--interview-dir` — the channel for any other UI,
-  bot or agent, and the files remain as the record of what was decided.
 
 `--number-of-questions <n>` (default `5`) is the budget for the whole interview,
 spent across as many rounds as the session needs. An unusable channel — a taken
-port, no terminal, a directory owned by another interview — stops the run before
-a session opens. If a round expires or the channel disappears mid-interview, the
-run reports it and continues with the recommendations rather than failing.
+port — stops the run before a session opens. If a round expires or the channel
+disappears mid-interview, the run reports it and continues with the
+recommendations rather than failing.
 
 ## Reporter
 

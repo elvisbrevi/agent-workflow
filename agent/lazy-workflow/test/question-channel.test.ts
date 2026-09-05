@@ -1,8 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { FileQuestionChannel } from "../src/interaction/file-question-channel.ts";
 import { HttpQuestionChannel } from "../src/interaction/http-question-channel.ts";
 import {
   QuestionChannelUnavailableError,
@@ -12,7 +8,6 @@ import {
   type InterviewSettings,
   type QuestionChannelDependencies,
 } from "../src/interaction/question-channel.ts";
-import { TerminalQuestionChannel } from "../src/interaction/terminal-question-channel.ts";
 import type { QuestionRound } from "../src/interaction/question-round.ts";
 import { captureReporter } from "./_helpers/reporter-capture.ts";
 
@@ -28,7 +23,6 @@ const settings = (overrides: Partial<InterviewSettings> = {}): InterviewSettings
   channel: "http",
   host: "127.0.0.1",
   port: 0,
-  directory: null,
   timeoutSeconds: 900,
   rounds: 8,
   ...overrides,
@@ -198,138 +192,6 @@ test("un puerto ocupado deja el canal http inutilizable antes de abrir sesión",
   } finally {
     await taken.close();
   }
-});
-
-function terminal(typed: string) {
-  const { reporterFn, messages } = captureReporter();
-  const channel = new TerminalQuestionChannel(
-    settings({ channel: "terminal" }),
-    { reporter: reporterFn(true), deadline: neverExpires },
-    { input: new Blob([typed]).stream(), write: () => undefined },
-  );
-  return { channel, messages };
-}
-
-test("el canal terminal toma lo tecleado como respuesta", async () => {
-  const { channel } = terminal("dos\nno\n");
-  try {
-    expect(await channel.ask(round)).toEqual({
-      round: 1,
-      source: "operator",
-      answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }],
-    });
-  } finally {
-    await channel.close();
-  }
-});
-
-test("en el canal terminal una línea vacía acepta la recomendación", async () => {
-  const { channel } = terminal("\n\n");
-  try {
-    const answers = await channel.ask(round);
-
-    expect(answers.source).toBe("recommended");
-    expect(answers.answers).toEqual([{ id: "q1", answer: "uno" }, { id: "q2", answer: "sí" }]);
-  } finally {
-    await channel.close();
-  }
-});
-
-test("en el canal terminal un número elige entre las opciones ofrecidas", async () => {
-  const { channel, messages } = terminal("2\nno\n");
-  try {
-    const answers = await channel.ask(round);
-
-    expect(answers.answers[0]).toEqual({ id: "q1", answer: "dos" });
-    expect(messages.some((message) => message.includes("recomendación: uno"))).toBeTrue();
-  } finally {
-    await channel.close();
-  }
-});
-
-test("una terminal cerrada a mitad de ronda deja el canal inutilizable", async () => {
-  const { channel } = terminal("dos\n");
-  try {
-    await expect(channel.ask(round)).rejects.toThrow(QuestionChannelUnavailableError);
-  } finally {
-    await channel.close();
-  }
-});
-
-test("una ronda vencida no consume la respuesta de la ronda siguiente", async () => {
-  const { reporterFn } = captureReporter();
-  let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const input = new ReadableStream<Uint8Array>({
-    start: (streamController) => { controller = streamController; },
-  });
-  let deadlines = 0;
-  const channel = new TerminalQuestionChannel(
-    settings({ channel: "terminal" }),
-    {
-      reporter: reporterFn(true),
-      deadline: () => deadlines++ === 0 ? alreadyExpired() : neverExpires(),
-    },
-    { input, write: () => undefined },
-  );
-  try {
-    await expect(channel.ask(round)).rejects.toThrow(QuestionTimeoutError);
-
-    const nextRound = { ...round, round: 2 };
-    const asked = channel.ask(nextRound);
-    controller.enqueue(new TextEncoder().encode("dos\nno\n"));
-
-    expect(await asked).toEqual({
-      round: 2,
-      source: "operator",
-      answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }],
-    });
-  } finally {
-    await channel.close();
-  }
-});
-
-test("el canal de archivos escribe la ronda y lee las respuestas que aparecen", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "lazy-workflow-interview-"));
-  const channel = new FileQuestionChannel(
-    settings({ channel: "file", directory }),
-    deps(),
-    5,
-  );
-  try {
-    const asked = channel.ask(round);
-    // Written before the first poll returns, exactly as an external answerer would.
-    await Bun.write(
-      join(directory, "ronda-1.respuestas.json"),
-      JSON.stringify({ answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }] }),
-    );
-
-    expect(await asked).toEqual({
-      round: 1,
-      source: "operator",
-      answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }],
-    });
-    expect(await Bun.file(join(directory, "ronda-1.preguntas.json")).json()).toEqual(round);
-  } finally {
-    await channel.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("el canal de archivos no pisa la ronda de otra entrevista", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "lazy-workflow-interview-"));
-  await Bun.write(join(directory, "ronda-1.preguntas.json"), "{}");
-  const channel = new FileQuestionChannel(settings({ channel: "file", directory }), deps(), 5);
-  try {
-    await expect(channel.ask(round)).rejects.toThrow(QuestionChannelUnavailableError);
-  } finally {
-    await channel.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("el canal de archivos exige un directorio de intercambio", () => {
-  expect(() => new FileQuestionChannel(settings({ channel: "file" }), deps()))
-    .toThrow(QuestionChannelUnavailableError);
 });
 
 test("el plazo real se cancela cuando la ronda se respondió", async () => {

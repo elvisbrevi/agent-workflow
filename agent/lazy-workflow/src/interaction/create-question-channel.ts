@@ -6,7 +6,6 @@
 
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-import { FileQuestionChannel } from "./file-question-channel.ts";
 import { HttpQuestionChannel } from "./http-question-channel.ts";
 import {
   realDeadline,
@@ -14,7 +13,6 @@ import {
   type QuestionChannel,
   type QuestionChannelDependencies,
 } from "./question-channel.ts";
-import { TerminalQuestionChannel } from "./terminal-question-channel.ts";
 
 /**
  * Null for `off`, so "no interview" stays a first-class state. A null-object
@@ -33,9 +31,5 @@ export const createQuestionChannel: QuestionChannelFactory = (settings, reporter
       return null;
     case "http":
       return new HttpQuestionChannel(settings, deps);
-    case "terminal":
-      return new TerminalQuestionChannel(settings, deps);
-    case "file":
-      return new FileQuestionChannel(settings, deps);
   }
 };

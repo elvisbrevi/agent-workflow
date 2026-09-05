@@ -5,8 +5,8 @@
  * The coordinator owns the interview — how many rounds, what an expired
  * deadline means, which session is resumed — and the channel owns only the
  * carrying. That split is what makes another channel a single adapter: a
- * browser page, a terminal, a pair of files today, and a GUI or a mailbox
- * later, without the coordinator learning any of them.
+ * browser page, a GUI or a mailbox later, without the coordinator learning
+ * any of them.
  *
  * The session itself never touches a channel. It prints a marker and reads the
  * answers it is handed on resume, so the interview adds no capability to the
@@ -17,7 +17,7 @@ import type { Reporter } from "../output/reporter.ts";
 import type { QuestionAnswers, QuestionRound } from "./question-round.ts";
 
 /** The channels an operator may pick. `off` is the default: no interview at all. */
-export const INTERVIEW_CHANNELS = ["off", "http", "terminal", "file"] as const;
+export const INTERVIEW_CHANNELS = ["off", "http"] as const;
 
 export type InterviewChannelKind = (typeof INTERVIEW_CHANNELS)[number];
 
@@ -28,8 +28,6 @@ export interface InterviewSettings {
   host: string;
   /** `0` asks the OS for a free port, so two runs never collide. */
   port: number;
-  /** Where the file channel writes rounds and reads answers. */
-  directory: string | null;
   /** Deadline per round; once spent, the recommended answers are taken. */
   timeoutSeconds: number;
   /** Bound on round trips, so an interview always terminates. */
@@ -55,7 +53,7 @@ export class QuestionTimeoutError extends Error {
   }
 }
 
-/** The channel cannot carry a question: no tty, a taken port, an unusable directory. */
+/** The channel cannot carry a question: a taken port. */
 export class QuestionChannelUnavailableError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);

@@ -564,7 +564,6 @@ describe("buildCli parser", () => {
         channel: "off",
         host: "127.0.0.1",
         port: 0,
-        directory: null,
         timeoutSeconds: 900,
         rounds: 8,
       });
@@ -572,8 +571,15 @@ describe("buildCli parser", () => {
 
     test("cada canal soportado se acepta", () => {
       expect(interviewOf(["plan", "--interview", "http"]).channel).toBe("http");
-      expect(interviewOf(["plan", "--interview", "terminal"]).channel).toBe("terminal");
-      expect(interviewOf(["plan", "--interview", "file", "--interview-dir", "/tmp/i"]).channel).toBe("file");
+    });
+
+    test("terminal y file ya no son canales validos", () => {
+      expect(parse(["plan", "--interview", "terminal"]).kind).toBe("error");
+      expect(parse(["plan", "--interview", "file", "--interview-dir", "/tmp/i"]).kind).toBe("error");
+    });
+
+    test("--interview-dir ya no existe", () => {
+      expect(parse(["plan", "--interview", "http", "--interview-dir", "/tmp/i"]).kind).toBe("error");
     });
 
     test("un canal desconocido es un error de argumentos", () => {
@@ -594,13 +600,11 @@ describe("buildCli parser", () => {
     });
 
     test("un sub-flag que su canal nunca leeria es un error de argumentos", () => {
-      expect(parse(["plan", "--interview", "terminal", "--interview-port", "7777"]).kind).toBe("error");
-      expect(parse(["plan", "--interview", "http", "--interview-dir", "/tmp/i"]).kind).toBe("error");
       expect(parse(["plan", "--interview-timeout", "60"]).kind).toBe("error");
     });
 
-    test("el canal file exige su directorio de intercambio", () => {
-      expect(parse(["plan", "--interview", "file"]).kind).toBe("error");
+    test("default con off no acepta sub-flags", () => {
+      expect(parse(["plan", "--interview-timeout", "60"]).kind).toBe("error");
     });
   });
 
