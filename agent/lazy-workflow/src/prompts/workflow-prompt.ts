@@ -199,20 +199,6 @@ export async function buildRoundRepairPrompt(reason: string): Promise<string> {
   ].join("\n");
 }
 
-/** The issue facts OpenCode needs, and only those. */
-function issueContext(issue: SelectedManagedIssue): string {
-  return JSON.stringify({
-    number: issue.number,
-    title: issue.title,
-    state: issue.state,
-    labels: issue.labels.map(({ name }) => name).filter(Boolean),
-    assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
-    createdAt: issue.createdAt,
-    body: issue.body,
-    comments: issue.comments,
-  });
-}
-
 /**
  * The Azure HU planning run's own sections: the User Story data, the
  * `autoplan` prompt, and the question budget. Both the mono-repository and
@@ -328,7 +314,6 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       // repositorio, con el roster de repositorios en lugar de un único directorio (ADR-0036).
       return [
         await readPromptAsset("github-delivery", { UNIT_ID: `#${spec.issue.number}` }),
-        "Coordinator-fixed issue context:", issueContext(spec.issue),
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
         ...(spec.units.length > 0
