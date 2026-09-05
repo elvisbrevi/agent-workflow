@@ -24,11 +24,11 @@ path, so is the retry loop it justified — nothing resumes a session toward a m
 was never asked to print, so a session that exits without a verifiable branch is an
 ordinary unit failure and leaves the ticket `En progreso` with its branch in place.
 
-The Azure workspace paths and the `terminalMarker` plumbing in the CLI adapters still
-carry the marker, and the idle nudge still re-injects it in OpenCode. That is deliberate
-sequencing, not an oversight: the workspace mode is rebuilt in its own slice, and until
-then a reader comparing this ADR against `lazy-workflow-cli.ts` will find both
-mechanisms, and the workspace one is the older.
+Both workspace modes gate the same way now: GitHub and Azure each verify every
+participant repository with git after the session's process exits, and neither
+prompt nor gate names `IMPLEMENTATION_READY`. No delivery path carries the marker
+anymore; the `terminalMarker` plumbing that remains in the CLI adapters serves
+the planning protocol markers only.
 
 The markers were a control plane made of provider text, which ADR-0020 had
 already rejected for queue outcomes. They survived for completion because the

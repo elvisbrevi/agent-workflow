@@ -35,45 +35,55 @@ function azureCheckpoint(): AzureWorkspaceCheckpoint {
 
 function githubCheckpoint(): GitHubWorkspaceCheckpoint {
   return {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-workspace-code",
     issue: 178,
-    phase: "implementing",
-    sessionId: "ses_178",
-    branch: "refs/heads/issue/178",
     parentDirectory: "/workspace",
     repositories: [{ path: "/workspace/repo-a", remote: "git@github.com:owner/repo-a.git", repository: "owner/repo-a" }],
     units: [],
-    receipts: {},
-    intent: null,
+    summary: null,
   };
 }
 
-test("los checkpoints workspace nombran el CLI dueño de la sesión", () => {
+test("los checkpoints workspace Azure nombran el CLI dueño de la sesión", () => {
   expect(isAzureWorkspaceCheckpoint({ ...azureCheckpoint(), cli: "claudecode" })).toBeTrue();
   expect(isAzureWorkspaceCheckpoint({ ...azureCheckpoint(), cli: "gemini" })).toBeFalse();
   expect(isAzureWorkspaceCheckpoint({ ...azureCheckpoint(), schemaVersion: 1 })).toBeFalse();
-  expect(isGitHubWorkspaceCheckpoint({ ...githubCheckpoint(), cli: "claudecode" })).toBeTrue();
-  expect(isGitHubWorkspaceCheckpoint({ ...githubCheckpoint(), cli: "gemini" })).toBeFalse();
-  expect(isGitHubWorkspaceCheckpoint({ ...githubCheckpoint(), schemaVersion: 1 })).toBeFalse();
 });
 
-for (const form of [
-  { label: "Azure", store: new AzureWorkspaceCheckpointStore(), fileName: "azure-workspace-code-checkpoint.json", checkpoint: azureCheckpoint() },
-  { label: "GitHub", store: new GitHubWorkspaceCheckpointStore(), fileName: "github-workspace-code-checkpoint.json", checkpoint: githubCheckpoint() },
-] as const) {
-  test(`un checkpoint workspace ${form.label} de la versión anterior se lee como OpenCode y se reescribe`, async () => {
-    const stateDirectory = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-checkpoint-"));
-    try {
-      const { schemaVersion: _version, cli: _cli, ...rest } = form.checkpoint;
-      const path = join(stateDirectory, form.fileName);
-      await Bun.write(path, `${JSON.stringify({ schemaVersion: 1, ...rest })}\n`);
+test("un checkpoint workspace Azure de la versión anterior se lee como OpenCode y se reescribe", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-checkpoint-"));
+  try {
+    const checkpoint = azureCheckpoint();
+    const { schemaVersion: _version, cli: _cli, ...rest } = checkpoint;
+    const path = join(stateDirectory, "azure-workspace-code-checkpoint.json");
+    await Bun.write(path, `${JSON.stringify({ schemaVersion: 1, ...rest })}\n`);
 
-      expect(await form.store.read(stateDirectory)).toEqual(form.checkpoint as never);
-      expect(await Bun.file(path).json()).toEqual(form.checkpoint);
-    } finally {
-      await rm(stateDirectory, { recursive: true, force: true });
-    }
-  });
-}
+    const store = new AzureWorkspaceCheckpointStore();
+    expect(await store.read(stateDirectory)).toEqual(checkpoint as never);
+    expect(await Bun.file(path).json()).toEqual(checkpoint);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("el checkpoint workspace GitHub no lleva fase, sesión ni recibos: solo lo que git no puede contar (ADR-0038)", () => {
+  const checkpoint = githubCheckpoint();
+  expect(isGitHubWorkspaceCheckpoint(checkpoint)).toBeTrue();
+  for (const stale of ["phase", "sessionId", "cli", "receipts", "intent", "reconciliation"]) {
+    expect(isGitHubWorkspaceCheckpoint({ ...checkpoint, [stale]: "anything" })).toBeFalse();
+  }
+  expect(isGitHubWorkspaceCheckpoint({ ...checkpoint, schemaVersion: 2 })).toBeFalse();
+});
+
+test("un checkpoint workspace GitHub persiste y se lee de vuelta igual", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-checkpoint-"));
+  try {
+    const checkpoint = githubCheckpoint();
+    const store = new GitHubWorkspaceCheckpointStore();
+    await store.write(checkpoint, stateDirectory);
+    expect(await store.read(stateDirectory)).toEqual(checkpoint);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});

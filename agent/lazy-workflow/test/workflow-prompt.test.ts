@@ -179,16 +179,18 @@ test("la reconciliacion GitHub conserva el contrato de entrega y fija los commit
   expect(prompt).toContain("Merge exactly bbbb222 into issue/201");
 });
 
-test("la entrega workspace GitHub declara el orden y la rama de cada repositorio", async () => {
+test("la entrega workspace GitHub comparte el asset de entrega de un repositorio y declara el roster", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "github-workspace-delivery",
     scope,
     issue,
     units: [
-      { path: "/ws/api", branch: "issue/201", manifestPath: "/ws/api/.git/manifest.json" } as never,
-      { path: "/ws/web", branch: "issue/201", manifestPath: "/ws/web/.git/manifest.json" } as never,
+      { path: "/ws/api", branch: "issue/201" } as never,
+      { path: "/ws/web", branch: "issue/201" } as never,
     ],
   }, context);
+  // El mismo asset que usa un solo repositorio (ADR-0036), con el número del Issue: issue #313.
+  expect(prompt).toContain("/implement the issue #201 usando /tdd /caveman /ponytail y /code-review.");
   expect(prompt).toContain("Workspace parent directory: /ws");
   expect(prompt).toContain("1. /ws/api (https://github.com/o/api.git)");
   expect(prompt).toContain("2. /ws/web (https://github.com/o/web.git)");
