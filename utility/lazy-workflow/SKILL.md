@@ -143,8 +143,7 @@ because they cost nothing to avoid and a full error message to discover.
 - The SAG commands need exactly one of `--hu` / `--issue`, and reject
   `--session`, `--branch` and `--base-branch`.
 - `deploy-sag` accepts `dev`, `test`, `qa`; PROD and every alias fail closed.
-- `--interview` is `plan`-only and incompatible with `--quiet`; `--interview-dir`
-  belongs to (and is required by) `--interview file`; `--interview-host` and
+- `--interview` is `plan`-only and incompatible with `--quiet`; `--interview-host` and
   `--interview-port` are `http`-only.
 - `--verbose` and `--quiet` are mutually exclusive.
 - `--cli` accepts `opencode` (`opencode`), `claudecode` (`claude`), and `codex` (`codex`); their default models are `opencode-go/deepseek-v4-pro`, `claude-sonnet-5`, and `gpt-5.6-sol`.

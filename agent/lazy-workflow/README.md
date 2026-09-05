@@ -51,13 +51,6 @@ lazy-workflow plan --number-of-questions 8 --working-directory /path/to/reposito
 # Answer those questions yourself, in a browser page the run opens
 lazy-workflow plan --interview http --working-directory /path/to/repository
 
-# Same, answering in the terminal you launched the run from
-lazy-workflow plan --interview terminal --working-directory /path/to/repository
-
-# Same, answering through JSON files any other tool can write
-lazy-workflow plan --interview file --interview-dir /tmp/entrevista \
-  --working-directory /path/to/repository
-
 # Plan against the SAG norms of the component declared in .sag/config.json
 lazy-workflow plan --normas-sag --working-directory /path/to/repository
 
@@ -1230,48 +1223,34 @@ them to you; your answers resume that same session, until the plan is final
 
 ```bash
 lazy-workflow plan --interview http --working-directory /path/to/repository
-lazy-workflow plan --hu 23438 --interview terminal --working-directory /path/to/repository
-lazy-workflow plan --interview file --interview-dir /tmp/entrevista \
-  --working-directory /path/to/repository
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--interview <off\|http\|terminal\|file>` | `off` | The channel you answer through. `off` is the historical run. |
+| `--interview <off\|http>` | `off` | The channel you answer through. `off` is the historical run. |
 | `--interview-timeout <seconds>` | `900` | Deadline per round; once spent, the session's own recommendations are taken and the run continues. |
 | `--interview-rounds <n>` | `8` | Bound on round trips. The last round is told to deliver the plan; one that asks again stops the run. |
 | `--interview-host <host>` | `127.0.0.1` | `http` only. |
 | `--interview-port <n>` | `0` (ephemeral) | `http` only, so two runs never collide. |
-| `--interview-dir <path>` | — | `file` only, and required for it. |
 
 `--number-of-questions` is unchanged: it is the budget for the whole interview,
 which the session spends across as many rounds as it needs. `--interview` only
 changes who answers them.
 
-The three channels:
-
-- **`http`** serves a page on loopback and prints its URL. The page shows the
-  round with each recommendation prefilled, so submitting it unchanged is the
-  same as not answering. The URL carries a per-run token and is the only
-  credential; a host outside loopback is allowed and reported as the exposure it
-  is. Answer from a browser, or with `curl` against `<url>/round` and
-  `<url>/answers`.
-- **`terminal`** asks in the terminal you launched the run from, reading
-  `/dev/tty` so it still works when the JSON result is piped somewhere. An empty
-  line accepts the recommendation; a number picks from the offered options.
-- **`file`** writes `ronda-<n>.preguntas.json` and waits for
-  `ronda-<n>.respuestas.json` in `--interview-dir`. It is the channel for
-  everything else — your own UI, a mail bridge, a bot, another agent — and the
-  files stay on disk as the record of what was decided.
+The `http` channel serves a page on loopback and prints its URL. The page shows
+the round with each recommendation prefilled, so submitting it unchanged is the
+same as not answering. The URL carries a per-run token and is the only
+credential; a host outside loopback is allowed and reported as the exposure it
+is. Answer from a browser, or with `curl` against `<url>/round` and
+`<url>/answers`.
 
 `--interview` applies to `plan` only, and is rejected together with `--quiet`,
-since every channel announces itself through the operator output that `--quiet`
-silences. An unusable channel — a taken port, no terminal, a directory that
-belongs to another interview — stops the run before a session opens, so nothing
-is spent on a run that could not have been answered. If the round expires or the
-channel goes away mid-interview, the run reports it and continues with the
-recommendations rather than failing; the interview is a chance to intervene, not
-a new way for planning to die.
+since the channel announces itself through the operator output that `--quiet`
+silences. An unusable channel — a taken port — stops the run before a session
+opens, so nothing is spent on a run that could not have been answered. If the
+round expires or the channel goes away mid-interview, the run reports it and
+continues with the recommendations rather than failing; the interview is a chance
+to intervene, not a new way for planning to die.
 
 `plan` still writes no state. An interrupted interview loses the round in
 flight and nothing else, and the session id is reported at every round, so an

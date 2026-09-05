@@ -316,7 +316,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .group(["description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
     .group(["real-effort", "real-effort-hh", "expected-rev", "number-of-questions"], "Tickets Azure (datos):")
     .group(
-      ["interview", "interview-timeout", "interview-rounds", "interview-host", "interview-port", "interview-dir"],
+      ["interview", "interview-timeout", "interview-rounds", "interview-host", "interview-port"],
       "Entrevista de planificacion (solo plan):",
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
@@ -373,7 +373,6 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("interview-rounds", positiveIntegerOption("--interview-rounds", "Maximo de rondas de preguntas antes de exigir el plan final.", DEFAULT_INTERVIEW_ROUNDS))
     .option("interview-host", { type: "string", requiresArg: true, default: DEFAULT_INTERVIEW_HOST, describe: "Host del canal http de preguntas; fuera de loopback la URL con su token es la unica credencial.", coerce: stringCoerce("--interview-host") })
     .option("interview-port", nonNegativeIntegerOption("--interview-port", "Puerto del canal http de preguntas; 0 pide uno libre al sistema.", DEFAULT_INTERVIEW_PORT))
-    .option("interview-dir", stringOption("--interview-dir", "Directorio donde el canal file escribe las rondas y lee las respuestas."))
     .option("type", stringOption("--type", "Tipo de work item de entrega (Task o Bug)."))
     .option("title", stringOption("--title", "Titulo exacto del ticket."))
     .option("estimate", nonNegativeNumberOption("--estimate", "Estimacion original en horas."))
@@ -633,11 +632,10 @@ function readInterview(
   asNumber: (key: string) => number | null,
 ): InterviewSettings {
   const channel = ((parsed["interview"] as InterviewChannelKind | undefined) ?? DEFAULT_INTERVIEW_CHANNEL);
-  const directory = asString("interview-dir");
 
   const supplied = (flag: string) => flagSupplied(rawArgs, flag);
   if (channel === "off") {
-    const declared = ["--interview-timeout", "--interview-rounds", "--interview-host", "--interview-port", "--interview-dir"]
+    const declared = ["--interview-timeout", "--interview-rounds", "--interview-host", "--interview-port"]
       .filter(supplied);
     if (declared.length > 0) {
       throw new Error(`${declared.join(", ")} requiere --interview con un canal; sin entrevista no hay ronda que acotar`);
@@ -646,18 +644,11 @@ function readInterview(
   if (channel !== "http" && (supplied("--interview-host") || supplied("--interview-port"))) {
     throw new Error(`--interview-host y --interview-port solo aplican a --interview http (recibido: ${channel})`);
   }
-  if (channel !== "file" && supplied("--interview-dir")) {
-    throw new Error(`--interview-dir solo aplica a --interview file (recibido: ${channel})`);
-  }
-  if (channel === "file" && !directory) {
-    throw new Error("--interview file requiere --interview-dir <ruta>");
-  }
 
   return {
     channel,
     host: asString("interview-host") ?? DEFAULT_INTERVIEW_HOST,
     port: asNumber("interview-port") ?? DEFAULT_INTERVIEW_PORT,
-    directory,
     timeoutSeconds: asNumber("interview-timeout") ?? DEFAULT_INTERVIEW_TIMEOUT_SECONDS,
     rounds: asNumber("interview-rounds") ?? DEFAULT_INTERVIEW_ROUNDS,
   };

@@ -53,9 +53,7 @@ The same holds in GitHub scope for another issue: capture it with
 ## "Let me answer the planning questions myself"
 
 ```bash
-lazy-workflow plan --hu 23438 --interview terminal --working-directory /repo   # in this terminal
-lazy-workflow plan --interview http --working-directory /repo                  # in a browser page it opens
-lazy-workflow plan --interview file --interview-dir /tmp/entrevista --working-directory /repo  # via JSON files
+lazy-workflow plan --interview http --working-directory /repo   # in a browser page it opens
 ```
 
 `--number-of-questions 8` widens the budget for the whole interview.
