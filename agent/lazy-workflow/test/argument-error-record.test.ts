@@ -34,25 +34,6 @@ async function runWithLog(args: string[]): Promise<{ exit: number; record: Recor
 }
 
 describe("el run record de un argument-error", () => {
-  test("un comando de sesión identifica el trabajo por issue", async () => {
-    const { exit, record } = await runWithLog(["architecture-review-sag", "--hu", "123", "--issue", "45"]);
-
-    expect(exit).toBe(1);
-    expect(record["failure_kind"]).toBe("argument-error");
-    expect(record["phase"]).toBe("validating");
-    expect(record["severity"]).toBe("error");
-    expect(record["message"]).toBe("architecture-review-sag no permite combinar --hu y --issue");
-    expect(record["context"]).toEqual({
-      issue: 45,
-      ticket: null,
-      hu: 123,
-      repository: process.cwd(),
-      session_id: null,
-      branch: null,
-      stop_reason: null,
-    });
-  });
-
   test("un comando de tool de Azure identifica el trabajo por ticket y branch", async () => {
     const { exit, record } = await runWithLog([
       "ticket-branch-set", "--hu", "999", "--ticket", "7", "--branch", "refs/heads/ticket/7",

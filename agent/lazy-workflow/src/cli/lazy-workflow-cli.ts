@@ -38,9 +38,6 @@ import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../
 import { registerInterruptionHandlers, type InterruptionCheckpointProbe, type InterruptionProcess } from "../output/run-interruption.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
-import { DeploymentAuthenticationRequiredError, SagDeploymentService, sanitizeDeploymentText, type DeploymentEnvironment, type DeploymentScope } from "../sag/deployment-service.ts";
-import { InfrastructureAuthenticationRequiredError, SagInfrastructureService, type InfrastructureScope } from "../sag/infrastructure-service.ts";
-import { GitHubArchitectureReviewService, type ArchitectureReviewPublication, type ArchitectureReviewTicket, type ArchitectureReviewTracker } from "../github/architecture-review-service.ts";
 import {
   GitHubManagedQueueService,
   assigneeLogins,
@@ -158,8 +155,6 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   validateSummary?(ticket: number, summary: string): Promise<void>;
   setSummary?(ticket: number, summary: string): Promise<unknown>;
   verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
-  publishArchitectureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
-  publishInfrastructureFindings?(hu: number, specification: { title: string; body: string }, tickets: ArchitectureReviewTicket[]): Promise<ArchitectureReviewPublication>;
 }>;
 
 interface RetryTimer { wait(milliseconds: number): Promise<void>; }
@@ -215,38 +210,6 @@ function argumentError(
 }
 
 /**
- * El alcance que los tres comandos SAG declaran igual: un HU o un Issue, nunca
- * ambos y nunca ninguno. Devuelve el código de salida cuando el alcance no
- * sirve —ya reportado— y `null` cuando el comando puede seguir.
- */
-function sagScopeError(
-  command: string,
-  options: Pick<CliOptions, "hu" | "issue" | "workingDirectory">,
-): number | null {
-  if (options.hu !== null && options.issue !== null) {
-    return argumentError(options, `${command} no permite combinar --hu y --issue`);
-  }
-  if (options.hu === null && options.issue === null) {
-    return argumentError(options, `${command} requiere --hu <id> o --issue <id>`);
-  }
-  return null;
-}
-
-/**
- * Ningún comando SAG reanuda una sesión ni recibe sus ramas: las decide el run
- * a partir del alcance.
- */
-function sagSessionFlagsError(
-  command: string,
-  options: Pick<CliOptions, "hu" | "issue" | "workingDirectory" | "session" | "branch" | "baseBranch">,
-): number | null {
-  if (options.session !== null || options.branch !== null || options.baseBranch !== null) {
-    return argumentError(options, `${command} no permite --session, --branch ni --base-branch`);
-  }
-  return null;
-}
-
-/**
  * La misma decisión en un comando de tool de Azure, que identifica el trabajo
  * por su ticket y su rama en vez de por un Issue.
  */
@@ -297,7 +260,6 @@ function githubRecoveryFailureKind(error: unknown): FailureKind {
 /** The run-log `workflow` label: the coarse family a command belongs to, not the command itself (ADR-0029). */
 function runLogWorkflow(command: string): string {
   if (command === "plan" || command === "code") return command;
-  if (command === "architecture-review-sag" || command === "infra-sag" || command === "deploy-sag") return "sag";
   return "tool";
 }
 
@@ -415,47 +377,8 @@ function describeRung(rung: FallbackRung): string {
   return `${rung.cli}:${rung.model}:${rung.variant}`;
 }
 
-function deploymentErrorMessage(error: unknown): string {
-  return sanitizeDeploymentText(errorMessage(error));
-}
-
 function isAuthenticationError(error: unknown): boolean {
   return /(?:authentication|authorization|unauthorized|forbidden|access token|login|\b401\b|\b403\b)/i.test(errorMessage(error));
-}
-
-function sanitizeDeploymentOutput(value: unknown): unknown {
-  if (typeof value === "string") return deploymentErrorMessage(value);
-  if (Array.isArray(value)) return value.map(sanitizeDeploymentOutput);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
-      key,
-      /authorization|token|password|secret|cookie|pat|api[-_ ]?key/i.test(key) ? "[REDACTED]" : sanitizeDeploymentOutput(nested),
-    ]));
-  }
-  return value;
-}
-
-/** El veredicto que una revisión de arquitectura devuelve detrás de su marcador. */
-interface ArchitectureReviewResult {
-  status: "clean" | "findings";
-  summary: string;
-  specification?: { title: string; body: string };
-  tickets?: ArchitectureReviewTicket[];
-}
-
-function parseArchitectureReviewResult(text: string): ArchitectureReviewResult {
-  const marker = "ARCHITECTURE_REVIEW_RESULT";
-  const lines = text.split(/\r?\n/);
-  const markerLine = lines.findIndex((line) => line.trim() === marker);
-  if (markerLine < 0) throw new Error(`OpenCode no devolvio ${marker}`);
-  const result = JSON.parse(lines.slice(markerLine + 1).join("\n").trim()) as ArchitectureReviewResult;
-  if ((result.status !== "clean" && result.status !== "findings") || typeof result.summary !== "string") {
-    throw new Error("resultado de architecture-review-sag invalido");
-  }
-  if (result.status === "findings" && (!result.specification || typeof result.specification.title !== "string" || typeof result.specification.body !== "string" || !Array.isArray(result.tickets))) {
-    throw new Error("architecture-review-sag reporto hallazgos sin specification o tickets");
-  }
-  return result;
 }
 
 const COMPLETION_GATE_MESSAGES: Record<CompletionGate, string> = {
@@ -511,12 +434,6 @@ const TICKET_READ_COMMANDS = new Set([
   "ticket-pr-info",
   "ticket-completion-info",
 ]);
-const INFRASTRUCTURE_FLAGS = new Set([
-  "--hu", "--issue",
-  "--cli", "--model", "--variant", "--prompt",
-  "--working-directory",
-  "--verbose", "--quiet", "--no-color",
-]);
 
 /** Un identificador que el tracker puede aceptar: un HU, un ticket o un PR. */
 function isPositiveId(value: number | null): value is number {
@@ -560,11 +477,8 @@ export class LazyWorkflowCli {
     private readonly retryTimer: RetryTimer = { wait: Bun.sleep },
     private readonly ticketBranchCleaner: TicketBranchCleaner = new GitTicketBranchCleaner(),
     private readonly clock: Clock = { now: Date.now },
-    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadCoding" | "loadArchitectureReview" | "loadDeployment" | "loadInfrastructure">> = new SagNormsService(),
+    private readonly sagNormsService: Pick<SagNormsService, "loadPlanning"> & Partial<Pick<SagNormsService, "loadCoding">> = new SagNormsService(),
     private readonly git: GitRunner = runGit,
-    private readonly githubTracker: ArchitectureReviewTracker = new GitHubArchitectureReviewService(),
-    private readonly deploymentService: Pick<SagDeploymentService, "deploy"> = new SagDeploymentService(),
-    private readonly infrastructureService: Pick<SagInfrastructureService, "verify"> = new SagInfrastructureService(),
     private readonly cliParser: CliParser = buildCli(),
     private readonly createReporterFn: typeof createReporter = createReporter,
     private readonly githubManagedQueue: GitHubManagedQueueAdapter = new GitHubManagedQueueService(),
@@ -996,53 +910,6 @@ export class LazyWorkflowCli {
         options,
         this.deterministicToolServices ?? createDeterministicToolServices(this.huInfoService),
       );
-    }
-
-    if (options.issue !== null && command !== "architecture-review-sag" && command !== "deploy-sag" && command !== "infra-sag") {
-      return argumentError(options, "--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag");
-    }
-
-    if (options.environment !== null && command !== "deploy-sag") {
-      return argumentError(options, "--environment solo se permite con deploy-sag");
-    }
-
-    if (command === "deploy-sag" && options.environment !== null && !options.environment?.trim()) {
-      return argumentError(options, "deploy-sag requiere --environment <dev|test|qa> cuando se proporciona --environment");
-    }
-
-    if (command === "architecture-review-sag") {
-      const rejected = sagScopeError(command, options) ?? sagSessionFlagsError(command, options);
-      if (rejected !== null) return rejected;
-      return this.runArchitectureReview(options);
-    }
-
-    if (command === "infra-sag") {
-      const unsupportedFlag = args.slice(1)
-        .map((arg) => arg?.split("=", 1)[0])
-        .find((arg): arg is string => typeof arg === "string" && arg.startsWith("--") && !INFRASTRUCTURE_FLAGS.has(arg));
-      if (unsupportedFlag) {
-        return argumentError(options, `infra-sag no permite ${unsupportedFlag}`);
-      }
-      // Sin regla de flags de sesión: la lista de flags admitidas de arriba ya
-      // rechaza --session, --branch y --base-branch, que no están en ella.
-      const rejected = sagScopeError(command, options);
-      if (rejected !== null) return rejected;
-      return this.runInfrastructure(options);
-    }
-
-    if (command === "deploy-sag") {
-      if (options.environment !== null && args.filter((arg) => arg === "--environment" || arg.startsWith("--environment=")).length > 1) {
-        return argumentError(options, "deploy-sag no permite repetir --environment");
-      }
-      const scope = sagScopeError(command, options);
-      if (scope !== null) return scope;
-      const environment = options.environment?.trim().toLowerCase() ?? "dev";
-      if (environment !== "dev" && environment !== "test" && environment !== "qa") {
-        return argumentError(options, "deploy-sag solo permite DEV, TEST o QA; PROD y sus aliases estan prohibidos");
-      }
-      const rejected = sagSessionFlagsError(command, options);
-      if (rejected !== null) return rejected;
-      return this.runDeployment(options, environment);
     }
 
     if (TICKET_READ_COMMANDS.has(command)) return this.runTicketRead(command, options);
@@ -3795,6 +3662,12 @@ export class LazyWorkflowCli {
     }
   }
 
+  /** The authority of a run: its profile, in the format the run's own CLI enforces. */
+  private authority(spec: WorkflowPromptSpec, cli: AgentCli): AgentAuthority {
+    const profile = authorityProfile(spec);
+    return { profile, configPath: authorityConfigPath(cli, profile) };
+  }
+
   private async loadSagNorms(options: CliOptions, phase: "planning" | "coding"): Promise<SagContext | null> {
     if (!options.normasSag) return null;
     try {
@@ -3807,207 +3680,6 @@ export class LazyWorkflowCli {
       reportFailure("delivery-failure", phase, { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, `lazy-workflow: no se pudo cargar el contexto SAG (${errorMessage(error)}); ejecucion detenida.`);
       return null;
     }
-  }
-
-  private async runDeployment(options: CliOptions, environment: DeploymentEnvironment, authenticationRetried = false): Promise<number> {
-    if (!this.sagNormsService.loadDeployment) {
-      reportFailure("delivery-failure", "deploying", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta deploy-sag");
-      return 1;
-    }
-    try {
-      const issueScope = options.issue !== null
-        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
-        : null;
-      const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
-      const scope: DeploymentScope = options.issue !== null
-        ? { tracker: "github", id: options.issue, title: issueScope?.title ?? `Issue #${options.issue}`, source: issueScope }
-        : { tracker: "azure", id: huScope!.id, title: huScope?.title ?? `HU #${huScope!.id}`, source: huScope };
-      const context = await this.sagNormsService.loadDeployment(options.workingDirectory);
-      const verifiedContext = await this.sagNormsService.loadDeployment(options.workingDirectory);
-      if (context.commit !== verifiedContext.commit) throw new Error("la fuente SAG cambio durante la preparacion; ejecucion detenida");
-      const deployment = await this.deploymentService.deploy(scope, options.workingDirectory, environment);
-      console.log(JSON.stringify(sanitizeDeploymentOutput({
-        deployment,
-        scope,
-        sag: context,
-      }), null, 2));
-      return 0;
-    } catch (error) {
-      if ((error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
-        && options.hu !== null && !authenticationRetried) {
-        reportAzureFailure("deployment-authentication-required", "authenticating", options, `Sesion de deployment detenida; autenticacion requerida para la HU ${options.hu}.`);
-        await this.huInfoService.waitForAccess(options.hu);
-        return this.runDeployment(options, environment, true);
-      }
-      reportFailure(
-        options.hu !== null && (error instanceof DeploymentAuthenticationRequiredError || isAuthenticationError(error))
-          ? "deployment-authentication-required"
-          : "delivery-failure",
-        "deploying",
-        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
-        `lazy-workflow: no se pudo ejecutar deploy-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`,
-      );
-      return 1;
-    }
-  }
-
-  private async runInfrastructure(options: CliOptions, authenticationRetried = false): Promise<number> {
-    if (!this.sagNormsService.loadInfrastructure) {
-      reportFailure("delivery-failure", "verifying", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta infra-sag");
-      return 1;
-    }
-    try {
-      const issueScope = options.issue !== null
-        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
-        : null;
-      const huScope = options.hu !== null ? await this.huInfoService.getHuInfo(options.hu) : null;
-      const scope: InfrastructureScope = options.issue !== null
-        ? {
-          tracker: "github",
-          id: options.issue,
-          title: `Issue #${options.issue}`,
-          source: issueScope ? {
-            title: issueScope.title,
-            description: sanitizeDeploymentText(issueScope.body),
-            comments: issueScope.comments.map(sanitizeDeploymentText),
-            state: issueScope.state,
-          } : undefined,
-        }
-        : {
-          tracker: "azure",
-          id: huScope!.id,
-          title: `HU #${huScope!.id}`,
-          source: huScope ? {
-            title: huScope.title,
-            description: huScope.description ? sanitizeDeploymentText(huScope.description) : undefined,
-            acceptanceCriteria: huScope.criterioDeAceptacion ? sanitizeDeploymentText(huScope.criterioDeAceptacion) : undefined,
-            state: huScope.state,
-            project: huScope.project,
-          } : undefined,
-        };
-      const context = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
-      const verifiedContext = await this.sagNormsService.loadInfrastructure(options.workingDirectory);
-      if (context.commit !== verifiedContext.commit) throw new Error("la fuente SAG cambio durante la preparacion; ejecucion detenida");
-      const verification = await this.infrastructureService.verify(scope, options.workingDirectory);
-      let publication: ArchitectureReviewPublication | null = null;
-      if (verification.findings.length > 0) {
-        const provenance = [
-          `SAG source: ${context.sourceRepository} (${context.branch} @ ${context.commit})`,
-          `Selected rules: ${context.selectedRules.map(({ ruleId }) => ruleId).join(", ") || "none"}`,
-        ].join("\n");
-        const specification = {
-          title: `Infrastructure readiness findings for ${scope.title}`,
-          body: `Authenticated infrastructure verification found missing or unverifiable prerequisites. Each finding below is a separate corrective work item.\n\n${provenance}`,
-        };
-        const tickets = verification.findings.map(({ title, body }) => ({ title, body: `${body}\n\n${provenance}` }));
-        if (issueScope !== null) {
-          publication = await this.githubTracker.publishFindings(
-            issueScope.number,
-            specification,
-            tickets,
-            options.workingDirectory,
-          );
-        } else {
-          if (!this.huInfoService.publishInfrastructureFindings) {
-            throw new Error("el servicio Azure no expone publication verificada para infra-sag");
-          }
-          publication = await this.huInfoService.publishInfrastructureFindings(options.hu!, specification, tickets);
-        }
-      }
-      console.log(JSON.stringify({
-        infrastructure: sanitizeDeploymentOutput(verification),
-        scope: { tracker: scope.tracker, id: scope.id, title: scope.title },
-        sag: context,
-        publication,
-      }, null, 2));
-      return 0;
-    } catch (error) {
-      if ((error instanceof InfrastructureAuthenticationRequiredError || isAuthenticationError(error))
-        && options.hu !== null && !authenticationRetried) {
-        reportAzureFailure("infrastructure-authentication-required", "authenticating", options, `Sesion de infraestructura detenida; autenticacion requerida para la HU ${options.hu}.`);
-        await this.huInfoService.waitForAccess(options.hu);
-        return this.runInfrastructure(options, true);
-      }
-      reportFailure(
-        options.hu !== null && (error instanceof InfrastructureAuthenticationRequiredError || isAuthenticationError(error))
-          ? "infrastructure-authentication-required"
-          : "delivery-failure",
-        "verifying",
-        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
-        `lazy-workflow: no se pudo ejecutar infra-sag (${deploymentErrorMessage(error)}); ejecucion detenida.`,
-      );
-      return 1;
-    }
-  }
-
-  private async runArchitectureReview(options: CliOptions): Promise<number> {
-    if (!this.sagNormsService.loadArchitectureReview) {
-      reportFailure("delivery-failure", "reviewing", { hu: options.hu, issue: options.issue, repository: options.workingDirectory }, "lazy-workflow: el servicio SAG no soporta architecture-review-sag");
-      return 1;
-    }
-    try {
-      const initialStatus = await this.git(["status", "--porcelain", "--untracked-files=no"], options.workingDirectory);
-      if (initialStatus.trim()) throw new Error("el repositorio tiene cambios sin guardar; la revision no mutara un arbol sucio");
-      const issueScope = options.issue !== null
-        ? await this.githubTracker.readIssue(options.issue, options.workingDirectory)
-        : null;
-      const scope = options.hu !== null
-        ? { tracker: "azure", hu: await this.huInfoService.getHuInfo(options.hu) }
-        : { tracker: "github", issue: issueScope };
-      const context = await this.sagNormsService.loadArchitectureReview(options.workingDirectory);
-      const run = await this.prompt({ kind: "architecture-review-sag", scope, context }, options);
-      const execution = await this.codingAgent.run({ ...options, ...run, session: null }, options.hu !== null);
-      let result = execution.result;
-      if (execution.azureLoginRequired && options.hu !== null) {
-        reportOperator(`Sesion detenida a la espera de az login: ${result.sessionId}`);
-        await this.huInfoService.waitForAccess(options.hu);
-        result = await this.codingAgent.resume(result.sessionId, "continue", options.workingDirectory, undefined, { agent: run.agent });
-      }
-      const finalStatus = await this.git(["status", "--porcelain", "--untracked-files=no"], options.workingDirectory);
-      if (finalStatus.trim()) throw new Error("architecture-review-sag modifico el arbol revisado; resultado rechazado");
-      if (execution.failed) return 1;
-      const review = parseArchitectureReviewResult(result.text);
-      let publication: ArchitectureReviewPublication | null = null;
-      if (review.status === "findings" && issueScope !== null) {
-        publication = await this.githubTracker.publishFindings(
-          issueScope.number,
-          review.specification!,
-          review.tickets!,
-          options.workingDirectory,
-        );
-      } else if (review.status === "findings" && options.hu !== null) {
-        if (!this.huInfoService.publishArchitectureFindings) {
-          throw new Error("el servicio Azure no expone publication verificada para architecture-review-sag");
-        }
-        publication = await this.huInfoService.publishArchitectureFindings(options.hu, review.specification!, review.tickets!);
-      }
-      console.log(JSON.stringify({
-        ...result,
-        architectureReview: {
-          status: review.status,
-          summary: review.summary,
-          sourceRepository: context.sourceRepository,
-          branch: context.branch,
-          commit: context.commit,
-          publication,
-        },
-      }, null, 2));
-      return 0;
-    } catch (error) {
-      reportFailure(
-        "delivery-failure",
-        "reviewing",
-        { hu: options.hu, issue: options.issue, repository: options.workingDirectory },
-        `lazy-workflow: no se pudo ejecutar architecture-review-sag (${errorMessage(error)}); ejecucion detenida.`,
-      );
-      return 1;
-    }
-  }
-
-  /** The authority of a run: its profile, in the format the run's own CLI enforces. */
-  private authority(spec: WorkflowPromptSpec, cli: AgentCli): AgentAuthority {
-    const profile = authorityProfile(spec);
-    return { profile, configPath: authorityConfigPath(cli, profile) };
   }
 
   /**

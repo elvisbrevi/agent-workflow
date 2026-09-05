@@ -48,7 +48,6 @@ export interface CliOptions {
   realEffort: number;
   realEffortHours: number;
   expectedRevision: number;
-  environment: string | null;
   hasRealEffort: boolean;
   hasRealEffortHours: boolean;
   hasExpectedRevision: boolean;
@@ -121,9 +120,6 @@ const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
 const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
-  "infra-sag",
-  "architecture-review-sag",
-  "deploy-sag",
   "hu-info",
   "hu-branch-info",
   "hu-branch-set",
@@ -310,7 +306,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .fail((message, error) => {
       reportError(error?.message ?? message ?? "argumento invalido");
     })
-    .group(["hu", "issue", "environment"], "Alcance:")
+    .group(["hu", "issue"], "Alcance:")
     .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "idle-timeout", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "commit", "summary"], "Tickets Azure:")
     .group(["description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
@@ -357,7 +353,6 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket."))
     .option("state", stringOption("--state", "Estado destino del ticket."))
     .option("expected-state", stringOption("--expected-state", "Estado actual esperado antes de la transicion."))
-    .option("environment", stringOption("--environment", "Entorno destino de deploy-sag (dev|test|qa)."))
     .option("real-effort", nonNegativeNumberOption("--real-effort", "Real Effort en horas."))
     .option("real-effort-hh", nonNegativeNumberOption("--real-effort-hh", "Real Effort HH."))
     .option("expected-rev", positiveIntegerOption("--expected-rev", "Revision esperada del ticket."))
@@ -560,7 +555,6 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     descriptionFile: asString("description-file"),
     state: asString("state"),
     expectedState: asString("expected-state"),
-    environment: asString("environment"),
     realEffort: asNumber("real-effort") ?? 0,
     realEffortHours: asNumber("real-effort-hh") ?? 0,
     expectedRevision: asNumber("expected-rev") ?? 0,
@@ -667,9 +661,6 @@ function renderHelp(parser: YargsInstance): string {
     "  code: --working-directory CSV acepta --hu para preparar la topología multi-repositorio Azure",
     "  code: --ticket fija una unica unidad de entrega; omitirlo drena los Task y Bug hijos elegibles de la HU",
     "  Azure ticket delivery run: el coordinador posee la entrega; OpenCode solo implementa, valida, revisa, commitea y deja el resumen de la sesion",
-    "  infra-sag: verifica prerequisitos sin provisionar y publica hallazgos en el tracker del alcance",
-    "  architecture-review-sag: revisa arquitectura sin mutar codigo; publica hallazgos en el tracker del alcance",
-    "  deploy-sag: descubre una ruta unica autenticada, ejecuta DEV/TEST/QA y verifica el resultado; PROD siempre esta prohibido",
     "  herramientas deterministas: no abren sesion, imprimen su resultado como JSON y son las mismas que usa el workflow",
     "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
     "  --no-log-file: deshabilita el run log de este run; no puede combinarse con --log-file",
@@ -686,12 +677,6 @@ const COMMAND_FORMS = [
   "  lazy-workflow code --hu <id> [options]",
   "  lazy-workflow code --hu <id> --working-directory <repo1,repo2,...> [--ticket <id>] [--base-branch <name>]",
   "  lazy-workflow code --session <id> --prompt continue",
-  "  lazy-workflow infra-sag --hu <id> [options]",
-  "  lazy-workflow infra-sag --issue <id> [options]",
-  "  lazy-workflow architecture-review-sag --hu <id> [options]",
-  "  lazy-workflow architecture-review-sag --issue <id> [options]",
-  "  lazy-workflow deploy-sag --hu <id> [options]",
-  "  lazy-workflow deploy-sag --issue <id> [options]",
   "  lazy-workflow hu-info --hu <id>",
   "  lazy-workflow hu-branch-info --hu <id>",
   "  lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>",

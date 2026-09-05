@@ -42,7 +42,6 @@ const specs: Array<[WorkflowPromptSpec, string]> = [
     manifestPaths: [],
   }, "lazy-azure-code"],
   [{ kind: "azure-delivery", context: {} as never, ticketBranch: null }, "lazy-azure-code"],
-  [{ kind: "architecture-review-sag", scope: {}, context: {} as never }, "lazy-review"],
 ];
 
 test("cada clase de run recibe su perfil de autoridad", () => {

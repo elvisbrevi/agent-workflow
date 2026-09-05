@@ -61,7 +61,5 @@ export function authorityProfile(spec: WorkflowPromptSpec): AuthorityProfile {
     case "azure-delivery":
     case "azure-workspace-delivery":
       return "lazy-azure-code";
-    case "architecture-review-sag":
-      return "lazy-review";
   }
 }

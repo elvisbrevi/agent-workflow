@@ -287,23 +287,11 @@ test("la entrega Azure y la GitHub dicen el mismo trabajo", async () => {
   expect(github).toContain(delivery);
 });
 
-test("la revision de arquitectura SAG no muta y declara su marker", async () => {
-  const prompt = await buildWorkflowPrompt({
-    kind: "architecture-review-sag",
-    scope: { tracker: "github", issue: 201 },
-    context: { commit: "abc123", sources: [] } as never,
-  }, context);
-  expect(prompt).toContain("do not modify source code");
-  expect(prompt).toContain('Review scope: {"tracker":"github","issue":201}');
-  expect(prompt).toContain("ARCHITECTURE_REVIEW_RESULT");
-});
-
 test("buildResumePrompt solo adjunta normas SAG cuando existen", () => {
   expect(buildResumePrompt("continue", null)).toBe("continue");
-  const withNorms = buildResumePrompt("continue", { phase: "coding" } as never);
+  const withNorms = buildResumePrompt("continue", { phase: "coding", paths: [] } as never);
   expect(withNorms).toContain("continue");
   expect(withNorms).toContain("SAG norms context");
-  expect(withNorms).toContain("unknown applicability remains an explicit decision");
 });
 
 test("un plan sin entrevista ordena aceptar la recomendación y no menciona rondas", async () => {
