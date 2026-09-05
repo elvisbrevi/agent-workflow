@@ -74,7 +74,7 @@ export type WorkflowPromptSpec =
       originalCommit: string;
       baseCommit: string;
     }
-  | { kind: "github-workspace-delivery"; scope: WorkspaceScope; issue: SelectedManagedIssue | null; units: GitHubWorkspaceUnit[] }
+  | { kind: "github-workspace-delivery"; scope: WorkspaceScope; issue: SelectedManagedIssue; units: GitHubWorkspaceUnit[] }
   | {
       kind: "azure-workspace-delivery";
       scope: WorkspaceScope;
@@ -199,20 +199,6 @@ export async function buildRoundRepairPrompt(reason: string): Promise<string> {
   ].join("\n");
 }
 
-/** The issue facts OpenCode needs, and only those. */
-function issueContext(issue: SelectedManagedIssue): string {
-  return JSON.stringify({
-    number: issue.number,
-    title: issue.title,
-    state: issue.state,
-    labels: issue.labels.map(({ name }) => name).filter(Boolean),
-    assignees: issue.assignees.map(({ login }) => login).filter(Boolean),
-    createdAt: issue.createdAt,
-    body: issue.body,
-    comments: issue.comments,
-  });
-}
-
 /**
  * The Azure HU planning run's own sections: the User Story data, the
  * `autoplan` prompt, and the question budget. Both the mono-repository and
@@ -324,18 +310,20 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
     }
 
     case "github-workspace-delivery":
+      // La variante transversal del issue GitHub: el mismo asset de entrega que usa un solo
+      // repositorio, con el roster de repositorios en lugar de un único directorio (ADR-0036).
       return [
-        await readPromptAsset("delivery"),
-        ...(spec.issue ? ["Coordinator-fixed issue context:", issueContext(spec.issue)] : []),
+        await readPromptAsset("github-delivery", { UNIT_ID: `#${spec.issue.number}` }),
         `Workspace parent directory: ${spec.scope.parentDirectory}`,
         ...repositoryRoster(spec.scope),
         ...(spec.units.length > 0
           ? ["Ramas fijadas:", ...spec.units.map(({ path, branch }) => `${path}: ${branch}`)]
           : []),
         "Trabaja los repositorios en el orden declarado, commiteando cada uno por separado.",
+        await readPromptAsset("delivery"),
+        ...sag,
         `The working directory is ${spec.scope.parentDirectory}`,
-        "Operator request:",
-        operatorRequest,
+        operatorRequest.trim() ? operatorRequest : null,
       ];
 
     case "azure-workspace-delivery":

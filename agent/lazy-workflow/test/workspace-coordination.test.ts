@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,7 +9,7 @@ import { GitHubPullRequestConflictError, type GitHubDeliveryAdapter } from "../s
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
-import { isGitHubWorkspaceManifest } from "../src/github/github-workspace-checkpoint.ts";
+import { SessionNotVerifiedError } from "../src/git/session-verification.ts";
 
 test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-"));
@@ -19,9 +18,8 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
   let prompt = "";
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -48,14 +46,10 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async (options) => { sessionRan = true;
-      prompt = options.prompt;
-      for (const repository of [repoA, repoB]) {
-        await Bun.write(join(repository, "manifest.json"), "{}\n");
-        await Bun.write(join(repository, "evidence.txt"), "evidence");
-      }
-      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
-    }, resume: async () => { throw new Error("must not resume"); } },
+    agentSource: {
+      run: async (options) => { prompt = options.prompt; return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "listo" } })), azureLoginRequired: false }; },
+      resume: async () => { throw new Error("must not resume"); },
+    },
     git,
     githubManagedQueue: queue,
     githubCheckpointStore: checkpointStore,
@@ -64,21 +58,17 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   });
   try {
     expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(0);
+    expect(prompt).toContain("/implement the issue #188");
     expect(prompt).toContain(`${repoA}`);
     expect(prompt).toContain(`${repoB}`);
     expect(events.filter((event) => event.startsWith("prepare:"))).toEqual(["prepare:repo-a", "prepare:repo-b"]);
     expect(events.filter((event) => event.startsWith("push:"))).toEqual(["push:repo-a", "push:repo-b"]);
     expect(events.indexOf("close")).toBeGreaterThan(events.indexOf("merge:repo-b"));
     expect(events.filter((event) => event.startsWith("lock:"))).toEqual(["lock:repo-a", "lock:repo-b"]);
-    const manifest: unknown = await Bun.file(join(root, ".lazy-workflow", "github-workspace-manifest.json")).json();
-    expect(isGitHubWorkspaceManifest(manifest)).toBe(true);
-    const units = (manifest as { repositories: Array<Record<string, unknown>> }).repositories;
-    expect(units.map((unit) => unit.remote)).toEqual([
-      "git@github.com:owner/repo-a.git",
-      "git@github.com:owner/repo-b.git",
-    ]);
-    expect(units.map((unit) => unit.changed)).toEqual([true, true]);
-    expect(units.map((unit) => unit.phase)).toEqual(["cleaning", "cleaning"]);
+    // Ni manifest agregado ni checkpoint sobreviven una entrega limpia (ADR-0038): no queda ningún
+    // archivo dejado por la sesión que la próxima corrida tenga que leer (issue #313).
+    expect(await Bun.file(join(root, ".lazy-workflow", "github-workspace-manifest.json")).exists()).toBe(false);
+    expect(await Bun.file(join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json")).exists()).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -90,15 +80,12 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    // Solo repo-a commitea: repo-b se queda exactamente donde empezó, que es lo que lo hace
-    // «sin cambios» a ojos del coordinador (ADR-0035).
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") {
-      return sessionRan && directory.includes("repo-a") ? "d".repeat(40) : "c".repeat(40);
-    }
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
+    // Ni status sucio ni commits sin publicar: repo-b se queda exactamente donde empezó, que es lo
+    // que lo hace «sin cambios» a ojos del coordinador (ADR-0035).
     return "";
   };
   const delivery: GitHubDeliveryAdapter = {
@@ -106,7 +93,11 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    verifySession: async () => ({ commit: "a".repeat(40) }),
+    // Solo repo-a pasa la verificación git; repo-b nunca commiteó nada sobre su base.
+    verifySession: async (_branch, _base, workingDirectory) => {
+      if (workingDirectory.includes("repo-a")) return { commit: "a".repeat(40) };
+      throw new SessionNotVerifiedError("la rama no tiene commits sobre su base");
+    },
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => { events.push(`pr:${basename(workingDirectory)}`); return { number: 1 }; },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => { events.push(`merge:${basename(workingDirectory)}`); return { number: pullRequest, mergeCommit: "1".repeat(40) }; },
@@ -123,12 +114,10 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => { sessionRan = true;
-      // Only repo-a receives a manifest; repo-b stays untouched (unchanged).
-      await Bun.write(join(repoA, "manifest.json"), "{}\n");
-      await Bun.write(join(repoA, "evidence.txt"), "evidence");
-      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
-    }, resume: async () => { throw new Error("must not resume"); } },
+    agentSource: {
+      run: async () => ({ result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "listo" } })), azureLoginRequired: false }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
     git,
     githubManagedQueue: queue,
     githubCheckpointStore: checkpointStore,
@@ -139,12 +128,7 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
     expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(0);
     expect(events.filter((event) => event.startsWith("pr:"))).toEqual(["pr:repo-a"]);
     expect(events.filter((event) => event.startsWith("merge:"))).toEqual(["merge:repo-a"]);
-    expect(events.filter((event) => event.startsWith("cleanup:"))).toEqual(["cleanup:repo-a", "cleanup:repo-b"]);
-    const manifest = await Bun.file(join(root, ".lazy-workflow", "github-workspace-manifest.json")).json() as { repositories: Array<Record<string, unknown>> };
-    const byPath = Object.fromEntries(manifest.repositories.map((unit) => [basename(unit.path as string), unit]));
-    expect(byPath["repo-a"]!.changed).toBe(true);
-    expect(byPath["repo-b"]!.changed).toBe(false);
-    expect(byPath["repo-b"]!.pullRequest).toBe(null);
+    expect(events.filter((event) => event.startsWith("cleanup:")).sort()).toEqual(["cleanup:repo-a", "cleanup:repo-b"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -156,9 +140,8 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -168,7 +151,8 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
       events.push(`prepare:${basename(workingDirectory)}`);
       return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
     },
-    verifySession: async () => { throw new Error("must not verify"); },
+    // Ninguno de los dos repositorios llevó commits sobre su base.
+    verifySession: async () => { throw new SessionNotVerifiedError("la rama no tiene commits sobre su base"); },
     pushCommit: async () => { throw new Error("must not push"); },
     createOrReusePullRequest: async () => { throw new Error("must not create PR"); },
     mergePullRequest: async () => { throw new Error("must not merge"); },
@@ -185,7 +169,10 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => ({ result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false }), resume: async () => { throw new Error("must not resume"); } },
+    agentSource: {
+      run: async () => ({ result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "listo" } })), azureLoginRequired: false }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
     git,
     githubManagedQueue: queue,
     githubCheckpointStore: checkpointStore,
@@ -196,6 +183,7 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
     expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(1);
     expect(events).not.toContain("close");
     expect(events.filter((event) => event.startsWith("cleanup:")).sort()).toEqual(["cleanup:repo-a", "cleanup:repo-b"]);
+    expect(await Bun.file(join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json")).exists()).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -207,8 +195,8 @@ test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () 
   const repoB = join(root, "repo-b");
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     if (args[0] === "status" && basename(directory) === "repo-b") return " M file.ts";
@@ -229,7 +217,7 @@ test("rechaza un workspace sucio antes de coordinar cualquier efecto", async () 
     selectAndClaimEligibleIssue: async () => ({ kind: "empty" as const }),
   };
   const openCode = {
-    run: async () => { sessionRan = true; events.push("opencode"); throw new Error("must not run"); },
+    run: async () => { events.push("opencode"); throw new Error("must not run"); },
     resume: async () => { events.push("resume"); throw new Error("must not resume"); },
   };
   const lock: GitHubRepositoryLockBoundary = {
@@ -269,10 +257,8 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   const events: string[] = [];
   let reconciled = false;
   let runs = 0;
-  let resumes = 0;
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -280,11 +266,12 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   const delivery: GitHubDeliveryAdapter = {
     verifyRepository: async () => undefined,
     prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") }),
-    verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? (reconciled ? reconciledCommit : originalCommit) : "b".repeat(40) }),
+    verifySession: async (_branch, _base, workingDirectory) => ({
+      commit: workingDirectory.includes("repo-a") ? (reconciled ? reconciledCommit : originalCommit) : "b".repeat(40),
+    }),
     pushCommit: async (_branch, commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}:${commit}`); },
     createOrReusePullRequest: async (_issue, _branch, _base, _commit, workingDirectory) => ({ number: basename(workingDirectory) === "repo-a" ? 1 : 2 }),
     preparePullRequestReconciliation: async () => { events.push("prepare:repo-a"); return { baseCommit }; },
-    verifyPendingPullRequestReconciliation: async () => { events.push("verify-pending:repo-a"); },
     verifyPullRequestReconciliation: async () => { events.push("verify:repo-a"); },
     mergePullRequest: async (pullRequest, _issue, _branch, _base, _commit, workingDirectory) => {
       events.push(`merge:${basename(workingDirectory)}`);
@@ -304,14 +291,9 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
     agentSource: {
-      run: async (options) => { sessionRan = true;
+      run: async (options) => {
         runs += 1;
-        if (runs === 1) {
-          for (const repository of [repoA, repoB]) {
-            await Bun.write(join(repository, "manifest.json"), "{}\n");
-            await Bun.write(join(repository, "evidence.txt"), "evidence");
-          }
-        } else {
+        if (runs > 1) {
           expect(options.prompt).toContain(baseCommit);
           expect(options.prompt).toContain("Coordinator-fixed pull request: #1");
           reconciled = true;
@@ -327,15 +309,12 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
     githubDelivery: delivery,
   });
   try {
-    // Dos invocaciones y ninguna reanudación: la de entrega y la de reconciliación, cada una en
-    // su propia sesión fresca.
+    // Dos invocaciones de sesión y ninguna reanudación: la de entrega y la de reconciliación, cada
+    // una en su propia sesión fresca (ADR-0039). La reconciliación no persiste su propia fase — la
+    // recomputa `mergePullRequest` volviendo a fallar, igual que la entrega de un repositorio.
     expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(0);
     expect(runs).toBe(2);
-    expect(resumes).toBe(0);
     expect(events).toContain("prepare:repo-a");
-    // La verificación de reconciliación pendiente pertenece a la reanudación entre invocaciones;
-    // con la reconciliación resuelta dentro de la misma corrida, ya no hay una que verificar.
-    expect(events).not.toContain("verify-pending:repo-a");
     expect(events).toContain("verify:repo-a");
     expect(events).toContain(`cleanup:repo-a:${reconciledCommit}`);
     expect(events.indexOf("merge:repo-b")).toBeGreaterThan(events.lastIndexOf("merge:repo-a"));
@@ -354,9 +333,8 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   const checkpointPath = join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json");
   let checkpointExistedDuringReconciliation: boolean | null = null;
   let reconciliationWorkingDirectory: string | null = null;
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -391,13 +369,10 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => { sessionRan = true;
-      for (const repository of [repoA, repoB]) {
-        await Bun.write(join(repository, "manifest.json"), "{}\n");
-        await Bun.write(join(repository, "evidence.txt"), "evidence");
-      }
-      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
-    }, resume: async () => { throw new Error("must not resume"); } },
+    agentSource: {
+      run: async () => ({ result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "listo" } })), azureLoginRequired: false }),
+      resume: async () => { throw new Error("must not resume"); },
+    },
     git,
     githubManagedQueue: queue,
     githubCheckpointStore: checkpointStore,
@@ -417,7 +392,7 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   }
 });
 
-test("preserva los recibos entregados y no cierra el Issue cuando el merge de otro repositorio falla, y completa la entrega al reanudar", async () => {
+test("no cierra el Issue cuando el merge de otro repositorio falla, y completa la entrega al reanudar sin abrir otra sesión", async () => {
   const root = await mkdtemp(join(tmpdir(), "lazy-workflow-workspace-partial-failure-"));
   const repoA = join(root, "repo-a");
   const repoB = join(root, "repo-b");
@@ -425,9 +400,8 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
   const events: string[] = [];
   let mergeBAttempts = 0;
   let runCalls = 0;
-  let sessionRan = false;
   const git: GitRunner = async (args, directory) => {
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return sessionRan ? "d".repeat(40) : "c".repeat(40);
+    if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
     if (args[0] === "remote") return `git@github.com:owner/${basename(directory)}.git`;
     return "";
@@ -465,15 +439,14 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
   };
   const cli = createCli({
     huInfoService: { getHuInfo: async () => { throw new Error("must not use Azure"); }, waitForAccess: async () => undefined },
-    agentSource: { run: async () => { sessionRan = true;
-      runCalls += 1;
-      if (runCalls > 1) throw new Error("must not run OpenCode again on resume");
-      for (const repository of [repoA, repoB]) {
-        await Bun.write(join(repository, "manifest.json"), "{}\n");
-        await Bun.write(join(repository, "evidence.txt"), "evidence");
-      }
-      return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "IMPLEMENTATION_READY" } })), azureLoginRequired: false };
-    }, resume: async () => { throw new Error("must not resume"); } },
+    agentSource: {
+      run: async () => {
+        runCalls += 1;
+        if (runCalls > 1) throw new Error("must not run OpenCode again on resume");
+        return { result: AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses-workspace", part: { type: "text", text: "listo" } })), azureLoginRequired: false };
+      },
+      resume: async () => { throw new Error("must not resume"); },
+    },
     git,
     githubManagedQueue: queue,
     githubCheckpointStore: checkpointStore,
@@ -492,11 +465,15 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
     expect(events.filter((event) => event === "push:repo-b")).toHaveLength(1);
     expect(events.filter((event) => event === "pr:repo-b")).toHaveLength(1);
 
+    // La segunda invocación no vuelve a abrir sesión: el checkpoint ya tiene el commit verificado
+    // de cada repositorio, así que retoma directo en la integración (ADR-0038).
     expect(await cli.run(["code", "--working-directory", `${repoA},${repoB}`])).toBe(0);
     expect(events.filter((event) => event === "prepare:repo-a")).toHaveLength(1);
+    // repo-a ya tenía PR y merge: ningún efecto suyo se repite al reanudar.
     expect(events.filter((event) => event === "push:repo-a")).toHaveLength(1);
     expect(events.filter((event) => event === "pr:repo-a")).toHaveLength(1);
     expect(events.filter((event) => event === "merge:repo-a")).toHaveLength(1);
+    // repo-b ya tenía PR pero no merge: push y PR no se repiten, solo el merge se reintenta.
     expect(events.filter((event) => event === "push:repo-b")).toHaveLength(1);
     expect(events.filter((event) => event === "pr:repo-b")).toHaveLength(1);
     expect(events.filter((event) => event === "merge:repo-b")).toHaveLength(2);
@@ -511,5 +488,3 @@ test("preserva los recibos entregados y no cierra el Issue cuando el merge de ot
     await rm(root, { recursive: true, force: true });
   }
 });
-
-

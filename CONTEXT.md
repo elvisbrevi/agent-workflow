@@ -97,9 +97,8 @@ A line a planning session prints alone to hand control back to the coordinator:
 wants answered, and `QUESTIONS_ANSWERED`, which the coordinator prints when it
 resumes that session with the operator's replies.
 
-A delivery session prints none, on either provider: it is finished when its process
-exits, and it succeeded when git says so (ADR-0035). Only the Azure workspace paths
-still print `IMPLEMENTATION_READY`, until the workspace mode is rebuilt.
+A delivery session prints none, on either provider or run shape: it is finished
+when its process exits, and it succeeded when git says so (ADR-0035).
 _Avoid_: a marker for delivery, provider text as a completion signal
 
 **Run outcome line**:
@@ -129,6 +128,22 @@ performs every Git and GitHub effect itself before advancing. The session
 prepares one implementation; it does not select work, open pull requests, or
 declare queue state.
 _Avoid_: prompt-driven queue drain, autonomous issue selection
+
+**GitHub workspace delivery**:
+A lazy-workflow invocation with `code --working-directory <repo1,repo2,...>`
+(no `--hu`). It selects and claims one issue on the first declared repository,
+runs a single OpenCode session from the workspace's parent directory, and then
+verifies every participant repository with git exactly like a
+single-repository run: every participant clean, at least one ahead of its base
+(ADR-0035). A repository with nothing over its base is a valid outcome, not a
+failure, and never receives a pull request; every changed repository gets its
+own pull request naming the same issue, in declared order, before the issue
+itself is closed once from its first repository and every branch is cleaned
+up. It reuses the same delivery prompt asset and the same self-verifying
+delivery primitives as a single-repository run, plus the repository roster
+(ADR-0036).
+_Avoid_: a separate workspace-only prompt, treating an unchanged repository as
+a failure, one pull request for the whole workspace
 
 **Queue drain**:
 The shape of a `code` run: ask the tracker for the first eligible unit, deliver
@@ -194,6 +209,18 @@ intents, the session identifier and the CLI that owned it are all derivable or
 meaningless now that no session is resumed (ADR-0038). A checkpoint of an older
 schema is discarded, not migrated.
 _Avoid_: a phase machine, a persisted session identifier, a per-effect receipt
+
+**GitHub workspace delivery checkpoint**:
+The same fact as the single-repository checkpoint, once per participant
+repository: the issue, the normalized repository list, and for each repository
+its branch, whether it changed, its verified commit, and its pull request and
+merge commit once delivered. Nothing else: no phase, no per-effect receipt, no
+session identifier, and no aggregate manifest written at the end — every push,
+pull request, merge, closure and cleanup is the same self-verifying effect a
+single-repository run already uses, so none of them needs a receipt of its own
+(ADR-0038).
+_Avoid_: a phase machine, a per-effect receipt, an aggregate manifest, file
+evidence the session is asked to write
 
 **Queue outcome**:
 A coordinator-owned result distinguishing a drained queue, a queue with nothing
