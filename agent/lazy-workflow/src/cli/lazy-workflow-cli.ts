@@ -770,19 +770,45 @@ export class LazyWorkflowCli {
 
   private async runParsed(options: CliOptions, args: string[]): Promise<number> {
     this.idleTimeoutMs = options.idleTimeoutMinutes * 60_000;
+    const runLogPath = resolveRunLogPath({ logFile: options.logFile, noLogFile: options.noLogFile });
+    // Minted here rather than inside the sink, because the operator is told
+    // which run to look for and the sink stamps that same id on every record.
+    const runId = crypto.randomUUID();
+    let runLogWritable = runLogPath !== null;
     const runLog = createRunLogSink({
-      path: resolveRunLogPath({ logFile: options.logFile, noLogFile: options.noLogFile }),
+      path: runLogPath,
+      runId,
       onWriteFailure: (error) => {
+        runLogWritable = false;
         getDefaultReporter().warn(
           `lazy-workflow: no se pudo escribir el run log (${errorMessage(error)}); se deshabilita para el resto del run.`,
         );
       },
     });
-    const base = runLogBase(options, await this.resolveRunLogProvider(options));
+
     // `--off` never shuts down a run that died on an invalid argument, and the
     // one place every failure already passes through — without threading the
     // dozens of returns of `dispatchParsed` — is the sink the Reporter feeds.
+    // The same flag keeps the pointer below quiet on a typo.
     let argumentError = false;
+
+    /**
+     * Where a failed run's own detail is, told once and only when there is
+     * something to read: a run whose log is off (`--no-log-file`) or whose sink
+     * died was already told so, and pointing at a file that holds nothing would
+     * be worse than saying nothing. An argument error is the other silence —
+     * the operator is at the keyboard with the message on screen, the same
+     * reason `--off` never powers a machine down for a typo.
+     *
+     * It goes to the operator channel and not through `Reporter.warn`/`.error`,
+     * which would write a run-log record whose whole content is an instruction
+     * to read the run log.
+     */
+    const reportRunLogPointer = (): void => {
+      if (!runLogPath || !runLogWritable || argumentError) return;
+      reportOperator(`lazy-workflow: revisa el run log para el detalle del fallo: grep ${runId} ${runLogPath}`);
+    };
+    const base = runLogBase(options, await this.resolveRunLogProvider(options));
     const reporterRunLog: ReporterRunLogSink = {
       event(severity, message, detail) {
         if (detail?.failureKind === "argument-error") argumentError = true;
@@ -824,6 +850,9 @@ export class LazyWorkflowCli {
       describeCheckpoint: this.describeInterruptionCheckpoint(options),
       errorMessage,
       process: this.processSignals,
+      // A crash needs the pointer as much as an ordinary failure does; a signal
+      // is the operator's own doing and gets nothing.
+      onFailure: reportRunLogPointer,
     });
 
     const finish = (exitCode: number, message: string): number => {
@@ -837,6 +866,9 @@ export class LazyWorkflowCli {
         durationMs: Date.now() - startedAt,
         message,
       });
+      // After the record it points at, so the run is already whole in the file
+      // by the time the operator is sent to read it.
+      if (exitCode !== 0) reportRunLogPointer();
       return exitCode;
     };
 

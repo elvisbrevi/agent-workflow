@@ -538,6 +538,19 @@ as an `event` record with the same `run_id`, regardless of `--quiet`: the run
 log is a separate seam from the terminal stream, so silencing one never silences
 the other. A run never fails because its run log could not be written.
 
+A run that ends badly says where its own detail is, naming the run so the file
+can be read straight away:
+
+```
+lazy-workflow: revisa el run log para el detalle del fallo: grep <run_id> ~/.local/state/lazy-workflow/runs.jsonl
+```
+
+It is told once, at the end, and only when there is something to read: a run
+with `--no-log-file`, or one whose log could not be written, was already told so
+and is not sent to a file holding nothing. An argument error stays silent too —
+the operator is at the keyboard with the message on screen, the same reason
+`--off` never powers a machine down for a typo.
+
 Each record splits into **labels** — flattened at the top level, the
 low-cardinality axes a dashboard groups by: `schema_version`, `run_id`, `ts`,
 `severity`, `event`, `command`, `workflow`, `provider`, `cli`, `model`,
