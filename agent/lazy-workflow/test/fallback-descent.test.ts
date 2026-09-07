@@ -234,14 +234,22 @@ test("el orden declarado se respeta aunque el escalón siguiente sea de otro CLI
 });
 
 
-test("sin descenso el checkpoint no nombra ningún modelo", async () => {
+test("el checkpoint no nombra el escalón: ni modelo, ni variante, ni CLI", async () => {
   const agents = scriptedAgents({ run: [], resume: [] });
   const store = checkpointStore();
 
   const code = await runDelivery(agents, ["--fallback", "opencode:provider/respaldo:medium"], store);
 
   expect(code).toBe(0);
-  expect(store.written.every((checkpoint) => checkpoint.model === undefined)).toBeTrue();
+  // Antes esto miraba `checkpoint.model`, un campo que ADR-0038 retiró: la aserción pasó a ser
+  // cierta por vacío. Se afirma sobre las claves, que es lo que volvería a fallar si alguien
+  // reintrodujera el escalón en el checkpoint.
+  expect(store.written.length).toBeGreaterThan(0);
+  for (const checkpoint of store.written) {
+    expect(Object.keys(checkpoint).sort()).toEqual(
+      ["schemaVersion", "workflow", "repository", "issue", "branch", "baseBranch", "commit", "summary"].sort(),
+    );
+  }
 });
 
 

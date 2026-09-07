@@ -27,7 +27,7 @@ test("entrega un workspace GitHub en orden y ejecuta OpenCode una sola vez", asy
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async (issue, workingDirectory) => {
       events.push(`prepare:${basename(workingDirectory)}`);
-      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" };
     },
     verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
@@ -91,7 +91,7 @@ test("distingue un repositorio sin cambios de uno entregado y no crea PR para é
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async (issue, workingDirectory) => {
       events.push(`prepare:${basename(workingDirectory)}`);
-      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" };
     },
     // Solo repo-a pasa la verificación git; repo-b nunca commiteó nada sobre su base.
     verifySession: async (_branch, _base, workingDirectory) => {
@@ -149,7 +149,7 @@ test("falla sin cerrar el Issue cuando ningún repositorio del workspace cambia"
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async (issue, workingDirectory) => {
       events.push(`prepare:${basename(workingDirectory)}`);
-      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" };
     },
     // Ninguno de los dos repositorios llevó commits sobre su base.
     verifySession: async () => { throw new SessionNotVerifiedError("la rama no tiene commits sobre su base"); },
@@ -265,7 +265,7 @@ test("reconcilia serialmente un PR conflictivo dentro del workspace", async () =
   };
   const delivery: GitHubDeliveryAdapter = {
     verifyRepository: async () => undefined,
-    prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") }),
+    prepareBranch: async (issue, workingDirectory) => ({ branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" }),
     verifySession: async (_branch, _base, workingDirectory) => ({
       commit: workingDirectory.includes("repo-a") ? (reconciled ? reconciledCommit : originalCommit) : "b".repeat(40),
     }),
@@ -331,8 +331,10 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   await Bun.$`mkdir -p ${repoA} ${repoB}`;
   const events: string[] = [];
   const checkpointPath = join(root, ".lazy-workflow", "github-workspace-code-checkpoint.json");
-  let checkpointExistedDuringReconciliation: boolean | null = null;
-  let reconciliationWorkingDirectory: string | null = null;
+  const observed: { checkpointExisted: boolean | null; workingDirectory: string | null } = {
+    checkpointExisted: null,
+    workingDirectory: null,
+  };
   const git: GitRunner = async (args, directory) => {
     if (args[0] === "rev-parse" && args[1] === "HEAD^{commit}") return "c".repeat(40);
     if (args[0] === "rev-parse") return directory;
@@ -342,7 +344,7 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async (issue, workingDirectory) => {
       events.push(`prepare:${basename(workingDirectory)}`);
-      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" };
     },
     verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },
@@ -354,8 +356,8 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
   const parents: GitHubParentReconciliationAdapter = {
     reconcileParents: async (_issueNumber, workingDirectory) => {
       events.push("parents");
-      reconciliationWorkingDirectory = workingDirectory;
-      checkpointExistedDuringReconciliation = await Bun.file(checkpointPath).exists();
+      observed.workingDirectory = workingDirectory;
+      observed.checkpointExisted = await Bun.file(checkpointPath).exists();
     },
     reconcileOpenParents: async () => undefined,
   };
@@ -384,8 +386,8 @@ test("reconcilia padres del workspace después de la limpieza y antes de borrar 
     expect(await cli.run(["code", "--working-directory", `${repoA}, ${repoB}`])).toBe(0);
     expect(events.indexOf("parents")).toBeGreaterThan(events.lastIndexOf("cleanup:repo-b"));
     expect(events.indexOf("parents")).toBeGreaterThan(events.indexOf("close"));
-    expect(checkpointExistedDuringReconciliation).toBe(true);
-    expect(reconciliationWorkingDirectory).toBe(await realpath(repoA));
+    expect(observed.checkpointExisted).toBe(true);
+    expect(observed.workingDirectory).toBe(await realpath(repoA));
     expect(await Bun.file(checkpointPath).exists()).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -409,7 +411,7 @@ test("no cierra el Issue cuando el merge de otro repositorio falla, y completa l
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async (issue, workingDirectory) => {
       events.push(`prepare:${basename(workingDirectory)}`);
-      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main", manifestPath: join(workingDirectory, "manifest.json") };
+      return { branch: `refs/heads/issue/${issue}`, baseBranch: "refs/heads/main" };
     },
     verifySession: async (_branch, _base, workingDirectory) => ({ commit: workingDirectory.includes("repo-a") ? "a".repeat(40) : "b".repeat(40) }),
     pushCommit: async (_branch, _commit, workingDirectory) => { events.push(`push:${basename(workingDirectory)}`); },

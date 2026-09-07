@@ -18,14 +18,13 @@ const specs: Array<[WorkflowPromptSpec, string]> = [
   [{ kind: "azure-plan", huInfo: { id: 1 } as never }, "lazy-azure-plan"],
   [{ kind: "workspace-plan", scope: scope as never, run: { kind: "github-repository-run" }, huInfo: null }, "lazy-github-plan"],
   [{ kind: "workspace-plan", scope: scope as never, run: { kind: "azure-hu-run", hu: 1 }, huInfo: { id: 1 } as never }, "lazy-azure-plan"],
-  [{ kind: "github-delivery", issue: issue as never, repository, branch: "b", manifestPath: "m" }, "lazy-github-code"],
+  [{ kind: "github-delivery", issue: issue as never, repository, branch: "b" }, "lazy-github-code"],
   [{ kind: "github-workspace-delivery", scope: scope as never, issue: issue as never, units: [] }, "lazy-github-code"],
   [{
     kind: "github-reconciliation",
     issue: issue as never,
     repository,
     branch: "b",
-    manifestPath: "m",
     pullRequest: 1,
     originalCommit: "a",
     baseCommit: "b",
@@ -39,7 +38,6 @@ const specs: Array<[WorkflowPromptSpec, string]> = [
     description: null,
     topology: topology as never,
     ticketTopology: topology as never,
-    manifestPaths: [],
   }, "lazy-azure-code"],
   [{ kind: "azure-delivery", context: {} as never, ticketBranch: null }, "lazy-azure-code"],
 ];

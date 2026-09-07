@@ -326,7 +326,8 @@ describe("createReporter", () => {
       const reporter = createReporter({ verbose: false, noColor: true, stream });
       const spinner = reporter.start("cargando");
 
-      expect(spinner.isSilent).toBeTrue();
+      // `isSilent` viaja en las opciones de ora y sobrevive en la instancia, que no lo declara.
+      expect((spinner as unknown as { isSilent?: boolean }).isSilent).toBeTrue();
       spinner.stop();
     });
   });

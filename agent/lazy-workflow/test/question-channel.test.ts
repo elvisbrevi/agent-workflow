@@ -5,6 +5,7 @@ import {
   QuestionTimeoutError,
   realDeadline,
   type Deadline,
+  type DeadlineFactory,
   type InterviewSettings,
   type QuestionChannelDependencies,
 } from "../src/interaction/question-channel.ts";
@@ -29,12 +30,12 @@ const settings = (overrides: Partial<InterviewSettings> = {}): InterviewSettings
 });
 
 /** A deadline nothing fires: the tests that are not about expiry never wait. */
-const neverExpires = () => ({ expired: new Promise<void>(() => undefined), cancel: () => undefined });
+const neverExpires = (): Deadline => ({ expired: new Promise<void>(() => undefined), cancel: () => undefined });
 
 /** A deadline already spent, so the expiry path is exercised without real time. */
 const alreadyExpired = (): Deadline => ({ expired: Promise.resolve(), cancel: () => undefined });
 
-function deps(deadline = neverExpires): QuestionChannelDependencies {
+function deps(deadline: DeadlineFactory = neverExpires): QuestionChannelDependencies {
   const { reporterFn } = captureReporter();
   return { reporter: reporterFn(true), deadline };
 }

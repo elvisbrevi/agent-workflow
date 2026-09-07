@@ -18,7 +18,7 @@ import { DETERMINISTIC_TOOL_COMMANDS } from "../src/cli/tool-commands.ts";
 const readme = await Bun.file(new URL("../README.md", import.meta.url)).text();
 
 const help = (() => {
-  const parsed = buildCli(() => true)(["--help"], { onHelp: () => undefined, onError: () => undefined });
+  const parsed = buildCli(() => true)(["--help"], { onHelp: () => 0, onError: () => 1 });
   return parsed.kind === "help" ? parsed.output : "";
 })();
 
@@ -51,7 +51,7 @@ for (const [command, options] of
     .filter((form) => SUPPORTED_COMMANDS.has(form.split(" ")[0]!))
     .map((form) => [
       form.split(" ")[0]!,
-      (form.replace(/\[[^\]]*\]/g, "").match(/--[a-z][a-z0-9-]*/g) ?? []),
+      (form.replace(/\[[^\]]*\]/g, "").match(/--[a-z][a-z0-9-]*/g) ?? ([] as string[])),
     ] as const)
 ) {
   const known = requiredOptions.get(command);

@@ -705,7 +705,9 @@ test("plan multi-repositorio con --hu inspecciona el alcance Azure sin preparar 
     if (args[0] === "status") return "";
     return "";
   };
-  const sessions: Array<{ workingDirectory: string; prompt: string }> = [];
+  // `workingDirectory` es opcional en las opciones del agente; se guarda tal cual llega, y la
+  // aserción de abajo —que lo compara con el directorio real— es la que exige que venga.
+  const sessions: Array<{ workingDirectory: string | undefined; prompt: string }> = [];
   const cli = createCli({
     huInfoService: azureBoundary,
     agentSource: {

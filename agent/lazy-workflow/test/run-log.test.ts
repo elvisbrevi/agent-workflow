@@ -310,7 +310,8 @@ describe("contrato publicado del run log (issue #268)", () => {
   });
 
   test("el vocabulario cerrado de session_event no cambia sin querer", () => {
-    expect([...RUN_LOG_SESSION_EVENTS].sort()).toEqual(
+    const events: string[] = [...RUN_LOG_SESSION_EVENTS];
+    expect(events.sort()).toEqual(
       [
         "session_started",
         "session_finished",
@@ -336,7 +337,6 @@ describe("contrato publicado del run log (issue #268)", () => {
       "session-failure": "error",
       "manifest-not-verifiable": "error",
       "session-not-verified": "error",
-      "session-not-verified": "error",
       "delivery-failure": "error",
       "pull-request-failure": "error",
       "reconciliation-required": "error",
@@ -351,7 +351,7 @@ describe("contrato publicado del run log (issue #268)", () => {
       "ticket-branch-cleanup-failure": "error",
       "workspace-scope-failure": "error",
       "topology-preparation-failure": "error",
-          "run-interrupted-signal": "error",
+      "run-interrupted-signal": "error",
       "run-interrupted-failure": "error",
       "shutdown-failure": "error",
     });

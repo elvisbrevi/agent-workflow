@@ -41,12 +41,12 @@ const issue: SelectedManagedIssue = {
 
 const scope: WorkspaceScope = {
   repositories: [
-    { path: "/ws/api", remote: "https://github.com/o/api.git" },
-    { path: "/ws/web", remote: "https://github.com/o/web.git" },
+    { path: "/ws/api", remote: "https://github.com/o/api.git", providerIdentity: null },
+    { path: "/ws/web", remote: "https://github.com/o/web.git", providerIdentity: null },
   ],
   parentDirectory: "/ws",
   stateDirectory: "/ws/.state",
-} as WorkspaceScope;
+};
 
 const topology = { integrationBranch: "refs/heads/hu/23438", ticketBranch: "refs/heads/ticket/51" };
 
@@ -149,7 +149,6 @@ test("la entrega GitHub fija issue, rama, manifest y markers", async () => {
     issue,
     repository: { nameWithOwner: "o/api" },
     branch: "issue/201",
-    manifestPath: "/repo/.git/manifest.json",
   }, context);
   // El trabajo, y nada del contrato (ADR-0036). El Issue viaja como su número: la sesión
   // tiene `gh` y lee el cuerpo fresco.
@@ -339,7 +338,7 @@ test("el plan workspace lleva la política de respuestas en ambos proveedores", 
 
 test("una entrega nunca recibe la política de respuestas de planificación", async () => {
   const prompt = await buildWorkflowPrompt(
-    { kind: "github-delivery", issue, repository: { nameWithOwner: "o/api" } as never, branch: "issue/201", manifestPath: "/m.json" },
+    { kind: "github-delivery", issue, repository: { nameWithOwner: "o/api" } as never, branch: "issue/201" },
     { ...context, interview: true },
   );
 

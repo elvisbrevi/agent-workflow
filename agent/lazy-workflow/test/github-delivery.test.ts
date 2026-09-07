@@ -8,7 +8,6 @@ import {
   GitHubPullRequestConflictError,
   type GitHubDeliveryAdapter,
   GitHubSessionNotVerifiedError,
-  type GitHubReadyManifest,
 } from "../src/github/github-delivery-service.ts";
 import type { GitHubParentReconciliationAdapter } from "../src/github/github-parent-reconciliation-service.ts";
 import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
@@ -26,10 +25,6 @@ function execution() {
     azureLoginRequired: false,
     failed: false,
   };
-}
-
-function phaseOf(checkpoint: GitHubDeliveryCheckpoint | null): string | undefined {
-  return checkpoint?.phase;
 }
 
 test("checkout de recuperación cambia a la rama local exacta sin crearla", async () => {
@@ -198,7 +193,7 @@ test("entrega GitHub desde la sesión verificada hasta la limpieza", async () =>
   const delivery: GitHubDeliveryAdapter = {
     prepareBranch: async () => {
       calls.push("prepare-branch");
-      return { branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/repo/.git/lazy-workflow/github-manifest.json" };
+      return { branch: "refs/heads/issue/179", baseBranch: "refs/heads/main" };
     },
     verifySession: async () => {
       calls.push("verify-session");
@@ -248,7 +243,7 @@ function drainDelivery(closed: number[]): GitHubDeliveryAdapter {
     prepareBranch: async (issueNumber) => {
       pendingIssue = issueNumber;
       pendingBranch = `refs/heads/issue/${issueNumber}`;
-      return { branch: pendingBranch, baseBranch: "refs/heads/main", manifestPath: `/nonexistent-${issueNumber}-manifest.json` };
+      return { branch: pendingBranch, baseBranch: "refs/heads/main" };
     },
     verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => undefined,
@@ -284,7 +279,6 @@ test("un checkpoint sin verificar no se entrega: queda reclamado y el drenaje si
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
     commit: null,
-    receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
   };
   const store: GitHubCheckpointStore = {
     read: async () => current,
@@ -319,7 +313,6 @@ test("un checkpoint sin verificar tampoco se entrega con --session", async () =>
     branch: "refs/heads/issue/179",
     baseBranch: "refs/heads/main",
     commit: null,
-    receipts: { "issue-claim": { verifiedAt: new Date().toISOString() } },
   };
   const store: GitHubCheckpointStore = {
     read: async () => current,
@@ -354,7 +347,7 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
     clear: async () => { current = null; },
   };
   const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
+    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main" }),
     verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => undefined,
     createOrReusePullRequest: async () => ({ number: 201 }),
@@ -382,8 +375,9 @@ test("recupera una entrega sessionless desde el límite de merge sin ejecutar Op
   });
 
   expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(1);
-  // La entrega quedó a medias tras verificarse: el checkpoint la conserva con su commit.
-  expect(current?.commit).toBe("a".repeat(40));
+  // La entrega quedó a medias tras verificarse: el checkpoint la conserva con su commit. Se lee
+  // por el store y no por `current`, que el análisis de flujo estrecha a `null` fuera del closure.
+  expect((await store.read())?.commit).toBe("a".repeat(40));
   failMerge = false;
   expect(await makeCli().run(["code", "--working-directory", "/repo"])).toBe(0);
   expect(openCodeRuns).toBe(1);
@@ -406,14 +400,6 @@ test("reconcilia un PR conflictivo sobre la base fijada y continúa la entrega",
     baseBranch: "refs/heads/main",
     commit: originalCommit,
   };
-  const manifest = (commit: string): GitHubReadyManifest => ({
-    issue: 179,
-    branch: "refs/heads/issue/179",
-    commit,
-    validation: [{ command: "bun test", result: "passed" }],
-    clean: true,
-    summary: "implemented",
-  });
   const store: GitHubCheckpointStore = {
     read: async () => current,
     write: async (checkpoint) => { current = checkpoint; },
@@ -561,11 +547,11 @@ test("reconciliación de padres ocurre después de la limpieza y antes de borrar
   let current: GitHubDeliveryCheckpoint | null = null;
   const store: GitHubCheckpointStore = {
     read: async () => current,
-    write: async (checkpoint) => { current = checkpoint; events.push(`write:${checkpoint.phase}`); },
+    write: async (checkpoint) => { current = checkpoint; events.push(checkpoint.commit ? "write:verified" : "write:unverified"); },
     clear: async () => { events.push("clear"); current = null; },
   };
   const delivery: GitHubDeliveryAdapter = {
-    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main", manifestPath: "/manifest.json" }),
+    prepareBranch: async () => ({ branch: "refs/heads/issue/179", baseBranch: "refs/heads/main" }),
     verifySession: async () => ({ commit: "a".repeat(40) }),
     pushCommit: async () => { events.push("push"); },
     createOrReusePullRequest: async () => { events.push("pull-request"); return { number: 201 }; },

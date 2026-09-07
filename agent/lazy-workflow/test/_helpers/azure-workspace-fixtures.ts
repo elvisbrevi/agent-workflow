@@ -142,7 +142,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
       const pathB = await seedRepo(root, repoB, remoteUrlB);
       parentDirectory = root;
 
-      const azureBoundary: AzureBoundary = {
+      const azureBoundary: Partial<AzureBoundary> = {
         getHuInfo: async () => ({ id: hu }),
         waitForAccess: async () => undefined,
         getIntegrationBranchInfo: async () => ({ hu, branch: integrationBranch }),

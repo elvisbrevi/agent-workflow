@@ -54,7 +54,6 @@ import {
 import { SessionNotVerifiedError } from "../git/session-verification.ts";
 import {
   GitHubDeliveryService,
-  GitHubManifestNotVerifiableError,
   GitHubPullRequestConflictError,
   githubRepositoryFromRemote,
   type GitHubDeliveryAdapter,
@@ -243,16 +242,13 @@ function azureFailureKind(error: unknown, fallback: FailureKind): FailureKind {
 
 function githubCompletionFailureKind(error: unknown): FailureKind {
   if (error instanceof SessionNotVerifiedError) return "session-not-verified";
-  if (error instanceof GitHubManifestNotVerifiableError) return "manifest-not-verifiable";
   if (error instanceof GitHubCoordinatedFailureError) return error.failureKind;
   if (error instanceof GitHubPullRequestConflictError) return "pull-request-failure";
   return "deterministic-completion-failure";
 }
 
 function githubRecoveryFailureKind(error: unknown): FailureKind {
-  return error instanceof GitHubManifestNotVerifiableError
-    || error instanceof GitHubCoordinatedFailureError
-    || error instanceof GitHubPullRequestConflictError
+  return error instanceof GitHubCoordinatedFailureError || error instanceof GitHubPullRequestConflictError
     ? githubCompletionFailureKind(error)
     : "session-failure";
 }
@@ -2475,7 +2471,6 @@ export class LazyWorkflowCli {
             baseCommit,
             workingDirectory: unit.path,
             issueWorkingDirectory: anchor.path,
-            requireEvidence: false,
           });
           if (outcome.kind === "pending") throw new Error(`la sesión de reconciliación no resolvió el conflicto en ${unit.path}`);
           unit = { ...unit, commit: outcome.commit };
@@ -3022,7 +3017,6 @@ export class LazyWorkflowCli {
       baseCommit: string;
       workingDirectory: string;
       issueWorkingDirectory: string;
-      requireEvidence: boolean;
     },
   ): Promise<GitHubReconciliationOutcome> {
     const delivery = this.githubDelivery;
@@ -3140,7 +3134,6 @@ export class LazyWorkflowCli {
         baseCommit,
         workingDirectory: options.workingDirectory,
         issueWorkingDirectory: options.workingDirectory,
-        requireEvidence: false,
       });
       if (outcome.kind === "pending") throw new Error("La sesión de reconciliación no resolvió el conflicto");
       verifiedCommit = outcome.commit;

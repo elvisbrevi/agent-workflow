@@ -347,9 +347,11 @@ describe("OpenCodeService reporter routing", () => {
       debug: () => undefined,
       trace: () => undefined,
       heading: () => undefined,
+      // El servicio solo usa `text` y `stop()` del spinner; `Reporter` lo declara como el `Ora`
+      // entero, que un fake no puede construir.
       start: (message: string) => {
         started += 1;
-        return { text: message, stop: () => { stopped += 1; } };
+        return { text: message, stop: () => { stopped += 1; } } as never;
       },
       stop: (spinner) => spinner?.stop(),
       session: () => undefined,

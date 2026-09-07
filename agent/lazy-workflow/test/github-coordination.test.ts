@@ -1,44 +1,62 @@
+/**
+ * La coordinación de una entrega GitHub: el checkpoint que el bucle escribe y la recuperación que
+ * lo retoma.
+ *
+ * Este archivo estaba escrito contra la máquina de ocho fases con recibos por efecto que ADR-0038
+ * retiró, así que importaba `GITHUB_DELIVERY_PHASES` y dejó de cargar entero cuando ese enum
+ * desapareció — nueve tests que el suite contaba como un solo error de importación. Se reescribe
+ * sobre lo que quedó: un checkpoint de `{ repository, issue, branch, baseBranch, commit, summary }`
+ * y una recuperación que responde una sola pregunta, si la unidad llegó a verificarse.
+ *
+ * Lo que ya no se puede probar porque ya no existe: reanudar una sesión desde el checkpoint
+ * (ADR-0039 la retiró) y volver a preparar la rama de una unidad sin verificar (ADR-0038 la deja
+ * reclamada y sigue drenando). El caso que cubría #293 —un checkpoint que quedó antes de fijar la
+ * rama— vive ahora como «una unidad sin verificar no reconcilia nada», más abajo.
+ */
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createCli } from "./_helpers/create-cli.ts";
 import { AgentResult } from "../src/coding-agent/agent-result.ts";
-import { GITHUB_DELIVERY_PHASES, type GitHubCheckpointStore, type GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
+import type { GitHubCheckpointStore, GitHubDeliveryCheckpoint } from "../src/github/github-delivery-checkpoint.ts";
 import type { GitHubDeliveryAdapter } from "../src/github/github-delivery-service.ts";
 import type { GitHubRepositoryLockBoundary } from "../src/github/github-repository-lock.ts";
 import { fakeSelectedIssue, fakeSelectedOutcome } from "./_helpers/managed-queue-fixtures.ts";
 import { fakeGitHubDelivery } from "./_helpers/github-delivery-fixtures.ts";
 
-/** Consecutive duplicate phases collapsed, so the assertion reads as the delivery's phase progression. */
-function distinctPhaseSequence(phases: string[]): string[] {
-  return phases.filter((phase, index) => phase !== phases[index - 1]);
-}
+const COMMIT = "a".repeat(40);
 
-function checkpoint(sessionId: string | null): GitHubDeliveryCheckpoint {
+function checkpoint(overrides: Partial<GitHubDeliveryCheckpoint> = {}): GitHubDeliveryCheckpoint {
   return {
-    schemaVersion: 2,
-    cli: "opencode",
+    schemaVersion: 3,
     workflow: "github-code",
     repository: "owner/repo",
     issue: 178,
-    phase: sessionId ? "implementing" : "reconciling",
-    branch: null,
-    sessionId,
+    branch: "refs/heads/issue/178",
+    baseBranch: "refs/heads/main",
     commit: null,
-    pullRequest: null,
-    receipts: {},
+    summary: null,
+    ...overrides,
   };
+}
+
+/**
+ * Cada escritura del checkpoint como el par que la distingue de la anterior: la rama fijada y si
+ * la unidad ya pasó su verificación. Es lo que la secuencia de fases decía antes, expresado sobre
+ * lo único que el checkpoint guarda hoy.
+ */
+function progression(writes: GitHubDeliveryCheckpoint[]): string[] {
+  const state = ({ branch, commit }: GitHubDeliveryCheckpoint): string =>
+    `${branch ? "branch" : "no-branch"}/${commit ? "verified" : "unverified"}`;
+  return writes.map(state).filter((value, index, all) => value !== all[index - 1]);
 }
 
 function boundaries(initial: GitHubDeliveryCheckpoint | null = null) {
   let current = initial;
-  const phases: string[] = [];
+  const writes: GitHubDeliveryCheckpoint[] = [];
   let lockAcquires = 0;
   let lockReleases = 0;
   const store: GitHubCheckpointStore = {
     read: async () => current,
-    write: async (value) => { current = value; phases.push(value.phase); },
+    write: async (value) => { current = value; writes.push(value); },
     clear: async () => { current = null; },
   };
   const lock: GitHubRepositoryLockBoundary = {
@@ -47,7 +65,14 @@ function boundaries(initial: GitHubDeliveryCheckpoint | null = null) {
       return async () => { lockReleases += 1; };
     },
   };
-  return { store, lock, phases, get current() { return current; }, get lockAcquires() { return lockAcquires; }, get lockReleases() { return lockReleases; } };
+  return {
+    store,
+    lock,
+    writes,
+    get current() { return current; },
+    get lockAcquires() { return lockAcquires; },
+    get lockReleases() { return lockReleases; },
+  };
 }
 
 const services = () => ({
@@ -55,13 +80,12 @@ const services = () => ({
   openCode: {
     run: async () => ({
       result: AgentResult.fromJsonLines(JSON.stringify({
-        type: "text", sessionID: "ses_178", part: { type: "text", text: "IMPLEMENTATION_READY" },
+        type: "text", sessionID: "ses_178", part: { type: "text", text: "entrega lista" },
       })),
       azureLoginRequired: false,
+      failed: false,
     }),
-    resume: async () => AgentResult.fromJsonLines(JSON.stringify({
-      type: "text", sessionID: "ses_178", part: { type: "text", text: "still working" },
-    })),
+    resume: async () => { throw new Error("ninguna sesión GitHub se reanuda (ADR-0039)"); },
   },
 });
 
@@ -79,66 +103,91 @@ function failingDelivery(overrides: Partial<GitHubDeliveryAdapter> = {}): GitHub
   };
 }
 
-test("checkpoint GitHub bloquea la selección de un issue sustituto", async () => {
-  const state = boundaries(checkpoint(null));
-  const { azure, openCode } = services();
-  let selections = 0;
-  const code = await createCli({
-    huInfoService: azure,
-    agentSource: { ...openCode, run: async () => { throw new Error("must not run"); } },
-    githubManagedQueue: { selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); } },
-    githubCheckpointStore: state.store,
-    githubRepositoryLock: state.lock,
-  }).run(["code", "--working-directory", "/repo"]);
+/** Silencia el panel del reportador, que escribe en `console.log` igual que los marcadores. */
+async function capturingLogs<T>(action: () => Promise<T>): Promise<{ value: T; logs: string[] }> {
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  try {
+    return { value: await action(), logs };
+  } finally {
+    console.log = original;
+  }
+}
 
-  expect(code).toBe(1);
-  expect(selections).toBe(0);
-  expect(state.lockAcquires).toBe(1);
-  expect(state.lockReleases).toBe(1);
-});
-
-test("la entrega GitHub checkpointa el issue fijado y limpia tras el resultado completo", async () => {
+test("la entrega GitHub checkpointa la unidad fijada y limpia tras el resultado completo", async () => {
   const state = boundaries();
   const { azure, openCode } = services();
   const events: string[] = [];
   const store: GitHubCheckpointStore = {
     ...state.store,
-    write: async (value) => { events.push(`write:${value.phase}`); await state.store.write(value); },
+    write: async (value) => { events.push("write"); await state.store.write(value); },
   };
+  let available = true;
   const queue = {
-    available: true,
     selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
-    async selectEligibleIssue() {
+    selectEligibleIssue: async () => {
       events.push("select");
-      if (!this.available) return { kind: "empty" as const };
-      this.available = false;
+      if (!available) return { kind: "empty" as const };
+      available = false;
       return { kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
     },
-    async claimSelectedIssue() {
+    claimSelectedIssue: async () => {
       events.push("claim");
-      if (this.available) throw new Error("issue was not selected");
+      if (available) throw new Error("issue was not selected");
       return fakeSelectedIssue(178);
     },
   };
-  const code = await createCli({
+  const { value: code } = await capturingLogs(() => createCli({
     huInfoService: azure,
     agentSource: openCode,
     githubManagedQueue: queue,
     githubCheckpointStore: store,
     githubRepositoryLock: state.lock,
     githubDelivery: fakeGitHubDelivery(),
-  }).run(["code", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]));
 
   expect(code).toBe(0);
-  expect(distinctPhaseSequence(state.phases)).toEqual([
-    "selected", "started", "implementation-ready", "integrating", "reconciling", "cleaning",
-  ]);
-  // The checkpoint is written once on selection and again after claim verification.
-  expect(state.phases.filter((phase) => phase === "selected")).toHaveLength(2);
+  // La unidad se fija antes de reclamarla, gana su rama, y solo después de que git la verifica
+  // queda con commit: es el único bit que la recuperación va a leer.
+  expect(progression(state.writes)).toEqual(["no-branch/unverified", "branch/unverified", "branch/verified"]);
+  // El checkpoint se escribe en la selección y recién entonces se reclama la issue.
+  expect(events.slice(0, 3)).toEqual(["select", "write", "claim"]);
   expect(state.current).toBeNull();
-  expect(events.slice(0, 3)).toEqual(["select", "write:selected", "claim"]);
   expect(state.lockAcquires).toBe(1);
   expect(state.lockReleases).toBe(1);
+});
+
+test("el checkpoint guarda el resumen de la sesión, que es el cuerpo del pull request", async () => {
+  const state = boundaries();
+  const { azure, openCode } = services();
+  const bodies: Array<string | undefined> = [];
+  let available = true;
+  const { value: code } = await capturingLogs(() => createCli({
+    huInfoService: azure,
+    agentSource: openCode,
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+      selectEligibleIssue: async () => {
+        if (!available) return { kind: "empty" as const };
+        available = false;
+        return { kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async () => fakeSelectedIssue(178),
+    },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: fakeGitHubDelivery({
+      createOrReusePullRequest: async (_i, _b, _bb, _c, _wd, _closes, _ref, summary) => {
+        bodies.push(summary);
+        return { number: 1 };
+      },
+    }),
+  }).run(["code", "--working-directory", "/repo"]));
+
+  expect(code).toBe(0);
+  expect(bodies).toEqual(["entrega lista"]);
+  expect(state.writes.at(-1)?.summary).toBe("entrega lista");
 });
 
 test("el coordinador continúa con la siguiente issue elegible hasta vaciar la cola", async () => {
@@ -159,22 +208,14 @@ test("el coordinador continúa con la siguiente issue elegible hasta vaciar la c
       return fakeSelectedIssue(pending.shift()!);
     },
   };
-  const logs: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
-  let code: number;
-  try {
-    code = await createCli({
-      huInfoService: azure,
-      agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
-      githubManagedQueue: queue,
-      githubCheckpointStore: state.store,
-      githubRepositoryLock: state.lock,
-      githubDelivery: fakeGitHubDelivery(),
-    }).run(["code", "--working-directory", "/repo"]);
-  } finally {
-    console.log = original;
-  }
+  const { value: code, logs } = await capturingLogs(() => createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+    githubManagedQueue: queue,
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: fakeGitHubDelivery(),
+  }).run(["code", "--working-directory", "/repo"]));
 
   expect(code).toBe(0);
   expect(claims).toBe(2);
@@ -187,258 +228,208 @@ test("el coordinador continúa con la siguiente issue elegible hasta vaciar la c
   expect(state.lockReleases).toBe(1);
 });
 
-test("la recuperación usa el checkpoint y no consulta la cola", async () => {
-  const state = boundaries(checkpoint("ses_178"));
+test("un claim que no se verifica conserva el checkpoint y detiene la corrida", async () => {
+  const state = boundaries();
   const { azure, openCode } = services();
-  let selections = 0;
-  let resumes = 0;
-  let resumeOverrides: unknown;
-  const queue = {
-    issue: fakeSelectedIssue(178),
-    selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
-    async reconcileClaimedIssue(issueNumber: number) {
-      if (this.issue.number !== issueNumber) throw new Error("wrong issue");
-      return this.issue;
-    },
-  };
-  const code = await createCli({
+  let runs = 0;
+  const { value: code } = await capturingLogs(() => createCli({
     huInfoService: azure,
-    agentSource: { ...openCode, resume: async (_session, _prompt, _directory, _marker, overrides) => {
-      resumes += 1;
-      resumeOverrides = overrides;
-      throw new Error("la sesión reanudada explotó");
-    } },
-    githubManagedQueue: queue,
-    githubCheckpointStore: state.store,
-    githubRepositoryLock: state.lock,
-  }).run([
-    "code", "--working-directory", "/repo",
-    "--model", "openai/gpt-5.6-luna", "--variant", "high",
-  ]);
-
-  expect(code).toBe(1);
-  expect(selections).toBe(0);
-  // Una sola: no hay reintento por marcador ausente, porque no hay marcador (ADR-0035).
-  expect(resumes).toBe(1);
-  expect(resumeOverrides).toEqual(expect.objectContaining({ model: "openai/gpt-5.6-luna", variant: "high" }));
-  expect(state.current?.issue).toBe(178);
-  // Una reanudación que explota deja la unidad para reconciliar, con su sesión nombrada.
-  expect(state.current?.phase).toBe("reconciling");
-});
-
-test("la recuperación conserva el checkpoint si el checkout seguro falla", async () => {
-  const initial = checkpoint("ses_178");
-  initial.branch = "refs/heads/issue/178";
-  initial.baseBranch = "refs/heads/main";
-  const state = boundaries(initial);
-  const { azure, openCode } = services();
-  let reconciliations = 0;
-  let resumes = 0;
-  const delivery = failingDelivery({
-    verifyRepository: async () => undefined,
-    checkoutBranch: async () => { throw new Error("El repositorio tiene cambios sin guardar"); },
-    verifyBranch: async () => { throw new Error("must not verify after checkout failure"); },
-  });
-  const queue = {
-    selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
-    reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
-  };
-
-  const code = await createCli({
-    huInfoService: azure,
-    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
-    githubManagedQueue: queue,
-    githubCheckpointStore: state.store,
-    githubRepositoryLock: state.lock,
-    githubDelivery: delivery,
-  }).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
-
-  expect(code).toBe(1);
-  expect(reconciliations).toBe(0);
-  expect(resumes).toBe(0);
-  expect(state.current).toEqual(initial);
-  expect(state.lockAcquires).toBe(1);
-  expect(state.lockReleases).toBe(1);
-});
-
-test("la recuperación no usa queue ni OpenCode si falta la rama fijada", async () => {
-  const initial = checkpoint("ses_178");
-  const state = boundaries(initial);
-  const { azure, openCode } = services();
-  let reconciliations = 0;
-  let resumes = 0;
-
-  const code = await createCli({
-    huInfoService: azure,
-    agentSource: { ...openCode, resume: async () => { resumes += 1; return openCode.resume(); } },
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
     githubManagedQueue: {
-      selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
-      reconcileClaimedIssue: async () => { reconciliations += 1; return fakeSelectedIssue(178); },
+      selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+      selectEligibleIssue: async () => ({
+        kind: "candidate" as const, issue: fakeSelectedIssue(178), repository: { nameWithOwner: "owner/repo" },
+      }),
+      claimSelectedIssue: async () => { throw new Error("el claim no quedó registrado"); },
     },
     githubCheckpointStore: state.store,
     githubRepositoryLock: state.lock,
     githubDelivery: failingDelivery(),
-  }).run(["code", "--session", "ses_178", "--working-directory", "/repo"]);
+  }).run(["code", "--working-directory", "/repo"]));
 
   expect(code).toBe(1);
-  expect(reconciliations).toBe(0);
-  expect(resumes).toBe(0);
-  expect(state.current).toEqual(initial);
+  expect(runs).toBe(0);
+  // La issue quedó fijada antes del claim, así que el checkpoint se conserva para reconciliarla.
+  expect(state.current?.issue).toBe(178);
+  expect(state.current?.commit).toBeNull();
 });
 
-test("la recuperación fija la rama cuando el checkpoint quedó antes de prepararla", async () => {
-  const state = boundaries({
-    ...checkpoint(null),
-    phase: "started",
-    receipts: { "issue-claim": { verifiedAt: "2026-08-24T23:03:09.872Z" } },
-  });
+test("una unidad que la sesión no dejó verificada queda reclamada y el drenaje sigue", async () => {
+  const state = boundaries();
   const { azure, openCode } = services();
-  const events: string[] = [];
+  const pending = [178, 179];
   let runs = 0;
-  const queue = {
-    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
-    reconcileClaimedIssue: async (issueNumber: number) => {
-      events.push("read-issue");
-      if (issueNumber !== 178) throw new Error("wrong issue");
-      return fakeSelectedIssue(178);
-    },
-  };
-  const delivery = failingDelivery({
-    prepareBranch: async (issue: number) => {
-      events.push(`prepare-branch:${issue}`);
-      return { branch: "refs/heads/issue/178", baseBranch: "refs/heads/main", manifestPath: "/missing-manifest.json" };
-    },
-    verifyRepository: async () => { events.push("verify-repository"); },
-    checkoutBranch: async () => { events.push("checkout-branch"); },
-    verifyBranch: async () => { events.push("verify-branch"); },
-  });
-
-  const code = await createCli({
+  const { value: code, logs } = await capturingLogs(() => createCli({
     huInfoService: azure,
-    agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-    githubManagedQueue: queue,
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must use checkpointed selection"); },
+      async selectEligibleIssue() {
+        const next = pending[0];
+        if (next === undefined) return { kind: "empty" as const };
+        return { kind: "candidate" as const, issue: fakeSelectedIssue(next), repository: { nameWithOwner: "owner/repo" } };
+      },
+      claimSelectedIssue: async () => fakeSelectedIssue(pending.shift()!),
+    },
     githubCheckpointStore: state.store,
     githubRepositoryLock: state.lock,
-    githubDelivery: delivery,
-  }).run(["code", "--working-directory", "/repo"]);
+    githubDelivery: fakeGitHubDelivery({
+      verifySession: async (branch) => {
+        if (branch === "refs/heads/issue/178") throw new Error("la rama no lleva commits sobre su base");
+        return { commit: COMMIT };
+      },
+    }),
+  }).run(["code", "--working-directory", "/repo"]));
 
+  // La 178 no se entrega y no detiene el drenaje: la 179 sí, y la corrida sale distinta de cero.
   expect(code).toBe(1);
-  expect(runs).toBe(1);
-  expect(events).toEqual(["prepare-branch:178", "verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
-  expect(state.current?.branch).toBe("refs/heads/issue/178");
-  expect(state.current?.baseBranch).toBe("refs/heads/main");
+  expect(runs).toBe(2);
+  expect(logs.filter((line) => line === "TICKET_COMPLETED")).toHaveLength(1);
+  expect(logs.filter((line) => line === "QUEUE_EMPTY")).toHaveLength(1);
+  // Su claim es lo que la saca de la frontera; el checkpoint no guarda nada a medias.
+  expect(state.current).toBeNull();
 });
 
-test("la recuperación sessionless cambia a la rama fijada antes de continuar", async () => {
-  const state = boundaries({
-    ...checkpoint(null),
-    phase: "started",
-    branch: "refs/heads/issue/178",
-    baseBranch: "refs/heads/main",
-    manifestPath: "/missing-manifest.json",
-  });
+test("la recuperación de una unidad verificada la termina sin abrir sesión ni consultar la cola", async () => {
+  const state = boundaries(checkpoint({ commit: COMMIT, summary: "entrega lista" }));
   const { azure, openCode } = services();
-  const events: string[] = [];
-  let reconciliations = 0;
+  let selections = 0;
   let runs = 0;
-  const queue = {
-    issue: fakeSelectedIssue(178),
-    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
-    async reconcileClaimedIssue(issueNumber: number) {
-      events.push("read-issue");
-      reconciliations += 1;
-      if (this.issue.number !== issueNumber) throw new Error("wrong issue");
-      return this.issue;
-    },
-  };
-  const delivery = failingDelivery({
-    verifyRepository: async () => { events.push("verify-repository"); },
-    checkoutBranch: async () => { events.push("checkout-branch"); },
-    verifyBranch: async () => { events.push("verify-branch"); },
-  });
-
-  const code = await createCli({
+  const effects: string[] = [];
+  const { value: code, logs } = await capturingLogs(() => createCli({
     huInfoService: azure,
-    agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-    githubManagedQueue: queue,
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; },
+      selectEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; },
+      claimSelectedIssue: async () => { throw new Error("must not claim"); },
+    },
     githubCheckpointStore: state.store,
     githubRepositoryLock: state.lock,
-    githubDelivery: delivery,
-  }).run(["code", "--working-directory", "/repo"]);
+    githubDelivery: fakeGitHubDelivery({
+      verifySession: async () => { throw new Error("una unidad ya verificada no se vuelve a verificar"); },
+      pushCommit: async () => { effects.push("push"); },
+      createOrReusePullRequest: async () => { effects.push("pull-request"); return { number: 7 }; },
+      mergePullRequest: async () => { effects.push("merge"); return { number: 7, mergeCommit: "b".repeat(40) }; },
+      closeIssue: async () => { effects.push("close"); },
+      cleanupBranch: async () => { effects.push("cleanup"); },
+    }),
+  }).run(["code", "--working-directory", "/repo"]));
+
+  expect(code).toBe(0);
+  expect(runs).toBe(0);
+  expect(effects).toEqual(["push", "pull-request", "merge", "close", "cleanup"]);
+  expect(logs.filter((line) => line === "TICKET_COMPLETED")).toHaveLength(1);
+  // Terminada la unidad fijada, la corrida vuelve a la cola en vez de salir.
+  expect(selections).toBe(1);
+  expect(state.current).toBeNull();
+  expect(state.lockAcquires).toBe(1);
+  expect(state.lockReleases).toBe(1);
+});
+
+test("una unidad verificada que falla al completarse conserva el checkpoint y detiene la corrida", async () => {
+  const initial = checkpoint({ commit: COMMIT });
+  const state = boundaries(initial);
+  const { azure, openCode } = services();
+  let runs = 0;
+  const { value: code } = await capturingLogs(() => createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { throw new Error("must not select"); },
+    },
+    githubCheckpointStore: state.store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: fakeGitHubDelivery({
+      pushCommit: async () => { throw new Error("origin rechazó el push"); },
+    }),
+  }).run(["code", "--working-directory", "/repo"]));
 
   expect(code).toBe(1);
-  expect(reconciliations).toBe(1);
-  expect(runs).toBe(1);
-  expect(events).toEqual(["verify-repository", "checkout-branch", "verify-branch", "read-issue", "opencode"]);
-  expect(state.current?.phase).toBe("started");
+  expect(runs).toBe(0);
+  // Ya tocó el remoto: la unidad queda con su commit fijado para que la corrida siguiente la retome.
+  expect(state.current?.issue).toBe(178);
+  expect(state.current?.commit).toBe(COMMIT);
+  expect(state.lockAcquires).toBe(1);
+  expect(state.lockReleases).toBe(1);
 });
 
-test("la recuperación sessionless ignora un manifest ajeno de un issue previo", async () => {
-  const root = mkdtempSync(join(tmpdir(), "lazy-workflow-stale-manifest-"));
-  const manifestPath = join(root, "github-completion-manifest.json");
-  writeFileSync(manifestPath, JSON.stringify({ issue: 177, branch: "refs/heads/issue/177", commit: "a".repeat(40) }));
-  const state = boundaries({
-    ...checkpoint(null),
-    phase: "started",
-    branch: "refs/heads/issue/178",
-    baseBranch: "refs/heads/main",
-    manifestPath,
-  });
-  const { azure, openCode } = services();
-  const events: string[] = [];
-  let runs = 0;
-  const queue = {
-    selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(999),
-    reconcileClaimedIssue: async () => fakeSelectedIssue(178),
-  };
-  const delivery = failingDelivery({
-    verifyRepository: async () => { events.push("verify-repository"); },
-    checkoutBranch: async () => { events.push("checkout-branch"); },
-    verifyBranch: async () => { events.push("verify-branch"); },
-    verifySession: async () => { throw new Error("must not verify"); },
-  });
-
-  try {
-    const code = await createCli({
-      huInfoService: azure,
-      agentSource: { ...openCode, run: async () => { events.push("opencode"); runs += 1; throw new Error("stop after recovery preflight"); } },
-      githubManagedQueue: queue,
-      githubCheckpointStore: state.store,
-      githubRepositoryLock: state.lock,
-      githubDelivery: delivery,
-    }).run(["code", "--working-directory", "/repo"]);
-
-    expect(code).toBe(1);
-    expect(runs).toBe(1);
-    expect(events).not.toContain("read-manifest");
-    expect(events.at(-1)).toBe("opencode");
-    expect(state.current?.phase).toBe("started");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-for (const phase of GITHUB_DELIVERY_PHASES) {
-  test(`la recuperación conserva el issue fijado en fase ${phase}`, async () => {
-    const state = boundaries({ ...checkpoint("ses_178"), phase });
+test("una unidad sin verificar no reconcilia nada: queda reclamada y el drenaje sigue", async () => {
+  // El caso de #293 —un checkpoint que quedó antes de fijar la rama— entra por acá desde ADR-0038:
+  // sin commit la unidad nunca tocó el remoto, así que no hay nada que retomar.
+  for (const stale of [checkpoint({ branch: null, baseBranch: null }), checkpoint()]) {
+    const state = boundaries(stale);
     const { azure, openCode } = services();
+    let runs = 0;
     let selections = 0;
-    const code = await createCli({
+    const { value: code, logs } = await capturingLogs(() => createCli({
       huInfoService: azure,
-      agentSource: { ...openCode, resume: async () => { throw new Error("la sesión reanudada explotó"); } },
+      agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
       githubManagedQueue: {
-        selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(999); },
-        reconcileClaimedIssue: async () => fakeSelectedIssue(178),
+        selectAndClaimEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; },
+        selectEligibleIssue: async () => { selections += 1; return { kind: "empty" as const }; },
+        claimSelectedIssue: async () => { throw new Error("must not claim"); },
       },
       githubCheckpointStore: state.store,
       githubRepositoryLock: state.lock,
-    }).run(["code", "--working-directory", "/repo"]);
+      githubDelivery: failingDelivery(),
+    }).run(["code", "--working-directory", "/repo"]));
 
+    // La unidad cuenta como fallada, así que la corrida sale distinta de cero aunque drene el resto.
     expect(code).toBe(1);
-    expect(selections).toBe(0);
-    expect(state.current?.issue).toBe(178);
-  });
-}
+    expect(runs).toBe(0);
+    expect(selections).toBe(1);
+    expect(logs.filter((line) => line === "QUEUE_EMPTY")).toHaveLength(1);
+    expect(state.current).toBeNull();
+  }
+});
 
+test("un checkpoint que nombra otra issue que la viva pide reconciliación en vez de entregar", async () => {
+  const state = boundaries(checkpoint({ commit: COMMIT }));
+  const { azure, openCode } = services();
+  // La recuperación relee el checkpoint antes de tocar nada. Si entre la lectura del coordinador y
+  // la suya el archivo pasó a nombrar otra unidad, lo que hay en el repositorio no es lo que iba a
+  // entregar, así que pide reconciliación en vez de entregar la unidad equivocada.
+  let reads = 0;
+  const store: GitHubCheckpointStore = {
+    ...state.store,
+    read: async () => {
+      reads += 1;
+      return reads === 1 ? checkpoint({ commit: COMMIT }) : checkpoint({ issue: 999, commit: COMMIT });
+    },
+  };
+  let selections = 0;
+  const { value: code, logs } = await capturingLogs(() => createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { throw new Error("must not run"); } },
+    githubManagedQueue: {
+      selectAndClaimEligibleIssue: async () => { selections += 1; return fakeSelectedOutcome(1000); },
+    },
+    githubCheckpointStore: store,
+    githubRepositoryLock: state.lock,
+    githubDelivery: failingDelivery(),
+  }).run(["code", "--working-directory", "/repo"]));
 
+  expect(code).toBe(1);
+  expect(selections).toBe(0);
+  expect(logs.some((line) => line.includes("RECONCILIATION_REQUIRED"))).toBeTrue();
+  expect(state.lockAcquires).toBe(1);
+  expect(state.lockReleases).toBe(1);
+});
 
+test("sin store ni lock la entrega GitHub no se coordina: no hay checkpoint que retomar", async () => {
+  const { azure, openCode } = services();
+  let runs = 0;
+  const { value: code, logs } = await capturingLogs(() => createCli({
+    huInfoService: azure,
+    agentSource: { ...openCode, run: async () => { runs += 1; return openCode.run(); } },
+    githubManagedQueue: { selectAndClaimEligibleIssue: async () => fakeSelectedOutcome(178) },
+    githubDelivery: undefined,
+  }).run(["code", "--working-directory", "/repo"]));
+
+  // ADR-0020: sin adaptador de entrega y sin rama fijada no hay nada que verificar, así que la
+  // corrida falla cerrada en vez de abrir una sesión que nadie va a poder completar.
+  expect(code).toBe(1);
+  expect(runs).toBe(0);
+  expect(logs.some((line) => line === "TICKET_COMPLETED")).toBeFalse();
+});

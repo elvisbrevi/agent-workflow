@@ -313,7 +313,7 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
   const pathA = await seedRepo(root, repoA, remoteUrlA);
   const events: string[] = [];
   const workspacePrepareCalled = { value: false };
-  const azureBoundary: AzureBoundary = {
+  const azureBoundary: Partial<AzureBoundary> = {
     getHuInfo: async () => ({ id: hu }),
     waitForAccess: async () => undefined,
     getIntegrationBranchInfo: async () => ({ hu, branch: integrationBranch }),

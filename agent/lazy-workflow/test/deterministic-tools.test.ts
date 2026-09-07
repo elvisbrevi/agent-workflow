@@ -12,7 +12,6 @@ import {
 import { DETERMINISTIC_TOOL_COMMANDS } from "../src/cli/tool-commands.ts";
 import { buildCli, type CliOptions } from "../src/cli/parse-cli-options.ts";
 import { createReporter } from "../src/output/reporter.ts";
-import type { FailureKind } from "../src/output/failure-kind.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 import { fakeSelectedIssue } from "./_helpers/managed-queue-fixtures.ts";
 
@@ -48,12 +47,11 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       releaseOwnClaim: record("releaseOwnClaim", undefined),
     },
     delivery: {
-      prepareBranch: record("prepareBranch", { branch: "refs/heads/issue/201", baseBranch: "refs/heads/main", manifestPath: "/repo/.git/manifest.json" }),
+      prepareBranch: record("prepareBranch", { branch: "refs/heads/issue/201", baseBranch: "refs/heads/main" }),
       checkoutBranch: record("checkoutBranch", undefined),
       verifyBranch: record("verifyBranch", undefined),
       cleanupBranch: record("cleanupBranch", undefined),
       verifySession: record("verifySession", { commit: COMMIT }),
-      writeManifest: record("writeManifest", { issue: 201, branch: "refs/heads/issue/201", commit: COMMIT, validation: [], clean: true, summary: "ok" }),
       pushCommit: record("pushCommit", undefined),
       createOrReusePullRequest: record("createOrReusePullRequest", { number: 9 }),
       mergePullRequest: record("mergePullRequest", { number: 9, mergeCommit: OTHER_COMMIT }),
@@ -189,7 +187,7 @@ describe("herramientas deterministas como comandos", () => {
   });
 
   test("clasifica cada comando determinista con su failure kind", () => {
-    const expected: Record<typeof DETERMINISTIC_TOOL_COMMANDS[number], FailureKind> = {
+    const expected: Record<typeof DETERMINISTIC_TOOL_COMMANDS[number], ReturnType<typeof deterministicFailureKind>> = {
       "hu-children-info": "tracker-read-failure",
       "hu-state-set": "deterministic-completion-failure",
       "hu-branch-ensure": "branch-preparation-failure",
@@ -267,14 +265,13 @@ describe("herramientas deterministas como comandos", () => {
       expect(calls[1]?.args).toEqual([201, "elvis", "/repo"]);
     });
 
-    test("github-branch-prepare devuelve rama, base y manifest", async () => {
+    test("github-branch-prepare devuelve la rama y su base", async () => {
       const { code, printed, calls } = await runTool(["github-branch-prepare", "--issue", "201", "--working-directory", "/repo"]);
 
       expect(code).toBe(0);
       expect(parsed(printed)).toEqual({
         branch: "refs/heads/issue/201",
         baseBranch: "refs/heads/main",
-        manifestPath: "/repo/.git/manifest.json",
       });
       expect(calls).toEqual([{ operation: "prepareBranch", args: [201, "/repo"] }]);
     });

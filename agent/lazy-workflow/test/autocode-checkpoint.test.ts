@@ -155,8 +155,9 @@ test("reescribe en disco un checkpoint autocode de la versión anterior", async 
     })}\n`);
 
     const read = await store.read(root);
-    expect(read?.schemaVersion).toBe(3);
-    expect(read?.cli).toBe("opencode");
+    expect(read && isVersionedAutocodeCheckpoint(read)).toBeTrue();
+    expect(read && isVersionedAutocodeCheckpoint(read) ? read.schemaVersion : null).toBe(3);
+    expect(read && isVersionedAutocodeCheckpoint(read) ? read.cli : null).toBe("opencode");
     expect(await Bun.file(path).json()).toEqual(read);
   } finally {
     await rm(root, { recursive: true, force: true });

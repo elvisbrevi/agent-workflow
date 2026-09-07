@@ -2060,7 +2060,9 @@ test("code --cli claudecode entrega la cola gestionada con ese CLI", async () =>
 
 test("code --cli codex entrega la cola gestionada con autoridad Codex", async () => {
   const requested: AgentCli[] = [];
-  let received: AgentRunOptions | null = null;
+  // Objeto en vez de `let`: el análisis de flujo estrecha a `null` una variable que solo se asigna
+  // dentro del closure, y la aserción de abajo dejaría de ver el tipo real.
+  const received: { options: AgentRunOptions | null } = { options: null };
   const { githubCheckpointStore, githubRepositoryLock, githubDelivery } = fakeCoordinatedGitHubDeps();
   const code = await createCli({
     huInfoService: {
@@ -2071,7 +2073,7 @@ test("code --cli codex entrega la cola gestionada con autoridad Codex", async ()
       requested.push(cli);
       return {
         run: async (options: AgentRunOptions) => {
-          received = options;
+          received.options = options;
           return {
             result: new AgentResult({ sessionId: "thread_codex", text: "IMPLEMENTATION_READY" }),
             azureLoginRequired: false,
@@ -2090,7 +2092,7 @@ test("code --cli codex entrega la cola gestionada con autoridad Codex", async ()
 
   expect(code).toBe(0);
   expect(requested).toEqual(["codex"]);
-  expect(received?.agent).toEqual({
+  expect(received.options?.agent).toEqual({
     profile: "lazy-github-code",
     configPath: authorityConfigPath("codex", "lazy-github-code"),
   });

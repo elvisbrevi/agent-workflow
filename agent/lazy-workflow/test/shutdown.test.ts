@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createCli } from "./_helpers/create-cli.ts";
 import type { DeterministicToolServices } from "../src/cli/deterministic-tools.ts";
-import type { createReporter, Reporter, ReporterFailureDetail } from "../src/output/reporter.ts";
+import type { createReporter, Reporter, ReporterFailureDetail, ReporterOptions } from "../src/output/reporter.ts";
 import { redactPassword, SudoSystemShutdown, type SystemShutdown } from "../src/system/shutdown-service.ts";
 
 /**
@@ -12,10 +12,12 @@ import { redactPassword, SudoSystemShutdown, type SystemShutdown } from "../src/
  */
 function recordingReporter(): { reporterFn: typeof createReporter; lines: Array<{ level: string; message: string }> } {
   const lines: Array<{ level: string; message: string }> = [];
-  const reporterFn = ((options?: { runLog?: { event(level: "info" | "warn" | "error", message: string, detail?: ReporterFailureDetail): void } }) => {
+  const reporterFn = ((arg: boolean | ReporterOptions) => {
+    // `createReporter` acepta tambien un booleano; solo la forma con opciones trae el run log.
+    const runLog = typeof arg === "boolean" ? undefined : arg.runLog;
     const emit = (level: "info" | "warn" | "error") => (message: string, detail?: ReporterFailureDetail) => {
       lines.push({ level, message });
-      options?.runLog?.event(level, message, detail);
+      runLog?.event(level, message, detail);
     };
     const reporter: Reporter = {
       tracing: false,

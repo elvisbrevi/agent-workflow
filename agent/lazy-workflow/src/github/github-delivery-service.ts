@@ -11,7 +11,6 @@ import { runGh, type GhRunner } from "./managed-queue-service.ts";
 export interface GitHubBranchPreparation {
   branch: string;
   baseBranch: string;
-  manifestPath: string;
 }
 
 export interface GitHubPullRequest {
@@ -23,13 +22,6 @@ export class GitHubPullRequestConflictError extends Error {
   constructor(readonly pullRequest: number) {
     super(`El PR #${pullRequest} tiene conflictos con su rama base`);
     this.name = "GitHubPullRequestConflictError";
-  }
-}
-
-export class GitHubManifestNotVerifiableError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "GitHubManifestNotVerifiableError";
   }
 }
 
@@ -85,7 +77,7 @@ function requireBranch(value: string, label: string): string {
 }
 
 function requireCommit(value: string): string {
-  if (!/^[0-9a-f]{40,64}$/i.test(value)) throw new Error("El commit del manifest no es válido");
+  if (!/^[0-9a-f]{40,64}$/i.test(value)) throw new Error("El commit no es válido");
   return value;
 }
 
@@ -200,9 +192,7 @@ export class GitHubDeliveryService implements GitHubDeliveryAdapter {
         await this.git(["switch", "--create", branchName(branch), `refs/remotes/origin/${baseName}`], workingDirectory);
       }
     }
-    const commonDirectory = resolve(workingDirectory, (await this.git(["rev-parse", "--git-common-dir"], workingDirectory)).trim());
-    const manifestPath = resolve(commonDirectory, "lazy-workflow/github-completion-manifest.json");
-    return { branch, baseBranch, manifestPath };
+    return { branch, baseBranch };
   }
 
   /**
