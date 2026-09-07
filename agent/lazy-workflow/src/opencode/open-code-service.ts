@@ -22,7 +22,7 @@ import {
 import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-import { reportSessionEvent } from "../output/session-event.ts";
+import { openSessionStart, reportSessionEvent } from "../output/session-event.ts";
 
 /** The CLI identifier this adapter's session-lifecycle records are labelled with, matching `--cli opencode`. */
 const CLI_NAME = "opencode";
@@ -96,6 +96,12 @@ function renderEventTrace(line: string, event: OpenCodeEventData | null): string
   }
   traced.push(`OpenCode evento crudo: ${line}`);
   return traced;
+}
+
+/** The session a `--session` command reopens: the only id known before the stream speaks. */
+function resumedSessionId(command: string[]): string | undefined {
+  const index = command.indexOf("--session");
+  return index >= 0 ? command[index + 1] : undefined;
 }
 
 function parseEvent(line: string): OpenCodeEventData | null {
@@ -322,7 +328,8 @@ export class OpenCodeService implements CodingAgent {
     const rung = { cli: CLI_NAME, model, variant };
     this.reporter.info(`OpenCode iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
     const startedAt = Date.now();
-    reportSessionEvent("session_started", "OpenCode inicia sesión", rung, {}, {}, this.reporter);
+    const resumedSession = resumedSessionId(command);
+    const start = openSessionStart("OpenCode inicia sesión", rung, this.reporter, resumedSession);
     const child = this.spawn(command, {
       cwd: workingDirectory,
       ...(authority ? { env: { OPENCODE_CONFIG: authority.configPath } } : {}),
@@ -370,6 +377,9 @@ export class OpenCodeService implements CodingAgent {
     };
     const emitEvent = (line: string) => {
       const event = parseEvent(line);
+      // The first event carrying a `sessionID` names the session, so the start
+      // record is written the moment the stream reveals which one this is.
+      start.observed(event?.sessionID);
       const rendered = renderEvent(line);
       if (eventSeverity(event) === "debug") {
         this.reporter.debug(rendered);
@@ -401,6 +411,9 @@ export class OpenCodeService implements CodingAgent {
         reportStdout,
         stdoutAbort.signal,
       );
+      // Streaming is over, so a session that died before naming itself still
+      // leaves its start record here, ahead of whatever ended it.
+      start.settle();
       let exitCode: number;
       let stderrOutput: Awaited<ReturnType<typeof readLines>>;
       if (streamed.stopped || idleFired) {
@@ -416,18 +429,16 @@ export class OpenCodeService implements CodingAgent {
         && (streamed.lines.some(requiresAzureLogin) || asksForAzureLogin(stderr));
       const terminalMarkerReceived = markerArrived;
       if (exitCode !== 0 && !azureLoginRequired && streamed.lines.length === 0) {
-        const sessionIndex = command.indexOf("--session");
-        const sessionId = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
-        if (sessionId && absentSessionPattern.test(stderr)) {
+        if (resumedSession && absentSessionPattern.test(stderr)) {
           reportSessionEvent(
             "session_not_found",
-            `La sesión OpenCode ${sessionId} ya no existe`,
+            `La sesión OpenCode ${resumedSession} ya no existe`,
             rung,
-            { sessionId },
+            { sessionId: resumedSession },
             { durationMs: Date.now() - startedAt },
             this.reporter,
           );
-          throw new AgentSessionNotFoundError(sessionId, `La sesión OpenCode ${sessionId} ya no existe`);
+          throw new AgentSessionNotFoundError(resumedSession, `La sesión OpenCode ${resumedSession} ya no existe`);
         }
         throw new Error("OpenCode no devolvio eventos");
       }
@@ -504,6 +515,8 @@ export class OpenCodeService implements CodingAgent {
     } finally {
       disarmIdle();
       stopSpinner();
+      // The backstop for a stream that threw before settling on its own.
+      start.settle();
     }
   }
 

@@ -42,7 +42,7 @@ const captureReporter = (verbose: boolean): { reporter: Reporter; captured: Capt
   return { reporter, captured };
 };
 
-type SessionEvent = { severity: string; message: string; sessionEvent?: string; cli?: string; model?: string; variant?: string; reason?: string };
+type SessionEvent = { severity: string; message: string; sessionEvent?: string; cli?: string; model?: string; variant?: string; reason?: string; sessionId?: string | null };
 
 /** A reporter wired to a run-log double, so a session-lifecycle record (issue #267) is assertable without a real sink. */
 const captureSessionEvents = (): { reporter: Reporter; events: SessionEvent[] } => {
@@ -61,6 +61,7 @@ const captureSessionEvents = (): { reporter: Reporter; events: SessionEvent[] } 
           model: detail?.model ?? undefined,
           variant: detail?.variant ?? undefined,
           reason: detail?.reason ?? undefined,
+          sessionId: detail?.context?.sessionId ?? null,
         });
       },
     },
@@ -464,6 +465,57 @@ describe("OpenCodeService reporter routing", () => {
     expect(execution.azureLoginRequired).toBeFalse();
     expect(execution.failed).toBeFalse();
     expect(execution.result.text).toBe("Voy a emitir IMPLEMENTATION_READY pronto");
+  });
+
+  test("session_started lleva el identificador que el stream anuncia", async () => {
+    const output = [
+      jsonEvent({ type: "session", sessionID: "ses_named" }),
+      jsonEvent({ type: "text", sessionID: "ses_named", part: { type: "text", text: "listo" } }),
+    ].join("\n");
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService(() => ({
+      stdout: new Blob([output]).stream(),
+      stderr: new Blob([]).stream(),
+      exited: Promise.resolve(0),
+      kill: () => undefined,
+    }), reporter);
+
+    await service.run(standardOptions, true);
+
+    const started = events.find((event) => event.sessionEvent === "session_started");
+    expect(started?.sessionId).toBe("ses_named");
+    expect(events.filter((event) => event.sessionEvent === "session_started")).toHaveLength(1);
+  });
+
+  test("una sesión reanudada lleva su identificador en session_started aunque el stream no llegue a hablar", async () => {
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService(() => ({
+      stdout: new Blob([]).stream(),
+      stderr: new Blob(["session not found"]).stream(),
+      exited: Promise.resolve(1),
+      kill: () => undefined,
+    }), reporter);
+
+    await expect(service.resume("ses_reanudada", "continue")).rejects.toThrow();
+
+    const started = events.find((event) => event.sessionEvent === "session_started");
+    expect(started?.sessionId).toBe("ses_reanudada");
+  });
+
+  test("una sesión que muere antes de nombrarse deja igual su session_started, sin identificador", async () => {
+    const { reporter, events } = captureSessionEvents();
+    const service = new OpenCodeService(() => ({
+      stdout: new Blob([]).stream(),
+      stderr: new Blob(["boom"]).stream(),
+      exited: Promise.resolve(1),
+      kill: () => undefined,
+    }), reporter);
+
+    await expect(service.run(standardOptions, true)).rejects.toThrow();
+
+    const started = events.filter((event) => event.sessionEvent === "session_started");
+    expect(started).toHaveLength(1);
+    expect(started[0]?.sessionId).toBeNull();
   });
 
   test("una sesión que termina sin su marcador terminal escribe un evento de sesión terminal_marker_missing (issue #267)", async () => {

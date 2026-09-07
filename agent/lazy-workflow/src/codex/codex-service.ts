@@ -29,7 +29,7 @@ import type { AuthorityProfile } from "../prompts/authority-profile.ts";
 import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-import { reportSessionEvent } from "../output/session-event.ts";
+import { openSessionStart, reportSessionEvent } from "../output/session-event.ts";
 
 /** The effort levels accepted by Codex and exposed through `--variant`. */
 export const CODEX_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -102,6 +102,12 @@ function parseEvent(line: string): CodexEventData | null {
   } catch {
     return null;
   }
+}
+
+/** The session a `resume` command reopens: the only id known before the stream speaks. */
+function resumedSessionId(command: string[]): string | undefined {
+  const index = command.indexOf("resume");
+  return index >= 0 ? command[index + 1] : undefined;
 }
 
 function parseEvents(output: string): CodexEventData[] {
@@ -380,12 +386,18 @@ export class CodexService implements CodingAgent {
     const rung = { cli: CLI_NAME, model, variant };
     const startedAt = Date.now();
     this.reporter.info(`Codex iniciado en ${cwd}${model ? ` con el modelo ${model}` : ""}`);
-    reportSessionEvent("session_started", "Codex inicia sesion", rung, {}, {}, this.reporter);
+    const resumedSession = resumedSessionId(command);
+    const start = openSessionStart("Codex inicia sesion", rung, this.reporter, resumedSession);
     const child: CodexProcess = this.spawn(command, { cwd: workingDirectory, ...(env ? { env } : {}) });
     let sessionId: string | undefined;
     const reportStdout = (line: string) => {
       const event = parseEvent(line);
-      if (event?.thread_id) sessionId = event.thread_id;
+      // `thread.started` names the session, so the start record is written the
+      // moment the stream reveals which one this is.
+      if (event?.thread_id) {
+        sessionId = event.thread_id;
+        start.observed(sessionId);
+      }
       for (const reported of renderEvent(line, sessionId)) {
         if (reported.severity === "debug") this.reporter.debug(reported.message);
         else if (reported.severity === "error") this.reporter.error(reported.message);
@@ -404,12 +416,14 @@ export class CodexService implements CodingAgent {
       readLines(child.stdout, reportStdout, () => watchdog.touch()),
       readLines(child.stderr, reportStderr),
       child.exited,
-    ]).finally(() => watchdog.disarm());
+    ]).finally(() => {
+      watchdog.disarm();
+      // A session that died before naming its thread still leaves a start record.
+      start.settle();
+    });
     const stderr = errorLines.join("\n");
     const events = parseEvents(lines.join("\n"));
     if (events.length === 0) {
-      const sessionIndex = command.indexOf("resume");
-      const resumedSession = sessionIndex >= 0 ? command[sessionIndex + 1] : undefined;
       if (exitCode !== 0 && resumedSession && absentSessionPattern.test(stderr)) {
         reportSessionEvent(
           "session_not_found",
