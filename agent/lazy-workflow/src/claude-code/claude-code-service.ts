@@ -33,7 +33,7 @@ import {
 import { renderToolCall, renderToolInput, renderToolOutput } from "../output/agent-tool-detail.ts";
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-import { reportSessionEvent } from "../output/session-event.ts";
+import { openSessionStart, reportSessionEvent } from "../output/session-event.ts";
 
 /** The CLI identifier this adapter's session-lifecycle records are labelled with, matching `--cli claudecode`. */
 const CLI_NAME = "claudecode";
@@ -213,6 +213,12 @@ function parseEvents(output: string): ClaudeCodeEventData[] {
     .filter((event): event is ClaudeCodeEventData => event !== null);
 }
 
+/** The session a `--resume` command reopens: the only id known before the stream speaks. */
+function resumedSessionId(command: string[]): string | undefined {
+  const index = command.indexOf("--resume");
+  return index >= 0 ? command[index + 1] : undefined;
+}
+
 function decodeStream(events: ClaudeCodeEventData[]): AgentResult {
   const sessionId = events.find((event) => event.type === "system" && event.subtype === "init")?.session_id;
   if (!sessionId) throw new Error("Claude Code no devolvió un identificador de sesión");
@@ -379,15 +385,19 @@ export class ClaudeCodeService implements CodingAgent {
     const rung = { cli: CLI_NAME, model, variant };
     this.reporter.info(`Claude Code iniciado en ${workingDirectory ?? globalThis.process.cwd()}${model ? ` con el modelo ${model}` : ""}`);
     const startedAt = Date.now();
-    reportSessionEvent("session_started", "Claude Code inicia sesión", rung, {}, {}, this.reporter);
+    const start = openSessionStart("Claude Code inicia sesión", rung, this.reporter, resumedSessionId(command));
     const child: AgentProcess = this.spawn(command, { cwd: workingDirectory });
     const reportStdout = (line: string) => {
+      const event = parseEvent(line);
+      // The `system`/`init` event names the session, so the start record is
+      // written the moment the stream reveals which one this is.
+      start.observed(event?.session_id);
       for (const { message, severity } of renderEvent(line)) {
         if (severity === "debug") this.reporter.debug(message);
         else this.reporter.info(message);
       }
       if (this.reporter.tracing) {
-        for (const message of renderEventTrace(line, parseEvent(line))) this.reporter.trace(message);
+        for (const message of renderEventTrace(line, event)) this.reporter.trace(message);
       }
     };
     const reportStderr = (line: string) => this.reporter.info(`Claude Code stderr: ${line}`);
@@ -400,7 +410,11 @@ export class ClaudeCodeService implements CodingAgent {
       readLines(child.stdout, reportStdout, () => watchdog.touch()),
       readLines(child.stderr, reportStderr),
       child.exited,
-    ]).finally(() => watchdog.disarm());
+    ]).finally(() => {
+      watchdog.disarm();
+      // A session that died before its init event still leaves a start record.
+      start.settle();
+    });
 
     const events = parseEvents(lines.join("\n"));
     if (watchdog.fired) this.reporter.warn(`${describeIdleTimeout("Claude Code", this.idleTimeoutMs)}; se desciende al escalón siguiente.`);

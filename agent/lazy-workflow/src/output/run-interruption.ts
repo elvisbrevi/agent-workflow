@@ -34,6 +34,12 @@ export interface RegisterInterruptionHandlersOptions {
   describeCheckpoint: InterruptionCheckpointProbe;
   errorMessage: (error: unknown) => string;
   process?: InterruptionProcess;
+  /**
+   * Called after a crash record is written, for whatever the operator should be
+   * told beyond the record itself. A signal never calls it: an interruption the
+   * operator asked for is not a failure to go read about.
+   */
+  onFailure?: () => void;
 }
 
 async function describeCheckpointSafely(probe: InterruptionCheckpointProbe): Promise<string | null> {
@@ -59,7 +65,7 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
   const proc = options.process ?? (process as unknown as InterruptionProcess);
   let handled = false;
 
-  const writeFinished = async (failureKind: FailureKind, message: string): Promise<void> => {
+  const writeFinished = async (failureKind: FailureKind, message: string, onWritten?: () => void): Promise<void> => {
     const checkpoint = await describeCheckpointSafely(options.describeCheckpoint);
     try {
       options.runLog.write({
@@ -74,6 +80,12 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
       });
     } catch {
       // The interruption record is itself best-effort: it must never become the crash it is recording.
+      return;
+    }
+    try {
+      onWritten?.();
+    } catch {
+      // Same rule: telling the operator where to look never becomes the crash.
     }
   };
 
@@ -97,6 +109,7 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
     void writeFinished(
       "run-interrupted-failure",
       `lazy-workflow termino por una excepcion no capturada (${options.errorMessage(error)})`,
+      options.onFailure,
     ).finally(() => proc.exit(UNHANDLED_FAILURE_EXIT_CODE));
   };
 
@@ -107,6 +120,7 @@ export function registerInterruptionHandlers(options: RegisterInterruptionHandle
     void writeFinished(
       "run-interrupted-failure",
       `lazy-workflow termino por un rechazo de promesa no manejado (${options.errorMessage(reason)})`,
+      options.onFailure,
     ).finally(() => proc.exit(UNHANDLED_FAILURE_EXIT_CODE));
   };
 

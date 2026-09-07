@@ -24,6 +24,23 @@ function reporter(captured: Captured = { info: [], warn: [], error: [], debug: [
   };
 }
 
+type SessionEvent = { kind: string; sessionId: string | null };
+
+/** A reporter that keeps the session-lifecycle records (issue #267) the run wrote, and nothing else. */
+function sessionReporter(): { reporter: Reporter; events: SessionEvent[] } {
+  const events: SessionEvent[] = [];
+  const base = reporter();
+  return {
+    reporter: {
+      ...base,
+      session: (kind, _message, detail) => {
+        events.push({ kind, sessionId: detail?.context?.sessionId ?? null });
+      },
+    },
+    events,
+  };
+}
+
 function event(value: Record<string, unknown>): string {
   return JSON.stringify(value);
 }
@@ -269,4 +286,39 @@ test("Codex detecta az login y no ejecuta un cierre de sesion al recibir el marc
 
   expect(execution.azureLoginRequired).toBeTrue();
   expect(commands).toHaveLength(1);
+});
+
+test("session_started lleva el identificador del hilo que anuncia el stream", async () => {
+  const { reporter: capturing, events } = sessionReporter();
+  const service = new CodexService(() => processFor([
+    threadStarted("thread_named"),
+    assistantMessage("listo"),
+  ].join("\n")), capturing);
+
+  await service.run(standardOptions);
+
+  const started = events.filter((session) => session.kind === "session_started");
+  expect(started).toHaveLength(1);
+  expect(started[0]?.sessionId).toBe("thread_named");
+});
+
+test("una sesion reanudada lleva su identificador en session_started aunque el stream no llegue a hablar", async () => {
+  const { reporter: capturing, events } = sessionReporter();
+  const service = new CodexService(() => processFor("", "thread missing not found", 1), capturing);
+
+  await expect(service.resume("thread_reanudado")).rejects.toBeInstanceOf(AgentSessionNotFoundError);
+
+  const started = events.find((session) => session.kind === "session_started");
+  expect(started?.sessionId).toBe("thread_reanudado");
+});
+
+test("una sesion que muere antes de nombrarse deja igual su session_started, sin identificador", async () => {
+  const { reporter: capturing, events } = sessionReporter();
+  const service = new CodexService(() => processFor("", "boom", 1), capturing);
+
+  await expect(service.run(standardOptions)).rejects.toThrow();
+
+  const started = events.filter((session) => session.kind === "session_started");
+  expect(started).toHaveLength(1);
+  expect(started[0]?.sessionId).toBeNull();
 });

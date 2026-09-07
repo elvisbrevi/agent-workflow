@@ -41,3 +41,45 @@ export function reportSessionEvent(
     ...extra,
   });
 }
+
+/**
+ * A session's start record, held open until the session names itself.
+ *
+ * No CLI knows its session id before it runs: Claude Code announces it on its
+ * `system`/`init` event, Codex on `thread.started`, OpenCode on the first event
+ * carrying a `sessionID`, and only a resumed session carries one on its own
+ * command line. So `session_started` is written on the first id that turns up —
+ * the resumed one when there is one, the stream's otherwise — and `settle()`
+ * writes it anyway, with a null id, for a session that died before naming
+ * itself. An attempt is never missing from the log, and a run's start and
+ * finish records stay one for one.
+ */
+export interface SessionStart {
+  /** Whatever id a stream line carried, if any; the first one present writes the record. */
+  observed(sessionId: string | null | undefined): void;
+  /** Writes the record with a null id if none ever turned up. Idempotent, so every exit path can call it. */
+  settle(): void;
+}
+
+export function openSessionStart(
+  message: string,
+  rung: SessionRung,
+  reporter: Reporter = getDefaultReporter(),
+  resumedSessionId?: string | null,
+): SessionStart {
+  let written = false;
+  const write = (sessionId: string | null): void => {
+    if (written) return;
+    written = true;
+    reportSessionEvent("session_started", message, rung, { sessionId }, {}, reporter);
+  };
+  if (resumedSessionId) write(resumedSessionId);
+  return {
+    observed(sessionId) {
+      if (sessionId) write(sessionId);
+    },
+    settle() {
+      write(null);
+    },
+  };
+}

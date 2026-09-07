@@ -209,6 +209,50 @@ describe("registerInterruptionHandlers", () => {
     expect(runLog.records[0]?.checkpoint).toBeNull();
   });
 
+  test("un crash avisa por onFailure despues de dejar su registro, y una senal no", async () => {
+    const proc = new FakeProcess();
+    const runLog = new RecordingRunLogSink();
+    const told: number[] = [];
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.length === 1 ? args[0] : args); };
+    try {
+      const teardown = registerInterruptionHandlers({
+        runLog,
+        base,
+        startedAt: Date.now(),
+        describeCheckpoint: async () => null,
+        errorMessage: (error) => String(error),
+        process: proc,
+        onFailure: () => { told.push(runLog.records.length); },
+      });
+
+      proc.emit("SIGINT");
+      await flush();
+      expect(told).toEqual([]); // la interrupcion la pidio el operador: no hay a que mandarlo
+
+      teardown();
+      const crashing = new FakeProcess();
+      registerInterruptionHandlers({
+        runLog,
+        base,
+        startedAt: Date.now(),
+        describeCheckpoint: async () => null,
+        errorMessage: (error) => String(error),
+        process: crashing,
+        onFailure: () => { told.push(runLog.records.length); },
+      });
+
+      crashing.emit("uncaughtException", new Error("boom") as never);
+      await flush();
+
+      // Avisa una vez, y solo despues de que el registro que manda a leer existe.
+      expect(told).toEqual([2]);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   test("el teardown quita exactamente los cuatro handlers y ninguno mas", () => {
     const proc = new FakeProcess();
     const runLog = new RecordingRunLogSink();

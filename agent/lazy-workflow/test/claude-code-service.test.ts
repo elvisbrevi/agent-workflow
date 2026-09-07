@@ -57,6 +57,27 @@ const initEvent = (sessionId: string) =>
 const assistantText = (sessionId: string, text: string) =>
   jsonEvent({ type: "assistant", session_id: sessionId, message: { content: [{ type: "text", text }] } });
 
+type SessionEvent = { sessionEvent?: string; sessionId?: string | null };
+
+/** A reporter wired to a run-log double, so a session-lifecycle record (issue #267) is assertable without a real sink. */
+const captureSessionEvents = (): { reporter: Reporter; events: SessionEvent[] } => {
+  const { stream } = captureStream();
+  const events: SessionEvent[] = [];
+  const reporter = createReporter({
+    verbose: false,
+    stream,
+    runLog: {
+      event: (_severity, _message, detail) => {
+        events.push({
+          sessionEvent: detail?.sessionEvent ?? undefined,
+          sessionId: detail?.context?.sessionId ?? null,
+        });
+      },
+    },
+  });
+  return { reporter, events };
+};
+
 const stubProcess = (stdout: string, stderr = "", exitCode = 0) => ({
   stdout: new Blob([stdout]).stream(),
   stderr: new Blob([stderr]).stream(),
@@ -687,4 +708,41 @@ test("el resultado conserva las últimas tres cadenas de pensamiento, en orden",
   const { result } = await new ClaudeCodeService(() => stubProcess(output)).run(standardOptions);
 
   expect(result.reasoning).toEqual(["segunda", "tercera", "cuarta"]);
+});
+
+describe("ClaudeCodeService registro de inicio de sesión", () => {
+  test("session_started lleva el identificador que anuncia el evento init", async () => {
+    const { reporter, events } = captureSessionEvents();
+    const service = new ClaudeCodeService(
+      () => stubProcess([initEvent("ses_init"), assistantText("ses_init", "ok")].join("\n")),
+      reporter,
+    );
+
+    await service.run(standardOptions);
+
+    const started = events.filter((event) => event.sessionEvent === "session_started");
+    expect(started).toHaveLength(1);
+    expect(started[0]?.sessionId).toBe("ses_init");
+  });
+
+  test("una sesión reanudada lleva su identificador aunque el stream no llegue a hablar", async () => {
+    const { reporter, events } = captureSessionEvents();
+    const service = new ClaudeCodeService(() => stubProcess("", "boom", 1), reporter);
+
+    await expect(service.resume("ses_reanudada", "continue")).rejects.toThrow();
+
+    const started = events.find((event) => event.sessionEvent === "session_started");
+    expect(started?.sessionId).toBe("ses_reanudada");
+  });
+
+  test("una sesión que muere antes de nombrarse deja igual su session_started, sin identificador", async () => {
+    const { reporter, events } = captureSessionEvents();
+    const service = new ClaudeCodeService(() => stubProcess("", "boom", 1), reporter);
+
+    await expect(service.run(standardOptions)).rejects.toThrow();
+
+    const started = events.filter((event) => event.sessionEvent === "session_started");
+    expect(started).toHaveLength(1);
+    expect(started[0]?.sessionId).toBeNull();
+  });
 });
