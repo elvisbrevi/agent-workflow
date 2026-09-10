@@ -67,7 +67,7 @@ client syntax or let the client select them when their trigger matches.
 | Implementation | `implement`, `tdd` | A ticket or specification is ready to build |
 | Diagnosis | `diagnose` | A defect needs reproduction and a regression test |
 | Review | `code-review`, `handoff` | Changes need review or session transfer |
-| Utility | `caveman`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, interviewing, running the agent, setup, or skill authoring |
+| Utility | `caveman`, `credentials`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Communication, credentials, interviewing, running the agent, setup, or skill authoring |
 
 Skills with `disable-model-invocation: true` are explicit-only. See each
 `SKILL.md` for its trigger and output contract.
