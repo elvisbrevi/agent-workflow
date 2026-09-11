@@ -4,7 +4,10 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${SKILL_DIR}/scripts/credentials.py"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/credentials-skill.XXXXXX")"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+cleanup_test_root() {
+  rm -rf "$TEST_ROOT"
+}
+trap cleanup_test_root EXIT
 
 mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/keychain"
 cat > "${TEST_ROOT}/bin/security" <<'EOF'
@@ -119,6 +122,38 @@ grep -Fq 'Dynamic or unsupported entries requiring manual review:' "$TEST_ROOT/c
 grep -Fq 'DUPLICATE_API_KEY' "$TEST_ROOT/conflict-preview"
 ! grep -Fq 'first-fixture' "$TEST_ROOT/conflict-preview"
 ! grep -Fq 'second-fixture' "$TEST_ROOT/conflict-preview"
+
+if [[ "$(uname -s)" == "Darwin" && -x /usr/bin/security ]]; then
+  REAL_USER="$(/usr/bin/id -un)"
+  LONG_NAME="CREDENTIALS_LONG_TEST_${$}_API_KEY"
+  LONG_BASHRC="${TEST_ROOT}/long-bashrc"
+  LONG_VALUE="$(printf 'x%.0s' {1..300})"
+  cleanup_long_item() {
+    env PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$REAL_USER" \
+      /usr/bin/security delete-generic-password -a "$REAL_USER" -s "$LONG_NAME" \
+      >/dev/null 2>&1 || true
+    cleanup_test_root
+  }
+  trap cleanup_long_item EXIT
+  : > "$LONG_BASHRC"
+  printf '%s\n' "$LONG_VALUE" | \
+    env PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$REAL_USER" \
+      "$SCRIPT" --bashrc "$LONG_BASHRC" store "$LONG_NAME" --stdin \
+      > "$TEST_ROOT/long-store"
+  retrieved_long_value="$(env PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$REAL_USER" \
+    /usr/bin/security find-generic-password -a "$REAL_USER" -s "$LONG_NAME" -w)"
+  [[ "${#retrieved_long_value}" == "300" ]]
+  [[ "$retrieved_long_value" == "$LONG_VALUE" ]]
+  UPDATED_LONG_VALUE="$(printf 'y%.0s' {1..301})"
+  printf '%s\n' "$UPDATED_LONG_VALUE" | \
+    env PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$REAL_USER" \
+      "$SCRIPT" --bashrc "$LONG_BASHRC" store "$LONG_NAME" --stdin \
+      > "$TEST_ROOT/long-store-update"
+  retrieved_updated_value="$(env PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$REAL_USER" \
+    /usr/bin/security find-generic-password -a "$REAL_USER" -s "$LONG_NAME" -w)"
+  [[ "${#retrieved_updated_value}" == "301" ]]
+  [[ "$retrieved_updated_value" == "$UPDATED_LONG_VALUE" ]]
+fi
 
 /usr/bin/python3 -m py_compile "$SCRIPT"
 printf 'PASS: credentials skill\n'

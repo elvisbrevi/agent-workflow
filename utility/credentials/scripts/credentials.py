@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import getpass
 import os
 import re
@@ -33,6 +34,14 @@ COMMENTED_ASSIGNMENT = re.compile(
 START = "# >>> agent-workflow credentials >>>"
 END = "# <<< agent-workflow credentials <<<"
 KEYCHAIN_IF = "if command -v security >/dev/null 2>&1; then"
+ERR_SEC_ITEM_NOT_FOUND = -25300
+
+
+class KeychainFrameworkError(RuntimeError):
+    def __init__(self, operation: str, status: int):
+        super().__init__(f"{operation} failed with Security.framework status {status}")
+        self.operation = operation
+        self.status = status
 
 
 def is_credential(name: str) -> bool:
@@ -77,7 +86,122 @@ def account() -> str:
     return os.environ.get("USER") or getpass.getuser()
 
 
-def keychain_store(name: str, value: str) -> None:
+def _system_security_command() -> bool:
+    if sys.platform != "darwin":
+        return False
+    return Path(security_command()).resolve() == Path("/usr/bin/security")
+
+
+def _load_keychain_framework():
+    try:
+        security = ctypes.CDLL(
+            "/System/Library/Frameworks/Security.framework/Security"
+        )
+        core_foundation = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+    except OSError as error:
+        raise SystemExit(
+            "Could not load macOS Security.framework for Keychain storage."
+        ) from error
+
+    void_p = ctypes.c_void_p
+    uint32 = ctypes.c_uint32
+    char_p = ctypes.c_char_p
+    security.SecKeychainFindGenericPassword.argtypes = [
+        void_p,
+        uint32,
+        char_p,
+        uint32,
+        char_p,
+        ctypes.POINTER(uint32),
+        ctypes.POINTER(void_p),
+        ctypes.POINTER(void_p),
+    ]
+    security.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+    security.SecKeychainAddGenericPassword.argtypes = [
+        void_p,
+        uint32,
+        char_p,
+        uint32,
+        char_p,
+        uint32,
+        void_p,
+        ctypes.POINTER(void_p),
+    ]
+    security.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+    security.SecKeychainItemModifyAttributesAndData.argtypes = [
+        void_p,
+        void_p,
+        uint32,
+        void_p,
+    ]
+    security.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+    core_foundation.CFRelease.argtypes = [void_p]
+    core_foundation.CFRelease.restype = None
+    return security, core_foundation
+
+
+def _release_keychain_item(core_foundation, item_ref: ctypes.c_void_p) -> None:
+    if item_ref.value:
+        core_foundation.CFRelease(item_ref)
+
+
+def _keychain_store_framework(name: str, value: str) -> None:
+    # Security.framework receives the secret through a memory buffer, never
+    # through argv or security's interactive readpassphrase path.
+    security, core_foundation = _load_keychain_framework()
+    service = name.encode("utf-8")
+    user = account().encode("utf-8")
+    password = value.encode("utf-8")
+    password_buffer = ctypes.create_string_buffer(password)
+    item_ref = ctypes.c_void_p()
+    status = security.SecKeychainFindGenericPassword(
+        None,
+        len(service),
+        service,
+        len(user),
+        user,
+        None,
+        None,
+        ctypes.byref(item_ref),
+    )
+
+    if status == 0:
+        try:
+            status = security.SecKeychainItemModifyAttributesAndData(
+                item_ref,
+                None,
+                len(password),
+                ctypes.cast(password_buffer, ctypes.c_void_p),
+            )
+        finally:
+            _release_keychain_item(core_foundation, item_ref)
+        if status != 0:
+            raise KeychainFrameworkError("updating Keychain item", status)
+        return
+
+    if status != ERR_SEC_ITEM_NOT_FOUND:
+        raise KeychainFrameworkError("finding Keychain item", status)
+
+    status = security.SecKeychainAddGenericPassword(
+        None,
+        len(service),
+        service,
+        len(user),
+        user,
+        len(password),
+        ctypes.cast(password_buffer, ctypes.c_void_p),
+        ctypes.byref(item_ref),
+    )
+    try:
+        if status != 0:
+            raise KeychainFrameworkError("adding Keychain item", status)
+    finally:
+        _release_keychain_item(core_foundation, item_ref)
+
+
+def _keychain_store_cli(name: str, value: str) -> None:
     result = subprocess.run(
         [
             security_command(),
@@ -100,6 +224,16 @@ def keychain_store(name: str, value: str) -> None:
     if result.returncode != 0:
         message = result.stderr.strip() or "unknown Keychain error"
         raise SystemExit(f"Could not store {name} in Keychain: {message}")
+
+
+def keychain_store(name: str, value: str) -> None:
+    if _system_security_command():
+        try:
+            _keychain_store_framework(name, value)
+        except KeychainFrameworkError as error:
+            raise SystemExit(f"Could not store {name} in Keychain: {error}") from error
+        return
+    _keychain_store_cli(name, value)
 
 
 def parse_assignment(line: str):
