@@ -215,6 +215,7 @@ describe("herramientas deterministas como comandos", () => {
       "git-branch-delete": "ticket-branch-cleanup-failure",
       "credentials-list": "deterministic-completion-failure",
       "credentials-get": "deterministic-completion-failure",
+      "credentials-set": "deterministic-completion-failure",
     };
 
     for (const command of DETERMINISTIC_TOOL_COMMANDS) {

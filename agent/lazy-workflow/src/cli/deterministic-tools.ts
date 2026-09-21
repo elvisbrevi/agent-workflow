@@ -12,6 +12,7 @@
  * these commands without `gh`, `az` or `git` on the host.
  */
 
+import { join } from "node:path";
 import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
 import {
   GitHubDeliveryService,
@@ -35,24 +36,37 @@ import {
   defaultSecretsDirectory,
   listCredentials,
   readCredential,
+  storeCredential,
   type CredentialEntry,
   type CredentialValue,
+  type StoredCredential,
 } from "../credentials/credential-store.ts";
+import { refreshChezmoiSource } from "../credentials/chezmoi-source.ts";
+import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
 
 export { isDeterministicToolCommand, type DeterministicToolCommand };
 
-/** The credential reads, injectable so a test drives them without touching the host. */
+/** The credential operations, injectable so a test drives them without touching the host. */
 export interface CredentialTools {
   list(directory: string): Promise<CredentialEntry[]>;
   read(directory: string, name: string): Promise<CredentialValue | null>;
+  /** The value being stored: hidden at a terminal, or the first stdin line with `--stdin`. */
+  readSecret(name: string, fromStdin: boolean): Promise<string>;
+  /** Writes the value and answers where it landed and whether chezmoi re-added it. */
+  store(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential>;
 }
 
-/** The reader a run uses when its boundary does not declare one. */
+/** The boundaries a run uses when its boundary does not declare one. */
 const productionCredentialTools: CredentialTools = {
   list: listCredentials,
   read: readCredential,
+  readSecret: readCredentialSecret,
+  store: async (directory, name, service, value) => {
+    const stored = await storeCredential(directory, name, service, value);
+    return { ...stored, chezmoiSourceUpdated: await refreshChezmoiSource(join(directory, stored.file)) };
+  },
 };
 
 /** The GitHub queue operations a tool command drives. */
@@ -106,8 +120,8 @@ export interface DeterministicToolServices {
   delivery: GitHubDeliveryTools;
   branches: GitBranchTools;
   /**
-   * The credential reads. Optional because only the `credentials-*` commands
-   * reach them: a test that drives another family declares none.
+   * The credential operations. Optional because only the `credentials-*`
+   * commands reach them: a test that drives another family declares none.
    */
   credentials?: CredentialTools;
 }
@@ -351,11 +365,16 @@ async function runGitTool(
  * sessionless command reports them, so the exit code is the whole contract.
  */
 /**
- * The credential reads answer with the operator's own files instead of the JSON
- * its siblings print: `credentials-list` writes one name per line and
+ * The credential commands answer with the operator's own files instead of the
+ * JSON its siblings print: `credentials-list` writes one name per line and
  * `credentials-get` writes the decoded value, because both feed the shell
  * directly. The value only reaches a terminal — a pipe requires `--force`, so an
  * agent capturing output never gets it by accident.
+ *
+ * `credentials-set` is the write of the family. It takes the value from a hidden
+ * prompt — from stdin only when `--stdin` declares it — stores it in its env
+ * file, and answers with where it landed. The value is never printed, so it can
+ * appear in neither a pipe nor a log.
  */
 async function runCredentialsTool(
   command: DeterministicToolCommand,
@@ -370,12 +389,17 @@ async function runCredentialsTool(
     return 0;
   }
   const name = requireText(options.name, "--name <NAME>", command);
-  if (!isTerminal && !options.force) {
-    throw new MissingArgument("credentials-get requiere una terminal o --force para imprimir el valor");
+  if (command === "credentials-get") {
+    if (!isTerminal && !options.force) {
+      throw new MissingArgument("credentials-get requiere una terminal o --force para imprimir el valor");
+    }
+    const found = await credentials.read(directory, name);
+    if (!found) throw new Error(`${name} no esta en ${directory}`);
+    print(found.value);
+    return 0;
   }
-  const found = await credentials.read(directory, name);
-  if (!found) throw new Error(`${name} no esta en ${directory}`);
-  print(found.value);
+  const value = await credentials.readSecret(name, options.stdin);
+  print(JSON.stringify(await credentials.store(directory, name, options.service, value), null, 2));
   return 0;
 }
 

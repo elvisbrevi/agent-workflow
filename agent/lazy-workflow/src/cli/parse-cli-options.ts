@@ -75,10 +75,14 @@ export interface CliOptions {
   logFile: string | null;
   /** Disables the run log outright; rejected together with `--log-file`. */
   noLogFile: boolean;
-  /** The credential `credentials-get` prints; null when the operator omitted it. */
+  /** The credential `credentials-get` prints or `credentials-set` stores; null when the operator omitted it. */
   name: string | null;
+  /** The service env file `credentials-set` writes when no file already declares the name. */
+  service: string | null;
   /** Allows `credentials-get` to print a value outside a terminal; piping is explicit. */
   force: boolean;
+  /** Allows `credentials-set` to read the value from stdin instead of the hidden prompt. */
+  stdin: boolean;
   /** `--off`: apaga el equipo al terminar el run; null cuando el operador no lo pidio. */
   shutdown: ShutdownRequest | null;
 }
@@ -321,7 +325,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       "Entrevista de planificacion (solo plan):",
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
-    .group(["name", "force"], "Credenciales:")
+    .group(["name", "service", "force", "stdin"], "Credenciales:")
     .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
     .group(["off", "off-delay"], "Apagado del equipo:")
     .option("hu", positiveIntegerOption("--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
@@ -383,8 +387,10 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("child", positiveIntegerOption("--child", "Work item hijo."))
     .option("blocker", positiveIntegerOption("--blocker", "Work item que bloquea."))
     .option("blocked", positiveIntegerOption("--blocked", "Work item bloqueado."))
-    .option("name", stringOption("--name", "Nombre de la credencial que credentials-get imprime."))
+    .option("name", stringOption("--name", "Nombre de la credencial que credentials-get imprime o credentials-set guarda."))
+    .option("service", stringOption("--service", "Servicio cuyo archivo .env recibe la credencial; sin el, el archivo que ya la declara u other.env."))
     .option("force", { type: "boolean", default: false, describe: "Permite que credentials-get imprima el valor fuera de una terminal." })
+    .option("stdin", { type: "boolean", default: false, describe: "Lee de la entrada estandar el valor de credentials-set, en vez del prompt oculto; para sesiones no interactivas." })
     .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
     .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
     .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
@@ -537,6 +543,15 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     throw new Error("--log-file y --no-log-file son mutuamente excluyentes");
   }
 
+  // A credential flag that only the write consults is a typo on any other
+  // command, and catching it here costs nothing: `--service` names the file only
+  // `credentials-set` may create, and `--stdin` the source only it may read.
+  if (command !== "credentials-set") {
+    for (const flag of ["--service", "--stdin"]) {
+      if (flagSupplied(rawArgs, flag)) throw new Error(`${flag} solo aplica a credentials-set`);
+    }
+  }
+
   return {
     command,
     cli,
@@ -591,7 +606,9 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     logFile,
     noLogFile,
     name: asString("name"),
+    service: asString("service"),
     force: parsed["force"] === true,
+    stdin: parsed["stdin"] === true,
     shutdown: readShutdown(parsed, rawArgs, asNumber, env),
   };
 }

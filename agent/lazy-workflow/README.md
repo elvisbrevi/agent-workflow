@@ -170,6 +170,8 @@ lazy-workflow git-branch-delete --branch issue/263 --base-branch main --commit <
 # The operator's own credentials, read from ~/.config/secrets/*.env
 lazy-workflow credentials-list
 lazy-workflow credentials-get --name OPENAI_API_KEY
+# Store or rotate one: the value is prompted, never a flag
+lazy-workflow credentials-set --name OPENAI_API_KEY
 ```
 
 ### Choosing the CLI, the model and the effort
@@ -387,12 +389,20 @@ workflow stays the only thing a run has to trust.
 | Azure | `hu-children-info`, `hu-state-set`, `hu-branch-ensure`, `ticket-type-info`, `ticket-pr-create`, `ticket-branch-push`, `ticket-branch-checkout`, `ticket-session-verify` |
 | GitHub | `github-auth-info`, `github-repo-info`, `github-issue-list`, `github-issue-select`, `github-issue-info`, `github-issue-claim`, `github-issue-release`, `github-issue-close`, `github-branch-prepare`, `github-branch-checkout`, `github-branch-verify`, `github-branch-cleanup`, `github-session-verify`, `github-commit-push`, `github-pr-create`, `github-pr-merge` |
 | git | `git-branch-delete` |
-| credentials | `credentials-list`, `credentials-get` |
+| credentials | `credentials-list`, `credentials-get`, `credentials-set` |
 
 `credentials-list` and `credentials-get` are the exception to the JSON answer:
 they read the operator's encrypted `~/.config/secrets/*.env` files and write one
 name per line or the decoded value, so they feed the shell directly.
 `credentials-get` prints only to a terminal unless `--force` declares the pipe.
+
+`credentials-set` stores or rotates one credential. The value comes from a
+hidden prompt — or from the first line of the standard input when `--stdin`
+declares a pipe, for a session that is not interactive — and never from a flag,
+so it stays out of `ps` and the shell history. It writes the declaring file, or
+`--service <name>.env`, or `other.env`, with 0600 permissions; re-adds it to the
+encrypted chezmoi source when chezmoi manages that file; and answers with the
+name, the file and whether the source was updated — never the value.
 
 Beside them sit the Azure work-item commands the planning and delivery paths
 use: `hu-info`, `hu-branch-info`, `hu-branch-set`, `ticket-info`,
