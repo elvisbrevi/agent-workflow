@@ -41,7 +41,7 @@ import {
   type CredentialValue,
   type StoredCredential,
 } from "../credentials/credential-store.ts";
-import { refreshChezmoiSource } from "../credentials/chezmoi-source.ts";
+import { publishChezmoiSource } from "../credentials/chezmoi-source.ts";
 import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
@@ -54,7 +54,7 @@ export interface CredentialTools {
   read(directory: string, name: string): Promise<CredentialValue | null>;
   /** The value being stored: hidden at a terminal, or the first stdin line with `--stdin`. */
   readSecret(name: string, fromStdin: boolean): Promise<string>;
-  /** Writes the value and answers where it landed and whether chezmoi re-added it. */
+  /** Writes the value and answers where it landed and how far its publication got. */
   store(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential>;
 }
 
@@ -65,7 +65,7 @@ const productionCredentialTools: CredentialTools = {
   readSecret: readCredentialSecret,
   store: async (directory, name, service, value) => {
     const stored = await storeCredential(directory, name, service, value);
-    return { ...stored, chezmoiSourceUpdated: await refreshChezmoiSource(join(directory, stored.file)) };
+    return { ...stored, chezmoiSource: await publishChezmoiSource(join(directory, stored.file), stored.name) };
   },
 };
 

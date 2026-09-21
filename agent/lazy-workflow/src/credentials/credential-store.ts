@@ -12,6 +12,7 @@
 import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import type { ChezmoiPublication } from "./chezmoi-source.ts";
 
 export interface CredentialEntry {
   name: string;
@@ -22,9 +23,9 @@ export interface CredentialValue extends CredentialEntry {
   value: string;
 }
 
-/** A stored credential plus whether the encrypted chezmoi source was refreshed. */
+/** A stored credential plus how far the encrypted chezmoi publication got. */
 export interface StoredCredential extends CredentialEntry {
-  chezmoiSourceUpdated: boolean;
+  chezmoiSource: ChezmoiPublication;
 }
 
 const ASSIGNMENT = /^(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;

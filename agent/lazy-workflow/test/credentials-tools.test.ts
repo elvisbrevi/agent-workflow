@@ -192,7 +192,7 @@ describe("credentials como comandos", () => {
       },
       store: async (_directory, name, service, value) => {
         storeCalls.push({ name, service, value });
-        return { name, file: "alpha.env", chezmoiSourceUpdated: true };
+        return { name, file: "alpha.env", chezmoiSource: "published" };
       },
     });
 
@@ -214,7 +214,7 @@ describe("credentials como comandos", () => {
     expect(JSON.parse(printed.join("\n"))).toEqual({
       name: "ALPHA_API_KEY",
       file: "alpha.env",
-      chezmoiSourceUpdated: true,
+      chezmoiSource: "published",
     });
   });
 
@@ -229,7 +229,7 @@ describe("credentials como comandos", () => {
       },
       store: async (_directory, name, service, value) => {
         storeCalls.push({ name, service, value });
-        return { name, file: "deepseek.env", chezmoiSourceUpdated: false };
+        return { name, file: "deepseek.env", chezmoiSource: "unmanaged" };
       },
     });
 

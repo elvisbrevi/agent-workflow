@@ -400,9 +400,11 @@ name per line or the decoded value, so they feed the shell directly.
 hidden prompt — or from the first line of the standard input when `--stdin`
 declares a pipe, for a session that is not interactive — and never from a flag,
 so it stays out of `ps` and the shell history. It writes the declaring file, or
-`--service <name>.env`, or `other.env`, with 0600 permissions; re-adds it to the
-encrypted chezmoi source when chezmoi manages that file; and answers with the
-name, the file and whether the source was updated — never the value.
+`--service <name>.env`, or `other.env`, with 0600 permissions; and when chezmoi
+manages that file it also publishes it: re-adds it to the encrypted source,
+commits only that file to the private dotfiles repository and pushes. It answers
+with the name, the file and how far the publication got — `published`,
+`committed`, `unmanaged` or `failed` — never the value.
 
 Beside them sit the Azure work-item commands the planning and delivery paths
 use: `hu-info`, `hu-branch-info`, `hu-branch-set`, `ticket-info`,
