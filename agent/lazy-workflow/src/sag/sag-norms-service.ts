@@ -1,6 +1,24 @@
 import { resolve } from "node:path";
 
-export const CANONICAL_SAG_REPOSITORY_URL = "https://dev.azure.com/example-org/example-project/_git/sag-norms";
+/**
+ * El repositorio remoto donde viven las normas SAG.
+ *
+ * La URL no vive en el codigo publicado: cada operador declara la suya en
+ * `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`. Un run `--normas-sag` que no la declara
+ * falla antes de abrir sesion, en vez de leer normas de un repositorio ajeno.
+ */
+export const SAG_NORMS_REPOSITORY_ENV = "LAZY_WORKFLOW_SAG_NORMS_REPOSITORY";
+
+export function sagNormsRepository(env: NodeJS.ProcessEnv = process.env): string {
+  const repository = env[SAG_NORMS_REPOSITORY_ENV]?.trim();
+  if (!repository) {
+    throw new Error(
+      `Falta ${SAG_NORMS_REPOSITORY_ENV}: exporta la URL del repositorio remoto de normas SAG, ` +
+      "por ejemplo https://dev.azure.com/<organizacion>/<proyecto>/_git/<repositorio>.",
+    );
+  }
+  return repository.replace(/\/+$/, "");
+}
 
 const COMPONENTS = ["api", "bff", "nextjs"] as const;
 const COMPONENT_PATHS: Record<SagComponent, readonly [string, string]> = {
@@ -61,7 +79,7 @@ export class SagNormsService {
     const componentPaths = COMPONENT_PATHS[component];
     return {
       phase: "planning",
-      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      sourceRepository: sagNormsRepository(),
       component,
       paths: [
         NORMATIVE_PATHS.common,
@@ -80,7 +98,7 @@ export class SagNormsService {
     const componentPaths = COMPONENT_PATHS[component];
     return {
       phase: "coding",
-      sourceRepository: CANONICAL_SAG_REPOSITORY_URL,
+      sourceRepository: sagNormsRepository(),
       component,
       paths: [
         NORMATIVE_PATHS.common,

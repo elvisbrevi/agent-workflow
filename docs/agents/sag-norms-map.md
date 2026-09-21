@@ -6,11 +6,10 @@ This map defines which remote SAG sources a lazy-workflow command consults. It
 is a retrieval map, not a copy of the norms and not proof that an external SAG
 system complies with them.
 
-Canonical repository:
-[`sag-norms`](https://dev.azure.com/example-org/example-project/_git/sag-norms)
-on `master`. Every run must resolve and report the commit used. Links below use
-`version=GBmaster` for current content; stable rule IDs, not line numbers, are
-the retrieval anchors.
+Canonical repository: the remote repository named by
+`LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`, on `master`. Every run must resolve and
+report the commit used. Links below use `version=GBmaster` for current content;
+stable rule IDs, not line numbers, are the retrieval anchors.
 
 ## Source authority
 
@@ -74,8 +73,8 @@ norms.
 
 ## Normative sources
 
-Base URL:
-`https://dev.azure.com/example-org/example-project/_git/sag-norms?path=<PATH>&version=GBmaster`
+Base URL: `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`, with
+`?path=<PATH>&version=GBmaster` appended.
 
 | Rules | Path | Base applicability |
 |---|---|---|

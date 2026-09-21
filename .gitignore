@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Dependencies
+node_modules/
+
+# Local agent settings
+.claude/settings.local.json

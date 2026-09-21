@@ -71,7 +71,7 @@ test("hu-branch-set valida la rama remota, crea el Branch ArtifactLink y verific
     "rest",
     "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
     "--method", "patch",
-    "--uri", "https://dev.azure.com/example-org/project-id/_apis/wit/workitems/125?api-version=7.1",
+    "--uri", "https://dev.azure.com/org/project-id/_apis/wit/workitems/125?api-version=7.1",
     "--headers", "Content-Type=application/json-patch+json",
     "--output", "json",
   ]));

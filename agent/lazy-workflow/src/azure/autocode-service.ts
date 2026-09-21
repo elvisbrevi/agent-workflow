@@ -9,13 +9,13 @@ import {
   type IntegratedPullRequest,
   type AzurePullRequestTarget,
 } from "./ticket-info-service.ts";
+import { azureOrganization } from "./azure-organization.ts";
 
 interface InfrastructurePublication {
   specification: number;
   tickets: number[];
 }
 
-const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const WORK_ITEM_API_VERSION = "7.1";
 /**
@@ -227,7 +227,7 @@ const positiveNumberField = (item: WorkItem, name: string): boolean => {
 
 async function show(id: number, expandRelations: boolean, az: AzRunner): Promise<WorkItem> {
   const args = [
-    "boards", "work-item", "show", "--id", `${id}`, "--organization", ORGANIZATION,
+    "boards", "work-item", "show", "--id", `${id}`, "--organization", azureOrganization(),
     ...(expandRelations ? ["--expand", "relations"] : []),
     "--output", "json",
   ];
@@ -322,6 +322,11 @@ export class AzureAutocodeService implements AutocodeAzureService {
     this.ticketInfoService = new AzureTicketInfoService(az, git);
   }
 
+  /** La organizacion se resuelve en cada llamada: una corrida sin la variable falla con su nombre, no con una URL ajena. */
+  private get organization(): string {
+    return azureOrganization();
+  }
+
   async getHuInfo(hu: number): Promise<HuInfo> {
     const item = await show(hu, false, this.az);
     return new HuInfo({
@@ -350,13 +355,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
       const output = await this.az([
         "boards", "work-item", "create", "--type", "Task", "--title", title,
         "--fields", `System.Description=${body}`,
-        "--organization", ORGANIZATION, "--project", parent.project!, "--output", "json",
+        "--organization", this.organization, "--project", parent.project!, "--output", "json",
       ]);
       const id = createdWorkItemId(output);
       await this.az([
         "boards", "work-item", "relation", "add", "--id", `${id}`,
         "--relation-type", "parent", "--target-id", `${hu}`,
-        "--organization", ORGANIZATION, "--output", "json",
+        "--organization", this.organization, "--output", "json",
       ]);
       const verified = await show(id, true, this.az);
       if (!verified.relations?.some(({ rel, url }) => rel === "System.LinkTypes.Hierarchy-Reverse" && relationId(url) === hu)) {
@@ -504,7 +509,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       throw new Error(`El origen Azure pertenece al proyecto ${origin.project}, no al proyecto ${projectName}`);
     }
     const repositoryOutput = await this.az([
-      "repos", "show", "--organization", ORGANIZATION,
+      "repos", "show", "--organization", this.organization,
       "--project", projectName, "--repository", origin.repository, "--output", "json",
     ]);
     const repository = JSON.parse(repositoryOutput) as AzureRepository;
@@ -577,7 +582,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE,
       "--method", "patch",
-      "--uri", `${ORGANIZATION}/${repository.project.id}/_apis/wit/workitems/${hu}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--uri", `${this.organization}/${repository.project.id}/_apis/wit/workitems/${hu}?api-version=${WORK_ITEM_API_VERSION}`,
       "--headers", "Content-Type=application/json-patch+json",
       "--body", patchBody,
       "--output", "json",
@@ -634,7 +639,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       throw new Error(`El origen Azure pertenece al proyecto ${origin.project}, no al proyecto ${projectName}`);
     }
     const repositoryOutput = await this.az([
-      "repos", "show", "--organization", ORGANIZATION,
+      "repos", "show", "--organization", this.organization,
       "--project", projectName, "--repository", origin.repository, "--output", "json",
     ]);
     const repository = JSON.parse(repositoryOutput) as AzureRepository;
@@ -697,7 +702,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       await this.az([
         "rest", "--resource", AZURE_DEVOPS_RESOURCE,
         "--method", "patch",
-        "--uri", `${ORGANIZATION}/${repository.project.id}/_apis/wit/workitems/${ticket}?api-version=${WORK_ITEM_API_VERSION}`,
+        "--uri", `${this.organization}/${repository.project.id}/_apis/wit/workitems/${ticket}?api-version=${WORK_ITEM_API_VERSION}`,
         "--headers", "Content-Type=application/json-patch+json",
         "--body", JSON.stringify(patch),
         "--output", "json",
@@ -1022,7 +1027,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
   private async resolveRepositoryIdentity(repository: AzureWorkspaceRepositoryInput): Promise<AzureWorkspaceRepositoryIdentity> {
     const origin = parseAzureOrigin(await this.git(["remote", "get-url", "origin"], repository.path));
     const repositoryOutput = await this.az([
-      "repos", "show", "--organization", ORGANIZATION,
+      "repos", "show", "--organization", this.organization,
       "--project", origin.project, "--repository", origin.repository, "--output", "json",
     ]);
     const azure = JSON.parse(repositoryOutput) as AzureRepository;
@@ -1177,7 +1182,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE,
       "--method", "patch",
-      "--uri", `${ORGANIZATION}/${options.identity.projectId}/_apis/wit/workitems/${options.hu}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--uri", `${this.organization}/${options.identity.projectId}/_apis/wit/workitems/${options.hu}?api-version=${WORK_ITEM_API_VERSION}`,
       "--headers", "Content-Type=application/json-patch+json",
       "--body", patchBody,
       "--output", "json",
@@ -1208,7 +1213,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE,
       "--method", "patch",
-      "--uri", `${ORGANIZATION}/${options.identity.projectId}/_apis/wit/workitems/${options.ticket}?api-version=${WORK_ITEM_API_VERSION}`,
+      "--uri", `${this.organization}/${options.identity.projectId}/_apis/wit/workitems/${options.ticket}?api-version=${WORK_ITEM_API_VERSION}`,
       "--headers", "Content-Type=application/json-patch+json",
       "--body", patchBody,
       "--output", "json",
@@ -1359,7 +1364,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
 
   private async getCompletedPullRequest(context: AutocodeContext): Promise<CompletedPullRequest | null> {
     const output = await this.az([
-      "repos", "pr", "list", "--organization", ORGANIZATION,
+      "repos", "pr", "list", "--organization", this.organization,
       ...(context.project ? ["--project", context.project] : []),
       "--status", "completed", "--target-branch", context.integrationBranch,
       "--query", `[?contains(sourceRefName, '${context.ticket.id}')].{status:status,mergeStatus:mergeStatus,target:targetRefName,source:sourceRefName,id:pullRequestId,projectId:repository.project.id,repositoryId:repository.id,mergeCommit:lastMergeCommit.commitId}`,
@@ -1392,7 +1397,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     const output = await this.az([
       "repos", "pr", "work-item", "list",
       "--id", `${pullRequest}`,
-      "--organization", ORGANIZATION,
+      "--organization", this.organization,
       "--query", "[].id",
       "--output", "json",
     ]);

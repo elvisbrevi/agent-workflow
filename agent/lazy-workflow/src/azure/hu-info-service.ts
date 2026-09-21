@@ -1,8 +1,8 @@
 import { $ } from "bun";
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
+import { azureOrganization } from "./azure-organization.ts";
 
-const AZURE_ORGANIZATION = "https://dev.azure.com/example-org";
 const HU_QUERY = `{
   id: id,
   title: fields."System.Title",
@@ -24,7 +24,7 @@ export class HuInfoService {
     const output = await $`
       az boards work-item show \
       --id ${hu} \
-      --organization ${AZURE_ORGANIZATION} \
+      --organization ${azureOrganization()} \
       --query ${HU_QUERY} \
       --output json
     `.text();

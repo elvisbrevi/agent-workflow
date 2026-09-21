@@ -310,7 +310,10 @@ them and none is asked to.
 
 ## Azure HU workflows
 
-With `--hu`, both commands work an Azure DevOps User Story.
+With `--hu`, both commands work an Azure DevOps User Story. Every `az` call
+resolves the organization from `LAZY_WORKFLOW_AZURE_ORGANIZATION`
+(`https://dev.azure.com/<organization>`); a run without it fails before reaching
+Azure instead of naming one.
 
 `plan --hu` reads the HU, opens one session that slices it, and publishes the
 result the way GitHub does: work items created in dependency order, parent links
@@ -464,9 +467,11 @@ are the only credential.
 
 `--normas-sag` reads `.sag/config.json` from the working directory, takes its
 `tipo` — `api`, `bff` or `nextjs` — and hands the session the normative file
-paths that follow from it, in the canonical norms repository. The session reads
-the files itself. A run that declares the flag and cannot resolve the norms
-stops before opening a session.
+paths that follow from it, in the remote repository named by
+`LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`. The session reads the files itself. A run
+that declares the flag and cannot resolve the norms — missing `.sag/config.json`
+or an unset `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY` — stops before opening a
+session.
 
 ## Reporter and verbosity
 

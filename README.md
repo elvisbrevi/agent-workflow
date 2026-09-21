@@ -187,12 +187,14 @@ altogether: with that variable set, `--off` takes no value. The details are in
 [Unattended shutdown](agent/lazy-workflow/README.md#unattended-shutdown).
 
 Add `--normas-sag` to `plan` or `code` to load phase-appropriate norms from the
-remote SAG `master` branch. The selected repository must contain an explicit
-`.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The prompt
-records the resolved commit, source URLs, stable rule IDs, selection reasons,
-and applicability facts that need a decision. Coding sessions receive common,
-component, and explicit artifact/capability norms. Missing or unreadable SAG
-context stops before OpenCode; plain `plan` and `code` never read SAG sources.
+remote SAG `master` branch, whose URL comes from
+`LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`. The selected repository must contain an
+explicit `.sag/config.json` with `tipo` set to `api`, `bff`, or `nextjs`. The
+prompt records the resolved commit, source URLs, stable rule IDs, selection
+reasons, and applicability facts that need a decision. Coding sessions receive
+common, component, and explicit artifact/capability norms. Missing or unreadable
+SAG context stops before OpenCode; plain `plan` and `code` never read SAG
+sources.
 
 `deploy-sag` always loads delivery norms and requires exactly one explicit
 `--issue` or `--hu`. It reads an explicit `deployment` route from
@@ -225,7 +227,9 @@ or focused description, state, effort, attachment, and evidence commands with
 `--ticket`. Branch, pull-request, and completion reads also require `--hu` so
 the direct delivery relationship and integration branch are validated.
 
-To drain the HU's direct delivery tickets one at a time:
+To drain the HU's direct delivery tickets one at a time (Azure commands read the
+organization from `LAZY_WORKFLOW_AZURE_ORGANIZATION`,
+`https://dev.azure.com/<organization>`):
 
 ```bash
 bun run main.ts code --hu 23438 --base-branch main --working-directory /path/to/repository

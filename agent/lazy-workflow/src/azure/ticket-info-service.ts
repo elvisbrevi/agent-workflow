@@ -2,8 +2,8 @@ import { $ } from "bun";
 import { resolve } from "node:path";
 import { realpath } from "node:fs/promises";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { azureOrganization } from "./azure-organization.ts";
 
-const ORGANIZATION = "https://dev.azure.com/example-org";
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
 
@@ -517,6 +517,11 @@ export class AzureTicketInfoService {
     private readonly sleep: (milliseconds: number) => Promise<unknown> = Bun.sleep,
   ) {}
 
+  /** La organizacion se resuelve en cada llamada: una corrida sin la variable falla con su nombre, no con una URL ajena. */
+  private get organization(): string {
+    return azureOrganization();
+  }
+
   async getTicket(ticket: number): Promise<TicketSummary> {
     positiveId(ticket, "El ticket");
     return this.toSummary(await this.readWorkItem(ticket));
@@ -950,7 +955,7 @@ export class AzureTicketInfoService {
         path: "/relations/-",
         value: {
           rel: "System.LinkTypes.Hierarchy-Reverse",
-          url: `${ORGANIZATION}/_apis/wit/workItems/${input.hu}`,
+          url: `${this.organization}/_apis/wit/workItems/${input.hu}`,
         },
       },
     ];
@@ -1254,7 +1259,7 @@ export class AzureTicketInfoService {
    * rather than letting Azure reject the whole patch with a rule error.
    */
   private async creationDefaults(project: string, type: string, estimate?: number): Promise<Array<[string, unknown]>> {
-    const uri = `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/wit/workitemtypes/${encodeURIComponent(type)}/fields?$expand=all&api-version=${API_VERSION}`;
+    const uri = `${this.organization}/${encodeURIComponent(project)}/_apis/wit/workitemtypes/${encodeURIComponent(type)}/fields?$expand=all&api-version=${API_VERSION}`;
     const payload = JSON.parse(await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
     ])) as { value?: Array<{ referenceName?: string; allowedValues?: unknown }> };
@@ -1282,7 +1287,7 @@ export class AzureTicketInfoService {
     try {
       const payload = JSON.parse(await this.az([
         "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get",
-        "--uri", `${ORGANIZATION}/_apis/wit/fields/${encodeURIComponent(name)}?api-version=${API_VERSION}`,
+        "--uri", `${this.organization}/_apis/wit/fields/${encodeURIComponent(name)}?api-version=${API_VERSION}`,
         "--output", "json",
       ])) as { referenceName?: string };
       return payload.referenceName === name;
@@ -1319,7 +1324,7 @@ export class AzureTicketInfoService {
 
   private async readPullRequest(id: number, project?: string, repository?: string): Promise<TicketPullRequest> {
     const args = [
-      "repos", "pr", "show", "--id", `${id}`, "--organization", ORGANIZATION,
+      "repos", "pr", "show", "--id", `${id}`, "--organization", this.organization,
       ...(project ? ["--project", project] : []),
       ...(repository ? ["--repository", repository] : []),
       "--output", "json",
@@ -1328,8 +1333,8 @@ export class AzureTicketInfoService {
       return this.toPullRequest(JSON.parse(await this.az(args)));
     } catch (error) {
       const uri = repository
-        ? `${ORGANIZATION}/_apis/git/repositories/${encodeURIComponent(repository)}/pullRequests/${id}?api-version=${API_VERSION}`
-        : `${ORGANIZATION}/_apis/git/pullrequests/${id}?api-version=${API_VERSION}`;
+        ? `${this.organization}/_apis/git/repositories/${encodeURIComponent(repository)}/pullRequests/${id}?api-version=${API_VERSION}`
+        : `${this.organization}/_apis/git/pullrequests/${id}?api-version=${API_VERSION}`;
       try {
         return this.toPullRequest(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
@@ -1350,7 +1355,7 @@ export class AzureTicketInfoService {
   ): Promise<TicketPullRequest> {
     try {
       return this.toPullRequest(JSON.parse(await this.az([
-        "repos", "pr", "create", "--organization", ORGANIZATION,
+        "repos", "pr", "create", "--organization", this.organization,
         "--project", project, "--repository", repository,
         "--source-branch", source, "--target-branch", target,
         "--title", `Deliver ticket ${ticket}`,
@@ -1365,7 +1370,7 @@ export class AzureTicketInfoService {
       try {
         return this.toPullRequest(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post",
-          "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?api-version=${API_VERSION}`,
+          "--uri", `${this.organization}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?api-version=${API_VERSION}`,
           "--headers", "Content-Type=application/json",
           "--body", JSON.stringify({ sourceRefName: source, targetRefName: target, title: `Deliver ticket ${ticket}`, description: `Coordinator-owned delivery for ticket ${ticket} in HU ${hu}` }),
           "--output", "json",
@@ -1391,7 +1396,7 @@ export class AzureTicketInfoService {
     try {
       await this.az([
         "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
-        "--uri", `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
+        "--uri", `${this.organization}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests/${id}?api-version=${API_VERSION}`,
         "--headers", "Content-Type=application/json",
         "--body", JSON.stringify({
           status: "completed",
@@ -1403,7 +1408,7 @@ export class AzureTicketInfoService {
     } catch (error) {
       try {
         await this.az([
-          "repos", "pr", "update", "--id", `${id}`, "--organization", ORGANIZATION,
+          "repos", "pr", "update", "--id", `${id}`, "--organization", this.organization,
           "--project", project, "--repository", repository, "--status", "completed",
           "--delete-source-branch", "true", "--output", "json",
         ]);
@@ -1492,7 +1497,7 @@ export class AzureTicketInfoService {
     try {
       await this.az([
         "repos", "pr", "work-item", "add", "--id", `${id}`, "--work-items", `${ticket}`,
-        "--organization", ORGANIZATION,
+        "--organization", this.organization,
         ...(project ? ["--project", project] : []),
         ...(repository ? ["--repository", repository] : []),
         "--output", "json",
@@ -1524,7 +1529,7 @@ export class AzureTicketInfoService {
   }
 
   private async createWorkItem(project: string, type: string, patch: unknown[]): Promise<number> {
-    const uri = `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/wit/workitems/$${type}?api-version=${API_VERSION}`;
+    const uri = `${this.organization}/${encodeURIComponent(project)}/_apis/wit/workitems/$${type}?api-version=${API_VERSION}`;
     const created = JSON.parse(await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "post", "--uri", uri,
       "--headers", "Content-Type=application/json-patch+json", "--body", JSON.stringify(patch), "--output", "json",
@@ -1542,7 +1547,7 @@ export class AzureTicketInfoService {
       {
         op: "add",
         path: "/relations/-",
-        value: { rel, url: `${ORGANIZATION}/_apis/wit/workItems/${targetId}` },
+        value: { rel, url: `${this.organization}/_apis/wit/workItems/${targetId}` },
       },
     ], (candidate) => (candidate.relations ?? []).some(
       (relation) => relation.rel === rel && relationId(relation.url) === targetId,
@@ -1552,7 +1557,7 @@ export class AzureTicketInfoService {
   private async patchWorkItem(item: WorkItem, patch: unknown[]): Promise<void> {
     await this.az([
       "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "patch",
-      "--uri", `${ORGANIZATION}/_apis/wit/workitems/${item.id}?api-version=${API_VERSION}`,
+      "--uri", `${this.organization}/_apis/wit/workitems/${item.id}?api-version=${API_VERSION}`,
       "--headers", "Content-Type=application/json-patch+json", "--body", JSON.stringify(patch), "--output", "json",
     ]);
   }
@@ -1576,11 +1581,11 @@ export class AzureTicketInfoService {
   }
 
   private async readWorkItem(id: number): Promise<WorkItem> {
-    const args = ["boards", "work-item", "show", "--id", `${id}`, "--organization", ORGANIZATION, "--expand", "relations", "--output", "json"];
+    const args = ["boards", "work-item", "show", "--id", `${id}`, "--organization", this.organization, "--expand", "relations", "--output", "json"];
     try {
       return this.validWorkItem(JSON.parse(await this.az(args)), id);
     } catch (error) {
-      const uri = `${ORGANIZATION}/_apis/wit/workitems/${id}?$expand=relations&api-version=${API_VERSION}`;
+      const uri = `${this.organization}/_apis/wit/workitems/${id}?$expand=relations&api-version=${API_VERSION}`;
       try {
         return this.validWorkItem(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
@@ -1616,7 +1621,7 @@ export class AzureTicketInfoService {
   ): Promise<TicketPullRequest[]> {
     if (!project) return [];
     const args = [
-      "repos", "pr", "list", "--organization", ORGANIZATION, "--project", project,
+      "repos", "pr", "list", "--organization", this.organization, "--project", project,
       ...(repository ? ["--repository", repository] : []),
       "--status", status, "--output", "json",
     ];
@@ -1625,8 +1630,8 @@ export class AzureTicketInfoService {
       payload = this.pullRequestList(JSON.parse(await this.az(args)));
     } catch (error) {
       const uri = repository
-        ? `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
-        : `${ORGANIZATION}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
+        ? `${this.organization}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repository)}/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`
+        : `${this.organization}/${encodeURIComponent(project)}/_apis/git/pullrequests?searchCriteria.status=${status}&api-version=${API_VERSION}`;
       try {
         payload = this.pullRequestList(JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
@@ -1705,7 +1710,7 @@ export class AzureTicketInfoService {
   private async isPullRequestLinked(pullRequest: TicketPullRequest, ticket: number): Promise<boolean> {
     try {
       const output = await this.az([
-        "repos", "pr", "work-item", "list", "--id", `${pullRequest.id}`, "--organization", ORGANIZATION, "--query", "[].id", "--output", "json",
+        "repos", "pr", "work-item", "list", "--id", `${pullRequest.id}`, "--organization", this.organization, "--query", "[].id", "--output", "json",
         ...(pullRequest.projectId ? ["--project", pullRequest.projectId] : []),
         ...(pullRequest.repositoryId ? ["--repository", pullRequest.repositoryId] : []),
       ]);
@@ -1713,7 +1718,7 @@ export class AzureTicketInfoService {
     } catch (error) {
       if (!pullRequest.repositoryId) throw commandError(error);
       try {
-        const uri = `${ORGANIZATION}/_apis/git/repositories/${encodeURIComponent(pullRequest.repositoryId)}/pullRequests/${pullRequest.id}/workitems?api-version=${API_VERSION}`;
+        const uri = `${this.organization}/_apis/git/repositories/${encodeURIComponent(pullRequest.repositoryId)}/pullRequests/${pullRequest.id}/workitems?api-version=${API_VERSION}`;
         const payload = JSON.parse(await this.az([
           "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get", "--uri", uri, "--output", "json",
         ]));

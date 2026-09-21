@@ -3,7 +3,7 @@ import { unlink } from "node:fs/promises";
 import { AzureTicketInfoService } from "../src/azure/ticket-info-service.ts";
 
 const HU = 23438;
-const ORG = "https://dev.azure.com/example-org";
+const ORG = "https://dev.azure.com/org";
 
 interface Item {
   id: number;

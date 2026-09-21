@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { SagNormsService } from "../src/sag/sag-norms-service.ts";
 
+process.env["LAZY_WORKFLOW_SAG_NORMS_REPOSITORY"] ??= "https://dev.azure.com/org/Team/_git/norms";
+
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-sag-${crypto.randomUUID()}`;
 
 async function config(component = "api", facts: Record<string, unknown> = {}): Promise<string> {
@@ -18,7 +20,7 @@ test("plan returns normative file paths for the component tipo", async () => {
 
     expect(context.phase).toBe("planning");
     expect(context.component).toBe("api");
-    expect(context.sourceRepository).toContain("sag-norms");
+    expect(context.sourceRepository).toBe("https://dev.azure.com/org/Team/_git/norms");
     expect(context.paths).toEqual([
       "/estandares/comunes.md",
       "/estandares/api.md",
