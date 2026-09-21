@@ -1,13 +1,14 @@
 ---
 name: credentials
-description: Finds credentials in ~/.bashrc and macOS Keychain before asking the user, and stores or migrates credentials as Keychain-backed shell variables. Use whenever a coding agent needs, requests, configures, rotates, saves, or encounters a missing credential, token, password, passphrase, API key, secret, or authentication environment variable.
+description: Finds credentials in ~/.config/secrets/*.env (chezmoi + age) and in macOS Keychain before asking the user, and stores or migrates them as encrypted env files. Use whenever a coding agent needs, requests, configures, rotates, saves, or encounters a missing credential, token, password, passphrase, API key, secret, or authentication environment variable.
 ---
 
 # Credentials
 
-Keep credential values in macOS Keychain and keep only Keychain lookups in
-`~/.bashrc`. Never print, log, quote back, or place a credential in a command
-line, generated file, commit, issue, or chat response.
+Credential values live in `~/.config/secrets/<service>.env` (local files with
+0600 permissions), committed to a private chezmoi repository where they are
+encrypted with age. Never print, log, quote back, or place a credential in a
+command line, generated file, commit, issue, or chat response.
 
 Use the bundled helper:
 
@@ -20,54 +21,43 @@ uppercase shell identifiers such as `AZURE_DEVOPS_TOKEN`.
 
 ## Before asking for a credential
 
-1. Run `audit NAME`. It reports only whether `~/.bashrc` references the
-   credential and whether Keychain contains it; it never returns the value.
-2. If both are present, load `~/.bashrc` in the command's shell and retry the
-   operation. Do not ask the user for the credential.
-3. If Keychain has it but `~/.bashrc` does not, explain that the lookup is
-   missing. Add it only when the user asks to save or repair it.
-4. Ask for the credential only after the audit reports it missing.
+1. Run `audit NAME`. It reports which env file holds it and whether macOS
+   Keychain still has a legacy copy; it never returns the value.
+2. If an env file has it, load that file in the command's shell
+   (`. ~/.config/secrets/<file>` or the `load-env <service>` helper) and retry.
+   Do not ask the user for the credential.
+3. Ask for the credential only after the audit reports it missing.
 
 ## Store a requested credential
 
 Only after an explicit user request to save, add, rotate, or repair it, run:
 
 ```bash
-"<skill-directory>/scripts/credentials.py" store NAME
+"<skill-directory>/scripts/credentials.py" store NAME [--service SERVICE]
 ```
 
-The helper reads the value with a hidden prompt, writes or updates the Keychain
-item using account `$USER` and service `NAME`, creates a structurally complete
-backup with credential values redacted, and writes a sorted managed block in
-this form:
+The helper reads the value with a hidden prompt, updates
+`~/.config/secrets/<service>.env` (creating it with 0600 when needed),
+re-adds it to chezmoi so the encrypted source state is updated, and prints how
+to publish the change. Values never appear in the output. Use `--stdin` only
+when a protected interactive session supplies stdin without putting the value
+in command text or logs.
+
+## Migrate a legacy Keychain item
+
+On macOS, credentials that still live only in Keychain can be moved into the
+env-file model without retyping them:
 
 ```bash
-if command -v security >/dev/null 2>&1; then
-  export NAME="$(security find-generic-password -a "$USER" -s "NAME" -w 2>/dev/null)"
-fi
+"<skill-directory>/scripts/credentials.py" migrate NAME [--service SERVICE]
 ```
 
-Use `--stdin` only when a protected interactive session supplies stdin without
-putting the value in command text or logs.
+The helper reads the value from Keychain without printing it.
 
-## Audit and migrate existing entries
+## Rules
 
-Run a read-only audit before changing the file:
-
-```bash
-"<skill-directory>/scripts/credentials.py" audit
-"<skill-directory>/scripts/credentials.py" migrate
-```
-
-The second command previews credential variable names only. After the user
-explicitly asks to organize or migrate them, run:
-
-```bash
-"<skill-directory>/scripts/credentials.py" migrate --apply
-```
-
-The helper moves simple literal values into Keychain, groups and sorts active
-top-level exports, preserves function-local scope, and keeps commented entries
-commented. Review the reported variable names and backup path, then run `audit`
-again. Handle unsupported dynamic shell expressions manually without revealing
-their values.
+- File format is `export NAME=<shell-quoted value>`; one credential per line.
+- The helper validates the name and refuses values that span multiple lines.
+- `~/.bashrc` is never edited: secrets are loaded on demand, not at shell start.
+- To make the change available on another machine, publish it and run
+  `chezmoi update` there; files are decrypted with that machine's age identity.
