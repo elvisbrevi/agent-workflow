@@ -46,10 +46,18 @@ export const GITHUB_TOOL_COMMANDS = [
 /** Repository operations the workflow performs through `git`. */
 export const GIT_TOOL_COMMANDS = ["git-branch-delete"] as const;
 
+/**
+ * The credential reads. They answer from the operator's own encrypted env files
+ * instead of a tracker, so a name the credentials skill stores is visible from
+ * the terminal without opening a session.
+ */
+export const CREDENTIALS_TOOL_COMMANDS = ["credentials-list", "credentials-get"] as const;
+
 export const DETERMINISTIC_TOOL_COMMANDS = [
   ...AZURE_TOOL_COMMANDS,
   ...GITHUB_TOOL_COMMANDS,
   ...GIT_TOOL_COMMANDS,
+  ...CREDENTIALS_TOOL_COMMANDS,
 ] as const;
 
 export type DeterministicToolCommand = typeof DETERMINISTIC_TOOL_COMMANDS[number];
@@ -87,4 +95,6 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lazy-workflow github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lazy-workflow github-pr-merge --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lazy-workflow git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>",
+  "  lazy-workflow credentials-list",
+  "  lazy-workflow credentials-get --name <NAME> [--force]",
 ];

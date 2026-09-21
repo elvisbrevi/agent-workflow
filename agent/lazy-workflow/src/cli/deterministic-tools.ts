@@ -31,10 +31,29 @@ import {
 } from "../github/managed-queue-service.ts";
 import { reportFailure } from "../output/failure-kind.ts";
 import type { AzurePullRequestTarget } from "../azure/autocode-service.ts";
+import {
+  defaultSecretsDirectory,
+  listCredentials,
+  readCredential,
+  type CredentialEntry,
+  type CredentialValue,
+} from "../credentials/credential-store.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
 
 export { isDeterministicToolCommand, type DeterministicToolCommand };
+
+/** The credential reads, injectable so a test drives them without touching the host. */
+export interface CredentialTools {
+  list(directory: string): Promise<CredentialEntry[]>;
+  read(directory: string, name: string): Promise<CredentialValue | null>;
+}
+
+/** The reader a run uses when its boundary does not declare one. */
+const productionCredentialTools: CredentialTools = {
+  list: listCredentials,
+  read: readCredential,
+};
 
 /** The GitHub queue operations a tool command drives. */
 export interface GitHubQueueTools {
@@ -86,6 +105,11 @@ export interface DeterministicToolServices {
   queue: GitHubQueueTools;
   delivery: GitHubDeliveryTools;
   branches: GitBranchTools;
+  /**
+   * The credential reads. Optional because only the `credentials-*` commands
+   * reach them: a test that drives another family declares none.
+   */
+  credentials?: CredentialTools;
 }
 
 /** The concrete adapters, built only when a tool command is actually run. */
@@ -95,6 +119,7 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
     queue: new GitHubManagedQueueService(),
     delivery: new GitHubDeliveryService(),
     branches: new GitTicketBranchCleaner(),
+    credentials: productionCredentialTools,
   };
 }
 
@@ -325,13 +350,46 @@ async function runGitTool(
  * argument and a failed operation are both reported the way every other
  * sessionless command reports them, so the exit code is the whole contract.
  */
+/**
+ * The credential reads answer with the operator's own files instead of the JSON
+ * its siblings print: `credentials-list` writes one name per line and
+ * `credentials-get` writes the decoded value, because both feed the shell
+ * directly. The value only reaches a terminal — a pipe requires `--force`, so an
+ * agent capturing output never gets it by accident.
+ */
+async function runCredentialsTool(
+  command: DeterministicToolCommand,
+  options: CliOptions,
+  credentials: CredentialTools,
+  print: (line: string) => void,
+  isTerminal: boolean,
+): Promise<number> {
+  const directory = defaultSecretsDirectory();
+  if (command === "credentials-list") {
+    for (const entry of await credentials.list(directory)) print(entry.name);
+    return 0;
+  }
+  const name = requireText(options.name, "--name <NAME>", command);
+  if (!isTerminal && !options.force) {
+    throw new MissingArgument("credentials-get requiere una terminal o --force para imprimir el valor");
+  }
+  const found = await credentials.read(directory, name);
+  if (!found) throw new Error(`${name} no esta en ${directory}`);
+  print(found.value);
+  return 0;
+}
+
 export async function runDeterministicTool(
   command: DeterministicToolCommand,
   options: CliOptions,
   services: DeterministicToolServices,
   print: (line: string) => void = console.log,
+  isTerminal: boolean = process.stdout.isTTY === true,
 ): Promise<number> {
   try {
+    if (command.startsWith("credentials-")) {
+      return await runCredentialsTool(command, options, services.credentials ?? productionCredentialTools, print, isTerminal);
+    }
     const result = command.startsWith("github-")
       ? await runGitHubTool(command, options, services)
       : command.startsWith("git-")

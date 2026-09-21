@@ -75,6 +75,10 @@ export interface CliOptions {
   logFile: string | null;
   /** Disables the run log outright; rejected together with `--log-file`. */
   noLogFile: boolean;
+  /** The credential `credentials-get` prints; null when the operator omitted it. */
+  name: string | null;
+  /** Allows `credentials-get` to print a value outside a terminal; piping is explicit. */
+  force: boolean;
   /** `--off`: apaga el equipo al terminar el run; null cuando el operador no lo pidio. */
   shutdown: ShutdownRequest | null;
 }
@@ -317,6 +321,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
       "Entrevista de planificacion (solo plan):",
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
+    .group(["name", "force"], "Credenciales:")
     .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
     .group(["off", "off-delay"], "Apagado del equipo:")
     .option("hu", positiveIntegerOption("--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
@@ -378,6 +383,8 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("child", positiveIntegerOption("--child", "Work item hijo."))
     .option("blocker", positiveIntegerOption("--blocker", "Work item que bloquea."))
     .option("blocked", positiveIntegerOption("--blocked", "Work item bloqueado."))
+    .option("name", stringOption("--name", "Nombre de la credencial que credentials-get imprime."))
+    .option("force", { type: "boolean", default: false, describe: "Permite que credentials-get imprima el valor fuera de una terminal." })
     .option("normas-sag", { type: "boolean", default: false, describe: "Carga las normas SAG del modulo remoto." })
     .option("working-directory", { type: "string", requiresArg: true, default: process.cwd(), describe: "Directorio de trabajo del repositorio objetivo.", coerce: stringCoerce("--working-directory") })
     .option("verbose", { type: "boolean", default: false, describe: "Emite el stream completo de eventos." })
@@ -583,6 +590,8 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     noColor: parsed["color"] === false,
     logFile,
     noLogFile,
+    name: asString("name"),
+    force: parsed["force"] === true,
     shutdown: readShutdown(parsed, rawArgs, asNumber, env),
   };
 }

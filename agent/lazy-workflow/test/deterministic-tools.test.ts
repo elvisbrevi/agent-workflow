@@ -213,6 +213,8 @@ describe("herramientas deterministas como comandos", () => {
       "github-pr-create": "pull-request-failure",
       "github-pr-merge": "pull-request-failure",
       "git-branch-delete": "ticket-branch-cleanup-failure",
+      "credentials-list": "deterministic-completion-failure",
+      "credentials-get": "deterministic-completion-failure",
     };
 
     for (const command of DETERMINISTIC_TOOL_COMMANDS) {
