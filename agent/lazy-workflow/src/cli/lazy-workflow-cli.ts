@@ -70,6 +70,7 @@ import {
 } from "../github/github-workspace-checkpoint.ts";
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
 import { SudoSystemShutdown, type SystemShutdown } from "../system/shutdown-service.ts";
+import { runSelfUpdate, type InstallerRunner } from "../system/self-update.ts";
 import {
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
@@ -507,6 +508,11 @@ export class LazyWorkflowCli {
      * down the machine running the suite.
      */
     private readonly systemShutdown: SystemShutdown = new SudoSystemShutdown(),
+    /**
+     * How `update` reinstalls the tool. Injected like every other boundary, so a
+     * test verifies what the command forwards without running the installer.
+     */
+    private readonly runInstaller: InstallerRunner = runSelfUpdate,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -710,6 +716,14 @@ export class LazyWorkflowCli {
   }
 
   async run(args: string[]): Promise<number> {
+    // `update` maintains the tool, not the work: the installer owns its own
+    // flags and destinations, so everything after the command is forwarded to it
+    // instead of parsed here, and no session or run log is opened. With nothing
+    // declared, the shared install this CLI is normally reached through.
+    if (args[0] === "update") {
+      return this.runInstaller(args.length > 1 ? args.slice(1) : ["--all-global"]);
+    }
+
     const parsed = parseCli(args, this.cliParser);
     if (parsed.kind === "help") {
       const requestedHelp = args.some((arg) => arg === "--help" || arg === "-h");

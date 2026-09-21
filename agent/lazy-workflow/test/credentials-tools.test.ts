@@ -47,6 +47,7 @@ const credentialTools = (overrides: Partial<CredentialTools>): CredentialTools =
   read: unreachable,
   readSecret: unreachable,
   store: unreachable,
+  update: unreachable,
   ...overrides,
 });
 
@@ -277,6 +278,47 @@ describe("credentials como comandos", () => {
   test("--service y --stdin solo aplican a credentials-set", () => {
     expect(() => parseOptions(["credentials-get", "--name", "ALPHA_API_KEY", "--service", "alpha"])).toThrow();
     expect(() => parseOptions(["credentials-list", "--stdin"])).toThrow();
+  });
+
+  test("credentials-update trae los valores publicados sin pedir nombre", async () => {
+    const printed: string[] = [];
+    const updated: string[] = [];
+    const credentials = credentialTools({
+      update: async (directory) => { updated.push(directory); },
+    });
+
+    const options = parseOptions(["credentials-update"]);
+    const code = await runDeterministicTool(
+      "credentials-update",
+      options,
+      servicesWith(credentials),
+      (line) => printed.push(line),
+      false,
+    );
+
+    expect(code).toBe(0);
+    expect(updated).toHaveLength(1);
+    expect(printed).toHaveLength(1);
+    expect(JSON.parse(printed[0]!)).toEqual({ updated: true, directory: updated[0] });
+  });
+
+  test("credentials-update falla ruidosamente cuando el pull o el apply fallan", async () => {
+    const printed: string[] = [];
+    const credentials = credentialTools({
+      update: async () => { throw new Error("no se pudo traer el repositorio de dotfiles"); },
+    });
+
+    const options = parseOptions(["credentials-update"]);
+    const code = await runDeterministicTool(
+      "credentials-update",
+      options,
+      servicesWith(credentials),
+      (line) => printed.push(line),
+      false,
+    );
+
+    expect({ code, printed }).toEqual({ code: 1, printed: [] });
+    expect(messages.length).toBeGreaterThan(0);
   });
 });
 

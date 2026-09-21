@@ -41,7 +41,7 @@ import {
   type CredentialValue,
   type StoredCredential,
 } from "../credentials/credential-store.ts";
-import { publishChezmoiSource } from "../credentials/chezmoi-source.ts";
+import { publishChezmoiSource, updateChezmoiSecrets } from "../credentials/chezmoi-source.ts";
 import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
@@ -56,6 +56,8 @@ export interface CredentialTools {
   readSecret(name: string, fromStdin: boolean): Promise<string>;
   /** Writes the value and answers where it landed and how far its publication got. */
   store(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential>;
+  /** Brings the secrets directory to what the published source declares. */
+  update(directory: string): Promise<void>;
 }
 
 /** The boundaries a run uses when its boundary does not declare one. */
@@ -67,6 +69,7 @@ const productionCredentialTools: CredentialTools = {
     const stored = await storeCredential(directory, name, service, value);
     return { ...stored, chezmoiSource: await publishChezmoiSource(join(directory, stored.file), stored.name) };
   },
+  update: updateChezmoiSecrets,
 };
 
 /** The GitHub queue operations a tool command drives. */
@@ -375,6 +378,10 @@ async function runGitTool(
  * prompt — from stdin only when `--stdin` declares it — stores it in its env
  * file, and answers with where it landed. The value is never printed, so it can
  * appear in neither a pipe nor a log.
+ *
+ * `credentials-update` is the other direction: it fetches what another machine
+ * published and applies only the secrets directory, so this machine's values
+ * become the repository's.
  */
 async function runCredentialsTool(
   command: DeterministicToolCommand,
@@ -386,6 +393,11 @@ async function runCredentialsTool(
   const directory = defaultSecretsDirectory();
   if (command === "credentials-list") {
     for (const entry of await credentials.list(directory)) print(entry.name);
+    return 0;
+  }
+  if (command === "credentials-update") {
+    await credentials.update(directory);
+    print(JSON.stringify({ updated: true, directory }, null, 2));
     return 0;
   }
   const name = requireText(options.name, "--name <NAME>", command);

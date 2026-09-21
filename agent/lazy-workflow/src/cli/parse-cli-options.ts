@@ -129,6 +129,7 @@ const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
 export const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
+  "update",
   "hu-info",
   "hu-branch-info",
   "hu-branch-set",
@@ -698,6 +699,7 @@ function renderHelp(parser: YargsInstance): string {
 
 const COMMAND_FORMS = [
   "Formas de invocacion:",
+  "  lazy-workflow update [opciones del instalador]",
   "  lazy-workflow plan [options]",
   "  lazy-workflow plan --hu <id> [options]",
   "  lazy-workflow code [options]",

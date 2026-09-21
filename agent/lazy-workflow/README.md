@@ -27,6 +27,10 @@ skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,
 `--claude-local`, `--target D`, `--ref REF`, `--uninstall`, `--dry-run` and
 `--force`.
 
+Once installed, `lazy-workflow update` reinstalls it: it runs the repository's
+`install.sh` with the arguments declared after it, and with `--all-global` when
+none is declared.
+
 Every command has a runnable example in [Practical examples](#practical-examples);
 the sections after it explain what each one does.
 
@@ -172,6 +176,17 @@ lazy-workflow credentials-list
 lazy-workflow credentials-get --name OPENAI_API_KEY
 # Store or rotate one: the value is prompted, never a flag
 lazy-workflow credentials-set --name OPENAI_API_KEY
+```
+
+### Updating the tool and the credentials
+
+```bash
+# Reinstall the tool; any argument is forwarded to install.sh
+lazy-workflow update
+lazy-workflow update --codex
+
+# Bring this machine the secrets another machine published
+lazy-workflow credentials-update
 ```
 
 ### Choosing the CLI, the model and the effort
@@ -389,7 +404,7 @@ workflow stays the only thing a run has to trust.
 | Azure | `hu-children-info`, `hu-state-set`, `hu-branch-ensure`, `ticket-type-info`, `ticket-pr-create`, `ticket-branch-push`, `ticket-branch-checkout`, `ticket-session-verify` |
 | GitHub | `github-auth-info`, `github-repo-info`, `github-issue-list`, `github-issue-select`, `github-issue-info`, `github-issue-claim`, `github-issue-release`, `github-issue-close`, `github-branch-prepare`, `github-branch-checkout`, `github-branch-verify`, `github-branch-cleanup`, `github-session-verify`, `github-commit-push`, `github-pr-create`, `github-pr-merge` |
 | git | `git-branch-delete` |
-| credentials | `credentials-list`, `credentials-get`, `credentials-set` |
+| credentials | `credentials-list`, `credentials-get`, `credentials-set`, `credentials-update` |
 
 `credentials-list` and `credentials-get` are the exception to the JSON answer:
 they read the operator's encrypted `~/.config/secrets/*.env` files and write one
@@ -405,6 +420,11 @@ manages that file it also publishes it: re-adds it to the encrypted source,
 commits only that file to the private dotfiles repository and pushes. It answers
 with the name, the file and how far the publication got — `published`,
 `committed`, `unmanaged` or `failed` — never the value.
+
+`credentials-update` brings this machine to what the repository declares: it
+pulls the private dotfiles repository and applies only the credentials
+directory, so a value another machine published becomes the value here. Local
+modifications of the secrets files are replaced by the repository's version.
 
 Beside them sit the Azure work-item commands the planning and delivery paths
 use: `hu-info`, `hu-branch-info`, `hu-branch-set`, `ticket-info`,

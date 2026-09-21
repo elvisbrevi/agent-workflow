@@ -51,9 +51,15 @@ export const GIT_TOOL_COMMANDS = ["git-branch-delete"] as const;
  * encrypted env files instead of a tracker, so a name the credentials skill
  * stores is visible from the terminal without opening a session; `set` is the
  * write that keeps both writers — the skill's helper and this CLI — on the same
- * file, and takes the value only from a hidden prompt or from `--stdin`.
+ * file, and takes the value only from a hidden prompt or from `--stdin`;
+ * `update` is the pull that makes this machine's values the repository's.
  */
-export const CREDENTIALS_TOOL_COMMANDS = ["credentials-list", "credentials-get", "credentials-set"] as const;
+export const CREDENTIALS_TOOL_COMMANDS = [
+  "credentials-list",
+  "credentials-get",
+  "credentials-set",
+  "credentials-update",
+] as const;
 
 export const DETERMINISTIC_TOOL_COMMANDS = [
   ...AZURE_TOOL_COMMANDS,
@@ -100,4 +106,5 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lazy-workflow credentials-list",
   "  lazy-workflow credentials-get --name <NAME> [--force]",
   "  lazy-workflow credentials-set --name <NAME> [--service <service>] [--stdin]",
+  "  lazy-workflow credentials-update",
 ];

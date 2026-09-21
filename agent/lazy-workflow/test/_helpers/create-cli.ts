@@ -52,6 +52,7 @@ export interface CliBoundaries {
   createQuestionChannelFn?: Boundary[17];
   processSignals?: Boundary[18];
   systemShutdown?: Boundary[19];
+  runInstaller?: Boundary[20];
 }
 
 /**
@@ -118,5 +119,6 @@ export function createCli(boundaries: CliBoundaries = {}): LazyWorkflowCli {
     boundaries.createQuestionChannelFn,
     boundaries.processSignals,
     boundaries.systemShutdown,
+    boundaries.runInstaller,
   );
 }

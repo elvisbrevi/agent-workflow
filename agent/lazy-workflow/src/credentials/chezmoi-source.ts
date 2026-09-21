@@ -15,6 +15,25 @@ export type ChezmoiPublication =
   | "unmanaged" // no chezmoi, or the file does not live in its source state
   | "failed"; // chezmoi or git refused
 
+/**
+ * Brings this machine's secrets to what the repository declares: pulls the
+ * private dotfiles repository, then applies only the secrets directory, so a
+ * value another machine published becomes the value here without touching the
+ * rest of the dotfiles. `--force` is declared because taking the repository's
+ * version of the secrets is the whole point of the command, and a run without a
+ * terminal cannot answer chezmoi's overwrite prompt.
+ */
+export async function updateChezmoiSecrets(secretsDirectory: string): Promise<void> {
+  const chezmoi = Bun.which("chezmoi");
+  if (chezmoi === null) throw new Error("chezmoi no esta en el PATH");
+  if ((await run(chezmoi, ["update", "--apply=false"])) !== 0) {
+    throw new Error("no se pudo traer el repositorio de dotfiles (chezmoi update --apply=false)");
+  }
+  if ((await run(chezmoi, ["apply", "--force", secretsDirectory])) !== 0) {
+    throw new Error(`no se pudieron aplicar los secretos en ${secretsDirectory}`);
+  }
+}
+
 export async function publishChezmoiSource(target: string, credential: string): Promise<ChezmoiPublication> {
   const chezmoi = Bun.which("chezmoi");
   if (chezmoi === null) return "unmanaged";

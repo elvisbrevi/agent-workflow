@@ -216,6 +216,7 @@ describe("herramientas deterministas como comandos", () => {
       "credentials-list": "deterministic-completion-failure",
       "credentials-get": "deterministic-completion-failure",
       "credentials-set": "deterministic-completion-failure",
+      "credentials-update": "deterministic-completion-failure",
     };
 
     for (const command of DETERMINISTIC_TOOL_COMMANDS) {
