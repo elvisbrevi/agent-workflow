@@ -283,7 +283,8 @@ test("la entrega Azure y la GitHub dicen el mismo trabajo", async () => {
     context,
   );
 
-  const delivery = (await Bun.file(new URL("../prompts/delivery-prompt.md", import.meta.url)).text()).trimEnd();
+  const delivery = (await Bun.file(new URL("../prompts/delivery-prompt.md", import.meta.url)).text())
+    .replace(/\r\n?/g, "\n").trimEnd();
   expect(azure).toContain(delivery);
   expect(github).toContain(delivery);
 });

@@ -375,8 +375,8 @@ describe("credential-store", () => {
       expect(stored).toEqual({ name: "ALPHA_API_KEY", file: "alpha.env" });
 
       const path = join(directory, "alpha.env");
-      expect((await stat(path)).mode & 0o777).toBe(0o600);
-      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+      if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect((await stat(directory)).mode & 0o777).toBe(0o700);
       expect(await Bun.file(path).text()).toBe(
         "# alpha.env - managed by chezmoi; load with: load-env alpha\n\nexport ALPHA_API_KEY='a b'\n",
       );

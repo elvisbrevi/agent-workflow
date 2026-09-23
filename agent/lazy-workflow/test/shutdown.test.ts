@@ -102,6 +102,8 @@ function harness(options: { queue?: () => Promise<never[]>; shutdownBehavior?: "
 }
 
 const listArgs = ["github-issue-list", "--working-directory", "/tmp", "--no-log-file"];
+const offArgs = process.platform === "win32" ? ["--off"] : ["--off", "clave"];
+const offPassword = process.platform === "win32" ? null : "clave";
 
 describe("apagado del equipo al terminar el run (--off)", () => {
   test("sin --off el run no apaga nada", async () => {
@@ -111,7 +113,7 @@ describe("apagado del equipo al terminar el run (--off)", () => {
     expect(cli.timer.waits).toEqual([]);
   });
 
-  test("un run exitoso con --off apaga con la contrasena declarada, tras la gracia por defecto", async () => {
+  test.skipIf(process.platform === "win32")("un run exitoso con --off apaga con la contrasena declarada, tras la gracia por defecto", async () => {
     const cli = harness();
     expect(await cli.run([...listArgs, "--off", "MiPassword123"])).toBe(0);
     expect(cli.shutdown.calls).toEqual(["MiPassword123"]);
@@ -119,7 +121,7 @@ describe("apagado del equipo al terminar el run (--off)", () => {
     expect(cli.lines.some((line) => line.level === "warn" && line.message.includes("apagará el equipo en 15s"))).toBeTrue();
   });
 
-  test("-off es la misma forma con un solo guion", async () => {
+  test.skipIf(process.platform === "win32")("-off es la misma forma con un solo guion", async () => {
     const cli = harness();
     expect(await cli.run([...listArgs, "-off", "MiPassword123"])).toBe(0);
     expect(cli.shutdown.calls).toEqual(["MiPassword123"]);
@@ -127,15 +129,15 @@ describe("apagado del equipo al terminar el run (--off)", () => {
 
   test("--off-delay 0 apaga sin gracia previa", async () => {
     const cli = harness();
-    expect(await cli.run([...listArgs, "--off", "clave", "--off-delay", "0"])).toBe(0);
+    expect(await cli.run([...listArgs, ...offArgs, "--off-delay", "0"])).toBe(0);
     expect(cli.timer.waits).toEqual([]);
-    expect(cli.shutdown.calls).toEqual(["clave"]);
+    expect(cli.shutdown.calls).toEqual([offPassword]);
   });
 
   test("un run que falla igual apaga: quien lo dejo corriendo ya no esta frente al equipo", async () => {
     const cli = harness({ queue: async () => { throw new Error("tracker inalcanzable"); } });
-    expect(await cli.run([...listArgs, "--off", "clave"])).toBe(1);
-    expect(cli.shutdown.calls).toEqual(["clave"]);
+    expect(await cli.run([...listArgs, ...offArgs])).toBe(1);
+    expect(cli.shutdown.calls).toEqual([offPassword]);
   });
 
   test("un run que murio por un error de argumentos no apaga el equipo", async () => {
@@ -146,7 +148,7 @@ describe("apagado del equipo al terminar el run (--off)", () => {
 
   test("un apagado que falla se reporta y deja el resultado del run intacto", async () => {
     const cli = harness({ shutdownBehavior: "fails" });
-    expect(await cli.run([...listArgs, "--off", "clave"])).toBe(0);
+    expect(await cli.run([...listArgs, ...offArgs])).toBe(0);
     expect(cli.lines.some((line) => line.level === "error" && line.message.includes("no se pudo apagar el equipo"))).toBeTrue();
   });
 });
@@ -170,7 +172,7 @@ function spawnRecorder(exitCode: number, stderr = ""): { spawn: typeof Bun.spawn
 describe("SudoSystemShutdown", () => {
   test("con contrasena la entrega por stdin, nunca como argumento", async () => {
     const recorder = spawnRecorder(0);
-    await new SudoSystemShutdown(recorder.spawn).shutdown("MiPassword123");
+    await new SudoSystemShutdown(recorder.spawn, "darwin").shutdown("MiPassword123");
 
     expect(recorder.commands).toEqual([["sudo", "-S", "-p", "", "shutdown", "-h", "now"]]);
     expect(recorder.stdin).toEqual(["MiPassword123\n"]);
@@ -178,7 +180,7 @@ describe("SudoSystemShutdown", () => {
 
   test("sin contrasena usa un sudo que no la pide, en vez de esperar un prompt que nadie responde", async () => {
     const recorder = spawnRecorder(0);
-    await new SudoSystemShutdown(recorder.spawn).shutdown(null);
+    await new SudoSystemShutdown(recorder.spawn, "darwin").shutdown(null);
 
     expect(recorder.commands).toEqual([["sudo", "-n", "shutdown", "-h", "now"]]);
     expect(recorder.stdin).toEqual([]);
@@ -186,7 +188,7 @@ describe("SudoSystemShutdown", () => {
 
   test("un comando que falla explica el motivo con la contrasena redactada", async () => {
     const recorder = spawnRecorder(1, "sudo: 1 incorrect password attempt para MiPassword123");
-    const shutdown = new SudoSystemShutdown(recorder.spawn).shutdown("MiPassword123");
+    const shutdown = new SudoSystemShutdown(recorder.spawn, "darwin").shutdown("MiPassword123");
 
     await expect(shutdown).rejects.toThrow("incorrect password");
     await shutdown.catch((error: unknown) => {
@@ -197,5 +199,14 @@ describe("SudoSystemShutdown", () => {
 
   test("redactPassword deja el texto intacto cuando no hay contrasena que ocultar", () => {
     expect(redactPassword("sudo: command not found", null)).toBe("sudo: command not found");
+  });
+
+  test("Windows usa shutdown.exe sin contrasena", async () => {
+    const recorder = spawnRecorder(0);
+    await new SudoSystemShutdown(recorder.spawn, "win32").shutdown(null);
+    expect(recorder.commands).toEqual([["shutdown.exe", "/s", "/t", "0"]]);
+    expect(recorder.stdin).toEqual([]);
+    await expect(new SudoSystemShutdown(recorder.spawn, "win32").shutdown("clave"))
+      .rejects.toThrow("does not accept a sudo password");
   });
 });

@@ -148,7 +148,9 @@ export function formatHandoffProgress(progress: HandoffProgress): string {
 
 async function readAsset(name: PromptAsset): Promise<string> {
   // Sin el recorte, el salto final del archivo se vuelve una línea vacía del prompt.
-  return (await Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text()).trimEnd();
+  return (await Bun.file(new URL(`../../prompts/${name}-prompt.md`, import.meta.url)).text())
+    .replace(/\r\n?/g, "\n")
+    .trimEnd();
 }
 
 /** Load a prompt asset and resolve its contract placeholders. */

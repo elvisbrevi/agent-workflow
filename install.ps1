@@ -82,7 +82,7 @@ $target = (Resolve-Path -LiteralPath $target).Path
 
 function Load-Manifest {
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return }
-  $saved = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $saved = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
   foreach ($property in $saved.PSObject.Properties) { $script:managedCopies[$property.Name] = [string]$property.Value }
 }
 
@@ -185,7 +185,10 @@ function Remove-Managed([string]$directory) {
     if ($owned) {
       if ($dryRun) { Write-Host "  dry-run  remove managed $($item.FullName)" }
       else {
-        Remove-Item -LiteralPath $item.FullName -Force
+        # Windows PowerShell 5.1 prompts before Remove-Item on a populated
+        # junction. Delete the junction itself without traversing its target.
+        if ($item.PSIsContainer -and $linkTarget) { [IO.Directory]::Delete($item.FullName) }
+        else { Remove-Item -LiteralPath $item.FullName -Force }
         Write-Host "Removed managed link: $($item.FullName)"
       }
     }
@@ -199,8 +202,10 @@ function Prepare-Destination([string]$destination) {
     if ([Console]::IsInputRedirected) { Fail "Cannot prompt to overwrite $destination without a TTY. Re-run with --force." }
     if ((Read-Host "Already exists: $destination. Overwrite? [y/N]") -notmatch '^[Yy]$') { return $false }
   }
-  if ($existing.PSIsContainer -and -not (Link-Target $existing)) { Remove-Item -LiteralPath $destination -Recurse -Force }
-  else { Remove-Item -LiteralPath $destination -Force }
+  if ($existing.PSIsContainer) {
+    if (Link-Target $existing) { [IO.Directory]::Delete($destination) }
+    else { Remove-Item -LiteralPath $destination -Recurse -Force }
+  } else { Remove-Item -LiteralPath $destination -Force }
   [void]$managedCopies.Remove($destination)
   return $true
 }
@@ -239,6 +244,24 @@ function Install-Runner([string]$source, [string]$destination) {
   [IO.File]::WriteAllText($destination, $content, [Text.Encoding]::ASCII)
   $managedCopies[$destination] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
   Write-Host "Installed runner: $destination"
+}
+
+function Install-PowerShellRunner([string]$source, [string]$destination) {
+  $scriptPath = Join-Path $source 'run.ps1'
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { return }
+  if ($dryRun) { Write-Host "  dry-run  install $destination -> $scriptPath"; return }
+  if (-not (Prepare-Destination $destination)) { return }
+  $relative = $scriptPath.Substring($cache.Length).Replace('/', '\')
+  $installedScript = '.cache\agent-workflow' + $relative
+  $content = @'
+$sourceScript = Join-Path $env:USERPROFILE '{{SCRIPT}}'
+& $sourceScript @args
+exit $LASTEXITCODE
+'@
+  $content = $content.Replace('{{SCRIPT}}', $installedScript)
+  [IO.File]::WriteAllText($destination, $content, [Text.Encoding]::ASCII)
+  $managedCopies[$destination] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+  Write-Host "Installed PowerShell runner: $destination"
 }
 
 function Destinations {
@@ -311,6 +334,9 @@ try {
       foreach ($agent in $agents) {
         $runnerName = if ($env:OS -eq 'Windows_NT') { "$($agent.Name).cmd" } else { $agent.Name }
         Install-Runner $agent.Source (Join-Path $directory $runnerName)
+        if ($env:OS -eq 'Windows_NT') {
+          Install-PowerShellRunner $agent.Source (Join-Path $directory "$($agent.Name)-powershell.ps1")
+        }
       }
     }
   }

@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { join } from "node:path";
 import {
   AUTHORITY_PROFILES,
   authorityConfigPath,
@@ -61,11 +62,11 @@ test("cada CLI resuelve su propia autoridad para cada perfil", async () => {
     const opencode = authorityConfigPath("opencode", profile);
     const claudecode = authorityConfigPath("claudecode", profile);
     const codex = authorityConfigPath("codex", profile);
-    expect(`${profile} opencode: ${opencode.endsWith("/opencode/authority.json")}`)
+    expect(`${profile} opencode: ${opencode.endsWith(join("opencode", "authority.json"))}`)
       .toBe(`${profile} opencode: true`);
-    expect(`${profile} claudecode: ${claudecode.endsWith(`/claudecode/${profile}.json`)}`)
+    expect(`${profile} claudecode: ${claudecode.endsWith(join("claudecode", `${profile}.json`))}`)
       .toBe(`${profile} claudecode: true`);
-    expect(`${profile} codex: ${codex.endsWith(`/codex/${profile}.rules`)}`)
+    expect(`${profile} codex: ${codex.endsWith(join("codex", `${profile}.rules`))}`)
       .toBe(`${profile} codex: true`);
     expect(`${profile} existe: ${await Bun.file(claudecode).exists()}`).toBe(`${profile} existe: true`);
     expect(`${profile} Codex existe: ${await Bun.file(codex).exists()}`).toBe(`${profile} Codex existe: true`);

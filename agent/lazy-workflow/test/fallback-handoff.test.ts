@@ -211,7 +211,7 @@ test("la sesión traspasada arranca con el perfil de autoridad en el formato del
 
   const authority = agents.started[1]?.options.agent;
   expect(authority?.profile).toBe("lazy-github-code");
-  expect(authority?.configPath).toEndWith("claudecode/lazy-github-code.json");
+  expect(authority?.configPath).toEndWith(join("claudecode", "lazy-github-code.json"));
 });
 
 
@@ -231,7 +231,7 @@ test("un agotamiento con respaldo en Codex continúa la misma unidad en una sesi
   expect(handoff?.model).toBe("gpt-5.6-sol");
   expect(handoff?.variant).toBe("high");
   expect(handoff?.session).toBeNull();
-  expect(handoff?.agent?.configPath).toEndWith("codex/lazy-github-code.rules");
+  expect(handoff?.agent?.configPath).toEndWith(join("codex", "lazy-github-code.rules"));
   expect(handoff?.prompt).toContain("/implement the issue #178");
 });
 
@@ -249,7 +249,7 @@ test("un agotamiento en Codex con respaldo de otro CLI continúa la misma unidad
   expect(handoff?.model).toBe("claude-opus-5");
   expect(handoff?.variant).toBe("high");
   expect(handoff?.session).toBeNull();
-  expect(handoff?.agent?.configPath).toEndWith("claudecode/lazy-github-code.json");
+  expect(handoff?.agent?.configPath).toEndWith(join("claudecode", "lazy-github-code.json"));
 });
 
 test("un agotamiento posterior al traspaso reanuda la sesión nueva con la autoridad del CLI nuevo", async () => {
@@ -276,7 +276,7 @@ test("un agotamiento posterior al traspaso reanuda la sesión nueva con la autor
   expect(agents.started[2]?.cli).toBe("claudecode");
   expect(agents.started[2]?.options.session).toBeNull();
   expect(agents.started[2]?.options.model).toBe("claude-sonnet-5");
-  expect(agents.started[2]?.options.agent?.configPath).toEndWith("claudecode/lazy-github-code.json");
+  expect(agents.started[2]?.options.agent?.configPath).toEndWith(join("claudecode", "lazy-github-code.json"));
 });
 
 

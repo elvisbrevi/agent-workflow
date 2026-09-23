@@ -39,7 +39,9 @@ and run `./install.sh --help` or `./install.ps1 --help` for the complete option 
 
 With `--all-global` or `--claude-global`, the executable launcher is installed
 at `~/.local/bin/lazy-workflow` on Unix and `~/.local/bin/lazy-workflow.cmd`
-on Windows. The installer prepares its locked Bun dependencies in the managed
+on Windows. Windows also gets `lazy-workflow-powershell.ps1` for prompts with
+quotes or multiple lines; run it from PowerShell with a script execution policy
+that permits local scripts. The installer prepares its locked Bun dependencies in the managed
 cache before exposing the launcher. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash

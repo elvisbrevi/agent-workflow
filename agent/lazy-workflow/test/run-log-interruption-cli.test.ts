@@ -17,6 +17,10 @@ const readLines = (path: string): Array<Record<string, unknown>> =>
 class FakeProcess implements InterruptionProcess {
   readonly pid = 4242;
   private readonly listeners = new Map<string, Set<(...args: never[]) => void>>();
+  private resolveExit: (() => void) | null = null;
+  readonly exited = new Promise<void>((resolve) => { this.resolveExit = resolve; });
+  private resolveSignal: (() => void) | null = null;
+  readonly signaled = new Promise<void>((resolve) => { this.resolveSignal = resolve; });
 
   on(event: string, listener: (...args: never[]) => void): void {
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
@@ -29,10 +33,12 @@ class FakeProcess implements InterruptionProcess {
 
   kill(): void {
     // A test process must never actually receive the redelivered signal.
+    this.resolveSignal?.();
   }
 
   exit(code: number): never {
     this.exitCode = code;
+    this.resolveExit?.();
     return undefined as never;
   }
 
@@ -91,7 +97,7 @@ describe("LazyWorkflowCli interruption handling", () => {
       await reached;
 
       proc.emit("SIGINT");
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await proc.signaled;
 
       const lines = readLines(logFile);
       expect(lines[0]).toMatchObject({ event: "run.started", command: "github-issue-list" });
@@ -149,7 +155,7 @@ describe("LazyWorkflowCli interruption handling", () => {
         // Simulates a rejection that truly escapes every catch, delivered directly
         // to the handler exactly as Bun would deliver it to `process`.
         proc.emit("unhandledRejection", new Error("escaped rejection") as never);
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await proc.exited;
 
         const lines = readLines(logFile);
         const finished = lines.filter((line) => line["event"] === "run.finished" && line["outcome"] === "interrupted");

@@ -22,6 +22,9 @@ lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory
 lazy-workflow code --working-directory /path/to/repository
 ```
 
+On Windows the installed command is `lazy-workflow.cmd`. For quoted or multiline
+prompts from PowerShell, use `lazy-workflow-powershell.ps1` instead.
+
 `install.sh --codex` or `install.ps1 --codex` installs the skills into `~/.codex/skills/`, which is where
 Codex resolves them from; without it a run that falls back to Codex has no
 skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,

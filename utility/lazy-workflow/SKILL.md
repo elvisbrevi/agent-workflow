@@ -48,7 +48,8 @@ scripts/preflight.sh --hu 23438 --working-directory /repo    # Bash or Zsh, Azur
 ```
 
 From PowerShell, use `scripts/preflight.ps1` with the same flags. The installed
-`lazy-workflow.cmd` runs the same Bun CLI and deterministic tools.
+`lazy-workflow.cmd` runs the same Bun CLI and deterministic tools; use
+`lazy-workflow-powershell.ps1` to preserve quotes and multiline prompt arguments.
 
 It runs only read-only tools, prints one JSON document with every probe and a
 `notes` array (for example, which base this HU would branch from), and

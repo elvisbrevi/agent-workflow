@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdir, mkdtemp, readdir, readlink, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTHORITY_PROFILES, authorityConfigPath, type AuthorityProfile } from "../src/prompts/authority-profile.ts";
@@ -71,8 +71,14 @@ test("armar el home de autoridad Codex enlaza auth.json y skills del operador y 
 
     expect(home).toBe(destination);
     expect(await readdir(join(destination, "rules"))).toEqual(["lazy-review.rules"]);
-    expect(await readlink(join(destination, "auth.json"))).toBe(join(operatorHome, "auth.json"));
-    expect(await readlink(join(destination, "skills"))).toBe(join(operatorHome, "skills"));
+    if (process.platform === "win32") {
+      await writeFile(join(destination, "auth.json"), '{"linked":true}');
+      expect(await readFile(join(operatorHome, "auth.json"), "utf8")).toBe('{"linked":true}');
+      expect(await realpath(join(destination, "skills"))).toBe(await realpath(join(operatorHome, "skills")));
+    } else {
+      expect(await readlink(join(destination, "auth.json"))).toBe(join(operatorHome, "auth.json"));
+      expect(await readlink(join(destination, "skills"))).toBe(join(operatorHome, "skills"));
+    }
     expect(await Bun.file(join(destination, "config.toml")).exists()).toBe(false);
   } finally {
     await rm(operatorHome, { recursive: true, force: true });

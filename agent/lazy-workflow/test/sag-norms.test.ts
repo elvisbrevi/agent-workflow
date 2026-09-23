@@ -2,8 +2,6 @@ import { expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { SagNormsService } from "../src/sag/sag-norms-service.ts";
 
-process.env["LAZY_WORKFLOW_SAG_NORMS_REPOSITORY"] ??= "https://dev.azure.com/org/Team/_git/norms";
-
 const root = `${process.env.TMPDIR ?? "/tmp"}/lazy-workflow-sag-${crypto.randomUUID()}`;
 
 async function config(component = "api", facts: Record<string, unknown> = {}): Promise<string> {

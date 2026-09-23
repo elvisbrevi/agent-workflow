@@ -175,7 +175,7 @@ describe("buildCli parser", () => {
     });
 
     test("--cli claudecode selecciona Claude Code", () => {
-      const result = parse(["plan", "--cli", "claudecode"]);
+      const result = captureParse(buildCli(() => true), ["plan", "--cli", "claudecode"]);
       expect(result.kind).toBe("options");
       if (result.kind !== "options") return;
       expect(result.options.cli).toBe("claudecode");
@@ -649,21 +649,21 @@ describe("buildCli parser", () => {
       expect(result.options.shutdown).toBeNull();
     });
 
-    test("--off <contrasena> declara el apagado con la gracia por defecto", () => {
+    test.skipIf(process.platform === "win32")("--off <contrasena> declara el apagado con la gracia por defecto", () => {
       const result = parseOff(["code", "--off", "MiPassword123"]);
       expect(result.kind).toBe("options");
       if (result.kind !== "options") return;
       expect(result.options.shutdown).toEqual({ password: "MiPassword123", delaySeconds: 15 });
     });
 
-    test("-off <contrasena> es la misma forma con un solo guion", () => {
+    test.skipIf(process.platform === "win32")("-off <contrasena> es la misma forma con un solo guion", () => {
       const result = parseOff(["code", "-off", "MiPassword123"]);
       expect(result.kind).toBe("options");
       if (result.kind !== "options") return;
       expect(result.options.shutdown).toEqual({ password: "MiPassword123", delaySeconds: 15 });
     });
 
-    test("--off sin valor toma la contrasena de LAZY_WORKFLOW_OFF_PASSWORD", () => {
+    test.skipIf(process.platform === "win32")("--off sin valor toma la contrasena de LAZY_WORKFLOW_OFF_PASSWORD", () => {
       const result = parseOff(["code", "--off"], { LAZY_WORKFLOW_OFF_PASSWORD: "desde-el-entorno" });
       expect(result.kind).toBe("options");
       if (result.kind !== "options") return;
@@ -686,15 +686,22 @@ describe("buildCli parser", () => {
     });
 
     test("--off-delay acota la gracia y admite 0", () => {
-      const inmediato = parseOff(["code", "--off", "clave", "--off-delay", "0"]);
+      const offArgs = process.platform === "win32" ? ["--off"] : ["--off", "clave"];
+      const password = process.platform === "win32" ? null : "clave";
+      const inmediato = parseOff(["code", ...offArgs, "--off-delay", "0"]);
       expect(inmediato.kind).toBe("options");
       if (inmediato.kind !== "options") return;
-      expect(inmediato.options.shutdown).toEqual({ password: "clave", delaySeconds: 0 });
+      expect(inmediato.options.shutdown).toEqual({ password, delaySeconds: 0 });
 
-      const largo = parseOff(["code", "--off", "clave", "--off-delay", "120"]);
+      const largo = parseOff(["code", ...offArgs, "--off-delay", "120"]);
       expect(largo.kind).toBe("options");
       if (largo.kind !== "options") return;
-      expect(largo.options.shutdown).toEqual({ password: "clave", delaySeconds: 120 });
+      expect(largo.options.shutdown).toEqual({ password, delaySeconds: 120 });
+    });
+
+    test.skipIf(process.platform !== "win32")("Windows rechaza una contrasena de sudo", () => {
+      expect(parseOff(["code", "--off", "clave"]).kind).toBe("error");
+      expect(parseOff(["code", "--off"], { LAZY_WORKFLOW_OFF_PASSWORD: "clave" }).kind).toBe("error");
     });
 
     test("--off-delay sin --off es un error de argumentos", () => {
