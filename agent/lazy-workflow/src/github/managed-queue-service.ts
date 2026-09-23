@@ -10,6 +10,11 @@ export interface ManagedIssue {
   blockedBy: { nodes: Array<{ number: number; state: string }> };
 }
 
+interface IssueJson extends Omit<ManagedIssue, "blockedBy"> {
+  id?: string;
+  blockedBy?: { nodes?: Array<{ number: number; state: string }> };
+}
+
 export interface SelectedManagedIssue extends ManagedIssue {
   body: string;
   comments: string[];
@@ -81,6 +86,10 @@ export function assigneeLogins(issue: Pick<ManagedIssue, "assignees">): string[]
 
 function openBlockers(issue: Pick<ManagedIssue, "blockedBy">): number[] {
   return (issue.blockedBy?.nodes ?? []).filter(({ state }) => state === "OPEN").map(({ number }) => number);
+}
+
+function ghDoesNotExposeIssueRelationships(error: unknown): boolean {
+  return error instanceof Error && /unknown json field\s*:\s*["']?blockedBy/i.test(error.message);
 }
 
 function titlePrefix(title: string): string | null {
@@ -158,7 +167,7 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
   }
 
   async listManagedIssues(workingDirectory: string): Promise<ManagedIssue[]> {
-    const output = await this.gh([
+    const args = [
       "issue",
       "list",
       "--state",
@@ -168,21 +177,42 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       "--limit",
       "100",
       "--json",
-      "number,title,state,labels,assignees,createdAt,blockedBy",
-    ], workingDirectory);
-    const parsed = JSON.parse(output) as ManagedIssue[];
-    return Array.isArray(parsed) ? parsed : [];
+      "id,number,title,state,labels,assignees,createdAt,blockedBy",
+    ];
+    try {
+      const output = await this.gh(args, workingDirectory);
+      const parsed = JSON.parse(output) as ManagedIssue[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      if (!ghDoesNotExposeIssueRelationships(error)) throw error;
+      const fallbackArgs = [...args];
+      fallbackArgs[fallbackArgs.length - 1] = "id,number,title,state,labels,assignees,createdAt";
+      const output = await this.gh(fallbackArgs, workingDirectory);
+      const parsed = JSON.parse(output) as IssueJson[];
+      return Array.isArray(parsed) ? this.attachBlockedBy(parsed, workingDirectory) : [];
+    }
   }
 
   async readIssueDetail(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue> {
-    const output = await this.gh([
+    const args = [
       "issue",
       "view",
       `${issueNumber}`,
       "--json",
-      "number,title,state,labels,assignees,createdAt,blockedBy,body,comments",
-    ], workingDirectory);
-    const parsed = JSON.parse(output) as {
+      "id,number,title,state,labels,assignees,createdAt,blockedBy,body,comments",
+    ];
+    let output: string;
+    let hasNativeBlockedBy = true;
+    try {
+      output = await this.gh(args, workingDirectory);
+    } catch (error) {
+      if (!ghDoesNotExposeIssueRelationships(error)) throw error;
+      const fallbackArgs = [...args];
+      fallbackArgs[fallbackArgs.length - 1] = "id,number,title,state,labels,assignees,createdAt,body,comments";
+      output = await this.gh(fallbackArgs, workingDirectory);
+      hasNativeBlockedBy = false;
+    }
+    const parsed = JSON.parse(output) as IssueJson & {
       number?: number;
       title?: string;
       state?: string;
@@ -196,7 +226,7 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
     if (parsed.number !== issueNumber || typeof parsed.title !== "string" || typeof parsed.createdAt !== "string") {
       throw new Error(`gh issue view devolvio un alcance inesperado para el Issue ${issueNumber}`);
     }
-    return {
+    const issue = {
       number: issueNumber,
       title: parsed.title,
       state: parsed.state ?? "",
@@ -207,6 +237,50 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       body: parsed.body ?? "",
       comments: (parsed.comments ?? []).map(({ body }) => body ?? ""),
     };
+    if (hasNativeBlockedBy) return issue;
+    const withBlockedBy = (await this.attachBlockedBy([parsed], workingDirectory))[0];
+    if (!withBlockedBy) throw new Error(`gh api graphql no devolvio el Issue #${issueNumber}`);
+    return { ...issue, blockedBy: withBlockedBy.blockedBy };
+  }
+
+  /** Older gh releases lack `blockedBy` in `--json`; resolve the same data in one API query. */
+  private async attachBlockedBy(issues: IssueJson[], workingDirectory: string): Promise<ManagedIssue[]> {
+    if (issues.length === 0) return [];
+    if (issues.some(({ id }) => typeof id !== "string" || id.length === 0)) {
+      throw new Error("gh issue no devolvio IDs necesarios para leer las dependencias");
+    }
+    const query = "query($ids:[ID!]!){nodes(ids:$ids){... on Issue{number blockedBy(first:100){nodes{number state} totalCount}}}}";
+    const args = ["api", "graphql", "-f", `query=${query}`];
+    for (const issue of issues) args.push("-F", `ids[]=${issue.id}`);
+    const output = await this.gh(args, workingDirectory);
+    const parsed = JSON.parse(output) as {
+      data?: {
+        nodes?: Array<{
+          number?: number;
+          blockedBy?: { nodes?: Array<{ number: number; state: string }>; totalCount?: number };
+        } | null>;
+      };
+    };
+    const nodes = parsed.data?.nodes;
+    if (!Array.isArray(nodes) || nodes.length !== issues.length) {
+      throw new Error("gh api graphql no devolvio todas las dependencias de la cola");
+    }
+    const blockedByByNumber = new Map<number, { nodes: Array<{ number: number; state: string }> }>();
+    for (const node of nodes) {
+      const blockedBy = node?.blockedBy;
+      if (typeof node?.number !== "number" || !blockedBy || !Array.isArray(blockedBy.nodes)) {
+        throw new Error("gh api graphql devolvio dependencias incompletas para la cola");
+      }
+      if (typeof blockedBy.totalCount === "number" && blockedBy.totalCount > blockedBy.nodes.length) {
+        throw new Error(`gh api graphql trunco las dependencias del Issue #${node.number}`);
+      }
+      blockedByByNumber.set(node.number, { nodes: blockedBy.nodes });
+    }
+    return issues.map((issue) => {
+      const blockedBy = blockedByByNumber.get(issue.number);
+      if (!blockedBy) throw new Error(`gh api graphql no devolvio el Issue #${issue.number}`);
+      return { ...issue, blockedBy };
+    });
   }
 
   /**
