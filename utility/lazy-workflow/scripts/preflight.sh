@@ -17,6 +17,9 @@
 # 2 a usage error, 3 no lazy-workflow binary could be resolved.
 
 set -uo pipefail
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  setopt TYPESET_SILENT
+fi
 
 WORKING_DIRECTORY="$PWD"
 HU=""
@@ -80,10 +83,10 @@ add_note() { NOTES="${NOTES}${NOTES:+,}$(printf '\n    "%s"' "$(json_escape "$1"
 # stderr, so the two are captured separately and neither corrupts the other.
 probe() {
   local label="$1"; shift
-  local stdout_file stderr_file status
+  local stdout_file stderr_file exit_code
   stdout_file="$(mktemp)"; stderr_file="$(mktemp)"
   "${RUNNER[@]}" "$@" --no-color >"$stdout_file" 2>"$stderr_file"
-  status=$?
+  exit_code=$?
   local out err entry stamped
   out="$(tr -d '\033' <"$stdout_file")"
   err="$(tr -d '\033' <"$stderr_file")"
@@ -95,14 +98,14 @@ probe() {
   [[ -n "$stamped" ]] && err="$stamped"
   err="$(printf '%s\n' "$err" | tail -n 5)"
 
-  if [[ $status -eq 0 && -n "$out" ]]; then
+  if [[ $exit_code -eq 0 && -n "$out" ]]; then
     entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lazy-workflow %s",\n      "ok": true,\n      "result": %s\n    }' \
       "$(json_escape "$label")" "$(json_escape "$*")" "$out")"
     [[ "$label" == "hu-branch" ]] && BRANCH_JSON="$out"
   else
     ALL_OK=false
     entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lazy-workflow %s",\n      "ok": false,\n      "exitCode": %s,\n      "error": "%s"\n    }' \
-      "$(json_escape "$label")" "$(json_escape "$*")" "$status" "$(json_escape "${err:-$out}")")"
+      "$(json_escape "$label")" "$(json_escape "$*")" "$exit_code" "$(json_escape "${err:-$out}")")"
   fi
   PROBES="${PROBES}${PROBES:+,}${entry}"
 }

@@ -4,8 +4,9 @@ The operator output is Spanish; the messages below are what the terminal shows.
 Read the message first, then run the tool command that produces the evidence,
 then rerun the same workflow command. Nothing here needs a new session.
 
-`scripts/preflight.sh` gathers most of that evidence in one pass, and the failing
-probe usually names the cause directly. Remember where to look: the JSON result
+`scripts/preflight.sh` (`scripts/preflight.ps1` in PowerShell) gathers most of
+that evidence in one pass, and the failing probe usually names the cause.
+Remember where to look: the JSON result
 is on stdout, and every explanation is on stderr.
 
 ## Start from the marker it ended on

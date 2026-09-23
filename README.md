@@ -13,22 +13,34 @@ Azure DevOps HU runs.
 
 ## Install
 
-The installer refreshes its managed cache and reconciles repository-owned
-links while preserving files and links owned by other tools:
+Install Git and Bun first. The installer refreshes its managed cache and
+reconciles repository-owned entries while preserving files owned by other tools.
+Bash and Zsh use `install.sh`; PowerShell uses `install.ps1` with the same flags:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
   | bash -s -- --all-global
 ```
 
+```zsh
+curl -fsSL https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.sh \
+  | zsh -s -- --all-global
+```
+
+```powershell
+$installer = Join-Path $env:TEMP 'agent-workflow-install.ps1'
+Invoke-WebRequest https://raw.githubusercontent.com/elvisbrevi/agent-workflow/main/install.ps1 -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer --all-global
+```
+
 Narrower modes include `--claude-global`, `--global`, `--local`,
 `--opencode`, and `--both`. Use `--target <directory>` for local modes
-and run `./install.sh --help` for the complete option list.
+and run `./install.sh --help` or `./install.ps1 --help` for the complete option list.
 
 With `--all-global` or `--claude-global`, the executable launcher is installed
-at `~/.local/bin/lazy-workflow`; the installer prepares its locked Bun
-dependencies in the managed cache before exposing the launcher. Ensure
-`~/.local/bin` is in `PATH`, then run:
+at `~/.local/bin/lazy-workflow` on Unix and `~/.local/bin/lazy-workflow.cmd`
+on Windows. The installer prepares its locked Bun dependencies in the managed
+cache before exposing the launcher. Ensure `~/.local/bin` is in `PATH`, then run:
 
 ```bash
 lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
@@ -66,7 +78,7 @@ workflow uses, so it validates identically (see
 [Deterministic tools as commands](agent/lazy-workflow/README.md#deterministic-tools-as-commands)
 and [ADR-0026](docs/adr/0026-run-deterministic-tools-as-standalone-commands.md)).
 
-`update` reinstalls the tool by running the repository's installer with the
+`update` reinstalls the tool by running the repository's platform installer with the
 arguments declared after it, and with `--all-global` when none is declared. The
 `credentials-*` commands keep the operator's own secrets usable from the
 terminal: `credentials-list` and `credentials-get` read the encrypted
@@ -209,6 +221,7 @@ it. The password reaches `sudo -S shutdown -h now` through stdin, and
 `LAZY_WORKFLOW_OFF_PASSWORD` keeps it out of `ps` and the shell history
 altogether: with that variable set, `--off` takes no value. The details are in
 [Unattended shutdown](agent/lazy-workflow/README.md#unattended-shutdown).
+On Windows, use `--off` without a password; it runs `shutdown.exe /s /t 0`.
 
 Add `--normas-sag` to `plan` or `code` to load the norms of the component
 declared in the selected repository's `.sag/config.json` — `tipo` must be

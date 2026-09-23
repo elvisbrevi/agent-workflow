@@ -14,7 +14,7 @@
  * a rule that stops enforcing.
  */
 
-import { mkdir, rm, symlink } from "node:fs/promises";
+import { link, mkdir, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -55,7 +55,12 @@ export async function assembleCodexAuthorityHome(
   await mkdir(join(destination, "rules"), { recursive: true });
   const rules = await Bun.file(codexRulesPath(profile)).text();
   await Bun.write(join(destination, "rules", `${profile}.rules`), rules);
-  await symlink(join(operatorHome, "auth.json"), join(destination, "auth.json"));
-  await symlink(join(operatorHome, "skills"), join(destination, "skills"));
+  if (process.platform === "win32") {
+    await link(join(operatorHome, "auth.json"), join(destination, "auth.json"));
+    await symlink(join(operatorHome, "skills"), join(destination, "skills"), "junction");
+  } else {
+    await symlink(join(operatorHome, "auth.json"), join(destination, "auth.json"));
+    await symlink(join(operatorHome, "skills"), join(destination, "skills"));
+  }
   return destination;
 }

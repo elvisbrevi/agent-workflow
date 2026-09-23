@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_path="${BASH_SOURCE[0]}"
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  source_path="${(%):-%x}"
+else
+  source_path="${BASH_SOURCE[0]}"
+fi
 while [[ -L "$source_path" ]]; do
   source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
   source_path="$(readlink "$source_path")"

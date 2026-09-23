@@ -43,7 +43,7 @@ inside that directory rather than a skill directory.
 | Change which profile a run gets, or where each CLI reads its authority | `agent/lazy-workflow/src/prompts/authority-profile.ts` |
 | Change how a run powers the machine down when it ends (`--off`) | `agent/lazy-workflow/src/system/shutdown-service.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
-| Change installation or symlink behavior | `install.sh` and `tests/install_test.sh` |
+| Change installation or symlink behavior | `install.sh`, `install.ps1`, and `tests/install_test.sh` |
 | Change user-facing orientation | `README.md` and `agent/lazy-workflow/README.md` |
 | Change tracker or domain conventions | `docs/agents/`, `docs/adr/`, or `CONTEXT.md` |
 
@@ -64,6 +64,7 @@ Run the focused suite for the changed area and the repository-level checks:
 ```bash
 (cd agent/lazy-workflow && bun test)
 bash tests/install_test.sh
+BASH_BIN=zsh bash tests/install_test.sh
 git diff --check
 ```
 

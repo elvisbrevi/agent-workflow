@@ -4,7 +4,7 @@
 # The agent runs the script; the user follows prompts in their terminal.
 #
 # Usage:
-#   bash hitl-loop.template.sh
+#   bash hitl-loop.template.sh  # or zsh hitl-loop.template.sh
 #
 # Two helpers:
 #   step "<instruction>"          → show instruction, wait for Enter
@@ -13,16 +13,21 @@
 # At the end, captured values are printed as KEY=VALUE for the agent to parse.
 
 set -euo pipefail
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  setopt TYPESET_SILENT
+fi
 
 step() {
   printf '\n>>> %s\n' "$1"
-  read -r -p "    [Enter when done] " _
+  printf '    [Enter when done] '
+  read -r acknowledgement
 }
 
 capture() {
   local var="$1" question="$2" answer
   printf '\n>>> %s\n' "$question"
-  read -r -p "    > " answer
+  printf '    > '
+  read -r answer
   printf -v "$var" '%s' "$answer"
 }
 

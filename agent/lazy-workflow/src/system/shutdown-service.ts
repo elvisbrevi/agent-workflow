@@ -37,12 +37,20 @@ export function redactPassword(text: string, password: string | null): string {
  * blocking on a prompt nobody will answer in an unattended run.
  */
 export class SudoSystemShutdown implements SystemShutdown {
-  constructor(private readonly spawn: typeof Bun.spawn = Bun.spawn) {}
+  constructor(
+    private readonly spawn: typeof Bun.spawn = Bun.spawn,
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {}
 
   async shutdown(password: string | null): Promise<void> {
-    const command = password === null
-      ? ["sudo", "-n", "shutdown", "-h", "now"]
-      : ["sudo", "-S", "-p", "", "shutdown", "-h", "now"];
+    if (this.platform === "win32" && password !== null) {
+      throw new Error("Windows shutdown does not accept a sudo password; use --off without a value");
+    }
+    const command = this.platform === "win32"
+      ? ["shutdown.exe", "/s", "/t", "0"]
+      : password === null
+        ? ["sudo", "-n", "shutdown", "-h", "now"]
+        : ["sudo", "-S", "-p", "", "shutdown", "-h", "now"];
     const child = this.spawn(command, {
       stdin: password === null ? "ignore" : "pipe",
       stdout: "pipe",

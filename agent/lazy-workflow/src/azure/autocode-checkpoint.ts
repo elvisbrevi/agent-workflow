@@ -1,5 +1,5 @@
-import { unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, unlink } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { DEFAULT_CLI, isAgentCli, withOwnerCli, type AgentCli } from "../coding-agent/agent-cli.ts";
 import { runGit } from "../git/git-ticket-branch-cleaner.ts";
 
@@ -177,7 +177,7 @@ export class GitAutocodeCheckpointStore implements AutocodeCheckpointStore {
 
   async write(checkpoint: StoredAutocodeCheckpoint, workingDirectory?: string): Promise<void> {
     const path = await this.path(workingDirectory);
-    await Bun.$`mkdir -p ${path.substring(0, path.lastIndexOf("/"))}`;
+    await mkdir(dirname(path), { recursive: true });
     const normalized = isVersionedAutocodeCheckpoint(checkpoint)
       ? checkpoint
       : migrateAutocodeCheckpoint(checkpoint);

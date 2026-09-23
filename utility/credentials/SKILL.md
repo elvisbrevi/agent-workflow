@@ -16,6 +16,12 @@ Use the bundled helper:
 "<skill-directory>/scripts/credentials.py" audit NAME
 ```
 
+In PowerShell, invoke it with Python:
+
+```powershell
+python "<skill-directory>/scripts/credentials.py" audit NAME
+```
+
 Replace `<skill-directory>` with this skill's directory. Variable names must be
 uppercase shell identifiers such as `AZURE_DEVOPS_TOKEN`.
 
@@ -25,6 +31,8 @@ uppercase shell identifiers such as `AZURE_DEVOPS_TOKEN`.
    Keychain still has a legacy copy; it never returns the value.
 2. If an env file has it, load that file in the command's shell
    (`. ~/.config/secrets/<file>` or the `load-env <service>` helper) and retry.
+   In PowerShell, load one named credential without displaying it:
+   `$env:NAME = (& lazy-workflow credentials-get --name NAME --force)`.
    Do not ask the user for the credential.
 3. Ask for the credential only after the audit reports it missing.
 
@@ -35,6 +43,8 @@ Only after an explicit user request to save, add, rotate, or repair it, run:
 ```bash
 "<skill-directory>/scripts/credentials.py" store NAME [--service SERVICE]
 ```
+
+In PowerShell, run `python "<skill-directory>/scripts/credentials.py" store NAME [--service SERVICE]`.
 
 The helper reads the value with a hidden prompt, updates
 `~/.config/secrets/<service>.env` (creating it with 0600 when needed),
@@ -51,6 +61,8 @@ env-file model without retyping them:
 ```bash
 "<skill-directory>/scripts/credentials.py" migrate NAME [--service SERVICE]
 ```
+
+In PowerShell on macOS, run `python "<skill-directory>/scripts/credentials.py" migrate NAME [--service SERVICE]`.
 
 The helper reads the value from Keychain without printing it.
 

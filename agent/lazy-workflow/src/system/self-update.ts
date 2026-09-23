@@ -3,7 +3,7 @@
  *
  * What a reinstall means — which destinations, which cache, which ref — belongs
  * to the installer that put this binary on the PATH, so this command does not
- * reimplement it: it runs the repository's `install.sh` and forwards the
+ * reimplement it: it runs the repository's platform installer and forwards the
  * arguments the operator declared after `update`. With none, the CLI declares
  * `--all-global`, the shared install this tool is normally reached through. It
  * opens no session, writes no run log and takes no workflow option.
@@ -14,12 +14,15 @@ import { fileURLToPath } from "node:url";
 export type InstallerRunner = (args: string[]) => Promise<number>;
 
 /** The installer that ships beside the CLI, in the checkout or in its cache. */
-export function installerPath(): string {
-  return fileURLToPath(new URL("../../../../install.sh", import.meta.url));
+export function installerPath(platform = process.platform): string {
+  return fileURLToPath(new URL(`../../../../install.${platform === "win32" ? "ps1" : "sh"}`, import.meta.url));
 }
 
 export async function runSelfUpdate(args: string[]): Promise<number> {
-  const child = Bun.spawn(["bash", installerPath(), ...args], {
+  const command = process.platform === "win32"
+    ? ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath(), ...args]
+    : ["bash", installerPath(), ...args];
+  const child = Bun.spawn(command, {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",

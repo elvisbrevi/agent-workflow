@@ -1,6 +1,7 @@
 import yargs from "yargs";
 import type { Argv } from "yargs";
 import { AGENT_CLI_BINARIES, AGENT_CLI_PROFILES, DEFAULT_CLI, isAgentCli, type AgentCli } from "../coding-agent/agent-cli.ts";
+import { resolveAgentBinary } from "../coding-agent/agent-process.ts";
 import { DEFAULT_IDLE_TIMEOUT_MINUTES } from "../coding-agent/idle-watchdog.ts";
 import { INTERVIEW_CHANNELS, type InterviewChannelKind, type InterviewSettings } from "../interaction/question-channel.ts";
 import type { ShutdownRequest } from "../system/shutdown-service.ts";
@@ -108,7 +109,7 @@ const FIXED_EFFORT_HELP = AGENT_CLIS
 /** Answers whether a binary is on the PATH; injected so tests never depend on the host. */
 export type BinaryProbe = (binary: string) => boolean;
 
-const binaryOnPath: BinaryProbe = (binary) => Bun.which(binary) !== null;
+const binaryOnPath: BinaryProbe = (binary) => resolveAgentBinary(binary) !== null;
 
 const DEFAULT_VARIANT = "high";
 const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
@@ -403,7 +404,9 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     // LAZY_WORKFLOW_OFF_PASSWORD, or none at all when sudo does not need one.
     .option("off", {
       type: "string",
-      describe: `Apaga el equipo al terminar el run; el valor es la contrasena de sudo. Sin valor toma ${OFF_PASSWORD_ENV} o un sudo sin contrasena. Tambien se acepta -off <contrasena>.`,
+      describe: process.platform === "win32"
+        ? "Apaga Windows al terminar el run con shutdown.exe; usa --off sin contrasena."
+        : `Apaga el equipo al terminar el run; el valor es la contrasena de sudo. Sin valor toma ${OFF_PASSWORD_ENV} o un sudo sin contrasena. Tambien se acepta -off <contrasena>.`,
     })
     .option("off-delay", nonNegativeIntegerOption("--off-delay", "Segundos de gracia antes del apagado; 0 apaga de inmediato.", DEFAULT_OFF_DELAY_SECONDS))
     .parserConfiguration({ "camel-case-expansion": false, "boolean-negation": true });
@@ -638,6 +641,9 @@ function readShutdown(
   const declared = typeof parsed["off"] === "string" ? parsed["off"] : "";
   const fromEnv = env[OFF_PASSWORD_ENV] ?? "";
   const password = declared.length > 0 ? declared : fromEnv.length > 0 ? fromEnv : null;
+  if (process.platform === "win32" && password !== null) {
+    throw new Error("--off en Windows no usa contrasena de sudo; declara --off sin valor");
+  }
   return { password, delaySeconds: asNumber("off-delay") ?? DEFAULT_OFF_DELAY_SECONDS };
 }
 
@@ -693,7 +699,9 @@ function renderHelp(parser: YargsInstance): string {
     "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
     "  --no-log-file: deshabilita el run log de este run; no puede combinarse con --log-file",
     "  --off: apaga el equipo cuando el run termina, con exito o con falla; un error de argumentos nunca apaga",
-    "  --off: la contrasena en la linea de comandos queda visible en ps y en el historial; " + OFF_PASSWORD_ENV + " la evita",
+    process.platform === "win32"
+      ? "  --off: en Windows usa shutdown.exe /s /t 0, sin contrasena"
+      : "  --off: la contrasena en la linea de comandos queda visible en ps y en el historial; " + OFF_PASSWORD_ENV + " la evita",
   ].join("\n");
 }
 

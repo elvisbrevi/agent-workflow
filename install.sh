@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  setopt NULL_GLOB
+  setopt TYPESET_SILENT
+fi
 
 # ─────────────────────────────────────────────────────────────
 # agent-workflow installer
@@ -39,7 +43,8 @@ prompt_tty() {
     die "$failure_message"
   fi
 
-  if ! IFS= read -r -p "$prompt" response </dev/tty; then
+  printf '%s' "$prompt" >/dev/tty
+  if ! IFS= read -r response </dev/tty; then
     die "Unable to read interactive input from /dev/tty."
   fi
 
@@ -675,7 +680,7 @@ dispatch_destinations() {
       echo "runners:${HOME}/.local/bin"
       echo "skills:${HOME}/.agents/skills"
       echo "agents:${HOME}/.agents/agents"
-      echo "skills:${HOME}/.codex/skills"
+      echo "skills:${CODEX_HOME:-${HOME}/.codex}/skills"
       ;;
     claude-global)
       echo "skills:${HOME}/.claude/skills"
@@ -731,22 +736,22 @@ main() {
   while IFS= read -r dest; do
     [[ -z "$dest" ]] && continue
     local kind="${dest%%:*}"
-    local path="${dest#*:}"
-    local label="${MODE} (${path})"
+    local destination_path="${dest#*:}"
+    local label="${MODE} (${destination_path})"
 
     if [[ "$UNINSTALL" == true ]]; then
       case "$kind" in
-        skills) uninstall_from "$CACHE_DIR" "$path" "$label" ;;
-        agents) uninstall_agents_from "$CACHE_DIR" "$path" "$label" ;;
-        claude-agents) process_claude_agents "uninstalling" "$CACHE_DIR" "$path" "$label" ;;
-        runners) process_runners "uninstalling" "$CACHE_DIR" "$path" "$label" ;;
+        skills) uninstall_from "$CACHE_DIR" "$destination_path" "$label" ;;
+        agents) uninstall_agents_from "$CACHE_DIR" "$destination_path" "$label" ;;
+        claude-agents) process_claude_agents "uninstalling" "$CACHE_DIR" "$destination_path" "$label" ;;
+        runners) process_runners "uninstalling" "$CACHE_DIR" "$destination_path" "$label" ;;
       esac
     else
       case "$kind" in
-        skills) install_to "$CACHE_DIR" "$path" "$label" ;;
-        agents) install_agents_to "$CACHE_DIR" "$path" "$label" ;;
-        claude-agents) process_claude_agents "installing" "$CACHE_DIR" "$path" "$label" ;;
-        runners) process_runners "installing" "$CACHE_DIR" "$path" "$label" ;;
+        skills) install_to "$CACHE_DIR" "$destination_path" "$label" ;;
+        agents) install_agents_to "$CACHE_DIR" "$destination_path" "$label" ;;
+        claude-agents) process_claude_agents "installing" "$CACHE_DIR" "$destination_path" "$label" ;;
+        runners) process_runners "installing" "$CACHE_DIR" "$destination_path" "$label" ;;
       esac
     fi
   done < <(dispatch_destinations)

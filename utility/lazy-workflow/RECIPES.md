@@ -1,5 +1,8 @@
 # Recipes
 
+In PowerShell, use `scripts/preflight.ps1` wherever an example uses
+`scripts/preflight.sh`; the flags and JSON result are the same.
+
 One intent per section, stated the way an operator states it, answered with the
 commands to run in order. Replace `/repo`, the HU and the issue numbers.
 

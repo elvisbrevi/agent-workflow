@@ -24,7 +24,7 @@ judgment produces nothing. Almost every question of the form "why did it stop",
 ## Invoke it
 
 ```bash
-lazy-workflow <command> [flags]     # the installed launcher (install.sh --all-global)
+lazy-workflow <command> [flags]     # the installed launcher (install.sh or install.ps1 --all-global)
 bun run main.ts <command> [flags]   # equivalent, from inside agent/lazy-workflow/
 lazy-workflow                       # full command help — the authority on flags
 ```
@@ -35,6 +35,7 @@ The output contract makes this scriptable, and it is worth relying on:
 - Operator output — the run panel, every stamped `dd/mm/yy HH:mm:ss` line, every
   error explanation — goes to **stderr**. So `lazy-workflow ticket-info … 2>/dev/null`
   is clean JSON, and when a command fails the reason is on stderr while stdout is empty.
+  In PowerShell, use `2>$null` for the same redirection.
 - Workflow runs are long-lived: they stream to stderr and end on a marker
   (`PLAN_READY`, `IMPLEMENTATION_READY`, `TICKET_COMPLETED`…). Never poll them in a
   loop; read the marker they end on.
@@ -42,9 +43,12 @@ The output contract makes this scriptable, and it is worth relying on:
 Before proposing a run, gather the state it depends on in one pass:
 
 ```bash
-scripts/preflight.sh --working-directory /repo               # GitHub scope
-scripts/preflight.sh --hu 23438 --working-directory /repo    # Azure HU scope
+scripts/preflight.sh --working-directory /repo               # Bash or Zsh, GitHub scope
+scripts/preflight.sh --hu 23438 --working-directory /repo    # Bash or Zsh, Azure HU scope
 ```
+
+From PowerShell, use `scripts/preflight.ps1` with the same flags. The installed
+`lazy-workflow.cmd` runs the same Bun CLI and deterministic tools.
 
 It runs only read-only tools, prints one JSON document with every probe and a
 `notes` array (for example, which base this HU would branch from), and

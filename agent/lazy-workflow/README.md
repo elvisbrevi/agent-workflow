@@ -12,7 +12,8 @@ To install dependencies:
 bun install
 ```
 
-Installed by `install.sh --all-global`, `--claude-global` or `--claude-local`,
+Installed by `install.sh` (Bash or Zsh) or `install.ps1` (PowerShell) with
+`--all-global`, `--claude-global` or `--claude-local`,
 the installer prepares the locked Bun dependencies in its managed cache and the
 `lazy-workflow` command is on the path:
 
@@ -21,14 +22,14 @@ lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory
 lazy-workflow code --working-directory /path/to/repository
 ```
 
-`install.sh --codex` installs the skills into `~/.codex/skills/`, which is where
+`install.sh --codex` or `install.ps1 --codex` installs the skills into `~/.codex/skills/`, which is where
 Codex resolves them from; without it a run that falls back to Codex has no
 skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,
 `--claude-local`, `--target D`, `--ref REF`, `--uninstall`, `--dry-run` and
 `--force`.
 
 Once installed, `lazy-workflow update` reinstalls it: it runs the repository's
-`install.sh` with the arguments declared after it, and with `--all-global` when
+platform installer with the arguments declared after it, and with `--all-global` when
 none is declared.
 
 Every command has a runnable example in [Practical examples](#practical-examples);
@@ -181,7 +182,7 @@ lazy-workflow credentials-set --name OPENAI_API_KEY
 ### Updating the tool and the credentials
 
 ```bash
-# Reinstall the tool; any argument is forwarded to install.sh
+# Reinstall the tool; any argument is forwarded to the platform installer
 lazy-workflow update
 lazy-workflow update --codex
 
@@ -645,6 +646,9 @@ shutdown and the run is recorded as interrupted. Taking the password from
 `LAZY_WORKFLOW_OFF_PASSWORD` keeps it out of `ps` and the shell history. A
 shutdown that fails is reported like any other failure and cannot change the
 exit code the run already earned.
+
+On Windows, use `lazy-workflow code --off --working-directory C:\repo` without
+a password. The command uses `shutdown.exe /s /t 0` after the grace period.
 
 ## Agent authority
 

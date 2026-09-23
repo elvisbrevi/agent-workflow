@@ -35,8 +35,9 @@ same step with its own verification, over hand-driving a sequence of writes.
 
 ## Preflight chains
 
-The reads worth doing before spending a session. `scripts/preflight.sh` runs
-exactly these and returns them as one JSON document.
+The reads worth doing before spending a session. `scripts/preflight.sh`
+(`scripts/preflight.ps1` in PowerShell) runs exactly these and returns them as
+one JSON document.
 
 ```bash
 # Before plan/code --hu
@@ -204,6 +205,7 @@ lazy-workflow git-branch-delete --branch <name> --base-branch <name> [--commit <
 ## Reading the output
 
 - JSON on **stdout**, operator lines and errors on **stderr**. `2>/dev/null`
+  in Bash or Zsh (`2>$null` in PowerShell)
   leaves parseable JSON; a failed command leaves stdout empty and the reason on
   stderr, so an empty stdout is never "no results".
 - `--branch` and `--base-branch` accept the short name (`issue/201`) or the full
