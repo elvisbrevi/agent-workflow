@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildCli,
+  SUPPORTED_COMMANDS,
   type CliParseResult,
   type CliParser,
 } from "../src/cli/parse-cli-options.ts";
@@ -450,6 +451,17 @@ describe("buildCli parser", () => {
     test("--help devuelve help aunque haya otros flags", () => {
       const result = parse(["plan", "--help"]);
       expect(result.kind).toBe("help");
+    });
+
+    test("--help enumera cada comando soportado con una invocacion explicita", () => {
+      const result = parse(["--help"]);
+      expect(result.kind).toBe("help");
+      if (result.kind !== "help") return;
+      const documented = new Set(
+        [...result.output.matchAll(/^  lazy-workflow ([\w-]+)(?:\s|$)/gm)]
+          .map((match) => match[1]!),
+      );
+      expect([...documented].sort()).toEqual([...SUPPORTED_COMMANDS].sort());
     });
   });
 

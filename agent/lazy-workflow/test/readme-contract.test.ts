@@ -16,6 +16,17 @@ import { buildCli, SUPPORTED_COMMANDS } from "../src/cli/parse-cli-options.ts";
 import { DETERMINISTIC_TOOL_COMMANDS } from "../src/cli/tool-commands.ts";
 
 const readme = await Bun.file(new URL("../README.md", import.meta.url)).text();
+const rootReadme = await Bun.file(new URL("../../../README.md", import.meta.url)).text();
+
+test("el README principal describe cada comando registrado y usa la CLI instalada", () => {
+  const documented = new Set(
+    [...rootReadme.matchAll(/^\| `([a-z][a-z0-9-]*)` \|/gm)]
+      .map((match) => match[1]!)
+      .filter((command) => !["opencode", "claudecode", "codex"].includes(command)),
+  );
+  expect([...documented].sort()).toEqual([...SUPPORTED_COMMANDS].sort());
+  expect(rootReadme).not.toContain("bun run");
+});
 
 const help = (() => {
   const parsed = buildCli(() => true)(["--help"], { onHelp: () => 0, onError: () => 1 });
