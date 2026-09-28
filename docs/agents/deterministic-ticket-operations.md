@@ -3,7 +3,7 @@
 ## Objective
 
 Mechanical Azure DevOps and Git effects are kept out of the OpenCode prompt and
-owned by typed, idempotent `lazy-workflow` commands. OpenCode remains responsible
+owned by typed, idempotent `lz` commands. OpenCode remains responsible
 for implementation, review, commits, and producing behavior-appropriate
 evidence files — but not for the JSON that declares them: the completion
 manifest is written by `ticket-manifest-set`, because a shape a session

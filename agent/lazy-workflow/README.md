@@ -15,15 +15,16 @@ bun install
 Installed by `install.sh` (Bash or Zsh) or `install.ps1` (PowerShell) with
 `--all-global`, `--claude-global` or `--claude-local`,
 the installer prepares the locked Bun dependencies in its managed cache and the
-`lazy-workflow` command is on the path:
+`lz` command is on the path:
 
 ```bash
-lazy-workflow plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
-lazy-workflow code --working-directory /path/to/repository
+lz plan --prompt "plan the requested GitHub work" --working-directory /path/to/repository
+lz code --working-directory /path/to/repository
 ```
 
-On Windows the installed command is `lazy-workflow.cmd`. For quoted or multiline
-prompts from PowerShell, use `lazy-workflow-powershell.ps1` instead.
+On Windows the installed command is `lz.cmd`. For quoted or multiline
+prompts from PowerShell, use `lz-powershell.ps1` instead.
+The previous `lazy-workflow` command remains an alias for existing scripts.
 
 `install.sh --codex` or `install.ps1 --codex` installs the skills into `~/.codex/skills/`, which is where
 Codex resolves them from; without it a run that falls back to Codex has no
@@ -31,7 +32,7 @@ skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,
 `--claude-local`, `--target D`, `--ref REF`, `--uninstall`, `--dry-run` and
 `--force`.
 
-Once installed, `lazy-workflow update` reinstalls it: it runs the repository's
+Once installed, `lz update` reinstalls it: it runs the repository's
 platform installer with the arguments declared after it, and with `--all-global` when
 none is declared.
 
@@ -44,44 +45,44 @@ the sections after it explain what each one does.
 
 ```bash
 # Plan the GitHub backlog of one repository
-lazy-workflow plan --prompt "plan the requested change" --working-directory /path/to/repository
+lz plan --prompt "plan the requested change" --working-directory /path/to/repository
 
 # Ask a different number of clarifying questions (default 5)
-lazy-workflow plan --number-of-questions 3 --working-directory /path/to/repository
+lz plan --number-of-questions 3 --working-directory /path/to/repository
 
 # Answer those questions yourself, in a browser page the run opens
-lazy-workflow plan --interview http --working-directory /path/to/repository
+lz plan --interview http --working-directory /path/to/repository
 
 # Plan against the norms of the component declared in .sag/config.json
-lazy-workflow plan --normas-sag --working-directory /path/to/repository
+lz plan --normas-sag --working-directory /path/to/repository
 
 # Slice an Azure HU and publish its work items in dependency order
-lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+lz plan --hu 23438 --working-directory /path/to/repository
 
 # Plan one unit of work across several repositories in a single session
-lazy-workflow plan --working-directory /path/to/api,/path/to/web
+lz plan --working-directory /path/to/api,/path/to/web
 ```
 
 ### Delivering
 
 ```bash
 # Drain the eligible GitHub issues, each in its own fresh session
-lazy-workflow code --working-directory /path/to/repository
+lz code --working-directory /path/to/repository
 
 # Same, with the coding norms loaded
-lazy-workflow code --normas-sag --working-directory /path/to/repository
+lz code --normas-sag --working-directory /path/to/repository
 
 # Drain the direct Task and Bug tickets of an Azure HU
-lazy-workflow code --hu 23438 --working-directory /path/to/repository
+lz code --hu 23438 --working-directory /path/to/repository
 
 # First delivery of an HU whose hu/<HU> branch does not exist yet
-lazy-workflow code --hu 23438 --base-branch develop --working-directory /path/to/repository
+lz code --hu 23438 --base-branch develop --working-directory /path/to/repository
 
 # Deliver one Azure ticket across a multi-repository workspace
-lazy-workflow code --hu 23438 --ticket 23459 --working-directory /path/to/api,/path/to/web
+lz code --hu 23438 --ticket 23459 --working-directory /path/to/api,/path/to/web
 
 # Drain the queue overnight and power the machine down when the run ends
-lazy-workflow code --off 'sudo-password' --working-directory /path/to/repository
+lz code --off 'sudo-password' --working-directory /path/to/repository
 ```
 
 ### Resuming an interrupted run
@@ -89,59 +90,59 @@ lazy-workflow code --off 'sudo-password' --working-directory /path/to/repository
 ```bash
 # The issue or HU, the ticket and the branch come from the checkpoint,
 # so no --hu and no --working-directory are needed
-lazy-workflow code
+lz code
 
 # Reconcile a delivery whose session had already been verified: rerun the
 # original command, which finishes that unit instead of selecting replacement work
-lazy-workflow code --working-directory /path/to/repository
+lz code --working-directory /path/to/repository
 ```
 
 ### Azure reads — no session is opened
 
 ```bash
-lazy-workflow hu-info --hu 23438
-lazy-workflow hu-children-info --hu 23438
-lazy-workflow hu-branch-info --hu 23438
-lazy-workflow ticket-info --hu 23438 --ticket 23459
-lazy-workflow ticket-type-info --ticket 23459
-lazy-workflow ticket-description-info --ticket 23459
-lazy-workflow ticket-state-info --ticket 23459
-lazy-workflow ticket-effort-info --ticket 23459
-lazy-workflow ticket-branch-info --hu 23438 --ticket 23459
-lazy-workflow ticket-pr-info --hu 23438 --ticket 23459
-lazy-workflow ticket-completion-info --hu 23438 --ticket 23459
+lz hu-info --hu 23438
+lz hu-children-info --hu 23438
+lz hu-branch-info --hu 23438
+lz ticket-info --hu 23438 --ticket 23459
+lz ticket-type-info --ticket 23459
+lz ticket-description-info --ticket 23459
+lz ticket-state-info --ticket 23459
+lz ticket-effort-info --ticket 23459
+lz ticket-branch-info --hu 23438 --ticket 23459
+lz ticket-pr-info --hu 23438 --ticket 23459
+lz ticket-completion-info --hu 23438 --ticket 23459
 ```
 
 ### Azure writes — no session is opened
 
 ```bash
 # Branch links
-lazy-workflow hu-branch-set --hu 23438 --branch refs/heads/hu/23438 --working-directory /path/to/repository
-lazy-workflow hu-branch-ensure --hu 23438 --base-branch develop --working-directory /path/to/repository
-lazy-workflow ticket-branch-set --hu 23438 --ticket 23459 --branch refs/heads/ticket/23459 \\
+lz hu-branch-set --hu 23438 --branch refs/heads/hu/23438 --working-directory /path/to/repository
+lz hu-branch-ensure --hu 23438 --base-branch develop --working-directory /path/to/repository
+lz ticket-branch-set --hu 23438 --ticket 23459 --branch refs/heads/ticket/23459 \\
   --working-directory /path/to/repository
-lazy-workflow ticket-branch-checkout --branch refs/heads/ticket/23459 --working-directory /path/to/repository
-lazy-workflow ticket-branch-push --branch refs/heads/ticket/23459 --working-directory /path/to/repository
+lz ticket-branch-checkout --branch refs/heads/ticket/23459 --working-directory /path/to/repository
+lz ticket-branch-push --branch refs/heads/ticket/23459 --working-directory /path/to/repository
 
 # Work items and their relations
-lazy-workflow ticket-create --hu 23438 --type Task --title "Slice uno" \
+lz ticket-create --hu 23438 --type Task --title "Slice uno" \
   --description-file ./description.html --estimate 8
-lazy-workflow ticket-link-parent --parent 23438 --child 23459
-lazy-workflow ticket-link-predecessor --blocker 23459 --blocked 23460
+lz ticket-link-parent --parent 23438 --child 23459
+lz ticket-link-predecessor --blocker 23459 --blocked 23460
 
 # Ticket fields
-lazy-workflow ticket-description-set --ticket 23459 --description-file ./description.html
-lazy-workflow ticket-state-set --ticket 23459 --state "En progreso" --expected-state "Nuevo"
-lazy-workflow ticket-effort-set --ticket 23459 --real-effort 6 --real-effort-hh 6 --expected-rev 9
-lazy-workflow hu-state-set --hu 23438 --state "Resuelto" --expected-state "En progreso" --expected-rev 12
+lz ticket-description-set --ticket 23459 --description-file ./description.html
+lz ticket-state-set --ticket 23459 --state "En progreso" --expected-state "Nuevo"
+lz ticket-effort-set --ticket 23459 --real-effort 6 --real-effort-hh 6 --expected-rev 9
+lz hu-state-set --hu 23438 --state "Resuelto" --expected-state "En progreso" --expected-rev 12
 
 # Pull request and completion
-lazy-workflow ticket-pr-create --hu 23438 --ticket 23459
-lazy-workflow ticket-pr-link --hu 23438 --ticket 23459 --pr 987
-lazy-workflow ticket-commit-link --ticket 23459 --pr 987
-lazy-workflow ticket-session-verify --branch refs/heads/ticket/23459 \
+lz ticket-pr-create --hu 23438 --ticket 23459
+lz ticket-pr-link --hu 23438 --ticket 23459 --pr 987
+lz ticket-commit-link --ticket 23459 --pr 987
+lz ticket-session-verify --branch refs/heads/ticket/23459 \
   --base-branch refs/heads/hu/23438 --working-directory /path/to/repository
-lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 987 \
+lz ticket-completion-apply --hu 23438 --ticket 23459 --pr 987 \
   --summary "Lo que la sesión dejó dicho"
 ```
 
@@ -149,62 +150,62 @@ lazy-workflow ticket-completion-apply --hu 23438 --ticket 23459 --pr 987 \
 
 ```bash
 # What a code run would take, and why it would skip the rest
-lazy-workflow github-auth-info --working-directory /path/to/repository
-lazy-workflow github-repo-info --working-directory /path/to/repository
-lazy-workflow github-issue-list --working-directory /path/to/repository
-lazy-workflow github-issue-select --working-directory /path/to/repository
-lazy-workflow github-issue-info --issue 263 --working-directory /path/to/repository
+lz github-auth-info --working-directory /path/to/repository
+lz github-repo-info --working-directory /path/to/repository
+lz github-issue-list --working-directory /path/to/repository
+lz github-issue-select --working-directory /path/to/repository
+lz github-issue-info --issue 263 --working-directory /path/to/repository
 
 # The claim, the branch, the commit, the pull request, the closure
-lazy-workflow github-issue-claim --issue 263 --working-directory /path/to/repository
-lazy-workflow github-issue-release --issue 263 --working-directory /path/to/repository
-lazy-workflow github-branch-prepare --issue 263 --working-directory /path/to/repository
-lazy-workflow github-branch-checkout --branch issue/263 --base-branch main --working-directory /path/to/repository
-lazy-workflow github-session-verify --branch issue/263 --base-branch main --working-directory /path/to/repository
-lazy-workflow github-branch-verify --branch issue/263 --base-branch main --working-directory /path/to/repository
-lazy-workflow github-commit-push --branch issue/263 --commit <sha> --working-directory /path/to/repository
-lazy-workflow github-pr-create --issue 263 --branch issue/263 --base-branch main --commit <sha> \
+lz github-issue-claim --issue 263 --working-directory /path/to/repository
+lz github-issue-release --issue 263 --working-directory /path/to/repository
+lz github-branch-prepare --issue 263 --working-directory /path/to/repository
+lz github-branch-checkout --branch issue/263 --base-branch main --working-directory /path/to/repository
+lz github-session-verify --branch issue/263 --base-branch main --working-directory /path/to/repository
+lz github-branch-verify --branch issue/263 --base-branch main --working-directory /path/to/repository
+lz github-commit-push --branch issue/263 --commit <sha> --working-directory /path/to/repository
+lz github-pr-create --issue 263 --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
-lazy-workflow github-pr-merge --pr 271 --issue 263 --branch issue/263 --base-branch main --commit <sha> \
+lz github-pr-merge --pr 271 --issue 263 --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
-lazy-workflow github-issue-close --issue 263 --pr 271 --commit <sha> --working-directory /path/to/repository
-lazy-workflow github-branch-cleanup --branch issue/263 --base-branch main --commit <sha> \
+lz github-issue-close --issue 263 --pr 271 --commit <sha> --working-directory /path/to/repository
+lz github-branch-cleanup --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
 
 # git
-lazy-workflow git-branch-delete --branch issue/263 --base-branch main --commit <sha> \
+lz git-branch-delete --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
 
 # The operator's own credentials, read from ~/.config/secrets/*.env
-lazy-workflow credentials-list
-lazy-workflow credentials-get --name OPENAI_API_KEY
+lz credentials-list
+lz credentials-get --name OPENAI_API_KEY
 # Store or rotate one: the value is prompted, never a flag
-lazy-workflow credentials-set --name OPENAI_API_KEY
+lz credentials-set --name OPENAI_API_KEY
 ```
 
 ### Updating the tool and the credentials
 
 ```bash
 # Reinstall the tool; any argument is forwarded to the platform installer
-lazy-workflow update
-lazy-workflow update --codex
+lz update
+lz update --codex
 
 # Bring this machine the secrets another machine published
-lazy-workflow credentials-update
+lz credentials-update
 ```
 
 ### Choosing the CLI, the model and the effort
 
 ```bash
 # OpenCode is the default; naming it explicitly is equivalent
-lazy-workflow code --cli opencode --working-directory /path/to/repository
+lz code --cli opencode --working-directory /path/to/repository
 
 # Claude Code with Sonnet 5 at high effort
-lazy-workflow code --cli claudecode --model claude-sonnet-5 --variant high \
+lz code --cli claudecode --model claude-sonnet-5 --variant high \
   --working-directory /path/to/repository
 
 # Codex with gpt-5.6-sol at high effort
-lazy-workflow code --cli codex --model gpt-5.6-sol --variant high \
+lz code --cli codex --model gpt-5.6-sol --variant high \
   --working-directory /path/to/repository
 ```
 
@@ -212,30 +213,30 @@ lazy-workflow code --cli codex --model gpt-5.6-sol --variant high \
 
 ```bash
 # Claude Code on Sonnet 5, backed by the same model through GitHub Copilot
-lazy-workflow code --cli claudecode --model claude-sonnet-5 \
+lz code --cli claudecode --model claude-sonnet-5 \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
   --working-directory /path/to/repository
 
 # Several rungs; declaration order is the descent order
-lazy-workflow code --cli claudecode --model claude-sonnet-5 \
+lz code --cli claudecode --model claude-sonnet-5 \
   --fallback claudecode:claude-opus-5:high \
   --fallback codex:gpt-5.6-sol:high \
   --working-directory /path/to/repository
 
 # End the session and descend after 15 minutes of silence instead of 30
-lazy-workflow code --idle-timeout 15 --fallback codex:gpt-5.6-sol:high \
+lz code --idle-timeout 15 --fallback codex:gpt-5.6-sol:high \
   --working-directory /path/to/repository
 ```
 
 ### Operator output
 
 ```bash
-lazy-workflow code --verbose --working-directory /path/to/repository
-lazy-workflow code --verbose-output --working-directory /path/to/repository
-lazy-workflow code --quiet --working-directory /path/to/repository
-lazy-workflow code --no-color --working-directory /path/to/repository
-lazy-workflow code --log-file /path/to/runs.jsonl --working-directory /path/to/repository
-lazy-workflow code --no-log-file --working-directory /path/to/repository
+lz code --verbose --working-directory /path/to/repository
+lz code --verbose-output --working-directory /path/to/repository
+lz code --quiet --working-directory /path/to/repository
+lz code --no-color --working-directory /path/to/repository
+lz code --log-file /path/to/runs.jsonl --working-directory /path/to/repository
+lz code --no-log-file --working-directory /path/to/repository
 ```
 
 ## Default GitHub workflows
@@ -379,9 +380,9 @@ delivered across several repositories in a single session, with the first
 repository as the anchor.
 
 ```bash
-lazy-workflow plan --working-directory /path/to/api,/path/to/web
-lazy-workflow code --working-directory /path/to/api,/path/to/web
-lazy-workflow code --hu 23438 --ticket 23459 --working-directory /path/to/api,/path/to/web
+lz plan --working-directory /path/to/api,/path/to/web
+lz code --working-directory /path/to/api,/path/to/web
+lz code --hu 23438 --ticket 23459 --working-directory /path/to/api,/path/to/web
 ```
 
 Every repository must have a remote of the run's own provider — all GitHub, or
@@ -497,7 +498,7 @@ carries the answers back, and resumes that same session. `--interview off` is
 the default and the only other channel.
 
 ```bash
-lazy-workflow plan --interview http --interview-host 127.0.0.1 --interview-port 8787 \
+lz plan --interview http --interview-host 127.0.0.1 --interview-port 8787 \
   --interview-timeout 900 --interview-rounds 8 --working-directory /path/to/repository
 ```
 
@@ -524,11 +525,11 @@ session.
 Four global flags select what reaches the operator:
 
 ```bash
-lazy-workflow code --working-directory /repo                  # default: info, warn, error
-lazy-workflow code --verbose --working-directory /repo        # + debug
-lazy-workflow code --verbose-output --working-directory /repo # + debug and trace
-lazy-workflow code --quiet --working-directory /repo          # errors only
-lazy-workflow code --no-color --working-directory /repo       # ANSI stripped
+lz code --working-directory /repo                  # default: info, warn, error
+lz code --verbose --working-directory /repo        # + debug
+lz code --verbose-output --working-directory /repo # + debug and trace
+lz code --quiet --working-directory /repo          # errors only
+lz code --no-color --working-directory /repo       # ANSI stripped
 ```
 
 `--verbose` and `--quiet` are mutually exclusive. `--verbose-output` is strictly
@@ -547,7 +548,7 @@ tokyo-night, and a run opens with a rounded panel naming what it is about to do:
 
 ```text
 ╭──────────────────────────────────────────────────────────╮
-│ lazy-workflow · code                                     │
+│ lz · code                                     │
 │ alcance    GitHub                                        │
 │ agente     opencode · opencode-go/deepseek-v4-pro · high │
 │ directorio /repo                                         │
@@ -570,10 +571,10 @@ between them without parsing operator prose. It describes a run; it never copies
 one — a record carries no credential, no prompt text and no diff content.
 
 ```bash
-lazy-workflow code --working-directory /repo                            # default path
-lazy-workflow code --log-file /path/to/runs.jsonl --working-directory /repo
-lazy-workflow code --no-log-file --working-directory /repo
-LAZY_WORKFLOW_LOG_FILE=/path/to/runs.jsonl lazy-workflow code --working-directory /repo
+lz code --working-directory /repo                            # default path
+lz code --log-file /path/to/runs.jsonl --working-directory /repo
+lz code --no-log-file --working-directory /repo
+LAZY_WORKFLOW_LOG_FILE=/path/to/runs.jsonl lz code --working-directory /repo
 ```
 
 Where it writes resolves in this order: `--log-file <path>`, then
@@ -638,9 +639,9 @@ still at the keyboard and powering their machine off for a typo is never what
 was asked.
 
 ```bash
-lazy-workflow code --off 'sudo-password' --working-directory /repo
-lazy-workflow code --off 'sudo-password' --off-delay 60 --working-directory /repo
-LAZY_WORKFLOW_OFF_PASSWORD='sudo-password' lazy-workflow code --off --working-directory /repo
+lz code --off 'sudo-password' --working-directory /repo
+lz code --off 'sudo-password' --off-delay 60 --working-directory /repo
+LAZY_WORKFLOW_OFF_PASSWORD='sudo-password' lz code --off --working-directory /repo
 ```
 
 `--off-delay` seconds (default 15) is the grace period, and it is the way out:
@@ -650,7 +651,7 @@ shutdown and the run is recorded as interrupted. Taking the password from
 shutdown that fails is reported like any other failure and cannot change the
 exit code the run already earned.
 
-On Windows, use `lazy-workflow code --off --working-directory C:\repo` without
+On Windows, use `lz code --off --working-directory C:\repo` without
 a password. The command uses `shutdown.exe /s /t 0` after the grace period.
 
 ## Agent authority

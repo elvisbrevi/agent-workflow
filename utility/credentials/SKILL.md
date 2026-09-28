@@ -32,7 +32,7 @@ uppercase shell identifiers such as `AZURE_DEVOPS_TOKEN`.
 2. If an env file has it, load that file in the command's shell
    (`. ~/.config/secrets/<file>` or the `load-env <service>` helper) and retry.
    In PowerShell, load one named credential without displaying it:
-   `$env:NAME = (& lazy-workflow credentials-get --name NAME --force)`.
+   `$env:NAME = (& lz credentials-get --name NAME --force)`.
    Do not ask the user for the credential.
 3. Ask for the credential only after the audit reports it missing.
 

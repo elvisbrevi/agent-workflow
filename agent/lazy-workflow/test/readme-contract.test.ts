@@ -1,5 +1,5 @@
 /**
- * El README de lazy-workflow se verifica contra el código, no contra la memoria.
+ * El README de lz se verifica contra el código, no contra la memoria.
  *
  * Documentó comando por comando un sistema que el rediseño desmontó, y nada
  * fallaba por eso. Estas pruebas fijan lo que se puede fijar: los comandos que
@@ -50,8 +50,8 @@ const requiredOptions = new Map<string, string[]>();
 for (const [command, options] of
   help.split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.startsWith("lazy-workflow "))
-    .map((line) => line.slice("lazy-workflow ".length))
+    .filter((line) => line.startsWith("lz "))
+    .map((line) => line.slice("lz ".length))
     // `ticket-{branch,pr}-info` es una forma por cada alternativa, no un comando llamado asi.
     .flatMap((form) => {
       const braces = form.match(/^([a-z-]*)\{([a-z,]+)\}([a-z-]*)( .*)?$/);
@@ -73,11 +73,11 @@ for (const [command, options] of
 const shellInvocations: string[] = (readme.match(/```bash\n([\s\S]*?)```/g) ?? [])
   .flatMap((block) => block.replace(/\\\n\s*/g, " ").split("\n"))
   .map((line) => line.trim())
-  .filter((line) => line.startsWith("lazy-workflow "));
+  .filter((line) => line.startsWith("lz "));
 
 test("el README nombra todos los tool commands y ninguno que el código no exponga", () => {
-  const named = new Set((readme.match(/lazy-workflow ([a-z][a-z0-9-]*)/g) ?? [])
-    .map((match) => match.slice("lazy-workflow ".length)));
+  const named = new Set((readme.match(/lz ([a-z][a-z0-9-]*)/g) ?? [])
+    .map((match) => match.slice("lz ".length)));
 
   expect(DETERMINISTIC_TOOL_COMMANDS.filter((command) => !named.has(command))).toEqual([]);
   const invoked = shellInvocations.map((line) => line.split(" ")[1]!);

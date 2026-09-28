@@ -5,7 +5,7 @@ flag they accept. The deterministic tools have their own file
 ([TOOLS.md](TOOLS.md)), and what the agent flags actually change is in
 [CODING-AGENTS.md](CODING-AGENTS.md).
 
-`lazy-workflow` with no subcommand — or with an unsupported one — prints the
+`lz` with no subcommand — or with an unsupported one — prints the
 complete help, which is the authority whenever this file and the binary disagree.
 
 ## The commands
@@ -101,17 +101,17 @@ keyboard having just mistyped a flag. A failed shutdown is reported as
 `shutdown-failure` and leaves the run's exit code exactly as it was.
 
 ```bash
-LAZY_WORKFLOW_OFF_PASSWORD='…' lazy-workflow code --off --working-directory /repo   # drain the queue, then power down
-lazy-workflow code --off '…' --off-delay 0 --working-directory /repo                # no grace period
+LAZY_WORKFLOW_OFF_PASSWORD='…' lz code --off --working-directory /repo   # drain the queue, then power down
+lz code --off '…' --off-delay 0 --working-directory /repo                # no grace period
 ```
 
 ## Multi-repository workspaces
 
 ```bash
-lazy-workflow plan --working-directory /repo-a,/repo-b
-lazy-workflow code --working-directory /repo-a,/repo-b
-lazy-workflow code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
-lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
+lz plan --working-directory /repo-a,/repo-b
+lz code --working-directory /repo-a,/repo-b
+lz code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
+lz code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
 ```
 
 Each entry must be a Git repository root with an `origin` remote and a clean

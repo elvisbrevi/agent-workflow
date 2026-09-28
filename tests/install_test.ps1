@@ -33,12 +33,17 @@ try {
   New-Item -ItemType Directory -Path $source, $profile, $project -Force | Out-Null
   $skill = Join-Path $source 'utility/alpha'
   $agent = Join-Path $source 'agent/runner'
-  New-Item -ItemType Directory -Path $skill, $agent -Force | Out-Null
+  $lazyAgent = Join-Path $source 'agent/lazy-workflow'
+  New-Item -ItemType Directory -Path $skill, $agent, $lazyAgent -Force | Out-Null
   [IO.File]::WriteAllText((Join-Path $skill 'SKILL.md'), '# Test skill')
   [IO.File]::WriteAllText((Join-Path $agent 'AGENT.md'), '# Test agent')
   [IO.File]::WriteAllText((Join-Path $agent 'main.ts'), 'console.log(JSON.stringify(process.argv.slice(2)));')
   [IO.File]::WriteAllText((Join-Path $agent 'run.cmd'), '@echo off')
   Copy-Item -LiteralPath (Join-Path $repository 'agent/lazy-workflow/run.ps1') -Destination (Join-Path $agent 'run.ps1')
+  Copy-Item -LiteralPath (Join-Path $agent 'main.ts') -Destination (Join-Path $lazyAgent 'main.ts')
+  Copy-Item -LiteralPath (Join-Path $agent 'run.cmd') -Destination (Join-Path $lazyAgent 'run.cmd')
+  Copy-Item -LiteralPath (Join-Path $agent 'run.ps1') -Destination (Join-Path $lazyAgent 'run.ps1')
+  [IO.File]::WriteAllText((Join-Path $lazyAgent 'AGENT.md'), '# Lazy Workflow test agent')
   Invoke-Git @('-C', $source, 'init', '-b', 'main')
   Invoke-Git @('-C', $source, 'config', 'user.name', 'Install Test')
   Invoke-Git @('-C', $source, 'config', 'user.email', 'install-test@example.invalid')
@@ -100,11 +105,16 @@ try {
   $globalCodexSkill = Join-Path $env:CODEX_HOME 'skills/alpha'
   $globalRunner = Join-Path $profile '.local/bin/runner.cmd'
   $globalPowerShellRunner = Join-Path $profile '.local/bin/runner-powershell.ps1'
-  foreach ($path in @($globalClaudeSkill, $globalSharedSkill, $globalCodexSkill, $globalRunner, $globalPowerShellRunner)) {
+  $shortRunner = Join-Path $profile '.local/bin/lz.cmd'
+  $shortPowerShellRunner = Join-Path $profile '.local/bin/lz-powershell.ps1'
+  $legacyRunner = Join-Path $profile '.local/bin/lazy-workflow.cmd'
+  foreach ($path in @($globalClaudeSkill, $globalSharedSkill, $globalCodexSkill, $globalRunner, $globalPowerShellRunner, $shortRunner, $shortPowerShellRunner, $legacyRunner)) {
     Assert (Test-Path -LiteralPath $path) "All-global did not install $path"
   }
+  Assert ((& $shortRunner 'short name') -eq '["short name"]') 'Short Windows runner failed'
+  Assert ((& $legacyRunner 'old name') -eq '["old name"]') 'Legacy Windows runner failed'
   Invoke-Installer @('--uninstall', '--all-global')
-  foreach ($path in @($globalClaudeSkill, $globalSharedSkill, $globalCodexSkill, $globalRunner, $globalPowerShellRunner)) {
+  foreach ($path in @($globalClaudeSkill, $globalSharedSkill, $globalCodexSkill, $globalRunner, $globalPowerShellRunner, $shortRunner, $shortPowerShellRunner, $legacyRunner)) {
     Assert (-not (Test-Path -LiteralPath $path)) "All-global did not remove $path"
   }
   Write-Output 'PASS: all-global installs and removes every Windows destination'

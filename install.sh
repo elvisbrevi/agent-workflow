@@ -523,9 +523,9 @@ process_claude_agents() {
 
 # ── Optional legacy agent runner launchers ──────────────────
 install_runner() {
-  local cache="$1" dest_base="$2" agent="$3"
+  local cache="$1" dest_base="$2" agent="$3" command="${4:-$3}"
   local src="${cache}/agent/${agent}/run.sh"
-  local dst="${dest_base}/${agent}"
+  local dst="${dest_base}/${command}"
 
   [[ -f "$src" ]] || return 0
 
@@ -549,7 +549,7 @@ install_runner() {
   fi
 
   ln -s "$src" "$dst"
-  ok "Installed runner: ${agent}"
+  ok "Installed runner: ${command}"
 }
 
 uninstall_runner() {
@@ -593,8 +593,14 @@ process_runners() {
     [[ -f "${cache}/agent/${agent}/run.sh" ]] || continue
     if [[ "$action" == "installing" ]]; then
       install_runner "$cache" "$dest_base" "$agent"
+      if [[ "$agent" == "lazy-workflow" ]]; then
+        install_runner "$cache" "$dest_base" "$agent" "lz"
+      fi
     else
       uninstall_runner "$dest_base" "$agent"
+      if [[ "$agent" == "lazy-workflow" ]]; then
+        uninstall_runner "$dest_base" "lz"
+      fi
     fi
     count=$((count + 1))
   done < <(discover_agents "$cache")

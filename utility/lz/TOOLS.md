@@ -41,31 +41,31 @@ one JSON document.
 
 ```bash
 # Before plan/code --hu
-lazy-workflow hu-info         --hu 23438
-lazy-workflow hu-children-info --hu 23438     # what is already published
-lazy-workflow hu-branch-info  --hu 23438      # "branch": null → the first code run provisions hu/23438 from master or main
+lz hu-info         --hu 23438
+lz hu-children-info --hu 23438     # what is already published
+lz hu-branch-info  --hu 23438      # "branch": null → the first code run provisions hu/23438 from master or main
 
 # Before code in GitHub scope
-lazy-workflow github-auth-info    --working-directory /repo
-lazy-workflow github-repo-info    --working-directory /repo
-lazy-workflow github-issue-list   --working-directory /repo   # every candidate and why it is skipped
-lazy-workflow github-issue-select --working-directory /repo   # what the run would actually take
+lz github-auth-info    --working-directory /repo
+lz github-repo-info    --working-directory /repo
+lz github-issue-list   --working-directory /repo   # every candidate and why it is skipped
+lz github-issue-select --working-directory /repo   # what the run would actually take
 
 # Before declaring a ticket stuck
-lazy-workflow ticket-info            --hu 23438 --ticket 23459
-lazy-workflow ticket-completion-info --hu 23438 --ticket 23459
+lz ticket-info            --hu 23438 --ticket 23459
+lz ticket-completion-info --hu 23438 --ticket 23459
 ```
 
 ## Azure reads
 
 ```bash
-lazy-workflow hu-info --hu <id>
-lazy-workflow hu-children-info --hu <id>
-lazy-workflow hu-branch-info --hu <id>
-lazy-workflow ticket-info --hu <id> --ticket <id>
-lazy-workflow ticket-type-info --ticket <id>
-lazy-workflow ticket-{description,state,effort,attachment,evidence}-info --ticket <id>
-lazy-workflow ticket-{branch,pr,completion}-info --hu <id> --ticket <id>
+lz hu-info --hu <id>
+lz hu-children-info --hu <id>
+lz hu-branch-info --hu <id>
+lz ticket-info --hu <id> --ticket <id>
+lz ticket-type-info --ticket <id>
+lz ticket-{description,state,effort,attachment,evidence}-info --ticket <id>
+lz ticket-{branch,pr,completion}-info --hu <id> --ticket <id>
 ```
 
 `ticket-info` is the aggregate: identity, description, state, revision, effort,
@@ -81,26 +81,26 @@ integration branch are validated rather than assumed.
 ## Azure writes
 
 ```bash
-lazy-workflow hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>
-lazy-workflow hu-branch-ensure --hu <id> [--base-branch <name>] --working-directory <path>
-lazy-workflow hu-state-set --hu <id> --state <state> --expected-state <state> --expected-rev <rev>
-lazy-workflow ticket-create --hu <id> --type <Task|Bug> --title <title> --description-file <path> \
+lz hu-branch-set --hu <id> --branch <name> [--base-branch <name>] --working-directory <path>
+lz hu-branch-ensure --hu <id> [--base-branch <name>] --working-directory <path>
+lz hu-state-set --hu <id> --state <state> --expected-state <state> --expected-rev <rev>
+lz ticket-create --hu <id> --type <Task|Bug> --title <title> --description-file <path> \
   [--estimate <hours>] [--assignee <identity>] [--field <referenceName>=<value>]
-lazy-workflow ticket-link-parent --parent <id> --child <id>
-lazy-workflow ticket-link-predecessor --blocker <id> --blocked <id>
-lazy-workflow ticket-description-set --ticket <id> --description-file <path>
-lazy-workflow ticket-state-set --ticket <id> --state <state> --expected-state <state>
-lazy-workflow ticket-effort-set --ticket <id> --real-effort <h> --real-effort-hh <h> --expected-rev <rev>
-lazy-workflow ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>
-lazy-workflow ticket-branch-checkout --branch <name> --working-directory <path>
-lazy-workflow ticket-branch-push --branch <name> --working-directory <path>
-lazy-workflow ticket-pr-create --hu <id> --ticket <id>
-lazy-workflow ticket-pr-link --hu <id> --ticket <id> --pr <id>
-lazy-workflow ticket-commit-link --ticket <id> --pr <id>
-lazy-workflow ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
-lazy-workflow ticket-evidence-set --ticket <id> --evidence-file <path>
-lazy-workflow ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto de la sesión>
-lazy-workflow ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] \
+lz ticket-link-parent --parent <id> --child <id>
+lz ticket-link-predecessor --blocker <id> --blocked <id>
+lz ticket-description-set --ticket <id> --description-file <path>
+lz ticket-state-set --ticket <id> --state <state> --expected-state <state>
+lz ticket-effort-set --ticket <id> --real-effort <h> --real-effort-hh <h> --expected-rev <rev>
+lz ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>
+lz ticket-branch-checkout --branch <name> --working-directory <path>
+lz ticket-branch-push --branch <name> --working-directory <path>
+lz ticket-pr-create --hu <id> --ticket <id>
+lz ticket-pr-link --hu <id> --ticket <id> --pr <id>
+lz ticket-commit-link --ticket <id> --pr <id>
+lz ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
+lz ticket-evidence-set --ticket <id> --evidence-file <path>
+lz ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto de la sesión>
+lz ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] \
   --validation <command> --validation-result <outcome> \
   --evidence <http-json|screen|command-output>:<path> --working-directory <path>
 ```
@@ -146,13 +146,13 @@ has no `master`, exactly as `code --hu` does.
 ## GitHub queue
 
 ```bash
-lazy-workflow github-auth-info    --working-directory <path>
-lazy-workflow github-repo-info    --working-directory <path>
-lazy-workflow github-issue-list   --working-directory <path>
-lazy-workflow github-issue-select --working-directory <path>
-lazy-workflow github-issue-info    --issue <id> --working-directory <path>
-lazy-workflow github-issue-claim   --issue <id> --working-directory <path>
-lazy-workflow github-issue-release --issue <id> --working-directory <path>
+lz github-auth-info    --working-directory <path>
+lz github-repo-info    --working-directory <path>
+lz github-issue-list   --working-directory <path>
+lz github-issue-select --working-directory <path>
+lz github-issue-info    --issue <id> --working-directory <path>
+lz github-issue-claim   --issue <id> --working-directory <path>
+lz github-issue-release --issue <id> --working-directory <path>
 ```
 
 `github-issue-list` classifies every candidate with the reason it is or is not
@@ -163,18 +163,18 @@ run's own; `github-issue-release` releases only the authenticated user's claim.
 ## GitHub delivery
 
 ```bash
-lazy-workflow github-branch-prepare  --issue <id> --working-directory <path>
-lazy-workflow github-branch-checkout --branch <name> --base-branch <name> --working-directory <path>
-lazy-workflow github-branch-verify   --branch <name> --base-branch <name> --working-directory <path>
-lazy-workflow github-branch-cleanup  --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-manifest-info --manifest <path> --working-directory <path>
-lazy-workflow github-manifest-set  --issue <id> --branch <name> --manifest <path> [--commit <sha>] \
+lz github-branch-prepare  --issue <id> --working-directory <path>
+lz github-branch-checkout --branch <name> --base-branch <name> --working-directory <path>
+lz github-branch-verify   --branch <name> --base-branch <name> --working-directory <path>
+lz github-branch-cleanup  --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
+lz github-manifest-info --manifest <path> --working-directory <path>
+lz github-manifest-set  --issue <id> --branch <name> --manifest <path> [--commit <sha>] \
   --summary <text> --validation <command> --validation-result <outcome> \
   [--evidence <path-in-repository>] --working-directory <path>
-lazy-workflow github-commit-push   --branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-pr-merge  --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lazy-workflow github-issue-close --issue <id> --pr <id> --commit <sha> --working-directory <path>
+lz github-commit-push   --branch <name> --commit <sha> --working-directory <path>
+lz github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
+lz github-pr-merge  --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
+lz github-issue-close --issue <id> --pr <id> --commit <sha> --working-directory <path>
 ```
 
 These are the coordinator's own delivery steps, in the order it performs them.
@@ -199,7 +199,7 @@ files and never formats or comments them itself.
 ## git
 
 ```bash
-lazy-workflow git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>
+lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>
 ```
 
 ## Reading the output

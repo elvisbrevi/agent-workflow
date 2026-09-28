@@ -458,7 +458,7 @@ describe("buildCli parser", () => {
       expect(result.kind).toBe("help");
       if (result.kind !== "help") return;
       const documented = new Set(
-        [...result.output.matchAll(/^  lazy-workflow ([\w-]+)(?:\s|$)/gm)]
+        [...result.output.matchAll(/^  lz ([\w-]+)(?:\s|$)/gm)]
           .map((match) => match[1]!),
       );
       expect([...documented].sort()).toEqual([...SUPPORTED_COMMANDS].sort());

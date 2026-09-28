@@ -16,7 +16,7 @@ scripts/preflight.sh --hu 23438 --working-directory /repo
 #   (equivalently: hu-info, hu-children-info and hu-branch-info one by one)
 
 # 2. Plan: the session slices the HU, the coordinator publishes the work items
-lazy-workflow plan --hu 23438 --normas-sag \
+lz plan --hu 23438 --normas-sag \
   --prompt "Prioritize the read paths before the write paths; keep ticket titles in Spanish." \
   --working-directory /repo
 
@@ -25,7 +25,7 @@ lazy-workflow plan --hu 23438 --normas-sag \
 scripts/preflight.sh --hu 23438 --working-directory /repo
 
 # 4. Deliver the published Task and Bug tickets, one fresh session each
-lazy-workflow code --hu 23438 --normas-sag --base-branch main \
+lz code --hu 23438 --normas-sag --base-branch main \
   --prompt "Cover every acceptance criterion with a test before closing the ticket." \
   --working-directory /repo
 ```
@@ -42,10 +42,10 @@ The planning session cannot read Azure — `lazy-azure-plan` denies `az` and `gh
 Materialize the reference first, then point the prompt at the file:
 
 ```bash
-lazy-workflow hu-info --hu 23300 > /tmp/ref-23300.json
-lazy-workflow hu-children-info --hu 23300 >> /tmp/ref-23300.json
+lz hu-info --hu 23300 > /tmp/ref-23300.json
+lz hu-children-info --hu 23300 >> /tmp/ref-23300.json
 
-lazy-workflow plan --hu 23438 --normas-sag \
+lz plan --hu 23438 --normas-sag \
   --prompt "Read /tmp/ref-23300.json first: it is HU 23300 and its published tickets. Slice HU 23438 with the same granularity, ticket titles and estimate scale." \
   --working-directory /repo
 ```
@@ -56,7 +56,7 @@ The same holds in GitHub scope for another issue: capture it with
 ## "Let me answer the planning questions myself"
 
 ```bash
-lazy-workflow plan --interview http --working-directory /repo   # in a browser page it opens
+lz plan --interview http --working-directory /repo   # in a browser page it opens
 ```
 
 `--number-of-questions 8` widens the budget for the whole interview.
@@ -66,7 +66,7 @@ lazy-workflow plan --interview http --working-directory /repo   # in a browser p
 
 ```bash
 scripts/preflight.sh --working-directory /repo   # auth, repository, queue and the next selection
-lazy-workflow code --working-directory /repo     # deliver them, one fresh session each
+lz code --working-directory /repo     # deliver them, one fresh session each
 ```
 
 `code` re-selects the next eligible issue after every verified delivery until the
@@ -79,8 +79,8 @@ The HU or issue, the ticket and the branch come from the checkpoint, so no
 `--hu` and no `--working-directory` are needed:
 
 ```bash
-lazy-workflow code --session <session-id> --prompt continue
-lazy-workflow code --session <session-id> --model claude-sonnet-5 --variant high --prompt continue
+lz code --session <session-id> --prompt continue
+lz code --session <session-id> --model claude-sonnet-5 --variant high --prompt continue
 ```
 
 If the delivery already reached `IMPLEMENTATION_READY`, rerun the **original**
@@ -88,19 +88,19 @@ command instead: it resumes the coordinator phase rather than selecting
 replacement work.
 
 ```bash
-lazy-workflow code --hu 23438 --working-directory /repo
+lz code --hu 23438 --working-directory /repo
 ```
 
 ## "Keep the run alive when the account runs out"
 
 ```bash
 # Same model, second account paying for it
-lazy-workflow code --working-directory /repo \
+lz code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high
 
 # Several rungs across three CLIs; declaration order is the descent order
-lazy-workflow code --working-directory /repo \
+lz code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
   --fallback codex:gpt-5.6-sol:high \
@@ -113,10 +113,10 @@ only for the unit of work in progress; the next one starts at the primary rung.
 ## "Review the architecture / check infra / deploy"
 
 ```bash
-lazy-workflow architecture-review-sag --issue 154 --working-directory /repo
-lazy-workflow architecture-review-sag --hu 23438 --working-directory /repo
-lazy-workflow infra-sag  --issue 155 --working-directory /repo
-lazy-workflow deploy-sag --issue 157 --environment qa --working-directory /repo
+lz architecture-review-sag --issue 154 --working-directory /repo
+lz architecture-review-sag --hu 23438 --working-directory /repo
+lz infra-sag  --issue 155 --working-directory /repo
+lz deploy-sag --issue 157 --environment qa --working-directory /repo
 ```
 
 Exactly one of `--hu` / `--issue` each, `.sag/config.json` required, and
@@ -127,10 +127,10 @@ tracker work.
 ## "One unit of work across several repositories"
 
 ```bash
-lazy-workflow plan --working-directory /repo-a,/repo-b
-lazy-workflow code --working-directory /repo-a,/repo-b
-lazy-workflow code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
-lazy-workflow code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
+lz plan --working-directory /repo-a,/repo-b
+lz code --working-directory /repo-a,/repo-b
+lz code --hu 23438 --working-directory /repo-a,/repo-b            # drains the HU
+lz code --hu 23438 --ticket 51 --working-directory /repo-a,/repo-b  # one unit only
 ```
 
 Every entry must be a Git repository root with an `origin` remote and a clean
@@ -141,11 +141,11 @@ narrows it to one; recovery needs the exact same list, in the same order.
 ## "Publish tickets by hand, without planning"
 
 ```bash
-lazy-workflow ticket-create --hu 23438 --type Task --title "Slice uno" \
+lz ticket-create --hu 23438 --type Task --title "Slice uno" \
   --description-file ./description.html --estimate 8 \
   --assignee persona@empresa.cl --field Custom.Componente=api
-lazy-workflow ticket-link-parent --parent 23438 --child 23459
-lazy-workflow ticket-link-predecessor --blocker 23459 --blocked 23460
+lz ticket-link-parent --parent 23438 --child 23459
+lz ticket-link-predecessor --blocker 23459 --blocked 23460
 ```
 
 These are the same primitives the plan publication uses, so a hand-published
@@ -154,7 +154,7 @@ ticket is indistinguishable from a planned one.
 ## "Show me everything the agent is doing"
 
 ```bash
-lazy-workflow code --verbose        --working-directory /repo   # + reasoning and tool calls
-lazy-workflow code --verbose-output --working-directory /repo   # + every tool input/output and the raw event
-lazy-workflow code --quiet          --working-directory /repo   # errors only
+lz code --verbose        --working-directory /repo   # + reasoning and tool calls
+lz code --verbose-output --working-directory /repo   # + every tool input/output and the raw event
+lz code --quiet          --working-directory /repo   # errors only
 ```

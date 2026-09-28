@@ -1,4 +1,4 @@
-# Read-only preflight for lazy-workflow from PowerShell. Output: one JSON document.
+# Read-only preflight for lz from PowerShell. Output: one JSON document.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -32,6 +32,8 @@ if ($ticket -and -not $hu) { [Console]::Error.WriteLine('--ticket also needs --h
 $runner = @()
 if ($env:LAZY_WORKFLOW_BIN) {
   $runner = @($env:LAZY_WORKFLOW_BIN)
+} elseif (Get-Command lz -ErrorAction SilentlyContinue) {
+  $runner = @('lz')
 } elseif (Get-Command lazy-workflow -ErrorAction SilentlyContinue) {
   $runner = @('lazy-workflow')
 } else {
@@ -47,7 +49,7 @@ if ($env:LAZY_WORKFLOW_BIN) {
   }
 }
 if ($runner.Count -eq 0) {
-  [Console]::Error.WriteLine('No lazy-workflow binary found. Install with install.ps1 --all-global, or set LAZY_WORKFLOW_BIN or LAZY_WORKFLOW_HOME.')
+  [Console]::Error.WriteLine('No lz binary found. Install with install.ps1 --all-global, or set LAZY_WORKFLOW_BIN or LAZY_WORKFLOW_HOME.')
   exit 3
 }
 
@@ -67,7 +69,7 @@ function Probe([string]$label, [string[]]$toolArgs) {
     $status = $LASTEXITCODE
     $output = ($lines | Out-String).Trim()
     $errorText = (Get-Content -LiteralPath $stderrFile -ErrorAction SilentlyContinue | Select-Object -Last 5 | Out-String).Trim()
-    $entry = [ordered]@{ probe = $label; command = "lazy-workflow $($toolArgs -join ' ')"; ok = $false }
+    $entry = [ordered]@{ probe = $label; command = "lz $($toolArgs -join ' ')"; ok = $false }
     if ($status -eq 0 -and $output) {
       try {
         $entry.ok = $true

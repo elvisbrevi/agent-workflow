@@ -1,0 +1,3 @@
+interface:
+  display_name: "lz"
+  short_description: "Compose the right lz command"

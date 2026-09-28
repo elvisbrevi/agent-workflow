@@ -2,7 +2,7 @@
 
 **Reusable skills and a CLI to plan and deliver software work with AI agents.**
 
-Use the skills in your coding assistant, or run **`lazy-workflow`** to turn a
+Use the skills in your coding assistant, or run **`lz`** to turn a
 GitHub backlog or an Azure DevOps User Story (HU) into verified deliveries.
 It supports **OpenCode**, **Claude Code**, and **Codex**.
 
@@ -38,11 +38,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer --all-global
 
 `--all-global` installs the skills, agent entries, and CLI, and prepares its
 locked Bun dependencies. Add `~/.local/bin` to `PATH` (`$HOME\.local\bin` on
-Windows), then check the installation with `lazy-workflow --help`.
+Windows), then check the installation with `lz --help`.
 
-Windows installs `lazy-workflow.cmd`; use `lazy-workflow-powershell.ps1` for
+Windows installs `lz.cmd`; use `lz-powershell.ps1` for
 quoted or multiline PowerShell prompts, with a script execution policy that
 permits local scripts.
+The previous `lazy-workflow` launcher remains available for existing scripts.
+The skill is named `lz`; reinstalling removes the old `lazy-workflow` skill link.
 
 <details>
 <summary>Other installation modes</summary>
@@ -70,16 +72,16 @@ Replace `/path/to/repository` with your local checkout.
 
 ```bash
 # Plan the requested work and publish GitHub issues with their dependencies.
-lazy-workflow plan --prompt "Add pagination to the API" --working-directory /path/to/repository
+lz plan --prompt "Add pagination to the API" --working-directory /path/to/repository
 
 # Deliver eligible GitHub issues: implement, verify, push, merge, and close.
-lazy-workflow code --working-directory /path/to/repository
+lz code --working-directory /path/to/repository
 
 # Show every command and its required options.
-lazy-workflow --help
+lz --help
 
 # Reinstall the latest tool and global integrations.
-lazy-workflow update
+lz update
 ```
 
 | Command | Purpose |
@@ -107,20 +109,20 @@ OpenCode is the default. Both `plan` and `code` accept `--cli`, `--model`, and
 
 ```bash
 # Plan with Claude Code at high effort.
-lazy-workflow plan --cli claudecode --variant high --working-directory /path/to/repository
+lz plan --cli claudecode --variant high --working-directory /path/to/repository
 
 # Deliver with Codex and an explicit model.
-lazy-workflow code --cli codex --model gpt-5.6-sol --working-directory /path/to/repository
+lz code --cli codex --model gpt-5.6-sol --working-directory /path/to/repository
 ```
 
 ### Plan interactively or apply SAG norms
 
 ```bash
 # Answer the planning questions in a browser.
-lazy-workflow plan --interview http --working-directory /path/to/repository
+lz plan --interview http --working-directory /path/to/repository
 
 # Load the component's SAG norms while planning.
-lazy-workflow plan --normas-sag --working-directory /path/to/repository
+lz plan --normas-sag --working-directory /path/to/repository
 ```
 
 SAG norms require `.sag/config.json` (`tipo`: `api`, `bff`, or `nextjs`) and
@@ -132,23 +134,23 @@ Set `LAZY_WORKFLOW_AZURE_ORGANIZATION` to `https://dev.azure.com/<organization>`
 
 ```bash
 # Split a User Story into linked work items.
-lazy-workflow plan --hu 23438 --working-directory /path/to/repository
+lz plan --hu 23438 --working-directory /path/to/repository
 
 # Deliver the HU's Task and Bug tickets; use main to create its integration branch.
-lazy-workflow code --hu 23438 --base-branch main --working-directory /path/to/repository
+lz code --hu 23438 --base-branch main --working-directory /path/to/repository
 ```
 
 ### Resume work or use several repositories
 
 ```bash
 # Reconcile a verified GitHub delivery interrupted during publication.
-lazy-workflow code --working-directory /path/to/repository
+lz code --working-directory /path/to/repository
 
 # Resume an Azure delivery from its preserved session and checkpoint.
-lazy-workflow code --session SESSION_ID --prompt continue
+lz code --session SESSION_ID --prompt continue
 
 # Deliver one unit across the listed repositories, in order.
-lazy-workflow code --working-directory /path/to/api,/path/to/web
+lz code --working-directory /path/to/api,/path/to/web
 ```
 
 Replace `SESSION_ID` with the preserved session ID. Multi-repository workflows
@@ -158,7 +160,7 @@ require all listed repositories to use the same tracker provider.
 
 ```bash
 # Switch from Claude Code to Codex if the provider is exhausted or the session stalls.
-lazy-workflow code --cli claudecode --fallback codex:gpt-5.6-sol:high \
+lz code --cli claudecode --fallback codex:gpt-5.6-sol:high \
   --idle-timeout 30 --working-directory /path/to/repository
 ```
 
@@ -171,13 +173,13 @@ See [fallback behavior](agent/lazy-workflow/README.md#fallback-chain).
 
 ```bash
 # Include full tool inputs, outputs, and raw agent events.
-lazy-workflow code --verbose-output --working-directory /path/to/repository
+lz code --verbose-output --working-directory /path/to/repository
 
 # Write the run log to a chosen file.
-lazy-workflow code --log-file /path/to/runs.jsonl --working-directory /path/to/repository
+lz code --log-file /path/to/runs.jsonl --working-directory /path/to/repository
 
 # Power down after delivery; on Unix, set LAZY_WORKFLOW_OFF_PASSWORD beforehand.
-lazy-workflow code --off --off-delay 60 --working-directory /path/to/repository
+lz code --off --off-delay 60 --working-directory /path/to/repository
 ```
 
 `--off` also shuts down after a failed run, except argument errors; Ctrl-C
@@ -190,8 +192,8 @@ These commands run individual operations **without opening an AI session**.
 They use the same adapters as the workflows. Tracker and Git operations return
 JSON; credential reads return names or a value.
 
-Use `lazy-workflow --help` for required arguments. The tables list subcommands;
-invoke them as `lazy-workflow <command> [options]`.
+Use `lz --help` for required arguments. The tables list subcommands;
+invoke them as `lz <command> [options]`.
 
 ### GitHub
 
@@ -269,19 +271,19 @@ Credentials live in `~/.config/secrets/*.env`. When chezmoi manages the file,
 
 ```bash
 # See which GitHub issues are eligible and why others are blocked.
-lazy-workflow github-issue-list --working-directory /path/to/repository
+lz github-issue-list --working-directory /path/to/repository
 
 # Inspect an Azure ticket and its delivery context.
-lazy-workflow ticket-info --hu 23438 --ticket 23459
+lz ticket-info --hu 23438 --ticket 23459
 
 # Create a Task from an HTML description file.
-lazy-workflow ticket-create --hu 23438 --type Task --title "Add pagination" --description-file ./description.html
+lz ticket-create --hu 23438 --type Task --title "Add pagination" --description-file ./description.html
 
 # Link an existing integration branch to an HU.
-lazy-workflow hu-branch-set --hu 23438 --branch hu/23438 --working-directory /path/to/repository
+lz hu-branch-set --hu 23438 --branch hu/23438 --working-directory /path/to/repository
 
 # Prompt for a credential value and store it.
-lazy-workflow credentials-set --name OPENAI_API_KEY
+lz credentials-set --name OPENAI_API_KEY
 ```
 
 See [all command examples](agent/lazy-workflow/README.md#practical-examples)
@@ -301,7 +303,7 @@ syntax, or let the client select a matching skill. Skills marked
 | Implementation | `implement`, `tdd` | Deliver a ticket or specification. |
 | Diagnosis | `diagnose` | Reproduce defects and verify fixes. |
 | Review | `code-review`, `handoff` | Review changes or transfer a session. |
-| Utility | `caveman`, `credentials`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill`, `writing-great-skills` | Control communication, credentials, setup, and workflows. |
+| Utility | `caveman`, `credentials`, `grilling`, `lz`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill`, `writing-great-skills` | Control communication, credentials, setup, and workflows. |
 
 `writing-great-skills` comes from [Matt Pocock's skills collection](https://github.com/AIGeniusInstitute/mattpocock-skills/tree/main/skills/productivity/writing-great-skills) under the MIT license included with the skill.
 
@@ -320,7 +322,7 @@ syntax, or let the client select a matching skill. Skills marked
 
 ```bash
 # Run the agent's tests.
-(cd agent/lazy-workflow && bun test)
+(cd agent/lz && bun test)
 
 # Verify the installer in Bash.
 bash tests/install_test.sh

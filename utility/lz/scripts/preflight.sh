@@ -14,7 +14,7 @@
 #   preflight.sh --issue 201 --working-directory /repo     # one GitHub issue
 #
 # Exit codes: 0 the report was produced (read `allOk` and each probe's `ok`),
-# 2 a usage error, 3 no lazy-workflow binary could be resolved.
+# 2 a usage error, 3 no lz binary could be resolved.
 
 set -uo pipefail
 if [[ -n "${ZSH_VERSION:-}" ]]; then
@@ -47,6 +47,7 @@ done
 # cache, since `cd -P` resolves the install symlink back to the real directory.
 resolve_runner() {
   if [[ -n "${LAZY_WORKFLOW_BIN:-}" ]]; then RUNNER=("${LAZY_WORKFLOW_BIN}"); return 0; fi
+  if command -v lz >/dev/null 2>&1; then RUNNER=(lz); return 0; fi
   if command -v lazy-workflow >/dev/null 2>&1; then RUNNER=(lazy-workflow); return 0; fi
   local script_dir agent_main
   script_dir="$(cd -P "$(dirname "$0")" && pwd)"
@@ -57,8 +58,8 @@ resolve_runner() {
 
 if ! resolve_runner; then
   printf '%s\n' \
-    "No lazy-workflow binary found. Install it with install.sh --all-global, or set" \
-    "LAZY_WORKFLOW_BIN=/path/to/lazy-workflow, or LAZY_WORKFLOW_HOME=/path/to/agent/lazy-workflow." >&2
+    "No lz binary found. Install it with install.sh --all-global, or set" \
+    "LAZY_WORKFLOW_BIN=/path/to/lz, or LAZY_WORKFLOW_HOME=/path/to/agent/lazy-workflow." >&2
   exit 3
 fi
 
@@ -99,12 +100,12 @@ probe() {
   err="$(printf '%s\n' "$err" | tail -n 5)"
 
   if [[ $exit_code -eq 0 && -n "$out" ]]; then
-    entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lazy-workflow %s",\n      "ok": true,\n      "result": %s\n    }' \
+    entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lz %s",\n      "ok": true,\n      "result": %s\n    }' \
       "$(json_escape "$label")" "$(json_escape "$*")" "$out")"
     [[ "$label" == "hu-branch" ]] && BRANCH_JSON="$out"
   else
     ALL_OK=false
-    entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lazy-workflow %s",\n      "ok": false,\n      "exitCode": %s,\n      "error": "%s"\n    }' \
+    entry="$(printf '\n    {\n      "probe": "%s",\n      "command": "lz %s",\n      "ok": false,\n      "exitCode": %s,\n      "error": "%s"\n    }' \
       "$(json_escape "$label")" "$(json_escape "$*")" "$exit_code" "$(json_escape "${err:-$out}")")"
   fi
   PROBES="${PROBES}${PROBES:+,}${entry}"

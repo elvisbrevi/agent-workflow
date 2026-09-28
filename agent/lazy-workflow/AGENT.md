@@ -39,7 +39,7 @@ resumes that same session with the answers. An expired round takes the answers
 the session recommended, so an unattended run behaves exactly as it always did.
 
 `update` maintains the tool itself: it runs the repository's `install.sh` and
-forwards every argument declared after the command, so `lazy-workflow update
+forwards every argument declared after the command, so `lz update
 --codex` is `install.sh --codex`, and no argument means `--all-global`.
 
 Any command may end by powering the machine down: `--off '<sudo password>'`

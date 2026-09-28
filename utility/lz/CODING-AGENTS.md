@@ -20,9 +20,9 @@ Contents: [One CLI per run](#one-cli-per-run) · [Authority](#authority-what-a-s
 | `--variant <effort>` | `high` | The effort of the selected CLI, read from that same table; Claude Code accepts `low`, `medium`, `high`, `xhigh`, `max`, and Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
 ```bash
-lazy-workflow plan --cli claudecode --model claude-opus-5 --variant high --working-directory /repo
-lazy-workflow code --cli opencode --model opencode-go/deepseek-v4-pro --variant high --working-directory /repo
-lazy-workflow plan --cli codex --model gpt-5.6-sol --variant high --working-directory /repo
+lz plan --cli claudecode --model claude-opus-5 --variant high --working-directory /repo
+lz code --cli opencode --model opencode-go/deepseek-v4-pro --variant high --working-directory /repo
+lz plan --cli codex --model gpt-5.6-sol --variant high --working-directory /repo
 ```
 
 Claude Code sessions run non-interactively over its JSON event stream, take the
@@ -53,7 +53,7 @@ compound commands are matched per sub-command, so `cd x && git push` is denied t
 
 Committing stays allowed in the delivery profiles, because the completion
 manifest names a commit the session must produce. So does running
-`lazy-workflow` itself: the manifest tools are ordinary commands under the bash
+`lz` itself: the manifest tools are ordinary commands under the bash
 permission every profile already grants, and they reach neither `az` nor `gh`,
 so no deny rule has to move to let a session write its manifest.
 
@@ -73,7 +73,7 @@ assembled fresh from the profile the coordinator already fixed.
 
 ## The division of labour
 
-The coordinator — the lazy-workflow process itself — owns every external effect.
+The coordinator — the lz process itself — owns every external effect.
 The session implements, validates, commits and writes a completion manifest, then
 stops. It is the coordinator that pushes, creates or reuses the pull request,
 merges it, closes the issue or completes the ticket, publishes effort and
@@ -84,8 +84,8 @@ left nothing merged has done its whole job, and the rest is a coordinator phase 
 resume by rerunning the same command.
 
 The manifest is the one artefact that crosses the boundary, and it is written by
-a tool, never by the session's editor: `lazy-workflow ticket-manifest-set` for an
-Azure ticket, `lazy-workflow github-manifest-set` for a GitHub issue (see
+a tool, never by the session's editor: `lz ticket-manifest-set` for an
+Azure ticket, `lz github-manifest-set` for a GitHub issue (see
 `TOOLS.md`). Each takes the identities, the validations it ran and the evidence
 files, then resolves the commit, computes the digests and validates the result
 with the coordinator's own code before writing. A session that types that JSON
@@ -103,9 +103,9 @@ opaque session id, the manifest path, the pull request, the verified effect
 receipts — and the CLI that owns the session.
 
 ```bash
-lazy-workflow code --session <id> --prompt continue                       # resume the preserved session
-lazy-workflow code --session <id> --model claude-sonnet-5 --variant high --prompt continue
-lazy-workflow code --hu 23438 --working-directory /repo                   # resume the coordinator phase
+lz code --session <id> --prompt continue                       # resume the preserved session
+lz code --session <id> --model claude-sonnet-5 --variant high --prompt continue
+lz code --hu 23438 --working-directory /repo                   # resume the coordinator phase
 ```
 
 - The identities come from the checkpoint, so `--session` needs neither `--hu`
@@ -125,7 +125,7 @@ in flight and nothing else.
 ## Fallback and handoff
 
 ```bash
-lazy-workflow code --working-directory /repo \
+lz code --working-directory /repo \
   --cli claudecode --model claude-sonnet-5 --variant high \
   --fallback opencode:github-copilot/claude-sonnet-5:high \
   --fallback codex:gpt-5.6-sol:high \

@@ -1,11 +1,11 @@
 ---
-name: lazy-workflow
-description: Compose and run the right lazy-workflow command — the executable agent that plans and delivers work through OpenCode, Claude Code, or Codex, on GitHub issues or Azure DevOps HUs. Covers both of its layers: the deterministic tool commands that read or mutate the tracker, the branch and the pull request without opening a session, and the workflow commands that drive a coding agent (plan, code, architecture-review-sag, infra-sag, deploy-sag) with their CLI/model/effort selection, fallback chains, authority profiles, sessions and checkpoints. Use this skill whenever lazy-workflow, autoplan, autocode, `--hu`, `--normas-sag`, an Azure HU or ticket, GitHub issue draining, or an interrupted run comes up — including when the user only asks "how do I run…" or describes the task ("plan this HU and then code it") without naming a single flag.
+name: lz
+description: Compose and run the right lz command for GitHub issues or Azure DevOps HUs. Covers deterministic tools, planning, delivery, SAG workflows, sessions, fallback chains, and checkpoints. Use when the user asks about lz, lazy-workflow, autoplan, autocode, an Azure HU or ticket, GitHub issue draining, or an interrupted run.
 ---
 
-# lazy-workflow
+# lz
 
-`lazy-workflow` is the executable agent of this repository
+`lz` is the executable agent of this repository
 ([`agent/lazy-workflow/`](../../agent/lazy-workflow/README.md)). It has two
 layers, and choosing the layer is the first and cheapest decision:
 
@@ -24,16 +24,16 @@ judgment produces nothing. Almost every question of the form "why did it stop",
 ## Invoke it
 
 ```bash
-lazy-workflow <command> [flags]     # the installed launcher (install.sh or install.ps1 --all-global)
+lz <command> [flags]     # the installed launcher (install.sh or install.ps1 --all-global)
 bun run main.ts <command> [flags]   # equivalent, from inside agent/lazy-workflow/
-lazy-workflow                       # full command help — the authority on flags
+lz                       # full command help — the authority on flags
 ```
 
 The output contract makes this scriptable, and it is worth relying on:
 
 - A tool command prints **one indented JSON object on stdout** and exits `0` or `1`.
 - Operator output — the run panel, every stamped `dd/mm/yy HH:mm:ss` line, every
-  error explanation — goes to **stderr**. So `lazy-workflow ticket-info … 2>/dev/null`
+  error explanation — goes to **stderr**. So `lz ticket-info … 2>/dev/null`
   is clean JSON, and when a command fails the reason is on stderr while stdout is empty.
   In PowerShell, use `2>$null` for the same redirection.
 - Workflow runs are long-lived: they stream to stderr and end on a marker
@@ -48,8 +48,8 @@ scripts/preflight.sh --hu 23438 --working-directory /repo    # Bash or Zsh, Azur
 ```
 
 From PowerShell, use `scripts/preflight.ps1` with the same flags. The installed
-`lazy-workflow.cmd` runs the same Bun CLI and deterministic tools; use
-`lazy-workflow-powershell.ps1` to preserve quotes and multiline prompt arguments.
+`lz.cmd` runs the same Bun CLI and deterministic tools; use
+`lz-powershell.ps1` to preserve quotes and multiline prompt arguments.
 
 It runs only read-only tools, prints one JSON document with every probe and a
 `notes` array (for example, which base this HU would branch from), and
@@ -72,7 +72,7 @@ then `bun` against the agent source.
 Compose in a fixed order so two commands are comparable at a glance:
 
 ```bash
-lazy-workflow <command> <scope> <context> <agent> <reporter>
+lz <command> <scope> <context> <agent> <reporter>
 #             code       --hu 23438 --normas-sag --working-directory /repo --cli claudecode --verbose
 ```
 
@@ -96,8 +96,8 @@ workspace run (`plan` and `code` only), and the declared order is the delivery o
 They are two runs, never one command, and nothing passes implicitly between them:
 
 ```bash
-lazy-workflow plan --hu 23438 --working-directory /repo   # returns a plan, publishes the work items
-lazy-workflow code --hu 23438 --working-directory /repo   # drains the published Task/Bug tickets
+lz plan --hu 23438 --working-directory /repo   # returns a plan, publishes the work items
+lz code --hu 23438 --working-directory /repo   # drains the published Task/Bug tickets
 ```
 
 `plan` writes no checkpoint and mutates no branch, so it is the safe half. `code`
@@ -130,8 +130,8 @@ change what you can promise:
   reference ("use HU 23300 as the model") has to be materialized first:
 
   ```bash
-  lazy-workflow hu-info --hu 23300 > /tmp/ref-23300.json
-  lazy-workflow plan --hu 23438 --normas-sag \
+  lz hu-info --hu 23300 > /tmp/ref-23300.json
+  lz plan --hu 23438 --normas-sag \
     --prompt "Read /tmp/ref-23300.json first: it is the reference HU. Slice 23438 with the same granularity." \
     --working-directory /repo
   ```

@@ -240,7 +240,7 @@ function Install-Runner([string]$source, [string]$destination) {
   # runtime even when cmd.exe reads the launcher using a legacy code page.
   $relative = $entrypoint.Substring($cache.Length).Replace('/', '\')
   $escaped = '%USERPROFILE%\.cache\agent-workflow' + $relative
-  $content = "@echo off`r`nwhere bun >nul 2>nul`r`nif errorlevel 1 (echo lazy-workflow: Bun is required but was not found in PATH. 1>&2 & exit /b 127)`r`nbun run `"$escaped`" %*`r`nexit /b %errorlevel%`r`n"
+  $content = "@echo off`r`nwhere bun >nul 2>nul`r`nif errorlevel 1 (echo lz: Bun is required but was not found in PATH. 1>&2 & exit /b 127)`r`nbun run `"$escaped`" %*`r`nexit /b %errorlevel%`r`n"
   [IO.File]::WriteAllText($destination, $content, [Text.Encoding]::ASCII)
   $managedCopies[$destination] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
   Write-Host "Installed runner: $destination"
@@ -336,6 +336,13 @@ try {
         Install-Runner $agent.Source (Join-Path $directory $runnerName)
         if ($env:OS -eq 'Windows_NT') {
           Install-PowerShellRunner $agent.Source (Join-Path $directory "$($agent.Name)-powershell.ps1")
+        }
+        if ($agent.Name -eq 'lazy-workflow') {
+          $shortName = if ($env:OS -eq 'Windows_NT') { 'lz.cmd' } else { 'lz' }
+          Install-Runner $agent.Source (Join-Path $directory $shortName)
+          if ($env:OS -eq 'Windows_NT') {
+            Install-PowerShellRunner $agent.Source (Join-Path $directory 'lz-powershell.ps1')
+          }
         }
       }
     }

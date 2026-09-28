@@ -1,5 +1,5 @@
 /**
- * `lazy-workflow update`: reinstalling the tool from its own repository.
+ * `lz update`: reinstalling the tool from its own repository.
  *
  * What a reinstall means — which destinations, which cache, which ref — belongs
  * to the installer that put this binary on the PATH, so this command does not

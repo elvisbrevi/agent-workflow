@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repository = Split-Path -Parent $PSScriptRoot
-$preflight = Join-Path $repository 'utility/lazy-workflow/scripts/preflight.ps1'
+$preflight = Join-Path $repository 'utility/lz/scripts/preflight.ps1'
 $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $testRoot = Join-Path $tempBase ("agent-workflow-preflight-test-" + [guid]::NewGuid().ToString('N'))
 $previousRunner = $env:LAZY_WORKFLOW_BIN

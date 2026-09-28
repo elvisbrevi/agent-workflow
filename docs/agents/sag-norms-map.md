@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This map defines which remote SAG sources a lazy-workflow command consults. It
+This map defines which remote SAG sources a lz command consults. It
 is a retrieval map, not a copy of the norms and not proof that an external SAG
 system complies with them.
 
