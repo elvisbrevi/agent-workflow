@@ -301,7 +301,9 @@ syntax, or let the client select a matching skill. Skills marked
 | Implementation | `implement`, `tdd` | Deliver a ticket or specification. |
 | Diagnosis | `diagnose` | Reproduce defects and verify fixes. |
 | Review | `code-review`, `handoff` | Review changes or transfer a session. |
-| Utility | `caveman`, `credentials`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill` | Control communication, credentials, setup, and workflows. |
+| Utility | `caveman`, `credentials`, `grilling`, `lazy-workflow`, `ponytail`, `setup-elvis-brevi-skills`, `write-a-skill`, `writing-great-skills` | Control communication, credentials, setup, and workflows. |
+
+`writing-great-skills` comes from [Matt Pocock's skills collection](https://github.com/AIGeniusInstitute/mattpocock-skills/tree/main/skills/productivity/writing-great-skills) under the MIT license included with the skill.
 
 ## Documentation
 
