@@ -177,10 +177,13 @@ lz git-branch-delete --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
 
 # The operator's own credentials, read from ~/.config/secrets/*.env
+lz credentials-audit --name OPENAI_API_KEY
 lz credentials-list
 lz credentials-get --name OPENAI_API_KEY
 # Store or rotate one: the value is prompted, never a flag
 lz credentials-set --name OPENAI_API_KEY
+# Copy an existing macOS Keychain item without printing its value
+lz credentials-migrate --name OPENAI_API_KEY --service openai
 ```
 
 ### Updating the tool and the credentials
@@ -409,7 +412,11 @@ workflow stays the only thing a run has to trust.
 | Azure | `hu-children-info`, `hu-state-set`, `hu-branch-ensure`, `ticket-type-info`, `ticket-pr-create`, `ticket-branch-push`, `ticket-branch-checkout`, `ticket-session-verify` |
 | GitHub | `github-auth-info`, `github-repo-info`, `github-issue-list`, `github-issue-select`, `github-issue-info`, `github-issue-claim`, `github-issue-release`, `github-issue-close`, `github-branch-prepare`, `github-branch-checkout`, `github-branch-verify`, `github-branch-cleanup`, `github-session-verify`, `github-commit-push`, `github-pr-create`, `github-pr-merge` |
 | git | `git-branch-delete` |
-| credentials | `credentials-list`, `credentials-get`, `credentials-set`, `credentials-update` |
+| credentials | `credentials-audit`, `credentials-list`, `credentials-get`, `credentials-set`, `credentials-migrate`, `credentials-update` |
+
+`credentials-audit` reports the declaring `.env` file names and whether macOS
+Keychain has the named item, never its value. Omit `--name` to audit every
+credential declared in the local secrets files.
 
 `credentials-list` and `credentials-get` are the exception to the JSON answer:
 they read the operator's encrypted `~/.config/secrets/*.env` files and write one
@@ -425,6 +432,11 @@ manages that file it also publishes it: re-adds it to the encrypted source,
 commits only that file to the private dotfiles repository and pushes. It answers
 with the name, the file and how far the publication got — `published`,
 `committed`, `unmanaged` or `failed` — never the value.
+
+`credentials-migrate` reads one named item from macOS Keychain and stores it
+through the same write and publication path as `credentials-set`, without
+printing the value. It requires `--name`; `--service` selects the file when the
+name is new. It leaves the Keychain item in place.
 
 `credentials-update` brings this machine to what the repository declares: it
 pulls the private dotfiles repository and applies only the credentials

@@ -76,9 +76,9 @@ export interface CliOptions {
   logFile: string | null;
   /** Disables the run log outright; rejected together with `--log-file`. */
   noLogFile: boolean;
-  /** The credential `credentials-get` prints or `credentials-set` stores; null when the operator omitted it. */
+  /** Credential inspected, read, stored, or migrated; optional for credentials-audit. */
   name: string | null;
-  /** The service env file `credentials-set` writes when no file already declares the name. */
+  /** Service env file written by credentials-set or credentials-migrate when needed. */
   service: string | null;
   /** Allows `credentials-get` to print a value outside a terminal; piping is explicit. */
   force: boolean;
@@ -389,7 +389,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("child", positiveIntegerOption("--child", "Work item hijo."))
     .option("blocker", positiveIntegerOption("--blocker", "Work item que bloquea."))
     .option("blocked", positiveIntegerOption("--blocked", "Work item bloqueado."))
-    .option("name", stringOption("--name", "Nombre de la credencial que credentials-get imprime o credentials-set guarda."))
+    .option("name", stringOption("--name", "Nombre de la credencial para credentials-audit, credentials-get, credentials-set o credentials-migrate."))
     .option("service", stringOption("--service", "Servicio cuyo archivo .env recibe la credencial; sin el, el archivo que ya la declara u other.env."))
     .option("force", { type: "boolean", default: false, describe: "Permite que credentials-get imprima el valor fuera de una terminal." })
     .option("stdin", { type: "boolean", default: false, describe: "Lee de la entrada estandar el valor de credentials-set, en vez del prompt oculto; para sesiones no interactivas." })
@@ -547,13 +547,11 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     throw new Error("--log-file y --no-log-file son mutuamente excluyentes");
   }
 
-  // A credential flag that only the write consults is a typo on any other
-  // command, and catching it here costs nothing: `--service` names the file only
-  // `credentials-set` may create, and `--stdin` the source only it may read.
-  if (command !== "credentials-set") {
-    for (const flag of ["--service", "--stdin"]) {
-      if (flagSupplied(rawArgs, flag)) throw new Error(`${flag} solo aplica a credentials-set`);
-    }
+  if (command !== "credentials-set" && command !== "credentials-migrate" && flagSupplied(rawArgs, "--service")) {
+    throw new Error("--service solo aplica a credentials-set o credentials-migrate");
+  }
+  if (command !== "credentials-set" && flagSupplied(rawArgs, "--stdin")) {
+    throw new Error("--stdin solo aplica a credentials-set");
   }
 
   return {
@@ -696,6 +694,7 @@ function renderHelp(parser: YargsInstance): string {
     "  code: --ticket fija una unica unidad de entrega; omitirlo drena los Task y Bug hijos elegibles de la HU",
     "  Azure ticket delivery run: el coordinador posee la entrega; el agente seleccionado implementa, valida, revisa, commitea y deja el resumen de la sesion",
     "  herramientas deterministas: no abren sesion y usan los mismos adaptadores del workflow; las operaciones de tracker y git imprimen JSON",
+    "  credentials-audit informa archivos y presencia en Keychain sin valores; credentials-migrate copia desde Keychain y publica como credentials-set",
     "  credentials-list imprime nombres; credentials-get imprime un valor y requiere --force para enviarlo a una tuberia",
     "  --verbose-output: implica --verbose y agrega la entrada y salida completas de cada herramienta mas el evento crudo del agente",
     "  --no-color: deshabilita los colores ANSI; NO_COLOR=1 tiene el mismo efecto",

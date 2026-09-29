@@ -6,7 +6,7 @@
  * bandera, y lo guarda sin imprimirlo.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,9 +17,11 @@ import {
 import { buildCli, type CliOptions } from "../src/cli/parse-cli-options.ts";
 import {
   listCredentials,
+  auditCredentialFiles,
   readCredential,
   storeCredential,
 } from "../src/credentials/credential-store.ts";
+import { keychainPresence, readKeychainCredential } from "../src/credentials/keychain.ts";
 import { createReporter } from "../src/output/reporter.ts";
 import { setDefaultReporter } from "../src/output/operator-output.ts";
 
@@ -43,10 +45,12 @@ const unreachable = (): never => {
 
 /** Las operaciones que un caso no ejercita fallan si alguien las llama. */
 const credentialTools = (overrides: Partial<CredentialTools>): CredentialTools => ({
+  audit: unreachable,
   list: async () => [],
   read: unreachable,
   readSecret: unreachable,
   store: unreachable,
+  migrate: unreachable,
   update: unreachable,
   ...overrides,
 });
@@ -93,6 +97,24 @@ describe("credentials como comandos", () => {
     );
 
     expect({ code, printed }).toEqual({ code: 0, printed: ["ALPHA_API_KEY", "BETA_TOKEN"] });
+  });
+
+  test("credentials-audit informa ubicaciones sin valores, con o sin --name", async () => {
+    const printed: string[] = [];
+    const calls: Array<string | null> = [];
+    const credentials = credentialTools({
+      audit: async (_directory, name) => {
+        calls.push(name);
+        return [{ name: "ALPHA_API_KEY", secrets: ["alpha.env"], keychain: "missing" }];
+      },
+    });
+    const named = parseOptions(["credentials-audit", "--name", "ALPHA_API_KEY"]);
+    const all = parseOptions(["credentials-audit"]);
+    expect(await runDeterministicTool("credentials-audit", named, servicesWith(credentials), (line) => printed.push(line))).toBe(0);
+    expect(await runDeterministicTool("credentials-audit", all, servicesWith(credentials), (line) => printed.push(line))).toBe(0);
+    expect(calls).toEqual(["ALPHA_API_KEY", null]);
+    expect(JSON.parse(printed[0]!)).toEqual({ name: "ALPHA_API_KEY", secrets: ["alpha.env"], keychain: "missing" });
+    expect(JSON.parse(printed[1]!)).toEqual([{ name: "ALPHA_API_KEY", secrets: ["alpha.env"], keychain: "missing" }]);
   });
 
   test("credentials-get fuera de una terminal exige --force y no lee nada", async () => {
@@ -258,6 +280,21 @@ describe("credentials como comandos", () => {
     expect(printed.join("\n")).not.toContain("otro-valor");
   });
 
+  test("credentials-migrate usa Keychain y devuelve solo metadatos", async () => {
+    const printed: string[] = [];
+    const calls: Array<{ name: string; service: string | null }> = [];
+    const credentials = credentialTools({
+      migrate: async (_directory, name, service) => {
+        calls.push({ name, service });
+        return { name, file: "crates-io.env", chezmoiSource: "published" };
+      },
+    });
+    const options = parseOptions(["credentials-migrate", "--name", "CARGO_REGISTRY_TOKEN", "--service", "crates-io"]);
+    expect(await runDeterministicTool("credentials-migrate", options, servicesWith(credentials), (line) => printed.push(line))).toBe(0);
+    expect(calls).toEqual([{ name: "CARGO_REGISTRY_TOKEN", service: "crates-io" }]);
+    expect(JSON.parse(printed[0]!)).toEqual({ name: "CARGO_REGISTRY_TOKEN", file: "crates-io.env", chezmoiSource: "published" });
+  });
+
   test("credentials-set sin --name es un error de argumentos", async () => {
     const printed: string[] = [];
     const credentials = credentialTools({});
@@ -275,9 +312,11 @@ describe("credentials como comandos", () => {
     expect(messages.length).toBeGreaterThan(0);
   });
 
-  test("--service y --stdin solo aplican a credentials-set", () => {
+  test("--service aplica a las escrituras y --stdin solo a credentials-set", () => {
     expect(() => parseOptions(["credentials-get", "--name", "ALPHA_API_KEY", "--service", "alpha"])).toThrow();
     expect(() => parseOptions(["credentials-list", "--stdin"])).toThrow();
+    expect(() => parseOptions(["credentials-migrate", "--name", "ALPHA_API_KEY", "--service", "alpha"])).not.toThrow();
+    expect(() => parseOptions(["credentials-migrate", "--name", "ALPHA_API_KEY", "--stdin"])).toThrow();
   });
 
   test("credentials-update trae los valores publicados sin pedir nombre", async () => {
@@ -323,6 +362,43 @@ describe("credentials como comandos", () => {
 });
 
 describe("credential-store", () => {
+  test("auditCredentialFiles informa duplicados y ausencias sin decodificar valores", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "credential-audit."));
+    try {
+      await Bun.write(join(directory, "alpha.env"), "export ALPHA_API_KEY='fake one'\nexport PATH=/bin\n");
+      await Bun.write(join(directory, "beta.env"), "export ALPHA_API_KEY='fake two'\n");
+      expect(await auditCredentialFiles(directory, "ALPHA_API_KEY")).toEqual([
+        { name: "ALPHA_API_KEY", secrets: ["alpha.env", "beta.env"] },
+      ]);
+      expect(await auditCredentialFiles(directory, "MISSING_TOKEN")).toEqual([
+        { name: "MISSING_TOKEN", secrets: [] },
+      ]);
+      expect(await auditCredentialFiles(directory, null)).toEqual([
+        { name: "ALPHA_API_KEY", secrets: ["alpha.env", "beta.env"] },
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("Keychain audit y lectura usan un security falso sin exponer valores", async () => {
+    if (process.platform === "win32") return;
+    const directory = await mkdtemp(join(tmpdir(), "credential-keychain."));
+    try {
+      const binary = join(directory, "security");
+      await Bun.write(binary, "#!/bin/sh\ncase \"$*\" in\n  *PRESENT_API_KEY*) printf 'fake-secret\\n' ;;\n  *) exit 1 ;;\nesac\n");
+      await chmod(binary, 0o700);
+      expect(await keychainPresence("PRESENT_API_KEY", binary)).toBe("present");
+      expect(await keychainPresence("MISSING_TOKEN", binary)).toBe("missing");
+      expect(await keychainPresence("PRESENT_API_KEY", null)).toBe("n/a");
+      expect(await readKeychainCredential("PRESENT_API_KEY", binary)).toBe("fake-secret");
+      expect(readKeychainCredential("MISSING_TOKEN", binary)).rejects.toThrow("no esta en Keychain");
+      expect(readKeychainCredential("PRESENT_API_KEY", null)).rejects.toThrow("no esta disponible");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("lista y decodifica las citas que escriben el skill y este modulo", async () => {
     const directory = await mkdtemp(join(tmpdir(), "credential-store."));
     try {

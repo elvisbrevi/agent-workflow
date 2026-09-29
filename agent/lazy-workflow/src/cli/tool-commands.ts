@@ -47,17 +47,15 @@ export const GITHUB_TOOL_COMMANDS = [
 export const GIT_TOOL_COMMANDS = ["git-branch-delete"] as const;
 
 /**
- * The credential operations. `list` and `get` answer from the operator's own
- * encrypted env files instead of a tracker, so a name the credentials skill
- * stores is visible from the terminal without opening a session; `set` is the
- * write that keeps both writers — the skill's helper and this CLI — on the same
- * file, and takes the value only from a hidden prompt or from `--stdin`;
- * `update` is the pull that makes this machine's values the repository's.
+ * The credential operations: inspect locations, read, store, copy from
+ * Keychain, and pull the published encrypted source without opening a session.
  */
 export const CREDENTIALS_TOOL_COMMANDS = [
+  "credentials-audit",
   "credentials-list",
   "credentials-get",
   "credentials-set",
+  "credentials-migrate",
   "credentials-update",
 ] as const;
 
@@ -103,8 +101,10 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lz github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lz github-pr-merge --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>",
+  "  lz credentials-audit [--name <NAME>]",
   "  lz credentials-list",
   "  lz credentials-get --name <NAME> [--force]",
   "  lz credentials-set --name <NAME> [--service <service>] [--stdin]",
+  "  lz credentials-migrate --name <NAME> [--service <service>]",
   "  lz credentials-update",
 ];

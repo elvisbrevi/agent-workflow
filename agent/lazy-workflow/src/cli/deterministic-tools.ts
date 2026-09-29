@@ -34,14 +34,17 @@ import { reportFailure } from "../output/failure-kind.ts";
 import type { AzurePullRequestTarget } from "../azure/autocode-service.ts";
 import {
   defaultSecretsDirectory,
+  auditCredentialFiles,
   listCredentials,
   readCredential,
   storeCredential,
   type CredentialEntry,
+  type CredentialLocation,
   type CredentialValue,
   type StoredCredential,
 } from "../credentials/credential-store.ts";
 import { publishChezmoiSource, updateChezmoiSecrets } from "../credentials/chezmoi-source.ts";
+import { keychainPresence, readKeychainCredential, type KeychainPresence } from "../credentials/keychain.ts";
 import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
@@ -50,25 +53,36 @@ export { isDeterministicToolCommand, type DeterministicToolCommand };
 
 /** The credential operations, injectable so a test drives them without touching the host. */
 export interface CredentialTools {
+  audit(directory: string, name: string | null): Promise<Array<CredentialLocation & { keychain: KeychainPresence }>>;
   list(directory: string): Promise<CredentialEntry[]>;
   read(directory: string, name: string): Promise<CredentialValue | null>;
   /** The value being stored: hidden at a terminal, or the first stdin line with `--stdin`. */
   readSecret(name: string, fromStdin: boolean): Promise<string>;
   /** Writes the value and answers where it landed and how far its publication got. */
   store(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential>;
+  migrate(directory: string, name: string, service: string | null): Promise<StoredCredential>;
   /** Brings the secrets directory to what the published source declares. */
   update(directory: string): Promise<void>;
 }
 
 /** The boundaries a run uses when its boundary does not declare one. */
+async function storeAndPublish(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential> {
+  const stored = await storeCredential(directory, name, service, value);
+  return { ...stored, chezmoiSource: await publishChezmoiSource(join(directory, stored.file), stored.name) };
+}
+
 const productionCredentialTools: CredentialTools = {
+  audit: async (directory, name) => {
+    const files = await auditCredentialFiles(directory, name);
+    const result: Array<CredentialLocation & { keychain: KeychainPresence }> = [];
+    for (const entry of files) result.push({ ...entry, keychain: await keychainPresence(entry.name) });
+    return result;
+  },
   list: listCredentials,
   read: readCredential,
   readSecret: readCredentialSecret,
-  store: async (directory, name, service, value) => {
-    const stored = await storeCredential(directory, name, service, value);
-    return { ...stored, chezmoiSource: await publishChezmoiSource(join(directory, stored.file), stored.name) };
-  },
+  store: storeAndPublish,
+  migrate: async (directory, name, service) => storeAndPublish(directory, name, service, await readKeychainCredential(name)),
   update: updateChezmoiSecrets,
 };
 
@@ -374,10 +388,9 @@ async function runGitTool(
  * directly. The value only reaches a terminal — a pipe requires `--force`, so an
  * agent capturing output never gets it by accident.
  *
- * `credentials-set` is the write of the family. It takes the value from a hidden
- * prompt — from stdin only when `--stdin` declares it — stores it in its env
- * file, and answers with where it landed. The value is never printed, so it can
- * appear in neither a pipe nor a log.
+ * `credentials-set` and `credentials-migrate` write the env file and answer
+ * with where it landed. The value is never printed, so it cannot appear in a
+ * pipe or log. `credentials-audit` reports file and Keychain presence only.
  *
  * `credentials-update` is the other direction: it fetches what another machine
  * published and applies only the secrets directory, so this machine's values
@@ -391,6 +404,11 @@ async function runCredentialsTool(
   isTerminal: boolean,
 ): Promise<number> {
   const directory = defaultSecretsDirectory();
+  if (command === "credentials-audit") {
+    const entries = await credentials.audit(directory, options.name);
+    print(JSON.stringify(options.name === null ? entries : entries[0], null, 2));
+    return 0;
+  }
   if (command === "credentials-list") {
     for (const entry of await credentials.list(directory)) print(entry.name);
     return 0;
@@ -408,6 +426,10 @@ async function runCredentialsTool(
     const found = await credentials.read(directory, name);
     if (!found) throw new Error(`${name} no esta en ${directory}`);
     print(found.value);
+    return 0;
+  }
+  if (command === "credentials-migrate") {
+    print(JSON.stringify(await credentials.migrate(directory, name, options.service), null, 2));
     return 0;
   }
   const value = await credentials.readSecret(name, options.stdin);

@@ -259,13 +259,16 @@ invoke them as `lz <command> [options]`.
 | Command | Purpose |
 |---|---|
 | `git-branch-delete` | Delete the local and remote delivery branch with verification. |
+| `credentials-audit` | Report which secrets files and Keychain contain a credential, without its value. |
 | `credentials-list` | Print the names stored in the local secrets files. |
 | `credentials-get` | Print one credential; piping requires `--force`. |
 | `credentials-set` | Store or rotate a credential using a hidden prompt or `--stdin`. |
+| `credentials-migrate` | Copy a legacy macOS Keychain credential into the secrets files. |
 | `credentials-update` | Pull the chezmoi source and apply its secrets, replacing local changes. |
 
 Credentials live in `~/.config/secrets/*.env`. When chezmoi manages the file,
-`credentials-set` also commits and pushes its encrypted source.
+`credentials-set` and `credentials-migrate` also commit and push its encrypted
+source.
 
 ### Common operations
 
@@ -284,6 +287,12 @@ lz hu-branch-set --hu 23438 --branch hu/23438 --working-directory /path/to/repos
 
 # Prompt for a credential value and store it.
 lz credentials-set --name OPENAI_API_KEY
+
+# Check where a credential exists without showing its value.
+lz credentials-audit --name CARGO_REGISTRY_TOKEN
+
+# Copy a legacy macOS Keychain item into the secrets files.
+lz credentials-migrate --name CARGO_REGISTRY_TOKEN --service crates-io
 ```
 
 See [all command examples](agent/lazy-workflow/README.md#practical-examples)

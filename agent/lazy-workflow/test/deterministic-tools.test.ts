@@ -213,9 +213,11 @@ describe("herramientas deterministas como comandos", () => {
       "github-pr-create": "pull-request-failure",
       "github-pr-merge": "pull-request-failure",
       "git-branch-delete": "ticket-branch-cleanup-failure",
+      "credentials-audit": "deterministic-completion-failure",
       "credentials-list": "deterministic-completion-failure",
       "credentials-get": "deterministic-completion-failure",
       "credentials-set": "deterministic-completion-failure",
+      "credentials-migrate": "deterministic-completion-failure",
       "credentials-update": "deterministic-completion-failure",
     };
 

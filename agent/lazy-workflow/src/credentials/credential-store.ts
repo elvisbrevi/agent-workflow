@@ -23,6 +23,11 @@ export interface CredentialValue extends CredentialEntry {
   value: string;
 }
 
+export interface CredentialLocation {
+  name: string;
+  secrets: string[];
+}
+
 /** A stored credential plus how far the encrypted chezmoi publication got. */
 export interface StoredCredential extends CredentialEntry {
   chezmoiSource: ChezmoiPublication;
@@ -122,6 +127,25 @@ export async function listCredentials(directory: string): Promise<CredentialEntr
     }
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** File locations only, including duplicate declarations; never reads decoded values. */
+export async function auditCredentialFiles(directory: string, requested: string | null): Promise<CredentialLocation[]> {
+  const locations = new Map<string, string[]>();
+  for (const file of await envFiles(directory)) {
+    for (const assignment of assignments(await readEnvFile(directory, file))) {
+      if (!CREDENTIAL_MARKER.test(assignment.name.toUpperCase())) continue;
+      const files = locations.get(assignment.name) ?? [];
+      if (!files.includes(file)) files.push(file);
+      locations.set(assignment.name, files);
+    }
+  }
+  if (requested !== null) {
+    const name = validateCredentialName(requested);
+    return [{ name, secrets: locations.get(name) ?? [] }];
+  }
+  return [...locations].sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, secrets]) => ({ name, secrets }));
 }
 
 /** One named credential with its decoded value, or null when no env file declares it. */
