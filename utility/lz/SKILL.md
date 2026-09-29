@@ -1,175 +1,93 @@
 ---
 name: lz
-description: Compose and run the right lz command for GitHub issues or Azure DevOps HUs. Covers deterministic tools, planning, delivery, SAG workflows, sessions, fallback chains, and checkpoints. Use when the user asks about lz, lazy-workflow, autoplan, autocode, an Azure HU or ticket, GitHub issue draining, or an interrupted run.
+description: Route lz requests through deterministic tools or workflows. Use for GitHub issue queues, Azure HUs and tickets, planning, delivery, SAG checks, or recovery of an interrupted lazy-workflow run.
 ---
 
 # lz
 
-`lz` is the executable agent of this repository
-([`agent/lazy-workflow/`](../../agent/lazy-workflow/README.md)). It has two
-layers, and choosing the layer is the first and cheapest decision:
+`lz` is the repository's executable workflow
+([agent/lazy-workflow](../../agent/lazy-workflow/README.md)). Route each request
+by the effect it needs:
 
-- **Tools** — one deterministic operation against Azure Boards, GitHub or git.
-  No session, no model, no cost. They are the same steps a workflow performs
-  internally (ADR-0026), so what a tool answers is what the workflow will see.
-  Use them to **decide, verify and repair**.
-- **Workflows** — `plan`, `code` and the three SAG-scoped commands. Each opens a
-  coding-agent session that reasons and writes code. Use them to **do the work**.
+- **Tool:** one deterministic read or repair operation; no coding-agent session.
+  Use [TOOLS.md](TOOLS.md) to choose a command.
+- **Workflow:** `plan` publishes work, `code` delivers it, and the SAG commands
+  review, verify, or deploy. `plan`, `code`, and `architecture-review-sag` open
+  coding-agent sessions; `infra-sag` and `deploy-sag` use adapters. Use
+  [COMMANDS.md](COMMANDS.md) for their flags.
 
-Reaching for a workflow when a tool answers the question burns a session on
-something a JSON read already knew. Reaching for a tool when the work needs
-judgment produces nothing. Almost every question of the form "why did it stop",
-"what will it take next", "is this ticket done" is a tool question.
+Run `lz` without arguments for current CLI help if a reference and the binary
+disagree. From `agent/lazy-workflow/`, `bun run main.ts <command> [flags]` is
+equivalent to the installed launcher.
 
-## Invoke it
+## Route the request
 
-```bash
-lz <command> [flags]     # the installed launcher (install.sh or install.ps1 --all-global)
-bun run main.ts <command> [flags]   # equivalent, from inside agent/lazy-workflow/
-lz                       # full command help — the authority on flags
-```
+1. **Choose the operation.** For status, eligibility, branch, completion-gate,
+   or failure questions, select the smallest read tool in [TOOLS.md](TOOLS.md).
+   For planning, delivery, review, infrastructure verification, or deployment,
+   select the workflow in [COMMANDS.md](COMMANDS.md). For a repair, use the
+   specific write tool after its read tool identifies the missing effect. This
+   step ends when the requested outcome has a command or sequence of commands.
+2. **Fix the scope.** No `--hu` means GitHub scope; `--hu <id>` means Azure HU
+   scope. SAG commands require exactly one of `--hu` or `--issue`. Set
+   `--working-directory` to the target repository even though it defaults to
+   the current directory. A comma-separated list is a multi-repository `plan`
+   or `code` run, delivered in the listed order. This step ends when the target
+   tracker and repository are unambiguous.
+3. **Read the state that can change the command.** Before a workflow run,
+   execute the read-only preflight from this skill's directory (PowerShell:
+   `scripts/preflight.ps1`):
 
-The output contract makes this scriptable, and it is worth relying on:
+   ```bash
+   scripts/preflight.sh --working-directory /repo
+   scripts/preflight.sh --hu 23438 --working-directory /repo
+   ```
 
-- A tool command prints **one indented JSON object on stdout** and exits `0` or `1`.
-- Operator output — the run panel, every stamped `dd/mm/yy HH:mm:ss` line, every
-  error explanation — goes to **stderr**. So `lz ticket-info … 2>/dev/null`
-  is clean JSON, and when a command fails the reason is on stderr while stdout is empty.
-  In PowerShell, use `2>$null` for the same redirection.
-- Workflow runs are long-lived: they stream to stderr and end on a marker
-  (`PLAN_READY`, `IMPLEMENTATION_READY`, `TICKET_COMPLETED`…). Never poll them in a
-  loop; read the marker they end on.
+   For one item, add `--issue <id>` or `--hu <id> --ticket <id>`. Inspect
+   `allOk`, each probe's `ok` and `error`, and `notes`; exit `0` means the
+   report was produced, not that every probe passed. Resolve a failed probe
+   before selecting a write. For Azure delivery, use the HU branch probe and
+   its notes to decide whether `--base-branch` is needed; see
+   [scope and context](COMMANDS.md#scope-and-context). This step ends when the
+   live state supports the chosen command, or the failure itself answers the
+   request.
+4. **Compose and run or answer.** Add `--cli`, `--model`, `--variant`, or
+   `--fallback` only when requested or needed for a known runtime constraint;
+   their defaults and recovery behavior are in
+   [CODING-AGENTS.md](CODING-AGENTS.md). Add `--normas-sag` separately to each
+   `plan` or `code` run that needs SAG norms. Execute an authorized action; if
+   the user asked only how, give the exact command and explain any non-obvious
+   flag. This step ends when the command has run or the operator has a runnable
+   command.
+5. **Verify the result.** Read the workflow's final marker in
+   [CODING-AGENTS.md#markers](CODING-AGENTS.md#markers), then use the relevant
+   read tool to confirm published items, delivery gates, or queue state. A
+   planning run and a delivery run are separate; inspect the items published
+   by `plan` before starting `code`. If a run stopped, follow
+   [TROUBLESHOOTING.md](TROUBLESHOOTING.md) using its marker and checkpoint.
+   This step ends when the requested effect is confirmed or the exact blocker
+   and recovery command are known.
 
-Before proposing a run, gather the state it depends on in one pass:
+## Boundaries that change the command
 
-```bash
-scripts/preflight.sh --working-directory /repo               # Bash or Zsh, GitHub scope
-scripts/preflight.sh --hu 23438 --working-directory /repo    # Bash or Zsh, Azure HU scope
-```
+- Tool results are JSON on stdout; operator messages and errors are on stderr.
+  A failed tool leaves stdout empty. Keep stderr visible when diagnosing a
+  failure.
+- `--prompt` supplements the workflow's fixed identities and authority
+  profile. A session cannot directly read its tracker or perform the
+  coordinator's push, PR, or tracker updates. Capture external reference data
+  with a tool before the run and point the prompt at the saved file. See
+  [the authority profiles](CODING-AGENTS.md#authority-what-a-session-may-execute).
+- SAG norms load through `--normas-sag`, not prompt text. The SAG commands load
+  their norms themselves.
+- To continue an interrupted coding-agent session, use
+  `lz code --session <id> --prompt continue`. Once implementation has reached
+  `IMPLEMENTATION_READY`, rerun the original `code` command to resume
+  coordinator work. See [sessions and checkpoints](CODING-AGENTS.md#sessions-and-checkpoints).
+- A workflow or write tool can change a live backlog, repository, or
+  deployment. Run it when the request authorizes that effect. Read tools and
+  preflight are available for diagnosis.
 
-From PowerShell, use `scripts/preflight.ps1` with the same flags. The installed
-`lz.cmd` runs the same Bun CLI and deterministic tools; use
-`lz-powershell.ps1` to preserve quotes and multiline prompt arguments.
-
-It runs only read-only tools, prints one JSON document with every probe and a
-`notes` array (for example, which base this HU would branch from), and
-resolves the binary itself — `LAZY_WORKFLOW_BIN`, then the launcher on `PATH`,
-then `bun` against the agent source.
-
-## Decide in four steps
-
-1. **Tool or workflow?** See above, then [TOOLS.md](TOOLS.md) for the catalog
-   and what each one answers.
-2. **Scope.** No `--hu` → GitHub (the default). `--hu <id>` → Azure HU. The SAG
-   commands take exactly one of `--hu` or `--issue`. Scope decides the prompt,
-   the authority profile and which flags are legal.
-3. **Phase.** `plan` maps and publishes work, `code` delivers it,
-   `architecture-review-sag` / `infra-sag` / `deploy-sag` are the SAG ones.
-4. **Rung.** `--cli`, `--model`, `--variant`, `--fallback`. Add these only when
-   the user asked for a specific model, account or backup —
-   [CODING-AGENTS.md](CODING-AGENTS.md) explains what changes when they do.
-
-Compose in a fixed order so two commands are comparable at a glance:
-
-```bash
-lz <command> <scope> <context> <agent> <reporter>
-#             code       --hu 23438 --normas-sag --working-directory /repo --cli claudecode --verbose
-```
-
-`--working-directory` defaults to the current directory; state it explicitly
-anyway, because a run in the wrong repository is indistinguishable from a
-correct one until it acts. A comma-separated list makes it a multi-repository
-workspace run (`plan` and `code` only), and the declared order is the delivery order.
-
-## Where to look next
-
-| Question | File |
-|---|---|
-| Which tool answers this, and what does it return? | [TOOLS.md](TOOLS.md) |
-| Which workflow command, and what does each flag mean? | [COMMANDS.md](COMMANDS.md) |
-| Which CLI/model/effort, what the session may execute, how sessions and checkpoints behave | [CODING-AGENTS.md](CODING-AGENTS.md) |
-| The whole sequence for a real intent | [RECIPES.md](RECIPES.md) |
-| It failed, or stopped early | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
-
-## Plan then code
-
-They are two runs, never one command, and nothing passes implicitly between them:
-
-```bash
-lz plan --hu 23438 --working-directory /repo   # returns a plan, publishes the work items
-lz code --hu 23438 --working-directory /repo   # drains the published Task/Bug tickets
-```
-
-`plan` writes no checkpoint and mutates no branch, so it is the safe half. `code`
-delivers one unit of work per fresh session and re-selects the next until the
-queue is empty or blocked. Between them, read what `plan` actually published
-(`hu-children-info`, or `github-issue-list`) — a plan that published nothing
-turns the delivery run into an expensive no-op.
-
-`--base-branch <name>` applies to `code --hu` **only** on the first delivery,
-when the HU has no branch link and `hu/<HU>` does not exist — `hu-branch-info
---hu <id>` answers that with `"branch": null`. It is optional: without it the run
-provisions `hu/<HU>` from `master`, or `main` when the repository has no
-`master`, resolving that per repository in a multi-repository run. Declare it
-when the HU must branch from anything else (`develop`, a release branch), or
-when a repository has neither trunk — that case fails closed asking for it.
-
-## The operator prompt is supplemental
-
-`--prompt` enters the session as the *operator request*, and the workflow prompt,
-the coordinator-fixed identities (issue, HU, ticket, branch, manifest path) and
-the SAG context all outrank it. The manifest at that path is written by
-`ticket-manifest-set` / `github-manifest-set` (see `TOOLS.md`) and never by hand,
-so `--prompt` has nothing useful to say about its shape. Two further consequences
-change what you can promise:
-
-- Norms load with `--normas-sag`, never from prose. Asking for "the SAG norms"
-  inside `--prompt` loads nothing at all.
-- The session cannot read the tracker itself — the authority profiles deny `az`
-  and `gh` to Azure runs, and `gh pr`/`gh api`/`gh repo`/`az` to GitHub runs. So a
-  reference ("use HU 23300 as the model") has to be materialized first:
-
-  ```bash
-  lz hu-info --hu 23300 > /tmp/ref-23300.json
-  lz plan --hu 23438 --normas-sag \
-    --prompt "Read /tmp/ref-23300.json first: it is the reference HU. Slice 23438 with the same granularity." \
-    --working-directory /repo
-  ```
-
-`--prompt continue` is the recovery idiom, always paired with `--session <id>`.
-
-## Guardrails that reject a run before it starts
-
-These are argument errors, caught while parsing — mention them when they apply,
-because they cost nothing to avoid and a full error message to discover.
-
-- `--branch` / `--base-branch` are Azure-only; `--issue` is SAG-only;
-  `--environment` is `deploy-sag`-only; `--normas-sag` is `plan`/`code`-only.
-- The SAG commands need exactly one of `--hu` / `--issue`, and reject
-  `--session`, `--branch` and `--base-branch`.
-- `deploy-sag` accepts `dev`, `test`, `qa`; PROD and every alias fail closed.
-- `--interview` is `plan`-only and incompatible with `--quiet`; `--interview-host` and
-  `--interview-port` are `http`-only.
-- `--verbose` and `--quiet` are mutually exclusive.
-- `--cli` accepts `opencode` (`opencode`), `claudecode` (`claude`), and `codex` (`codex`); their default models are `opencode-go/deepseek-v4-pro`, `claude-sonnet-5`, and `gpt-5.6-sol`.
-- With `--cli claudecode`, `--variant` must be `low|medium|high|xhigh|max`; with `--cli codex`, it must be `none|minimal|low|medium|high|xhigh|max`.
-- Every `--fallback <cli>:<model>:<variant>` rung has its binary verified while
-  parsing; a repeated rung is an error, and `--fallback-wait-max` may not be
-  smaller than `--fallback-wait`.
-- Azure multi-repository `code` requires `--hu`; `--ticket` is optional and
-  narrows the run to that single unit instead of draining the HU.
-- `--commit` always takes the full object name.
-- `--off-delay <s>` requires `--off`; the shutdown password belongs in
-  `LAZY_WORKFLOW_OFF_PASSWORD`, not on the command line.
-
-## How to answer
-
-Lead with the command block, then one line per non-obvious flag, then what to
-check when it finishes — the marker it should end on, the items it should have
-published, or the JSON worth rereading. When a preflight read would change the
-command you are about to propose, run it first and say what it returned.
-
-Running a workflow command has real effects on a real backlog: it claims issues,
-pushes branches, opens and merges pull requests, and moves tracker items. Read-only
-tools are yours to run freely; anything that writes is the user's call unless they
-already asked for the run.
+For complete sequences, including Azure branch selection and fallback chains,
+open [RECIPES.md](RECIPES.md). For flag validation errors, use
+[COMMANDS.md](COMMANDS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

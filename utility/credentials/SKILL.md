@@ -1,75 +1,80 @@
 ---
 name: credentials
-description: Finds credentials in ~/.config/secrets/*.env (chezmoi + age) and in macOS Keychain before asking the user, and stores or migrates them as encrypted env files. Use whenever a coding agent needs, requests, configures, rotates, saves, or encounters a missing credential, token, password, passphrase, API key, secret, or authentication environment variable.
+description: Credentials: audit before asking, load existing secrets, and store or migrate on request. Use when a task needs a token, password, API key, or authentication environment variable.
 ---
 
 # Credentials
 
-Credential values live in `~/.config/secrets/<service>.env` (local files with
-0600 permissions), committed to a private chezmoi repository where they are
-encrypted with age. Never print, log, quote back, or place a credential in a
-command line, generated file, commit, issue, or chat response.
+Use `scripts/credentials.py` from this skill's directory. It locates
+credentials in `~/.config/secrets/*.env` and legacy macOS Keychain items
+without showing their values. The helper writes local env files with `0600`
+permissions; chezmoi encrypts managed source files with age. In the commands
+below, replace `<skill-directory>` with the directory containing this file and
+`NAME` with the required variable.
 
-Use the bundled helper:
+Keep values in the designated secret files or in the consuming process's
+environment. Prevent values from appearing in tool output, command text,
+logs, issues, commits, other files, and chat. Run secret-loading commands with
+shell tracing disabled. Variable names must be uppercase shell identifiers
+containing a credential word such as `TOKEN`, `PASSWORD`, or `API_KEY`.
 
-```bash
-"<skill-directory>/scripts/credentials.py" audit NAME
-```
+## Find and use
 
-In PowerShell, invoke it with Python:
+1. Audit the exact variable before asking the user for it:
 
-```powershell
-python "<skill-directory>/scripts/credentials.py" audit NAME
-```
+   ```bash
+   "<skill-directory>/scripts/credentials.py" audit NAME
+   ```
 
-Replace `<skill-directory>` with this skill's directory. Variable names must be
-uppercase shell identifiers such as `AZURE_DEVOPS_TOKEN`.
+   In PowerShell, invoke the same helper with `python`. The result reports
+   `secrets=<file|missing>` and `keychain=<present|missing|n/a>`, never the
+   value. This step ends when every required name has a reported location.
+2. If `secrets` names a file, load that file in the command's shell
+   (`. ~/.config/secrets/<file>` or `load-env <service>`) and retry the
+   operation. In PowerShell, assign one variable without displaying it:
+   `$env:NAME = (& lz credentials-get --name NAME --force)`. This step ends
+   when the operation succeeds or reports a different error.
+3. If the file is missing but Keychain has the item, use it for the current
+   operation without printing it. On macOS, a shell can pass a named item to
+   one command like this:
 
-## Before asking for a credential
+   ```bash
+   if secret="$(security find-generic-password -a "$USER" -s NAME -w)" && [ -n "$secret" ]; then
+     NAME="$secret" command-that-needs-it
+     unset secret
+   fi
+   ```
 
-1. Run `audit NAME`. It reports which env file holds it and whether macOS
-   Keychain still has a legacy copy; it never returns the value.
-2. If an env file has it, load that file in the command's shell
-   (`. ~/.config/secrets/<file>` or the `load-env <service>` helper) and retry.
-   In PowerShell, load one named credential without displaying it:
-   `$env:NAME = (& lz credentials-get --name NAME --force)`.
-   Do not ask the user for the credential.
-3. Ask for the credential only after the audit reports it missing.
+   Replace both `NAME` tokens with the audited variable. This step ends when
+   the command has used the existing item. If neither store has it, ask the
+   user for that credential and state the missing variable name.
 
-## Store a requested credential
+## Store or migrate on request
 
-Only after an explicit user request to save, add, rotate, or repair it, run:
+When the user explicitly asks to save, add, rotate, or repair a credential,
+use the helper's hidden prompt:
 
 ```bash
 "<skill-directory>/scripts/credentials.py" store NAME [--service SERVICE]
 ```
 
-In PowerShell, run `python "<skill-directory>/scripts/credentials.py" store NAME [--service SERVICE]`.
-
-The helper reads the value with a hidden prompt, updates
-`~/.config/secrets/<service>.env` (creating it with 0600 when needed),
-re-adds it to chezmoi so the encrypted source state is updated, and prints how
-to publish the change. Values never appear in the output. Use `--stdin` only
-when a protected interactive session supplies stdin without putting the value
-in command text or logs.
-
-## Migrate a legacy Keychain item
-
-On macOS, credentials that still live only in Keychain can be moved into the
-env-file model without retyping them:
+When the user explicitly asks to move a legacy macOS Keychain item into the
+env-file model, use:
 
 ```bash
 "<skill-directory>/scripts/credentials.py" migrate NAME [--service SERVICE]
 ```
 
-In PowerShell on macOS, run `python "<skill-directory>/scripts/credentials.py" migrate NAME [--service SERVICE]`.
+In PowerShell, run either command with `python`. The helper writes
+`export NAME=<shell-quoted value>` to the matching service file, or to
+`<service>.env` (default `other.env`) when the name is new. It rejects empty
+values, keeps the file at `0600`, and attempts `chezmoi re-add` when chezmoi
+already manages the file. Use a single-line value; `--stdin` reads only its
+first line and requires protected stdin that keeps the value out of command
+text and logs.
 
-The helper reads the value from Keychain without printing it.
-
-## Rules
-
-- File format is `export NAME=<shell-quoted value>`; one credential per line.
-- The helper validates the name and refuses values that span multiple lines.
-- `~/.bashrc` is never edited: secrets are loaded on demand, not at shell start.
-- To make the change available on another machine, publish it and run
-  `chezmoi update` there; files are decrypted with that machine's age identity.
+After a write, run `audit NAME` again. The local step is complete when exactly
+the intended env file reports the name and the helper has reported whether
+chezmoi updated its encrypted source. If the user requested availability on
+another machine, publish the encrypted chezmoi change and run `chezmoi update`
+there; a local store or migration alone does not sync it.
