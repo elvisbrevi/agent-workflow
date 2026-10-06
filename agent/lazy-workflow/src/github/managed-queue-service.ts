@@ -55,7 +55,7 @@ export interface GitHubAuthenticatedIdentity {
 export const READY_FOR_AGENT_LABEL = "ready-for-agent";
 const READY_FOR_AGENT_LABEL_COLOR = "0E8A16";
 const READY_FOR_AGENT_LABEL_DESCRIPTION = "Issue ready for agent execution";
-const EPIC_TITLE_PREFIXES = ["[Epic]", "[Spec]"];
+const EPIC_TITLE_PREFIXES = ["[Epic]", "[Spec]", "Epic:", "Spec:"];
 const ADD_ASSIGNEE_FLAG = "--add-assignee";
 const REMOVE_ASSIGNEE_FLAG = "--remove-assignee";
 const ME_HANDLE = "@me";

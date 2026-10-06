@@ -277,8 +277,9 @@ is none. Re-asking each turn is the point: merging #42 is what makes #47
 eligible, and a list captured before the run began would never contain it.
 
 An issue is eligible when it is open, unassigned, labelled `ready-for-agent`,
-not an Epic issue type, not labelled `epic`, not titled `[Epic]…`, and has no
-open blocking dependency. Ties break by creation date, then by number.
+not an Epic issue type, not labelled `epic`, not titled `[Epic]…`, `[Spec]…`,
+`Epic:…` or `Spec:…`, and has no open blocking dependency. Ties break by creation
+date, then by number.
 
 Each unit is one composition of deterministic effects around a single fresh
 session:

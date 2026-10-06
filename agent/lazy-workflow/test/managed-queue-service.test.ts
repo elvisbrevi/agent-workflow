@@ -37,13 +37,17 @@ describe("classifyQueueIssues", () => {
       issue({ number: 2, title: "[Spec] Authoring platform" }),
       issue({ number: 3, title: "feat(lazy-workflow): select and claim one GitHub issue deterministically", labels: [{ name: "epic" }] }),
       issue({ number: 4, title: "feat(lazy-workflow): select and claim one GitHub issue deterministically", labels: [{ name: "ready-for-agent" }] }),
+      issue({ number: 5, title: "Spec: Authoring platform" }),
+      issue({ number: 6, title: "Epic: Authoring platform" }),
     ]);
 
-    expect(classification.managed.map(({ number }) => number)).toEqual([1, 2, 3, 4]);
+    expect(classification.managed.map(({ number }) => number)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(classification.eligible.map(({ number }) => number)).toEqual([4]);
     expect(classification.blocked.find(({ number }) => number === 1)?.reasons).toContain("epic-or-spec");
     expect(classification.blocked.find(({ number }) => number === 2)?.reasons).toContain("epic-or-spec");
     expect(classification.blocked.find(({ number }) => number === 3)?.reasons).toContain("epic-or-spec");
+    expect(classification.blocked.find(({ number }) => number === 5)?.reasons).toContain("epic-or-spec");
+    expect(classification.blocked.find(({ number }) => number === 6)?.reasons).toContain("epic-or-spec");
   });
 
   test("excludes closed issues, assigned issues, wrong label, and open blockers", () => {

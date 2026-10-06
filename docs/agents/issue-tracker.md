@@ -6,7 +6,7 @@ Issues and specifications for this repository live in GitHub Issues at `elvisbre
 
 The supervisor validates this document against the repository's Git remote before it launches a worker. The GitHub adapter owns remote detection, authentication checks, queue discovery, issue reads and claims, dependency checks, pull-request lookup and merge verification, issue closure, and restart reconciliation. The orchestration loop consumes those normalized tracker operations and must not construct GitHub commands directly.
 
-The adapter treats an issue as eligible only when it is open, unassigned, labeled `ready-for-agent`, not an Epic issue type, not labeled `epic`, not titled `[Epic]...`, and has no open native dependency. Ambiguous remotes, missing documentation, missing `gh`, and unavailable authentication fail before any worker or repository mutation starts.
+The adapter treats an issue as eligible only when it is open, unassigned, labeled `ready-for-agent`, not an Epic issue type, not labeled `epic`, not titled `[Epic]...`, `[Spec]...`, `Epic:...` or `Spec:...`, and has no open native dependency. Ambiguous remotes, missing documentation, missing `gh`, and unavailable authentication fail before any worker or repository mutation starts.
 
 The adapter also owns publication. A planning run's session creates nothing: it returns its slices behind `PLAN_READY`, and the coordinator creates one issue per slice with the literal `ready-for-agent` label applied in the same call that creates it, creating the label first if the repository lacks it. It then wires each declared blocking edge with GitHub's native dependency relation. An issue is the plan's because this code created it, so an issue somebody opens by hand while the session runs is never labelled (ADR-0040).
 
