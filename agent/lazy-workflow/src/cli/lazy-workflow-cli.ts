@@ -450,7 +450,7 @@ function parseCli(args: string[], parser: CliParser): CliParseResult {
       return 0;
     },
     onError: (message) => {
-      reportOperator(`lazy-workflow: ${message}`);
+      getDefaultReporter().error(`lazy-workflow: ${message}`);
       return 1;
     },
   });

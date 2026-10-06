@@ -167,6 +167,28 @@ describe("buildCli parser", () => {
     });
   });
 
+  describe("reporte de errores", () => {
+    test("todo rechazo pasa por onError, también los que detecta yargs", () => {
+      const rejected = [
+        ["github-auth-info", "--bogus"],
+        ["plan", "--hu", "abc"],
+        ["github-commit-push", "--branch", "issue/1", "--commit", "abc1234"],
+        ["git-branch-checkout", "--branch", "--orphan"],
+      ];
+      for (const args of rejected) {
+        const reported: string[] = [];
+        const result = buildCli()(args, {
+          onHelp: () => 0,
+          onError: (message) => { reported.push(message); return 1; },
+        });
+
+        expect(result.kind).toBe("error");
+        if (result.kind !== "error") continue;
+        expect({ args, reported }).toEqual({ args, reported: [result.message] });
+      }
+    });
+  });
+
   describe("seleccion de agente CLI", () => {
     test("sin --cli el agente es opencode", () => {
       const result = parse(["plan"]);

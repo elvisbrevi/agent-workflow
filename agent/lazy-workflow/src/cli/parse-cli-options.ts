@@ -259,11 +259,16 @@ export function buildCli(binaryPresent: BinaryProbe = binaryOnPath, env: NodeJS.
       return { kind: "help", output };
     }
 
-    let captured: CliParseResult | undefined;
+    // Every rejection reaches `onError`, whichever stage raised it, so an
+    // argument error never ends the run without saying why.
+    const reject = (message: string): CliParseResult => {
+      hooks.onError(message, 1);
+      return { kind: "error", message, exitCode: 1 };
+    };
+    let rejected: string | undefined;
     const reportError = (message: string): number => {
-      const exitCode = 1;
-      captured = { kind: "error", message, exitCode };
-      return exitCode;
+      rejected = message;
+      return 1;
     };
 
     // `--no-log-file` is read straight off `rawArgs` in `readOptions` rather than
@@ -277,21 +282,17 @@ export function buildCli(binaryPresent: BinaryProbe = binaryOnPath, env: NodeJS.
     try {
       argv = parser.parseSync();
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      reportError(message);
-      return captured ?? { kind: "error", message, exitCode: 1 };
+      return reject(error instanceof Error ? error.message : String(error));
     }
 
-    if (captured) return captured;
+    if (rejected !== undefined) return reject(rejected);
 
     // Reading the options can still reject a malformed value (`--field` pairs),
     // and that is an argument error like any other yargs raises.
     try {
       return { kind: "options", options: readOptions(command, argv, rawArgs.slice(1), binaryPresent, env) };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      hooks.onError(message, 1);
-      return { kind: "error", message, exitCode: 1 };
+      return reject(error instanceof Error ? error.message : String(error));
     }
   };
 }
