@@ -24,6 +24,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | What would a `code` run take next, and why does it skip the rest? | `github-issue-select`, `github-issue-list` |
 | Everything about one issue, with its eligibility reasons | `github-issue-info --issue` |
 | Free an issue an interrupted run still holds | `github-issue-release --issue` |
+| Switch to a branch, local or remote, and bring it up to date | `git-branch-checkout --branch` |
 | Repair a half-finished delivery step | `github-branch-prepare`, `github-commit-push`, `github-pr-create`, `github-pr-merge`, `github-issue-close`, `github-branch-cleanup` |
 | Write the completion manifest a delivery session must leave behind | `ticket-manifest-set` (Azure), `github-manifest-set` (GitHub) — never by hand |
 | Publish tracker work without planning it | `ticket-create`, `ticket-link-parent`, `ticket-link-predecessor` |
@@ -199,8 +200,14 @@ files and never formats or comments them itself.
 ## git
 
 ```bash
+lz git-branch-checkout --branch <name> --working-directory <path>
 lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>
 ```
+
+`git-branch-checkout` is `yp checkout` without its menu: it fetches every
+remote, switches to the named branch — `origin/feature-x` is tracked as
+`feature-x` — and fast-forwards it to its upstream, never merging. `fetched` and
+`pulled` report those two steps; neither failing fails the command.
 
 ## Reading the output
 

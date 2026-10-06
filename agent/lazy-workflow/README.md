@@ -173,6 +173,7 @@ lz github-branch-cleanup --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
 
 # git
+lz git-branch-checkout --branch origin/feature-x --working-directory /path/to/repository
 lz git-branch-delete --branch issue/263 --base-branch main --commit <sha> \
   --working-directory /path/to/repository
 
@@ -411,7 +412,7 @@ workflow stays the only thing a run has to trust.
 |---|---|
 | Azure | `hu-children-info`, `hu-state-set`, `hu-branch-ensure`, `ticket-type-info`, `ticket-pr-create`, `ticket-branch-push`, `ticket-branch-checkout`, `ticket-session-verify` |
 | GitHub | `github-auth-info`, `github-repo-info`, `github-issue-list`, `github-issue-select`, `github-issue-info`, `github-issue-claim`, `github-issue-release`, `github-issue-close`, `github-branch-prepare`, `github-branch-checkout`, `github-branch-verify`, `github-branch-cleanup`, `github-session-verify`, `github-commit-push`, `github-pr-create`, `github-pr-merge` |
-| git | `git-branch-delete` |
+| git | `git-branch-checkout`, `git-branch-delete` |
 | credentials | `credentials-audit`, `credentials-list`, `credentials-get`, `credentials-set`, `credentials-migrate`, `credentials-update` |
 
 `credentials-audit` reports the declaring `.env` file names and whether macOS

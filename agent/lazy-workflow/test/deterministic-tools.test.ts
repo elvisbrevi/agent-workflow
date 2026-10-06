@@ -59,6 +59,7 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
     },
     branches: {
       deleteTicketBranch: record("deleteTicketBranch", undefined),
+      checkoutBranch: record("checkoutBranch", { branch: "feature-x", fetched: true, pulled: true }),
     },
   };
   return { services, calls };
@@ -212,6 +213,7 @@ describe("herramientas deterministas como comandos", () => {
       "github-commit-push": "deterministic-completion-failure",
       "github-pr-create": "pull-request-failure",
       "github-pr-merge": "pull-request-failure",
+      "git-branch-checkout": "branch-preparation-failure",
       "git-branch-delete": "ticket-branch-cleanup-failure",
       "credentials-audit": "deterministic-completion-failure",
       "credentials-list": "deterministic-completion-failure",
@@ -399,6 +401,24 @@ describe("herramientas deterministas como comandos", () => {
   });
 
   describe("git", () => {
+    test("git-branch-checkout pasa la rama tal como se nombró, remota incluida", async () => {
+      const { code, printed, calls } = await runTool([
+        "git-branch-checkout", "--branch", "origin/feature-x", "--working-directory", "/repo",
+      ]);
+
+      expect(code).toBe(0);
+      expect(calls).toEqual([{ operation: "checkoutBranch", args: ["origin/feature-x", "/repo"] }]);
+      expect(parsed(printed)).toEqual({ branch: "feature-x", fetched: true, pulled: true, checkedOut: true });
+    });
+
+    test("git-branch-checkout exige --branch", async () => {
+      const { code, calls } = await runTool(["git-branch-checkout", "--working-directory", "/repo"]);
+
+      expect(code).toBe(1);
+      expect(calls).toEqual([]);
+      expect(messages).toEqual(["git-branch-checkout requiere --branch <name>"]);
+    });
+
     test("git-branch-delete pasa el commit remoto esperado cuando se declara", async () => {
       const { code, calls } = await runTool([
         "git-branch-delete", "--branch", "ticket/51", "--base-branch", "hu/23438",
@@ -546,6 +566,7 @@ describe("herramientas deterministas como comandos", () => {
       expect(typeof services.queue.verifyAuthentication).toBe("function");
       expect(typeof services.delivery.prepareBranch).toBe("function");
       expect(typeof services.branches.deleteTicketBranch).toBe("function");
+      expect(typeof services.branches.checkoutBranch).toBe("function");
     });
   });
 });

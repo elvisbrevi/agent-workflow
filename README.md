@@ -258,6 +258,7 @@ invoke them as `lz <command> [options]`.
 
 | Command | Purpose |
 |---|---|
+| `git-branch-checkout` | Fetch, switch to a local or remote branch, and fast-forward it (`yp checkout` without the menu). |
 | `git-branch-delete` | Delete the local and remote delivery branch with verification. |
 | `credentials-audit` | Report which secrets files and Keychain contain a credential, without its value. |
 | `credentials-list` | Print the names stored in the local secrets files. |

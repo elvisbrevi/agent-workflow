@@ -44,7 +44,7 @@ export const GITHUB_TOOL_COMMANDS = [
 ] as const;
 
 /** Repository operations the workflow performs through `git`. */
-export const GIT_TOOL_COMMANDS = ["git-branch-delete"] as const;
+export const GIT_TOOL_COMMANDS = ["git-branch-checkout", "git-branch-delete"] as const;
 
 /**
  * The credential operations: inspect locations, read, store, copy from
@@ -100,6 +100,7 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lz github-commit-push --branch <name> --commit <sha> --working-directory <path>",
   "  lz github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
   "  lz github-pr-merge --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>",
+  "  lz git-branch-checkout --branch <name> --working-directory <path>",
   "  lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>",
   "  lz credentials-audit [--name <NAME>]",
   "  lz credentials-list",

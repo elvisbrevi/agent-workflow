@@ -13,7 +13,8 @@
  */
 
 import { join } from "node:path";
-import { GitTicketBranchCleaner } from "../git/git-ticket-branch-cleaner.ts";
+import { checkoutGitBranchByName, type GitBranchCheckout } from "../git/git-branch-checkout.ts";
+import { GitTicketBranchCleaner, runGit } from "../git/git-ticket-branch-cleaner.ts";
 import {
   GitHubDeliveryService,
   type GitHubBranchPreparation,
@@ -112,6 +113,8 @@ export interface GitHubDeliveryTools {
 
 export interface GitBranchTools {
   deleteTicketBranch(ticketBranch: string, integrationBranch: string, workingDirectory: string, expectedRemoteCommit?: string): Promise<void>;
+  /** Optional for the reason the Azure operations are: only `git-branch-checkout` reaches it. */
+  checkoutBranch?(branch: string, workingDirectory: string): Promise<GitBranchCheckout>;
 }
 
 /**
@@ -145,11 +148,15 @@ export interface DeterministicToolServices {
 
 /** The concrete adapters, built only when a tool command is actually run. */
 export function createDeterministicToolServices(azure: AzureToolBoundary): DeterministicToolServices {
+  const cleaner = new GitTicketBranchCleaner();
   return {
     azure,
     queue: new GitHubManagedQueueService(),
     delivery: new GitHubDeliveryService(),
-    branches: new GitTicketBranchCleaner(),
+    branches: {
+      deleteTicketBranch: (...args) => cleaner.deleteTicketBranch(...args),
+      checkoutBranch: (branch, workingDirectory) => checkoutGitBranchByName(runGit, branch, workingDirectory),
+    },
     credentials: productionCredentialTools,
   };
 }
@@ -370,6 +377,11 @@ async function runGitTool(
   options: CliOptions,
   branches: GitBranchTools,
 ): Promise<unknown> {
+  if (command === "git-branch-checkout") {
+    // Not completed to a ref: `origin/feature-x` names a remote branch here.
+    const branch = requireText(options.branch, "--branch <name>", command);
+    return { ...await requireOperation(branches, "checkoutBranch", command)(branch, options.workingDirectory), checkedOut: true };
+  }
   const branch = requireBranchRef(options.branch, "--branch <name>", command);
   const baseBranch = requireBranchRef(options.baseBranch, "--base-branch <name>", command);
   await branches.deleteTicketBranch(branch, baseBranch, options.workingDirectory, options.commit ?? undefined);
