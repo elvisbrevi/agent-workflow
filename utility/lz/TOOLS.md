@@ -9,7 +9,8 @@ safe to run while deciding: they cannot answer differently from the run itself.
 Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains) ·
 [Azure reads](#azure-reads) · [Azure writes](#azure-writes) ·
 [GitHub queue](#github-queue) · [GitHub delivery](#github-delivery) ·
-[git](#git) · [Reading the output](#reading-the-output)
+[git](#git) · [Pull requests](#pull-requests) ·
+[Reading the output](#reading-the-output)
 
 ## Choosing one
 
@@ -28,6 +29,8 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | Switch to a branch, local or remote, and bring it up to date | `git-branch-checkout --branch` |
 | Repair a half-finished delivery step | `github-branch-prepare`, `github-commit-push`, `github-pr-create`, `github-pr-merge`, `github-issue-close`, `github-branch-cleanup` |
 | Write the completion manifest a delivery session must leave behind | `ticket-manifest-set` (Azure), `github-manifest-set` (GitHub) — never by hand |
+| What pull requests are open, and what is each one waiting on? | `pr-list`, `pr-info --pr`, `pr-thread-list --pr` |
+| Answer review feedback, or open a pull request | `pr-thread-reply`, `pr-create` |
 | Publish tracker work without planning it | `ticket-create`, `ticket-link-parent`, `ticket-link-predecessor` |
 | Attach the completion evidence a gate is waiting for | `ticket-pr-link`, `ticket-commit-link`, `ticket-attachment-add`, `ticket-evidence-set`, `ticket-completion-apply` |
 
@@ -213,6 +216,33 @@ list and no remote `HEAD` pointer. Every `name` it prints is accepted as is by
 `git-branch-checkout`, which switches to that branch — `origin/feature-x` is
 tracked as `feature-x` — and fast-forwards it to its upstream, never merging.
 `fetched` and `pulled` report those steps; neither failing fails the command.
+
+## Pull requests
+
+```bash
+lz pr-list --working-directory <path>
+lz pr-info --pr <id> --working-directory <path>
+lz pr-thread-list --pr <id> --working-directory <path>
+lz pr-thread-reply --pr <id> --thread <id> --body <text> --working-directory <path>
+lz pr-create --branch <name> --base-branch <name> --title <title> [--description <text> | --description-file <path>] --working-directory <path>
+```
+
+These are `yp pr` without its menu. The tracker is the one `origin` names —
+`gh` for GitHub, `az` for Azure DevOps, whose organization must match
+`LAZY_WORKFLOW_AZURE_ORGANIZATION` — and every answer carries it as `tracker`,
+in one shape for both: review states are `approved`, `approved-with-suggestions`,
+`changes-requested`, `rejected`, `commented` or `pending`, and a PR's status is
+`open`, `merged` or `closed`.
+
+- `pr-thread-list` returns what a person wrote, never Azure's system comments.
+  A code comment carries its `path` and `line`; GitHub's general discussion is
+  the thread `conversation`.
+- `pr-thread-reply --thread` takes an `id` exactly as `pr-thread-list` printed
+  it. On GitHub the thread must belong to `--pr`, or nothing is posted.
+- `pr-create` writes no description of its own. Write it, then pass it inline
+  with `--description` or, for anything longer than a line, with
+  `--description-file`. Omitting both opens the PR with an empty description;
+  Azure DevOps rejects one over 4000 characters.
 
 ## Reading the output
 

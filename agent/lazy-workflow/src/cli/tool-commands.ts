@@ -47,6 +47,18 @@ export const GITHUB_TOOL_COMMANDS = [
 export const GIT_TOOL_COMMANDS = ["git-branch-list", "git-branch-checkout", "git-branch-delete"] as const;
 
 /**
+ * Pull request operations, through `gh` or `az` as the repository's `origin`
+ * decides: what `yp pr` does, without its menu or its AI description.
+ */
+export const PULL_REQUEST_TOOL_COMMANDS = [
+  "pr-list",
+  "pr-info",
+  "pr-thread-list",
+  "pr-thread-reply",
+  "pr-create",
+] as const;
+
+/**
  * The credential operations: inspect locations, read, store, copy from
  * Keychain, and pull the published encrypted source without opening a session.
  */
@@ -63,6 +75,7 @@ export const DETERMINISTIC_TOOL_COMMANDS = [
   ...AZURE_TOOL_COMMANDS,
   ...GITHUB_TOOL_COMMANDS,
   ...GIT_TOOL_COMMANDS,
+  ...PULL_REQUEST_TOOL_COMMANDS,
   ...CREDENTIALS_TOOL_COMMANDS,
 ] as const;
 
@@ -103,6 +116,11 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lz git-branch-list --working-directory <path>",
   "  lz git-branch-checkout --branch <name> --working-directory <path>",
   "  lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --working-directory <path>",
+  "  lz pr-list --working-directory <path>",
+  "  lz pr-info --pr <id> --working-directory <path>",
+  "  lz pr-thread-list --pr <id> --working-directory <path>",
+  "  lz pr-thread-reply --pr <id> --thread <id> --body <text> --working-directory <path>",
+  "  lz pr-create --branch <name> --base-branch <name> --title <title> [--description <text> | --description-file <path>] --working-directory <path>",
   "  lz credentials-audit [--name <NAME>]",
   "  lz credentials-list",
   "  lz credentials-get --name <NAME> [--force]",

@@ -254,6 +254,20 @@ invoke them as `lz <command> [options]`.
 | `ticket-commit-link` | Link the pull request's merge commit to the ticket. |
 | `ticket-completion-apply` | Apply completion evidence and state after validating delivery gates. |
 
+### Pull requests (GitHub and Azure DevOps)
+
+`yp pr` without its menu or its AI description. The tracker is the one the
+repository's `origin` names; the description is passed in, so an agent can
+write it and hand it over.
+
+| Command | Purpose |
+|---|---|
+| `pr-list` | List the open pull requests. |
+| `pr-info` | Show one pull request with its description, status, and reviewers. |
+| `pr-thread-list` | List its discussion threads and code comments, with file and line. |
+| `pr-thread-reply` | Reply to one thread. |
+| `pr-create` | Open a pull request with a title and an inline or file description. |
+
 ### Git and credentials
 
 | Command | Purpose |
@@ -292,6 +306,9 @@ lz credentials-set --name OPENAI_API_KEY
 
 # Check where a credential exists without showing its value.
 lz credentials-audit --name CARGO_REGISTRY_TOKEN
+
+# Open a pull request whose description an agent wrote.
+lz pr-create --branch feature/x --base-branch main --title "feat: x" --description-file ./pr.md
 
 # Copy a legacy macOS Keychain item into the secrets files.
 lz credentials-migrate --name CARGO_REGISTRY_TOKEN --service crates-io

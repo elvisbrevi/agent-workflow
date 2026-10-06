@@ -33,6 +33,11 @@ import {
   type SelectedManagedIssue,
 } from "../github/managed-queue-service.ts";
 import { reportFailure } from "../output/failure-kind.ts";
+import { AzurePullRequests } from "../azure/azure-pull-requests.ts";
+import { runAzureCommand } from "../azure/ticket-info-service.ts";
+import { GitHubPullRequests } from "../github/github-pull-requests.ts";
+import { runGh } from "../github/managed-queue-service.ts";
+import { isAzureRemote, isGitHubRemote, type PullRequestTools } from "../pull-request/pull-request-tools.ts";
 import type { AzurePullRequestTarget } from "../azure/autocode-service.ts";
 import {
   defaultSecretsDirectory,
@@ -136,6 +141,16 @@ export interface AzureToolBoundary {
   verifySession?(ticketBranch: string, integrationBranch: string, workingDirectory: string): Promise<{ commit: string }>;
 }
 
+/** The pull request tools of the repository at `workingDirectory`, for the tracker its `origin` names. */
+export type PullRequestToolsResolver = (workingDirectory: string) => Promise<PullRequestTools>;
+
+async function resolvePullRequestTools(workingDirectory: string): Promise<PullRequestTools> {
+  const origin = (await runGit(["remote", "get-url", "origin"], workingDirectory)).trim();
+  if (isAzureRemote(origin)) return new AzurePullRequests(runAzureCommand, origin);
+  if (isGitHubRemote(origin)) return new GitHubPullRequests(runGh, workingDirectory);
+  throw new Error(`El remote origin ${origin} no es GitHub ni Azure DevOps`);
+}
+
 export interface DeterministicToolServices {
   azure: AzureToolBoundary;
   queue: GitHubQueueTools;
@@ -146,6 +161,8 @@ export interface DeterministicToolServices {
    * commands reach them: a test that drives another family declares none.
    */
   credentials?: CredentialTools;
+  /** Optional for the same reason: only the `pr-*` commands reach it. */
+  pullRequests?: PullRequestToolsResolver;
 }
 
 /** The concrete adapters, built only when a tool command is actually run. */
@@ -161,13 +178,14 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
       checkoutBranch: (branch, workingDirectory) => checkoutGitBranchByName(runGit, branch, workingDirectory),
     },
     credentials: productionCredentialTools,
+    pullRequests: resolvePullRequestTools,
   };
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export function deterministicFailureKind(command: DeterministicToolCommand) {
-  if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
+  if (command.endsWith("-info") || command === "pr-list" || command === "pr-thread-list" || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
   if (command === "git-branch-list" || command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
@@ -394,6 +412,54 @@ async function runGitTool(
   return { branch, baseBranch, ...(options.commit ? { commit: options.commit } : {}), removed: true };
 }
 
+const shortBranch = (branch: string): string => (branch.startsWith("refs/heads/") ? branch.slice("refs/heads/".length) : branch);
+
+/**
+ * The `yp pr` operations. Every argument is checked before the repository is
+ * read, so a malformed call never reaches `git`, `gh` or `az`; the tracker is
+ * then the one `origin` names, and it travels in every answer.
+ */
+async function runPullRequestTool(
+  command: DeterministicToolCommand,
+  options: CliOptions,
+  resolve: PullRequestToolsResolver,
+): Promise<unknown> {
+  const workingDirectory = options.workingDirectory;
+  if (command === "pr-list") {
+    const tools = await resolve(workingDirectory);
+    return { tracker: tools.tracker, pullRequests: await tools.list() };
+  }
+  if (command === "pr-create") {
+    const source = shortBranch(requireText(options.branch, "--branch <name>", command));
+    const target = shortBranch(requireText(options.baseBranch, "--base-branch <name>", command));
+    const title = requireText(options.title, "--title <title>", command);
+    if (options.description !== null && options.descriptionFile !== null) {
+      throw new MissingArgument(`${command} acepta --description o --description-file, no ambos`);
+    }
+    const description = options.descriptionFile !== null
+      ? await Bun.file(options.descriptionFile).text()
+      : options.description ?? "";
+    const tools = await resolve(workingDirectory);
+    const created = await tools.create({ source, target, title, description });
+    return { tracker: tools.tracker, ...created, source, target, title };
+  }
+
+  const pullRequest = requirePositive(options.pullRequest, "--pr <id>", command);
+  if (command === "pr-thread-reply") {
+    const thread = requireText(options.thread, "--thread <id>", command);
+    const body = requireText(options.body, "--body <text>", command);
+    const tools = await resolve(workingDirectory);
+    const { comment } = await tools.reply(pullRequest, thread, body);
+    return { tracker: tools.tracker, pullRequest, thread, comment, replied: true };
+  }
+  const tools = await resolve(workingDirectory);
+  if (command === "pr-thread-list") {
+    return { tracker: tools.tracker, pullRequest, threads: await tools.threads(pullRequest) };
+  }
+  // pr-info
+  return { tracker: tools.tracker, ...await tools.read(pullRequest) };
+}
+
 /**
  * Runs one deterministic tool and prints what its adapter answered. A missing
  * argument and a failed operation are both reported the way every other
@@ -466,11 +532,13 @@ export async function runDeterministicTool(
     if (command.startsWith("credentials-")) {
       return await runCredentialsTool(command, options, services.credentials ?? productionCredentialTools, print, isTerminal);
     }
-    const result = command.startsWith("github-")
-      ? await runGitHubTool(command, options, services)
-      : command.startsWith("git-")
-        ? await runGitTool(command, options, services.branches)
-        : await runAzureTool(command, options, services.azure);
+    const result = command.startsWith("pr-")
+      ? await runPullRequestTool(command, options, services.pullRequests ?? resolvePullRequestTools)
+      : command.startsWith("github-")
+        ? await runGitHubTool(command, options, services)
+        : command.startsWith("git-")
+          ? await runGitTool(command, options, services.branches)
+          : await runAzureTool(command, options, services.azure);
     print(JSON.stringify(result ?? null, null, 2));
     return 0;
   } catch (error) {

@@ -37,6 +37,7 @@ import { reportSessionEvent } from "../output/session-event.ts";
 import { createRunLogSink, resolveRunLogPath, type RunLogRecordInput } from "../output/run-log.ts";
 import { registerInterruptionHandlers, type InterruptionCheckpointProbe, type InterruptionProcess } from "../output/run-interruption.ts";
 import { GitTicketBranchCleaner, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
+import { isAzureRemote } from "../pull-request/pull-request-tools.ts";
 import { SagNormsService } from "../sag/sag-norms-service.ts";
 import {
   GitHubManagedQueueService,
@@ -435,11 +436,6 @@ const TICKET_READ_COMMANDS = new Set([
 /** Un identificador que el tracker puede aceptar: un HU, un ticket o un PR. */
 function isPositiveId(value: number | null): value is number {
   return value !== null && Number.isInteger(value) && value > 0;
-}
-
-function isAzureRemote(origin: string): boolean {
-  const trimmed = origin.trim();
-  return /^https:\/\/(?:[^@\/]+@)?dev\.azure\.com\/|^git@ssh\.dev\.azure\.com:|^https?:\/\/[^\/]*\.visualstudio\.com\//.test(trimmed);
 }
 
 function parseCli(args: string[], parser: CliParser): CliParseResult {

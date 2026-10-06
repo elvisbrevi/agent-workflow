@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createCli } from "./_helpers/create-cli.ts";
 import {
   createDeterministicToolServices,
@@ -56,6 +59,17 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
       createOrReusePullRequest: record("createOrReusePullRequest", { number: 9 }),
       mergePullRequest: record("mergePullRequest", { number: 9, mergeCommit: OTHER_COMMIT }),
       closeIssue: record("closeIssue", undefined),
+    },
+    pullRequests: async (workingDirectory) => {
+      calls.push({ operation: "resolvePullRequests", args: [workingDirectory] });
+      return {
+        tracker: "azure",
+        list: record("listPullRequests", [{ id: 7, title: "feat: x" }]),
+        read: record("readPullRequest", { id: 7, title: "feat: x", reviewers: [] }),
+        threads: record("listThreads", [{ id: "12", status: "active", path: null, line: null, comments: [] }]),
+        reply: record("replyThread", { comment: "3" }),
+        create: record("createPullRequest", { id: 8, url: "https://dev.azure.com/org/Team/_git/repo/pullrequest/8" }),
+      } as never;
     },
     branches: {
       deleteTicketBranch: record("deleteTicketBranch", undefined),
@@ -221,6 +235,11 @@ describe("herramientas deterministas como comandos", () => {
       "git-branch-list": "branch-preparation-failure",
       "git-branch-checkout": "branch-preparation-failure",
       "git-branch-delete": "ticket-branch-cleanup-failure",
+      "pr-list": "tracker-read-failure",
+      "pr-info": "tracker-read-failure",
+      "pr-thread-list": "tracker-read-failure",
+      "pr-thread-reply": "pull-request-failure",
+      "pr-create": "pull-request-failure",
       "credentials-audit": "deterministic-completion-failure",
       "credentials-list": "deterministic-completion-failure",
       "credentials-get": "deterministic-completion-failure",
@@ -459,6 +478,100 @@ describe("herramientas deterministas como comandos", () => {
     });
   });
 
+  describe("pull requests", () => {
+    test("pr-list responde las abiertas con el tracker que nombra origin", async () => {
+      const { code, printed, calls } = await runTool(["pr-list", "--working-directory", "/repo"]);
+
+      expect(code).toBe(0);
+      expect(calls.map(({ operation }) => operation)).toEqual(["resolvePullRequests", "listPullRequests"]);
+      expect(parsed(printed)).toEqual({ tracker: "azure", pullRequests: [{ id: 7, title: "feat: x" }] });
+    });
+
+    test("pr-info y pr-thread-list leen el PR declarado", async () => {
+      const info = await runTool(["pr-info", "--pr", "7", "--working-directory", "/repo"]);
+      const threads = await runTool(["pr-thread-list", "--pr", "7", "--working-directory", "/repo"]);
+
+      expect(info.calls[1]).toEqual({ operation: "readPullRequest", args: [7] });
+      expect(parsed(info.printed)).toEqual({ tracker: "azure", id: 7, title: "feat: x", reviewers: [] });
+      expect(threads.calls[1]).toEqual({ operation: "listThreads", args: [7] });
+      expect((parsed(threads.printed) as { pullRequest: number }).pullRequest).toBe(7);
+    });
+
+    test("pr-thread-reply publica el cuerpo en el hilo declarado", async () => {
+      const { code, printed, calls } = await runTool([
+        "pr-thread-reply", "--pr", "7", "--thread", "12", "--body", "Corregido en abc", "--working-directory", "/repo",
+      ]);
+
+      expect(code).toBe(0);
+      expect(calls[1]).toEqual({ operation: "replyThread", args: [7, "12", "Corregido en abc"] });
+      expect(parsed(printed)).toEqual({ tracker: "azure", pullRequest: 7, thread: "12", comment: "3", replied: true });
+    });
+
+    test("pr-create toma la descripción en línea y deja las ramas en su forma corta", async () => {
+      const { code, printed, calls } = await runTool([
+        "pr-create", "--branch", "refs/heads/feature/x", "--base-branch", "main", "--title", "feat: x",
+        "--description", "## Resumen\nLo que cambia", "--working-directory", "/repo",
+      ]);
+
+      expect(code).toBe(0);
+      expect(calls[1]).toEqual({
+        operation: "createPullRequest",
+        args: [{ source: "feature/x", target: "main", title: "feat: x", description: "## Resumen\nLo que cambia" }],
+      });
+      expect(parsed(printed)).toEqual({
+        tracker: "azure",
+        id: 8,
+        url: "https://dev.azure.com/org/Team/_git/repo/pullrequest/8",
+        source: "feature/x",
+        target: "main",
+        title: "feat: x",
+      });
+    });
+
+    test("pr-create lee la descripción de --description-file", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "lazy-workflow-pr-description-"));
+      const file = join(dir, "description.md");
+      writeFileSync(file, "# Desde un archivo\n");
+      try {
+        const { calls } = await runTool([
+          "pr-create", "--branch", "feature/x", "--base-branch", "main", "--title", "feat: x",
+          "--description-file", file, "--working-directory", "/repo",
+        ]);
+
+        expect((calls[1]?.args[0] as { description: string }).description).toBe("# Desde un archivo\n");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("sin descripción el PR se crea con la descripción vacía", async () => {
+      const { calls } = await runTool([
+        "pr-create", "--branch", "feature/x", "--base-branch", "main", "--title", "feat: x", "--working-directory", "/repo",
+      ]);
+
+      expect((calls[1]?.args[0] as { description: string }).description).toBe("");
+    });
+
+    test("un argumento inválido se rechaza antes de leer el repositorio", async () => {
+      const cases: Array<{ args: string[]; message: string }> = [
+        {
+          args: ["pr-create", "--branch", "x", "--base-branch", "main", "--title", "t", "--description", "a", "--description-file", "/f"],
+          message: "pr-create acepta --description o --description-file, no ambos",
+        },
+        { args: ["pr-create", "--branch", "x", "--base-branch", "main"], message: "pr-create requiere --title <title>" },
+        { args: ["pr-info"], message: "pr-info requiere --pr <id> con un entero positivo" },
+        { args: ["pr-thread-reply", "--pr", "7", "--thread", "12"], message: "pr-thread-reply requiere --body <text>" },
+        { args: ["pr-thread-reply", "--pr", "7", "--body", "ok"], message: "pr-thread-reply requiere --thread <id>" },
+      ];
+      for (const { args, message } of cases) {
+        messages.length = 0;
+        const { code, calls } = await runTool([...args, "--working-directory", "/repo"]);
+
+        expect({ args, code, calls, messages }).toEqual({ args, code: 1, calls: [], messages: [message] });
+      }
+    });
+  });
+
   describe("receptor del boundary", () => {
     test("cada herramienta Azure alcanza su operacion con el boundary como receptor", async () => {
       for (const { args, operation } of AZURE_TOOL_INVOCATIONS) {
@@ -585,6 +698,7 @@ describe("herramientas deterministas como comandos", () => {
       expect(typeof services.delivery.prepareBranch).toBe("function");
       expect(typeof services.branches.deleteTicketBranch).toBe("function");
       expect(typeof services.branches.listBranches).toBe("function");
+      expect(typeof services.pullRequests).toBe("function");
       expect(typeof services.branches.checkoutBranch).toBe("function");
     });
   });

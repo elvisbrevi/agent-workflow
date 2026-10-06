@@ -44,6 +44,12 @@ export interface CliOptions {
   commit: string | null;
   summary: string | null;
   descriptionFile: string | null;
+  /** A pull request description given inline, for `pr-create`; exclusive with `--description-file`. */
+  description: string | null;
+  /** The thread `pr-thread-reply` answers: a number on Azure, a node id or `conversation` on GitHub. */
+  thread: string | null;
+  /** The text `pr-thread-reply` posts. */
+  body: string | null;
   state: string | null;
   expectedState: string | null;
   realEffort: number;
@@ -329,6 +335,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     )
     .group(["normas-sag", "working-directory"], "Contexto:")
     .group(["name", "service", "force", "stdin"], "Credenciales:")
+    .group(["description", "thread", "body"], "Pull requests:")
     .group(["verbose", "verbose-output", "quiet", "color", "log-file"], "Reportador:")
     .group(["off", "off-delay"], "Apagado del equipo:")
     .option("hu", positiveIntegerOption("--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
@@ -363,7 +370,10 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("pr", positiveIntegerOption("--pr", "Identificador del pull request."))
     .option("commit", { type: "string", requiresArg: true, describe: "Commit fijado (nombre de objeto completo) de la herramienta determinista.", coerce: commitCoerce })
     .option("summary", stringOption("--summary", "Resumen de la entrega, tal como lo dejó la sesión."))
-    .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket."))
+    .option("description-file", stringOption("--description-file", "Archivo con la descripcion del ticket o del pull request."))
+    .option("description", stringOption("--description", "Descripcion del pull request de pr-create, en linea; excluye --description-file."))
+    .option("thread", stringOption("--thread", "Hilo del pull request que responde pr-thread-reply, tal como lo lista pr-thread-list."))
+    .option("body", stringOption("--body", "Texto que publica pr-thread-reply."))
     .option("state", stringOption("--state", "Estado destino del ticket."))
     .option("expected-state", stringOption("--expected-state", "Estado actual esperado antes de la transicion."))
     .option("real-effort", nonNegativeNumberOption("--real-effort", "Real Effort en horas."))
@@ -382,7 +392,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("interview-host", { type: "string", requiresArg: true, default: DEFAULT_INTERVIEW_HOST, describe: "Host del canal http de preguntas; fuera de loopback la URL con su token es la unica credencial.", coerce: stringCoerce("--interview-host") })
     .option("interview-port", nonNegativeIntegerOption("--interview-port", "Puerto del canal http de preguntas; 0 pide uno libre al sistema.", DEFAULT_INTERVIEW_PORT))
     .option("type", stringOption("--type", "Tipo de work item de entrega (Task o Bug)."))
-    .option("title", stringOption("--title", "Titulo exacto del ticket."))
+    .option("title", stringOption("--title", "Titulo exacto del ticket o del pull request."))
     .option("estimate", nonNegativeNumberOption("--estimate", "Estimacion original en horas."))
     .option("assignee", stringOption("--assignee", "Identidad Azure asignada al ticket."))
     .option("field", { type: "array", requiresArg: true, describe: "Campo Azure explicito como <referenceName>=<valor>; repetible." })
@@ -579,6 +589,9 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     commit: asString("commit"),
     summary: asString("summary"),
     descriptionFile: asString("description-file"),
+    description: asString("description"),
+    thread: asString("thread"),
+    body: asString("body"),
     state: asString("state"),
     expectedState: asString("expected-state"),
     realEffort: asNumber("real-effort") ?? 0,
