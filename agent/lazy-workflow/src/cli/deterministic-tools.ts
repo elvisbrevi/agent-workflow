@@ -14,6 +14,7 @@
 
 import { join } from "node:path";
 import { checkoutGitBranchByName, type GitBranchCheckout } from "../git/git-branch-checkout.ts";
+import { listGitBranches, type GitBranchList } from "../git/git-branch-list.ts";
 import { GitTicketBranchCleaner, runGit } from "../git/git-ticket-branch-cleaner.ts";
 import {
   GitHubDeliveryService,
@@ -113,7 +114,8 @@ export interface GitHubDeliveryTools {
 
 export interface GitBranchTools {
   deleteTicketBranch(ticketBranch: string, integrationBranch: string, workingDirectory: string, expectedRemoteCommit?: string): Promise<void>;
-  /** Optional for the reason the Azure operations are: only `git-branch-checkout` reaches it. */
+  /** Optional for the reason the Azure operations are: only `git-branch-list` and `git-branch-checkout` reach them. */
+  listBranches?(workingDirectory: string): Promise<GitBranchList>;
   checkoutBranch?(branch: string, workingDirectory: string): Promise<GitBranchCheckout>;
 }
 
@@ -155,6 +157,7 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
     delivery: new GitHubDeliveryService(),
     branches: {
       deleteTicketBranch: (...args) => cleaner.deleteTicketBranch(...args),
+      listBranches: (workingDirectory) => listGitBranches(runGit, workingDirectory),
       checkoutBranch: (branch, workingDirectory) => checkoutGitBranchByName(runGit, branch, workingDirectory),
     },
     credentials: productionCredentialTools,
@@ -167,7 +170,7 @@ export function deterministicFailureKind(command: DeterministicToolCommand) {
   if (command.endsWith("-info") || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
-  if (command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
+  if (command === "git-branch-list" || command.includes("branch-prepare") || command.includes("branch-checkout") || command.includes("branch-verify") || command === "hu-branch-ensure") return "branch-preparation-failure" as const;
   if (command === "github-issue-claim") return "claim-verification-failure" as const;
   if (command.includes("pr-") || command === "github-pr-merge") return "pull-request-failure" as const;
   return "deterministic-completion-failure" as const;
@@ -377,6 +380,9 @@ async function runGitTool(
   options: CliOptions,
   branches: GitBranchTools,
 ): Promise<unknown> {
+  if (command === "git-branch-list") {
+    return requireOperation(branches, "listBranches", command)(options.workingDirectory);
+  }
   if (command === "git-branch-checkout") {
     // Not completed to a ref: `origin/feature-x` names a remote branch here.
     const branch = requireText(options.branch, "--branch <name>", command);

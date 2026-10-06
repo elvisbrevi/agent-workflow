@@ -3,10 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkoutGitBranchByName } from "../src/git/git-branch-checkout.ts";
+import { listGitBranches } from "../src/git/git-branch-list.ts";
 import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
+
+/** Each commit one minute after the last, so ordering by date is deterministic. */
+let clock = 0;
 
 /** Real git, isolated from the operator's own configuration. */
 const git: GitRunner = async (args, workingDirectory) => {
+  const date = `${1_700_000_000 + clock * 60} +0000`;
   const child = Bun.spawn(["git", ...args], {
     cwd: workingDirectory,
     stdout: "pipe",
@@ -19,6 +24,8 @@ const git: GitRunner = async (args, workingDirectory) => {
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
       GIT_COMMITTER_EMAIL: "test@example.com",
+      GIT_AUTHOR_DATE: date,
+      GIT_COMMITTER_DATE: date,
     },
   });
   const [exitCode, stdout, stderr] = await Promise.all([
@@ -37,6 +44,7 @@ let work: string;
 async function commit(repository: string, file: string): Promise<string> {
   writeFileSync(join(repository, file), file);
   await git(["add", file], repository);
+  clock += 1;
   await git(["commit", "-m", file], repository);
   return (await git(["rev-parse", "HEAD"], repository)).trim();
 }
@@ -44,7 +52,8 @@ async function commit(repository: string, file: string): Promise<string> {
 const head = async (repository: string) => (await git(["rev-parse", "HEAD"], repository)).trim();
 
 beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), "lazy-workflow-branch-checkout-"));
+  clock = 0;
+  root = mkdtempSync(join(tmpdir(), "lazy-workflow-branches-"));
   seed = join(root, "seed");
   work = join(root, "work");
   await git(["init", "--bare", "-b", "main", "origin.git"], root);
@@ -111,4 +120,53 @@ test("un nombre que git leería como opción se rechaza antes de llamar a git", 
 
   await expect(checkoutGitBranchByName(recording, "--orphan", work)).rejects.toThrow("Rama no válida");
   expect(calls).toEqual([]);
+});
+
+test("el listado nombra la rama activa aparte y ofrece las demás como yp, la más reciente primero", async () => {
+  const list = await listGitBranches(git, work);
+
+  expect(list.current).toBe("main");
+  expect(list.fetched).toBeTrue();
+  // El HEAD del remoto apunta a una rama y no se ofrece como una.
+  expect(list.branches.map(({ name, type }) => ({ name, type }))).toEqual([
+    { name: "origin/feature-x", type: "remote" },
+    { name: "origin/main", type: "remote" },
+  ]);
+  expect(list.branches[0]?.date).toBe("2023-11-14T22:15:20Z");
+});
+
+test("una rama local se lista como local y la activa no se ofrece", async () => {
+  await checkoutGitBranchByName(git, "origin/feature-x", work);
+
+  const list = await listGitBranches(git, work);
+
+  expect(list.current).toBe("feature-x");
+  expect(list.branches).toContainEqual(expect.objectContaining({ name: "main", type: "local" }));
+  expect(list.branches.some(({ name, type }) => name === "feature-x" && type === "local")).toBeFalse();
+});
+
+test("cada rama listada es un nombre que git-branch-checkout acepta tal cual", async () => {
+  const [newest] = (await listGitBranches(git, work)).branches;
+
+  const result = await checkoutGitBranchByName(git, newest!.name, work);
+
+  expect(result.branch).toBe("feature-x");
+});
+
+test("sin alcanzar el remoto lista las ramas que ya conoce", async () => {
+  await git(["remote", "set-url", "origin", join(root, "missing.git")], work);
+
+  const list = await listGitBranches(git, work);
+
+  expect(list.fetched).toBeFalse();
+  expect(list.branches.map(({ name }) => name)).toEqual(["origin/feature-x", "origin/main"]);
+});
+
+test("un HEAD desacoplado no es una rama", async () => {
+  await git(["switch", "--detach", "HEAD"], work);
+
+  const list = await listGitBranches(git, work);
+
+  expect(list.current).toBeNull();
+  expect(list.branches.map(({ name }) => name)).toEqual(["origin/feature-x", "main", "origin/main"]);
 });

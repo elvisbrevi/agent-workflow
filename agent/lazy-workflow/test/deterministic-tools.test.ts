@@ -59,6 +59,11 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
     },
     branches: {
       deleteTicketBranch: record("deleteTicketBranch", undefined),
+      listBranches: record("listBranches", {
+        current: "main",
+        fetched: true,
+        branches: [{ name: "origin/feature-x", type: "remote" as const, date: "2026-10-06T19:00:00Z" }],
+      }),
       checkoutBranch: record("checkoutBranch", { branch: "feature-x", fetched: true, pulled: true }),
     },
   };
@@ -213,6 +218,7 @@ describe("herramientas deterministas como comandos", () => {
       "github-commit-push": "deterministic-completion-failure",
       "github-pr-create": "pull-request-failure",
       "github-pr-merge": "pull-request-failure",
+      "git-branch-list": "branch-preparation-failure",
       "git-branch-checkout": "branch-preparation-failure",
       "git-branch-delete": "ticket-branch-cleanup-failure",
       "credentials-audit": "deterministic-completion-failure",
@@ -401,6 +407,18 @@ describe("herramientas deterministas como comandos", () => {
   });
 
   describe("git", () => {
+    test("git-branch-list devuelve la rama activa y las que ofrece", async () => {
+      const { code, printed, calls } = await runTool(["git-branch-list", "--working-directory", "/repo"]);
+
+      expect(code).toBe(0);
+      expect(calls).toEqual([{ operation: "listBranches", args: ["/repo"] }]);
+      expect(parsed(printed)).toEqual({
+        current: "main",
+        fetched: true,
+        branches: [{ name: "origin/feature-x", type: "remote", date: "2026-10-06T19:00:00Z" }],
+      });
+    });
+
     test("git-branch-checkout pasa la rama tal como se nombró, remota incluida", async () => {
       const { code, printed, calls } = await runTool([
         "git-branch-checkout", "--branch", "origin/feature-x", "--working-directory", "/repo",
@@ -566,6 +584,7 @@ describe("herramientas deterministas como comandos", () => {
       expect(typeof services.queue.verifyAuthentication).toBe("function");
       expect(typeof services.delivery.prepareBranch).toBe("function");
       expect(typeof services.branches.deleteTicketBranch).toBe("function");
+      expect(typeof services.branches.listBranches).toBe("function");
       expect(typeof services.branches.checkoutBranch).toBe("function");
     });
   });
