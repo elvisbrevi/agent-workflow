@@ -205,6 +205,9 @@ lz update --codex
 
 # Bring this machine the secrets another machine published
 lz credentials-update
+
+# Describe every command, flag, default and effect as JSON
+lz catalog
 ```
 
 ### Choosing the CLI, the model and the effort
@@ -699,6 +702,24 @@ Planning profiles allow editing and committing, because documentation is a
 planning session's own deliverable. Delivery profiles allow committing and deny
 pushing: the coordinator pushes the verified commit itself.
 
+## Desktop GUI
+
+`gui/` is a Tauri app that renders this CLI as forms. It reads `lz catalog` —
+every command with its flags, their value kinds, defaults, requirements and the
+command's effect — so the window always matches the installed binary, shows the
+exact command line before it runs, and runs `lz` itself as a child process: the
+validation, checkpoints and run log are the ones described in this file. A form
+offers the flags of its command plus the shared groups it accepts (agent,
+interview, reporter, shutdown); an interrupt sends SIGINT to the run's process
+group, exactly as Ctrl-C does.
+
+`lz catalog` takes no options, opens no session and writes no run log;
+`src/cli/command-catalog.ts` builds it and `test/command-catalog.test.ts` pins it
+to the parser, so a catalog entry that the parser would reject fails the suite.
+Build and run the window with `bun install` and `bun run dev` inside `gui/`; its
+requirements and layout are in [gui/README.md](gui/README.md), and its settings
+file is documented with the `lz` skill.
+
 ## Other flags
 
 `--prompt` supplies the operator's own request to a session. `--session` resumes
@@ -710,11 +731,12 @@ Azure field on a work-item write, and is repeatable.
 
 ```text
 main.ts                 CLI entrypoint
+gui/                    Desktop GUI (Tauri): renders `lz catalog` and runs lz
 prompts/                Prompt assets, composed by src/prompts/
 opencode/authority.json Permission profiles injected per run (OpenCode)
 claudecode/             One settings file per profile (Claude Code)
 codex/                  One execpolicy rules file per profile (Codex)
-src/cli/                Workflow coordination, argument parsing, tool commands
+src/cli/                Workflow coordination, argument parsing, tool commands, the command catalog
 src/prompts/            Prompt composition, contract vocabulary, plan contract, authority profiles
 src/interaction/        Planning interview: question rounds and the channels that carry them
 src/azure/              Azure Boards model, services and plan publication

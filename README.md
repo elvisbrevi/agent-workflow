@@ -7,8 +7,8 @@ GitHub backlog or an Azure DevOps User Story (HU) into verified deliveries.
 It supports **OpenCode**, **Claude Code**, and **Codex**.
 
 [Install](#install) · [Quick start](#quick-start) · [Examples](#examples) ·
-[Deterministic commands](#deterministic-commands) · [Skills](#skills) ·
-[Documentation](#documentation)
+[Deterministic commands](#deterministic-commands) · [Desktop GUI](#desktop-gui) ·
+[Skills](#skills) · [Documentation](#documentation)
 
 ## Install
 
@@ -89,6 +89,7 @@ lz update
 | `plan` | Create a plan and publish its issues or Azure work items. |
 | `code` | Deliver eligible work, one unit at a time. |
 | `update` | Run the platform installer; defaults to `--all-global`. |
+| `catalog` | Print every command, its options, and its effect as JSON — what the [desktop GUI](#desktop-gui) renders. |
 
 Without `--hu`, workflows use GitHub. `code` selects open, unassigned,
 non-epic issues labelled `ready-for-agent` with no open blockers. Each delivery
@@ -317,6 +318,29 @@ lz credentials-migrate --name CARGO_REGISTRY_TOKEN --service crates-io
 See [all command examples](agent/lazy-workflow/README.md#practical-examples)
 and the [deterministic tools design](docs/adr/0026-run-deterministic-tools-as-standalone-commands.md).
 
+## Desktop GUI
+
+`agent/lazy-workflow/gui/` is a desktop app (Tauri) for everything above: each
+`lz` command is a form, the exact command line is shown before it runs, and the
+output streams into the window — operator lines beside the JSON result. It
+renders what `lz catalog` describes, so it always matches the installed CLI, and
+it runs that same `lz`, so validation, checkpoints and the run log are unchanged.
+It also shows the run history, answers planning interviews in the window, sends
+secrets on stdin rather than the command line, and checks which tools and
+variables a run will find.
+
+```bash
+# Requires Bun, Rust and Tauri's system libraries for your platform.
+cd agent/lazy-workflow/gui
+bun install
+bunx tauri dev     # open the window
+bunx tauri build   # build the installers into src-tauri/target/release/bundle/
+```
+
+Its settings live in `~/.config/lazy-workflow/gui.json`; the `lz` skill
+documents them and edits them safely. See the [GUI guide](agent/lazy-workflow/gui/README.md)
+and the skill's [GUI reference](utility/lz/GUI.md).
+
 ## Skills
 
 Skills are reusable `SKILL.md` workflows. Invoke them with your coding client's
@@ -340,6 +364,8 @@ syntax, or let the client select a matching skill. Skills marked
 | Reference | Contents |
 |---|---|
 | [Agent guide](agent/lazy-workflow/README.md) | Detailed CLI behavior, recovery, configuration, and examples. |
+| [GUI guide](agent/lazy-workflow/gui/README.md) | Building, running, and the layout of the desktop GUI. |
+| [lz skill: configuration](utility/lz/CONFIGURATION.md) | Where every CLI and GUI setting lives. |
 | [AGENTS.md](AGENTS.md) | Modification map and validation rules. |
 | [CONTEXT.md](CONTEXT.md) | Domain vocabulary. |
 | [Issue tracker](docs/agents/issue-tracker.md) | Tracker conventions. |
@@ -350,13 +376,17 @@ syntax, or let the client select a matching skill. Skills marked
 
 ```bash
 # Run the agent's tests.
-(cd agent/lz && bun test)
+(cd agent/lazy-workflow && bun test)
 
 # Verify the installer in Bash.
 bash tests/install_test.sh
 
 # Verify the installer in Zsh.
 BASH_BIN=zsh bash tests/install_test.sh
+
+# Type-check the GUI and run its Rust tests.
+(cd agent/lazy-workflow/gui && bun install && bunx tsc --noEmit -p .)
+(cd agent/lazy-workflow/gui/src-tauri && cargo test)
 
 # Check the patch for whitespace errors.
 git diff --check
