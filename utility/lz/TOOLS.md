@@ -212,7 +212,9 @@ lz git-branch-delete --branch <name> --base-branch <name> [--commit <sha>] --wor
 `git-branch-list` and `git-branch-checkout` are `yp checkout` split in two.
 `git-branch-list` is its menu: it fetches every remote and lists the branches
 newest commit first, with the active one under `current` rather than in the
-list and no remote `HEAD` pointer. Every `name` it prints is accepted as is by
+list and no remote `HEAD` pointer. Each `date` is the branch's last commit in
+UTC to the second (`2023-11-14T22:15:20Z`), the same whatever git version
+runs it. Every `name` it prints is accepted as is by
 `git-branch-checkout`, which switches to that branch — `origin/feature-x` is
 tracked as `feature-x` — and fast-forwards it to its upstream, never merging.
 `fetched` and `pulled` report those steps; neither failing fails the command.

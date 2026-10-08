@@ -5,7 +5,7 @@ export interface GitBranchEntry {
   /** The short name: `feature-x` locally, `origin/feature-x` for a remote branch. */
   name: string;
   type: "local" | "remote";
-  /** The date of the branch's last commit, ISO 8601. */
+  /** The date of the branch's last commit, ISO 8601 in UTC to the second: `2023-11-14T22:15:20Z`. */
   date: string;
 }
 
@@ -19,6 +19,13 @@ export interface GitBranchList {
 }
 
 const succeeds = (attempt: Promise<unknown>): Promise<boolean> => attempt.then(() => true, () => false);
+
+/**
+ * Git's own ISO dates change with its version — `+00:00` on older ones, `Z`
+ * on newer — so the epoch seconds it prints are formatted here instead.
+ */
+const utcDate = (epochSeconds: string): string =>
+  new Date(Number(epochSeconds) * 1000).toISOString().replace(".000Z", "Z");
 
 /**
  * The branches `yp checkout` offers, without its menu: the remotes are
@@ -35,7 +42,7 @@ export async function listGitBranches(git: GitRunner, workingDirectory: string):
     "branch",
     "--all",
     "--sort=-committerdate",
-    "--format=%(refname)%09%(refname:short)%09%(committerdate:iso-strict)",
+    "--format=%(refname)%09%(refname:short)%09%(committerdate:unix)",
   ], workingDirectory);
 
   const branches: GitBranchEntry[] = [];
@@ -45,7 +52,7 @@ export async function listGitBranches(git: GitRunner, workingDirectory: string):
     // Un HEAD desacoplado y el HEAD de un remoto apuntan a una rama; no lo son.
     if (!name || (!local && !ref.startsWith("refs/remotes/")) || ref.endsWith("/HEAD")) continue;
     if (local && name === current) continue;
-    branches.push({ name, type: local ? "local" : "remote", date });
+    branches.push({ name, type: local ? "local" : "remote", date: utcDate(date) });
   }
   return { current, fetched, branches };
 }

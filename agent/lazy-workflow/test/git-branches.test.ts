@@ -8,10 +8,12 @@ import type { GitRunner } from "../src/git/git-ticket-branch-cleaner.ts";
 
 /** Each commit one minute after the last, so ordering by date is deterministic. */
 let clock = 0;
+/** The committer's UTC offset, which the listing must not carry into its dates. */
+let zone = "+0000";
 
 /** Real git, isolated from the operator's own configuration. */
 const git: GitRunner = async (args, workingDirectory) => {
-  const date = `${1_700_000_000 + clock * 60} +0000`;
+  const date = `${1_700_000_000 + clock * 60} ${zone}`;
   const child = Bun.spawn(["git", ...args], {
     cwd: workingDirectory,
     stdout: "pipe",
@@ -53,6 +55,7 @@ const head = async (repository: string) => (await git(["rev-parse", "HEAD"], rep
 
 beforeEach(async () => {
   clock = 0;
+  zone = "+0000";
   root = mkdtempSync(join(tmpdir(), "lazy-workflow-branches-"));
   seed = join(root, "seed");
   work = join(root, "work");
@@ -133,6 +136,17 @@ test("el listado nombra la rama activa aparte y ofrece las demÃ¡s como yp, la mÃ
     { name: "origin/main", type: "remote" },
   ]);
   expect(list.branches[0]?.date).toBe("2023-11-14T22:15:20Z");
+});
+
+test("la fecha sale en UTC aunque el commit se hiciera en otro huso", async () => {
+  zone = "-0300";
+  await git(["switch", "--create", "late"], work);
+  await commit(work, "late.txt");
+  await git(["switch", "main"], work);
+
+  const list = await listGitBranches(git, work);
+
+  expect(list.branches[0]).toEqual({ name: "late", type: "local", date: "2023-11-14T22:16:20Z" });
 });
 
 test("una rama local se lista como local y la activa no se ofrece", async () => {
