@@ -9,14 +9,15 @@ that evidence in one pass, and the failing probe usually names the cause.
 Remember where to look: the JSON result
 is on stdout, and every explanation is on stderr.
 
-## Start from the marker it ended on
+## Start from how it ended
 
-The marker says who must act next — the full table is in
-[Markers](CODING-AGENTS.md#markers). The one that is read wrong most often:
-a run ending on `IMPLEMENTATION_READY` without `TICKET_COMPLETED` did **not**
-fail at implementation. It stopped in the coordinator phase, and rerunning the
-original command resumes exactly there. Starting a new delivery instead
-re-implements work that is already committed.
+A marker on stdout says who must act next — the full table is in
+[Markers](CODING-AGENTS.md#markers). The case read wrong most often: a delivery
+whose session was verified (its commits are on the fixed branch) but that ended
+without `TICKET_COMPLETED` did **not** fail at implementation. It stopped in the
+coordinator phase, and rerunning the original command resumes exactly there.
+Starting a new delivery instead re-implements work that is already committed.
+`github-session-verify` or `ticket-session-verify` tells the two cases apart.
 
 ## Argument errors
 
@@ -31,8 +32,7 @@ fires now when the checkpoint's issue is genuinely still open — no manual
 | Message | Fix |
 |---|---|
 | `--branch y --base-branch solo se permiten en flujos Azure` | Drop them, or add `--hu <id>` if this was meant to be an Azure run |
-| `--issue solo se permite con infra-sag, architecture-review-sag o deploy-sag` | Use `--hu` for Azure flows; GitHub `code` selects its own issue |
-| `--normas-sag solo se permite con plan o code` | The SAG workflows always load norms; the flag is redundant there |
+| `--normas-sag solo se permite con plan o code` | Tools never load norms; drop the flag |
 | `--interview solo se permite con plan` | Interviews belong to planning only |
 | `--interview y --quiet son mutuamente excluyentes` | Drop `--quiet`: the channel announces itself through operator output |
 | `--verbose y --quiet son mutuamente excluyentes` | Pick one verbosity |
@@ -42,7 +42,7 @@ fires now when the checkpoint's issue is genuinely still open — no manual
 | `--fallback <r> no tiene la forma <cli>:<modelo>:<variante>` | Three non-empty parts, colon separated |
 | `--fallback <r> repite un escalon ya declarado` | A rung equal to the primary or to another rung is useless |
 | `--fallback-wait-max N no puede ser menor que --fallback-wait M` | The bound must cover at least one interval |
-| `deploy-sag solo permite DEV, TEST o QA` | PROD and its aliases fail closed by design |
+| `catalog no acepta opciones` | `lz catalog` takes none; filter its JSON with `jq` instead |
 | `--working-directory CSV solo se permite con plan o code` | Workspace runs are planning and delivery only |
 | `runAzureWorkspaceCode requiere que --ticket <id> sea un entero positivo` | `--ticket` is optional, but a supplied one must be a positive integer |
 | `el checkpoint workspace Azure pertenece al ticket N` | A `--ticket` contradicting the delivery in flight; drop it or pass that one |
@@ -59,9 +59,9 @@ intact and no other ticket will be selected.
 |---|---|---|
 | `pinned-ticket-context` | The ticket context could not be rebuilt | `ticket-info --hu --ticket` |
 | `ticket-state` | The ticket is not in the state the gate expects | `ticket-state-info --ticket` |
-| `completion-evidence` | No completion evidence on the work item | `ticket-evidence-info --ticket` |
+| `completion-evidence` | No completion evidence on the work item | `ticket-info --hu --ticket` (`completionEvidence`) |
 | `real-effort`, `real-effort-hours` | The effort fields were never published | `ticket-effort-info --ticket` |
-| `commit-url`, `attached-capture` | The commit link or the capture is absent | `ticket-attachment-info --ticket` |
+| `commit-url` | The merge commit is not linked to the work item | `ticket-info --hu --ticket` (`mergeCommit`, `attachments`) |
 | `hu-integration-branch` | The HU has no usable integration branch | `hu-branch-info --hu` |
 | `completed-hu-targeted-pr`, `native-pr-association`, `merge-commit-artifact-link` | The PR is not merged into the HU branch, or not associated | `ticket-pr-info --hu --ticket` |
 
@@ -127,3 +127,11 @@ reports the time left until `--fallback-wait-max`. When the bound is spent it
 fails closed naming the last rung and its cause, with the checkpoint intact:
 `code --session <id> --prompt continue` resumes exactly where it stopped, or
 rerun with a chain whose rungs still have quota.
+
+## The GUI cannot run anything
+
+The window runs the same `lz` a terminal would, so first make sure the terminal
+works (`lz catalog > /dev/null`), then compare what the GUI resolves:
+**Inicio → Diagnostico**, or [GUI.md](GUI.md#troubleshooting) for each symptom.
+A run that fails inside the GUI fails for the reasons in this file — its operator
+panel is the same stderr.
