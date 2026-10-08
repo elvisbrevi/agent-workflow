@@ -83,9 +83,9 @@ lz code --session <session-id> --prompt continue
 lz code --session <session-id> --model claude-sonnet-5 --variant high --prompt continue
 ```
 
-If the delivery already reached `IMPLEMENTATION_READY`, rerun the **original**
-command instead: it resumes the coordinator phase rather than selecting
-replacement work.
+If git already verified the session's commits — the run had moved on to pushing,
+the pull request or the tracker — rerun the **original** command instead: it
+resumes the coordinator phase rather than selecting replacement work.
 
 ```bash
 lz code --hu 23438 --working-directory /repo
@@ -109,20 +109,6 @@ lz code --working-directory /repo \
 
 Write each rung's model id exactly as its own CLI exposes it. The descent lasts
 only for the unit of work in progress; the next one starts at the primary rung.
-
-## "Review the architecture / check infra / deploy"
-
-```bash
-lz architecture-review-sag --issue 154 --working-directory /repo
-lz architecture-review-sag --hu 23438 --working-directory /repo
-lz infra-sag  --issue 155 --working-directory /repo
-lz deploy-sag --issue 157 --environment qa --working-directory /repo
-```
-
-Exactly one of `--hu` / `--issue` each, `.sag/config.json` required, and
-`deploy-sag` refuses PROD and every production alias before any external effect.
-A clean architecture review publishes nothing; findings become corrective
-tracker work.
 
 ## "One unit of work across several repositories"
 
@@ -158,3 +144,62 @@ lz code --verbose        --working-directory /repo   # + reasoning and tool call
 lz code --verbose-output --working-directory /repo   # + every tool input/output and the raw event
 lz code --quiet          --working-directory /repo   # errors only
 ```
+
+## "Open the GUI on my repositories, with Claude Code by default"
+
+```bash
+cd agent/lazy-workflow/gui && bun install && bun run build   # once; installers land in src-tauri/target/release/bundle/
+
+# From this skill's directory:
+bun scripts/gui-settings.ts add repositories /path/to/api
+bun scripts/gui-settings.ts add repositories /path/to/web
+bun scripts/gui-settings.ts set flagDefaults.--cli claudecode
+bun scripts/gui-settings.ts set flagDefaults.--variant high
+bun scripts/gui-settings.ts set commandDefaults.plan.--interview http
+```
+
+Every form now opens on the active repository with `--cli claudecode`, and
+`plan` with the browser interview; the line above **Ejecutar** shows each of them
+as an explicit flag. Nothing here changes a terminal run.
+
+## "The GUI says lz is not found" / "it works in the terminal but not in the GUI"
+
+```bash
+bun scripts/gui-settings.ts set inheritShellEnvironment true
+bun scripts/gui-settings.ts add extraPath ~/.local/bin
+bun scripts/gui-settings.ts add extraPath ~/.bun/bin
+# or run a checkout directly, without the installed launcher:
+bun scripts/gui-settings.ts set lzCommand /path/to/agent-workflow/agent/lazy-workflow/main.ts
+```
+
+Then **Inicio → Diagnostico → Actualizar** lists the launcher and every tool the
+run will find. A missing `LAZY_WORKFLOW_*` variable is the same problem: export
+it from the shell profile, or set it for GUI runs only with
+`bun scripts/gui-settings.ts set environment.<NAME> <value>`.
+
+## "Give the GUI my Azure PAT and the shutdown password"
+
+```bash
+lz credentials-set --name AZURE_DEVOPS_EXT_PAT
+lz credentials-set --name LAZY_WORKFLOW_OFF_PASSWORD
+bun scripts/gui-settings.ts add secretEnvironment AZURE_DEVOPS_EXT_PAT
+bun scripts/gui-settings.ts add secretEnvironment LAZY_WORKFLOW_OFF_PASSWORD
+```
+
+Each GUI run reads them with `lz credentials-get` as it starts; neither value is
+written to `gui.json`, shown in a form, or placed on a command line. `--off` in
+the GUI is a checkbox that sends a bare `--off`, which takes the password from
+that variable.
+
+## "What exactly will this GUI form run?"
+
+The dark line above **Ejecutar** is the command, with secrets masked; **Copiar**
+puts it on the clipboard for a terminal. To reason about a form without the
+window, read the command's definition from the installed binary:
+
+```bash
+lz catalog | jq '.commands[] | select(.name == "code")'
+```
+
+Fields left empty are not sent, so the CLI's defaults apply; a greyed field's
+flag is not sent either, because the flag it `requires` is missing.

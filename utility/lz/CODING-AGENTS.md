@@ -32,10 +32,6 @@ uses `codex exec --json`, reads its session id from `thread.started`, and resume
 with `codex exec resume`. All CLIs' events reach the reporter with the same
 severities: assistant text as info, reasoning and tool calls as debug.
 
-The SAG workflows accept `--cli` too and keep their own rules whichever CLI runs
-them — `architecture-review-sag` is the only one that opens a session, and it
-cannot modify the reviewed tree in any of them.
-
 ## Authority: what a session may execute
 
 Every run carries an authority profile beside its prompt. The prompt states what
@@ -49,13 +45,9 @@ compound commands are matched per sub-command, so `cd x && git push` is denied t
 | `lazy-github-code` | `code` without `--hu` | the above plus every `gh issue` mutation |
 | `lazy-azure-plan` | `plan --hu` | pushes, branch/remote mutation, all `az` and all `gh` |
 | `lazy-azure-code` | `code --hu` | the above; the coordinator owns every Azure and remote effect |
-| `lazy-review` | `architecture-review-sag` | edits, and every mutating `git`, `gh` and `az` command |
 
-Committing stays allowed in the delivery profiles, because the completion
-manifest names a commit the session must produce. So does running
-`lz` itself: the manifest tools are ordinary commands under the bash
-permission every profile already grants, and they reach neither `az` nor `gh`,
-so no deny rule has to move to let a session write its manifest.
+Committing stays allowed in the delivery profiles, because git decides whether a
+session delivered: its commits on the fixed branch are the deliverable.
 
 **This is the constraint that shapes prompts.** A session cannot read the tracker,
 push, open a PR or move a work item, whatever `--prompt` asks of it. So anything
@@ -74,8 +66,7 @@ assembled fresh from the profile the coordinator already fixed.
 ## The division of labour
 
 The coordinator — the lz process itself — owns every external effect.
-The session implements, validates, commits and writes a completion manifest, then
-stops. It is the coordinator that pushes, creates or reuses the pull request,
+The session implements, validates and commits, then exits. It is the coordinator that pushes, creates or reuses the pull request,
 merges it, closes the issue or completes the ticket, publishes effort and
 evidence, verifies every gate, cleans branches and selects the next unit of work.
 
@@ -83,15 +74,14 @@ That boundary explains most surprising behaviour: a session that "finished" but
 left nothing merged has done its whole job, and the rest is a coordinator phase to
 resume by rerunning the same command.
 
-The manifest is the one artefact that crosses the boundary, and it is written by
-a tool, never by the session's editor: `lz ticket-manifest-set` for an
-Azure ticket, `lz github-manifest-set` for a GitHub issue (see
-`TOOLS.md`). Each takes the identities, the validations it ran and the evidence
-files, then resolves the commit, computes the digests and validates the result
-with the coordinator's own code before writing. A session that types that JSON
-instead is how a delivery stops on "El manifest de completion carece de campos
-requeridos" with everything else already done — so the delivery prompts name the
-command and never describe the shape.
+The commits are the one artefact that crosses the boundary (ADR-0035): when the
+session's process exits, the coordinator asks git whether the fixed branch is
+ahead of its base with a clean worktree, and that answer — not anything the
+session printed — decides whether the delivery continues. A session that asked
+a question, refused, or explored without committing leaves no commits and is an
+ordinary unit failure; one that committed part of its work leaves a dirty tree
+and fails the same way. `github-session-verify` and `ticket-session-verify` ask
+the same question on demand (see `TOOLS.md`).
 
 ## Sessions and checkpoints
 
@@ -99,8 +89,8 @@ A delivery run stores a versioned checkpoint in the repository's Git metadata
 (workspace runs keep the aggregate one in `<parent>/.lazy-workflow/`, outside every
 source repository). It records the phase, the immutable HU/ticket/issue/branch
 identities, the tracker revision, the effort baseline, the active duration, the
-opaque session id, the manifest path, the pull request, the verified effect
-receipts — and the CLI that owns the session.
+opaque session id, the pull request, the verified effect receipts — and the CLI
+that owns the session.
 
 ```bash
 lz code --session <id> --prompt continue                       # resume the preserved session
@@ -136,16 +126,15 @@ The primary rung is the run's own `--cli`/`--model`/`--variant`; declaration ord
 is descent order; every rung's binary is verified while parsing, so a typo is
 caught before the primary spends any usage.
 
-- The chain descends **only on provider exhaustion** — usage or rate limit,
-  quota, billing, authentication — as each CLI's adapter classifies it. A session
-  that merely fails its task never descends (ADR-0024).
-- A backup on the **same CLI** resumes the same session with the new model, so
-  the context already built survives.
-- A backup on **another CLI** has no session to resume: the work continues
-  through a handoff — a fresh session receiving the coordinator's own prompt for
-  the same fixed unit of work plus a progress section built from verified state
-  (checkpoint phase, branch, last commit, uncommitted worktree, manifest if it
-  exists). Nothing the exhausted session said travels with it (ADR-0025).
+- The chain descends on **provider exhaustion** — usage or rate limit, quota,
+  billing, authentication — as each CLI's adapter classifies it, or when a
+  session stays silent longer than `--idle-timeout` minutes (default 30). A
+  session that merely fails its task never descends (ADR-0024).
+- Every descent opens a **fresh session**, on the same CLI or another: the
+  coordinator's own prompt for the same fixed unit of work plus a progress
+  section with the branch, the commits it carries, and the last three reasoning
+  chains of the outgoing session, verbatim (ADR-0039). The commits are what
+  landed; the reasoning is context, not a verified account.
 - The descent is **sticky for the unit in progress only**: the next issue starts
   again at the primary rung, so a run returns to the preferred model as soon as
   quota renews.
@@ -165,11 +154,13 @@ A run ends on a marker, and which one it is says who must act next.
 |---|---|
 | `PLAN_READY` | The planning session returned a plan; the coordinator validates and publishes it |
 | `QUESTIONS_PENDING` / `QUESTIONS_ANSWERED` | An interview round is waiting for the operator, or has been answered |
-| `IMPLEMENTATION_READY` | The session finished implementing and produced its manifest with the manifest tool; everything after belongs to the coordinator |
 | `TICKET_COMPLETED`, `WORKFLOW_STEP_FINISHED` | Coordinator-only, emitted after every gate passed |
 | `QUEUE_EMPTY`, `QUEUE_BLOCKED` | Coordinator-owned queue outcomes; a session may not print them |
 | `RECONCILIATION_REQUIRED` | A checkpoint survives and must be reconciled before new work is selected |
-| `ARCHITECTURE_REVIEW_RESULT` | The review's findings, published as corrective tracker work |
+
+A delivery session prints no marker at all: git decides whether it delivered
+(ADR-0035), and the coordinator's stdout carries the outcome above. The GUI's run
+panel names the last of these markers next to the run's status.
 
 ## Watching a run
 

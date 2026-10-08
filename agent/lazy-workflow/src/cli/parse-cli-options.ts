@@ -117,26 +117,27 @@ export type BinaryProbe = (binary: string) => boolean;
 
 const binaryOnPath: BinaryProbe = (binary) => resolveAgentBinary(binary) !== null;
 
-const DEFAULT_VARIANT = "high";
-const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
-const DEFAULT_NUMBER_OF_QUESTIONS = 5;
+export const DEFAULT_VARIANT = "high";
+export const DEFAULT_PROMPT = "Follow the authoritative workflow and context.";
+export const DEFAULT_NUMBER_OF_QUESTIONS = 5;
 /** No interview unless the operator asks for one: an unattended run is the normal one. */
-const DEFAULT_INTERVIEW_CHANNEL: InterviewChannelKind = "off";
-const DEFAULT_INTERVIEW_TIMEOUT_SECONDS = 900;
-const DEFAULT_INTERVIEW_ROUNDS = 8;
-const DEFAULT_INTERVIEW_HOST = "127.0.0.1";
-const DEFAULT_INTERVIEW_PORT = 0;
-const DEFAULT_FALLBACK_WAIT_SECONDS = 300;
-const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
+export const DEFAULT_INTERVIEW_CHANNEL: InterviewChannelKind = "off";
+export const DEFAULT_INTERVIEW_TIMEOUT_SECONDS = 900;
+export const DEFAULT_INTERVIEW_ROUNDS = 8;
+export const DEFAULT_INTERVIEW_HOST = "127.0.0.1";
+export const DEFAULT_INTERVIEW_PORT = 0;
+export const DEFAULT_FALLBACK_WAIT_SECONDS = 300;
+export const DEFAULT_FALLBACK_WAIT_MAX_SECONDS = 3600;
 /** The default grace of `--off`: long enough for a present operator to cancel with Ctrl-C, short for one who already left. */
-const DEFAULT_OFF_DELAY_SECONDS = 15;
+export const DEFAULT_OFF_DELAY_SECONDS = 15;
 /** Where the sudo password comes from when `--off` is declared without a value, so it never reaches `ps` or the shell history. */
-const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
+export const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
 /** Los comandos que el CLI acepta; el README se verifica contra esta lista. */
 export const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
   "update",
+  "catalog",
   "hu-info",
   "hu-branch-info",
   "hu-branch-set",
@@ -723,6 +724,7 @@ function renderHelp(parser: YargsInstance): string {
 const COMMAND_FORMS = [
   "Formas de invocacion:",
   "  lz update [opciones del instalador]",
+  "  lz catalog",
   "  lz plan [options]",
   "  lz plan --hu <id> [options]",
   "  lz code [options]",

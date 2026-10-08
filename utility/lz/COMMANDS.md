@@ -1,12 +1,13 @@
 # Workflow commands and flags
 
-The commands that open a session or drive an adapter-backed workflow, and every
-flag they accept. The deterministic tools have their own file
+The commands that open a session, the two that maintain or describe the tool,
+and every flag they accept. The deterministic tools have their own file
 ([TOOLS.md](TOOLS.md)), and what the agent flags actually change is in
 [CODING-AGENTS.md](CODING-AGENTS.md).
 
-`lz` with no subcommand — or with an unsupported one — prints the
-complete help, which is the authority whenever this file and the binary disagree.
+`lz catalog` prints every command and flag as JSON, and `lz` with no
+subcommand — or with an unsupported one — prints the same surface as help text;
+either is the authority whenever this file and the binary disagree.
 
 ## The commands
 
@@ -17,17 +18,13 @@ complete help, which is the authority whenever this file and the binary disagree
 | `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
 | `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |
-| `architecture-review-sag` | exactly one of `--hu` / `--issue` | yes | Reviews without modifying the tree; publishes findings as corrective work |
-| `infra-sag` | exactly one of `--hu` / `--issue` | no | Read-only prerequisite verification through its adapter |
-| `deploy-sag` | exactly one of `--hu` / `--issue` | no | Deploys through its adapter; PROD fails closed |
-
-The three SAG commands always load SAG norms and require `.sag/config.json` with
-an explicit `tipo` of `api`, `bff` or `nextjs`; the component is never inferred
-from source layout. They reject `--session`, `--branch` and `--base-branch`, and
-`infra-sag` rejects every flag outside its own set.
+| `update [installer options]` | — | no | Runs the platform installer with the options after it; `--all-global` when none |
+| `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |
 
 `plan` and `code` accept `--normas-sag` to load phase-appropriate norms opt-in,
-per run: `plan --normas-sag` does not imply `code --normas-sag`. Plain `plan` and
+per run. The norms require `.sag/config.json` with an explicit `tipo` of `api`,
+`bff` or `nextjs`; the component is never inferred from source layout.
+`plan --normas-sag` does not imply `code --normas-sag`. Plain `plan` and
 `code` never read SAG sources at all. Norm loading resolves a commit, stable rule
 ids, source URLs and selection reasons; an unavailable source or an invalid
 configuration stops the run before a session opens. If the canonical source needs
@@ -38,13 +35,11 @@ Authorization header, never persisted and never sent to the agent.
 
 | Flag | Applies to | Meaning |
 |---|---|---|
-| `--hu <id>` | `plan`, `code`, SAG | Azure HU scope; without it the run is GitHub-only |
-| `--issue <id>` | SAG only | The explicit tracker item under review, verification or deployment |
-| `--ticket <id>` | Azure workspace `code`, `ticket-*` tools | The delivery work item; optional for `code`, where omitting it drains the HU |
+| `--hu <id>` | `plan`, `code`, Azure tools | Azure HU scope; without it the run is GitHub-only |
+| `--ticket <id>` | Azure `code`, `ticket-*` tools | The delivery work item; optional for `code`, where omitting it drains the HU |
 | `--branch <name>` | Azure flows | Rejected in GitHub scope |
 | `--base-branch <name>` | Azure flows | Applies only when creating `hu/<HU>` for the first time; without it the base is `master`, or `main` when the repository has no `master` |
 | `--normas-sag` | `plan`, `code` | Loads the SAG norms of the phase |
-| `--environment <dev\|test\|qa>` | `deploy-sag` | Default `dev`; PROD and aliases fail closed |
 | `--working-directory <path[,path...]>` | all | Defaults to cwd; a CSV makes it a workspace run (`plan`/`code` only) |
 
 ## Agent flags
@@ -127,9 +122,10 @@ it (ADR-0028). The drain continues only after a clean delivery — an unclean on
 stops with its checkpoint intact — and a queue with pending but ineligible work
 stops rather than reporting an empty one.
 
-One session works across the whole workspace. After `IMPLEMENTATION_READY` the
-coordinator verifies every per-repository manifest and then delivers the changed
-repositories one at a time in the declared order; repositories without changes
+One session works across the whole workspace. When it exits, the coordinator
+verifies every repository with git — a clean tree, and commits ahead of the base
+where it changed — and then delivers the changed repositories one at a time in
+the declared order; repositories without changes
 must end clean. The issue is closed — or the Azure ticket completed and the HU
 moved on — only after every required unit and every tracker gate is verified.
 Recovery requires the exact same normalized list, in the same order, with the
@@ -138,16 +134,16 @@ stops the run before any external effect.
 
 ## What `code` does after the session
 
-Both scopes follow the same shape: the session implements and emits
-`IMPLEMENTATION_READY`, then the coordinator validates the manifest against Git
-metadata, creates or reuses exactly one pull request, associates it, merges it,
+Both scopes follow the same shape: the session implements, validates and commits,
+then exits; the coordinator verifies with git that the fixed branch is ahead of
+its base with a clean worktree (ADR-0035), creates or reuses exactly one pull request, associates it, merges it,
 closes the issue or publishes effort and evidence and verifies every completion
 gate before moving the ticket to `Done`, cleans the delivery branch, and only
 then selects the next unit of work.
 
-Two consequences worth stating when answering: a delivery that stopped after
-`IMPLEMENTATION_READY` is resumed by rerunning the **original** command, not by
+Two consequences worth stating when answering: a delivery that stopped after its
+session was verified is resumed by rerunning the **original** command, not by
 starting a new one; and a GitHub pull request that conflicts with its base is
 reconciled by a conflict-only session for the same issue, branch and PR, accepted
-only when the new manifest commit contains both the original implementation and
-the fixed base.
+only when the new commit contains both the original implementation and the fixed
+base.

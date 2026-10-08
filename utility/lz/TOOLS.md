@@ -10,7 +10,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 [Azure reads](#azure-reads) · [Azure writes](#azure-writes) ·
 [GitHub queue](#github-queue) · [GitHub delivery](#github-delivery) ·
 [git](#git) · [Pull requests](#pull-requests) ·
-[Reading the output](#reading-the-output)
+[Describing the CLI](#describing-the-cli) · [Reading the output](#reading-the-output)
 
 ## Choosing one
 
@@ -19,7 +19,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | What is this HU, and what hangs off it? | `hu-info`, `hu-children-info` |
 | Does the HU have an integration branch? Which base would a first delivery use? | `hu-branch-info` |
 | Everything known about one ticket | `ticket-info --hu --ticket` |
-| One facet of a ticket | `ticket-{description,state,effort,attachment,evidence,type}-info` |
+| One facet of a ticket | `ticket-{description,state,effort,type}-info` |
 | Why is this ticket not `Done`? | `ticket-completion-info --hu --ticket` — prints the unmet gates |
 | Can this environment reach GitHub at all? | `github-auth-info`, `github-repo-info` |
 | What would a `code` run take next, and why does it skip the rest? | `github-issue-select`, `github-issue-list` |
@@ -27,12 +27,13 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | Free an issue an interrupted run still holds | `github-issue-release --issue` |
 | Which branches exist, local and remote, newest first? | `git-branch-list` |
 | Switch to a branch, local or remote, and bring it up to date | `git-branch-checkout --branch` |
+| Did the session leave a deliverable branch? | `github-session-verify`, `ticket-session-verify` |
 | Repair a half-finished delivery step | `github-branch-prepare`, `github-commit-push`, `github-pr-create`, `github-pr-merge`, `github-issue-close`, `github-branch-cleanup` |
-| Write the completion manifest a delivery session must leave behind | `ticket-manifest-set` (Azure), `github-manifest-set` (GitHub) — never by hand |
 | What pull requests are open, and what is each one waiting on? | `pr-list`, `pr-info --pr`, `pr-thread-list --pr` |
 | Answer review feedback, or open a pull request | `pr-thread-reply`, `pr-create` |
 | Publish tracker work without planning it | `ticket-create`, `ticket-link-parent`, `ticket-link-predecessor` |
-| Attach the completion evidence a gate is waiting for | `ticket-pr-link`, `ticket-commit-link`, `ticket-attachment-add`, `ticket-evidence-set`, `ticket-completion-apply` |
+| Attach the completion evidence a gate is waiting for | `ticket-pr-link`, `ticket-commit-link`, `ticket-completion-apply` |
+| Which commands and flags does the installed `lz` have? | `catalog` |
 
 Reads are free to run. Writes change a real backlog: run them when the user asked
 for that effect, and prefer rerunning the workflow command, which performs the
@@ -69,7 +70,7 @@ lz hu-children-info --hu <id>
 lz hu-branch-info --hu <id>
 lz ticket-info --hu <id> --ticket <id>
 lz ticket-type-info --ticket <id>
-lz ticket-{description,state,effort,attachment,evidence}-info --ticket <id>
+lz ticket-{description,state,effort}-info --ticket <id>
 lz ticket-{branch,pr,completion}-info --hu <id> --ticket <id>
 ```
 
@@ -102,15 +103,11 @@ lz ticket-branch-push --branch <name> --working-directory <path>
 lz ticket-pr-create --hu <id> --ticket <id>
 lz ticket-pr-link --hu <id> --ticket <id> --pr <id>
 lz ticket-commit-link --ticket <id> --pr <id>
-lz ticket-attachment-add --ticket <id> --file <path> --kind <http-json|screen|command-output>
-lz ticket-evidence-set --ticket <id> --evidence-file <path>
+lz ticket-session-verify --branch <name> --base-branch <name> --working-directory <path>
 lz ticket-completion-apply --hu <id> --ticket <id> --pr <id> --summary <texto de la sesión>
-lz ticket-manifest-set --ticket <id> --branch <name> --manifest <path> [--commit <sha>] \
-  --validation <command> --validation-result <outcome> \
-  --evidence <http-json|screen|command-output>:<path> --working-directory <path>
 ```
 
-Five rules govern these:
+Three rules govern these:
 
 - **Optimistic writes.** `ticket-state-set` requires the `--expected-state` it
   will find, and `ticket-effort-set` the `--expected-rev` the ticket was read at,
@@ -122,24 +119,6 @@ Five rules govern these:
 - **Reference names, never labels.** `--field <referenceName>=<value>` is
   repeatable and takes Azure reference names; display labels are never inferred
   (ADR-0006).
-- **The manifest is never hand-written.** `ticket-manifest-set` is the only way a
-  completion manifest is created: it takes the identities and what you ran, then
-  resolves the commit from HEAD, computes every SHA-256 digest from the evidence
-  files, and validates the result with the same code the coordinator's delivery
-  gate runs — so a manifest either lands verifiable or does not land at all. A
-  manifest typed by hand is how a delivery ends with `"ticket": "23575"`, a
-  `currentCommit` key, or an evidence kind that was never in the enum.
-- **`http-json` evidence is a browser capture.** It is a JSON object with
-  `title`, `screenshot`, a `request` (`method`, `url`, `headers`, optional
-  `body`) and a `response` (`status`, optional `statusText`, `headers`, optional
-  `body`); several exchanges may share one file under a `captures` array. Take it
-  by driving the request in the browser Chrome MCP opens, and pass that
-  screenshot in the same manifest as `screen` evidence, written beside the
-  capture file — the two are paired by file name within their directory. The
-  coordinator renders those fields into the ticket's completion-evidence field as
-  endpoint, header tables, pretty-printed bodies and the screenshot beside them,
-  so `ticket-manifest-set` refuses a file in any other shape — and only that tool
-  does, so a manifest already on disk stays publishable (ADR-0031).
 
 `hu-branch-set` without `--base-branch` links an existing remote branch; with it,
 it creates the branch from that exact remote commit and publishes it first. It
@@ -172,10 +151,7 @@ lz github-branch-prepare  --issue <id> --working-directory <path>
 lz github-branch-checkout --branch <name> --base-branch <name> --working-directory <path>
 lz github-branch-verify   --branch <name> --base-branch <name> --working-directory <path>
 lz github-branch-cleanup  --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
-lz github-manifest-info --manifest <path> --working-directory <path>
-lz github-manifest-set  --issue <id> --branch <name> --manifest <path> [--commit <sha>] \
-  --summary <text> --validation <command> --validation-result <outcome> \
-  [--evidence <path-in-repository>] --working-directory <path>
+lz github-session-verify --branch <name> --base-branch <name> --working-directory <path>
 lz github-commit-push   --branch <name> --commit <sha> --working-directory <path>
 lz github-pr-create --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
 lz github-pr-merge  --pr <id> --issue <id> --branch <name> --base-branch <name> --commit <sha> --working-directory <path>
@@ -187,19 +163,10 @@ Running them by hand is for repairing a delivery that stopped midway; the
 ordinary path is to rerun the `code` command, which resumes the same phase from
 its checkpoint.
 
-`github-manifest-set` is the exception: it is not a repair, it is how a delivery
-session produces its manifest in the first place. It fills in what it can verify —
-the commit from HEAD, `clean` from the real worktree state, every digest from the
-file — so the only things declared are the ones only the session knows. Its
-`--evidence` paths live **inside** the repository, unlike the Azure manifest's,
-whose evidence must stay out of the worktree — and they must be in the commit the
-manifest names, because the published document shows each screenshot from that
-commit. Their text reaches the pull request and the closing comment, so the same
-credential gate the Azure ticket applies runs here too. The coordinator renders that
-evidence into the pull-request body and into the comment that closes the issue —
-validations, HTTP captures and screenshots as one Markdown document, with the
-images shown from the commit that carries them — so a session names its evidence
-files and never formats or comments them itself.
+`github-session-verify` is the question the coordinator asks the moment a
+session exits (ADR-0035): is the fixed branch ahead of its base, with a clean
+worktree? It answers with the commit the delivery pushes, so a "the session said
+it finished" doubt is settled by running it rather than by reading the session.
 
 ## git
 
@@ -246,6 +213,21 @@ in one shape for both: review states are `approved`, `approved-with-suggestions`
   `--description-file`. Omitting both opens the PR with an empty description;
   Azure DevOps rejects one over 4000 characters.
 
+## Describing the CLI
+
+```bash
+lz catalog                                                     # every command, flag, default and effect
+lz catalog | jq -r '.commands[] | "\(.effect)\t\(.name)"'      # which commands write
+lz catalog | jq '.commands[] | select(.name == "ticket-create")'
+```
+
+`catalog` takes no options, opens no session and writes no run log. Each flag
+carries its `kind` (`integer`, `commit`, `directories`, `secret`…), whether it is
+`required`, its `default`, its `choices`, and the flags it `requires` or
+`conflicts` with; each command carries its `effect` (`read`, `write`, `session`,
+`maintenance`) and the shared flag `groups` it accepts. The desktop GUI builds
+its forms from exactly this document ([GUI.md](GUI.md)).
+
 ## Reading the output
 
 - JSON on **stdout**, operator lines and errors on **stderr**. `2>/dev/null`
@@ -256,12 +238,6 @@ in one shape for both: review states are `approved`, `approved-with-suggestions`
   ref (`refs/heads/issue/201`).
 - `--commit` requires the full object name, because every tool that takes one
   compares it against a ref — an abbreviation fails that comparison as if the
-  branch had moved. The manifest tools resolve it from HEAD when it is omitted,
-  which is what a delivery session should let them do.
-- `--validation` and `--validation-result` are repeatable and pair **by
-  position**: the first result belongs to the first command. They are two flags
-  rather than one because a real validation command carries whatever separator a
-  single flag would need (`dotnet test --filter A::B /p:X=Y`). A count mismatch
-  fails naming both flags.
+  branch had moved.
 - Tools open no session, so `--cli`, `--model`, `--variant` and `--fallback` do
   not apply. The reporter flags (`--verbose`, `--quiet`, `--no-color`) do.

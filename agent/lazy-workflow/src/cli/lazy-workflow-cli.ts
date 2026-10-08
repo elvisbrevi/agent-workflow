@@ -105,6 +105,7 @@ import {
   type CliParser,
   type FallbackRung,
 } from "./parse-cli-options.ts";
+import { commandCatalog } from "./command-catalog.ts";
 import {
   createDeterministicToolServices,
   isDeterministicToolCommand,
@@ -718,6 +719,18 @@ export class LazyWorkflowCli {
     // declared, the shared install this CLI is normally reached through.
     if (args[0] === "update") {
       return this.runInstaller(args.length > 1 ? args.slice(1) : ["--all-global"]);
+    }
+
+    // `catalog` describes the CLI rather than running anything, and a front end
+    // asks for it every time it starts: no reporter panel and no run log, only
+    // the document on stdout.
+    if (args[0] === "catalog") {
+      if (args.length > 1) {
+        getDefaultReporter().error(`lazy-workflow: catalog no acepta opciones (recibido: ${args.slice(1).join(" ")})`);
+        return 1;
+      }
+      console.log(JSON.stringify(commandCatalog(), null, 2));
+      return 0;
     }
 
     const parsed = parseCli(args, this.cliParser);
