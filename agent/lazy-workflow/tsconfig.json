@@ -26,5 +26,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // The desktop GUI type-checks with its own DOM configuration (gui/tsconfig.json).
+  "exclude": ["node_modules", "gui"]
 }

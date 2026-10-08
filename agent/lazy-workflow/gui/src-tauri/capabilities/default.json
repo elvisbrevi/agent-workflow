@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: lz commands, native file pickers, the interview page and HTTPS links (pull requests, work items) in the browser.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-message",
+    "opener:allow-reveal-item-in-dir",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://127.0.0.1:*" },
+        { "url": "http://localhost:*" },
+        { "url": "https://*" }
+      ]
+    }
+  ]
+}

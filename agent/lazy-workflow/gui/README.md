@@ -1,0 +1,78 @@
+# lz GUI
+
+A desktop window for `lz`, built with [Tauri](https://tauri.app). Every command
+of the CLI is a form, the exact command line is shown before it runs, and its
+output streams into a panel — operator lines (stderr) beside the result (stdout),
+with a JSON result rendered as a tree.
+
+The window holds no workflow logic. It reads `lz catalog` — the CLI's own JSON
+description of its commands, flags and effects — and renders that, so a new
+command or flag in the CLI appears in the GUI without changing it. Runs execute
+the same `lz` a terminal would, with the same validation, checkpoints and run
+log.
+
+## Requirements
+
+- `lz` installed (`install.sh --all-global`), or a checkout of this repository.
+- [Bun](https://bun.sh) and [Rust](https://rustup.rs).
+- Tauri's system libraries:
+  - **macOS:** Xcode Command Line Tools.
+  - **Linux:** `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev build-essential`.
+  - **Windows:** Microsoft C++ Build Tools and WebView2 (preinstalled on Windows 11).
+
+## Run and build
+
+```bash
+bun install
+bun run dev        # the window, with hot reload of the frontend
+bun run build      # release binary and installers in src-tauri/target/release/bundle/
+bun run tauri build --bundles deb   # only one installer format
+```
+
+`bun run dev` starts the Bun dev server on `localhost:1420` and opens the window
+against it; `bun run build` bundles the frontend into `dist/` with `bun build`
+and embeds it. The release binary is `lz-gui`.
+
+## What it does
+
+| Area | Behaviour |
+|---|---|
+| **Inicio** | Quick actions, and a diagnosis of the launcher, the tools a run shells out to (`bun`, `git`, `gh`, `az`, `opencode`, `claude`, `codex`, `chezmoi`) and the variables a run will see |
+| **Commands** | One form per command, grouped as the CLI groups them; shared flags (agent, interview, reporter, shutdown) in collapsible sections; validation before running; confirmation before anything that writes, opens a session or reinstalls |
+| **Runs** | One tab per run, live output, **Interrumpir** sends SIGINT to the run's process group (Ctrl-C), a second click kills it; the planning interview URL opens in the browser or inside the window |
+| **Historial** | The CLI's run log, grouped by run, terminal runs included |
+| **Configuracion** | The settings file below |
+
+Secrets never reach a command line: `credentials-set` takes its value in a
+password field and sends it on stdin, `credentials-get` output is masked, and
+`--off` takes its password from `LAZY_WORKFLOW_OFF_PASSWORD`, which the GUI can
+resolve from the credential store at run time.
+
+## Settings
+
+`~/.config/lazy-workflow/gui.json` (or `LAZY_WORKFLOW_GUI_SETTINGS`): the `lz`
+launcher, PATH additions, environment variables, secrets resolved through
+`lz credentials-get`, saved repositories, per-flag and per-command form defaults,
+confirmation and theme. The full schema, and a helper that edits it safely, are in
+the [`lz` skill's GUI reference](../../../utility/lz/GUI.md).
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `src-tauri/src/runner.rs` | Spawning `lz`, streaming its output, SIGINT-then-kill cancellation, stdin for secrets |
+| `src-tauri/src/environment.rs` | The login-shell environment, PATH composition, how `lzCommand` resolves |
+| `src-tauri/src/settings.rs` | `gui.json`: defaults, atomic save, unknown keys kept |
+| `src-tauri/src/run_log.rs` | Reading the CLI's run log for the history view |
+| `src/lib/command-line.ts` | Form values → argument vector, validation, the masked preview |
+| `src/lib/runs.ts` | The runs reducer, including output that arrives before its run is registered |
+| `src/components/` | The views |
+| `../src/cli/command-catalog.ts` | The catalog the CLI prints, pinned to the parser by `test/command-catalog.test.ts` |
+
+## Checks
+
+```bash
+bun run typecheck                 # the frontend
+(cd src-tauri && cargo test)      # settings, environment, run log, runner
+(cd .. && bun test)               # the CLI suite, which includes the catalog and the GUI's pure logic
+```

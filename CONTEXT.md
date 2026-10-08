@@ -83,6 +83,23 @@ adapter the workflow uses, prints what that adapter answered as JSON, and opens
 no session (ADR-0026).
 _Avoid_: reimplemented tool commands, session-opening tools
 
+**Command catalog**:
+The CLI's own description of itself, printed by `lz catalog` as JSON: every
+supported command with its family, its effect (`read`, `write`, `session`,
+`maintenance`), its flags with their value kinds, defaults, requirements and
+conflicts, and the shared flag groups it accepts. It describes the parser and
+never replaces it; a test pins one to the other. The desktop GUI renders it and
+the `lz` skill reads it, so neither keeps a copy of the CLI's surface.
+_Avoid_: a hand-kept command list in a front end, GUI-only flags
+
+**Desktop GUI**:
+The Tauri window in `agent/lazy-workflow/gui/` that turns the command catalog
+into forms, shows the exact command line before running it, and runs `lz` as a
+child process. Every effect stays the CLI's; the GUI's own state is its settings
+file, `~/.config/lazy-workflow/gui.json`, which only prefills forms and shapes a
+run's environment.
+_Avoid_: GUI-side validation the parser does not perform, secrets in the settings file
+
 **operator-output**:
 The name of the file module (`src/output/operator-output.ts`) that hosts
 the compat shim `reportOperator(message)`. The shim routes the call sites

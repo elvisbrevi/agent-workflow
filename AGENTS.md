@@ -8,7 +8,9 @@ This repository contains two kinds of artifacts:
 - **Agents**: executable workflows under `agent/<name>/`.
 
 The repository has one agent: `agent/lazy-workflow/`. Runtime code must stay
-inside that directory rather than a skill directory.
+inside that directory rather than a skill directory. Its desktop GUI,
+`agent/lazy-workflow/gui/`, is a front end for that agent, not another one: it
+renders `lz catalog` and runs `lz`, and holds no workflow logic.
 
 ## Where to modify things
 
@@ -18,7 +20,11 @@ inside that directory rather than a skill directory.
 | Add a new skill | A category directory, `SKILL.md`, optional `agents/openai.yaml`, and README catalog entries |
 | Change lazy-workflow CLI parsing or coordination | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` |
 | Add or remove a boundary the CLI receives by constructor | `agent/lazy-workflow/src/cli/lazy-workflow-cli.ts` and `agent/lazy-workflow/test/_helpers/create-cli.ts` (the only place that knows their order) |
-| Add or change a deterministic tool exposed as its own command | `agent/lazy-workflow/src/cli/tool-commands.ts` (the names) and `agent/lazy-workflow/src/cli/deterministic-tools.ts` (the dispatch) |
+| Add or change a deterministic tool exposed as its own command | `agent/lazy-workflow/src/cli/tool-commands.ts` (the names), `agent/lazy-workflow/src/cli/deterministic-tools.ts` (the dispatch), and its entry in `agent/lazy-workflow/src/cli/command-catalog.ts` |
+| Change what `lz catalog` describes — a command's flags, their kinds, defaults, requirements, or its effect | `agent/lazy-workflow/src/cli/command-catalog.ts` (the data) and `command-catalog-schema.ts` (the shape the GUI reads); `test/command-catalog.test.ts` pins both to the parser |
+| Change the desktop GUI's views, forms, or how a form becomes a command line | `agent/lazy-workflow/gui/src/` (`src/lib/` is pure and tested from `agent/lazy-workflow/test/gui-logic.test.ts`) |
+| Change how the GUI spawns or cancels `lz`, the environment it gives a run, or how it reads the run log | `agent/lazy-workflow/gui/src-tauri/src/` |
+| Change the GUI settings file (`gui.json`) | `gui/src-tauri/src/settings.rs`, `gui/src/lib/backend.ts`, `utility/lz/scripts/gui-settings.ts` and `utility/lz/GUI.md`; `test/gui-settings-script.test.ts` pins the helper to the Rust fields |
 | Change what the operator sees — the stamped line format, the levels, or the run panel | `agent/lazy-workflow/src/output/reporter.ts` |
 | Change the run log's record contract, its path resolution, or its rotation | `agent/lazy-workflow/src/output/run-log.ts` |
 | Change what a tool call reports about the artifact it touches | `agent/lazy-workflow/src/output/agent-tool-detail.ts` |
@@ -45,7 +51,7 @@ inside that directory rather than a skill directory.
 | Change how a run powers the machine down when it ends (`--off`) | `agent/lazy-workflow/src/system/shutdown-service.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
 | Change installation or symlink behavior | `install.sh`, `install.ps1`, and `tests/install_test.sh` |
-| Change user-facing orientation | `README.md` and `agent/lazy-workflow/README.md` |
+| Change user-facing orientation | `README.md`, `agent/lazy-workflow/README.md`, and `agent/lazy-workflow/gui/README.md` |
 | Change tracker or domain conventions | `docs/agents/`, `docs/adr/`, or `CONTEXT.md` |
 
 Keep coordination in the CLI layer and external-system details in their
@@ -67,6 +73,13 @@ Run the focused suite for the changed area and the repository-level checks:
 bash tests/install_test.sh
 BASH_BIN=zsh bash tests/install_test.sh
 git diff --check
+```
+
+When `agent/lazy-workflow/gui/` changes, also run:
+
+```bash
+(cd agent/lazy-workflow/gui && bun install && bun run typecheck)
+(cd agent/lazy-workflow/gui/src-tauri && cargo test && cargo clippy --all-targets)
 ```
 
 Do not use real credentials or a live backlog in automated tests.
