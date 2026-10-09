@@ -22,14 +22,18 @@ export function promptTty(prompt: string, failure: string, platform = process.pl
   catch { throw new Error(failure); }
   try {
     writeFileSync(platform === "win32" ? "CONOUT$" : fd, prompt);
-    const byte = Buffer.alloc(1);
-    let answer = "";
-    while (readSync(fd, byte, 0, 1, null)) {
-      if (byte[0] === 10) return answer.replace(/\r$/, "");
-      answer += byte.toString();
-    }
-    throw new Error("No se pudo leer la respuesta del terminal.");
+    return readTtyLine(fd);
   } finally { closeSync(fd); }
+}
+
+export function readTtyLine(fd: number): string {
+  const byte = Buffer.alloc(1);
+  const bytes: number[] = [];
+  while (readSync(fd, byte, 0, 1, null)) {
+    if (byte[0] === 10) return Buffer.from(bytes).toString("utf8").replace(/\r$/, "");
+    bytes.push(byte[0]!);
+  }
+  throw new Error("No se pudo leer la respuesta del terminal.");
 }
 
 export function destinations(options: Options, home: string, codexHome: string): Destination[] {

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { install, Installer, destinations } from "./install.ts";
+import { install, Installer, destinations, readTtyLine } from "./install.ts";
 import { guiPaths } from "./gui.ts";
 import { MODES, parseOptions } from "./options.ts";
 
@@ -241,6 +241,14 @@ test("imports have no installation effects", () => {
   new Installer(parseOptions(["--global"], home), env);
   expect(readdirSync(home)).toEqual([]);
   expect(commands()).toEqual([]);
+});
+
+test("interactive input preserves UTF-8 project paths and CRLF", () => {
+  const input = join(root, "input");
+  writeFileSync(input, "proyecto con espacios ü y 日本語\r\n");
+  const fd = openSync(input, "r");
+  try { expect(readTtyLine(fd)).toBe("proyecto con espacios ü y 日本語"); }
+  finally { closeSync(fd); }
 });
 
 test("GUI dry-run uninstall leaves the GUI, desktop and build intact", async () => {
