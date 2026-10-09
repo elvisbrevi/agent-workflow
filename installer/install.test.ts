@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -214,12 +214,19 @@ test("Windows file copies use the existing uppercase SHA256 manifest; changed fi
   expect(readFileSync(psRunner, "utf8")).toBe("edited by operator");
 });
 
-test("no TTY menu and collision produce actionable errors without reading piped stdin", () => {
+test("no TTY menu and collision produce actionable errors without reading piped stdin", async () => {
   for (const args of [[], ["--global"]]) {
     if (args.length) file(join(home, ".agents/skills/alpha/SKILL.md"), "foreign");
-    const child = spawnSync(process.execPath, [join(import.meta.dir, "main.ts"), ...args], { env, detached: true, stdio: "pipe" });
-    expect(child.status).toBe(1);
-    expect(child.stderr.toString()).toContain(args.length ? "--force" : "TTY");
+    const child = spawn(process.execPath, [join(import.meta.dir, "main.ts"), ...args], { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stdout.resume();
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once("close", resolve);
+      child.once("error", reject);
+    });
+    expect(status).toBe(1);
+    expect(stderr).toContain(args.length ? "--force" : "TTY");
   }
 });
 
@@ -234,4 +241,39 @@ test("imports have no installation effects", () => {
   new Installer(parseOptions(["--global"], home), env);
   expect(readdirSync(home)).toEqual([]);
   expect(commands()).toEqual([]);
+});
+
+test("GUI dry-run uninstall leaves the GUI, desktop and build intact", async () => {
+  await run(["--all-global"]);
+  const paths = guiPaths(home, "linux");
+  await run(["--all-global", "--uninstall", "--dry-run"]);
+  for (const path of [paths.executable, paths.desktop, paths.stamp, paths.build]) expect(existsSync(path)).toBe(true);
+  expect(lstatSync(join(home, ".local/bin/lz")).isSymbolicLink()).toBe(true);
+});
+
+test("foreign GUI without an ownership stamp survives uninstall", async () => {
+  const paths = guiPaths(home, "linux");
+  file(paths.executable, "foreign executable");
+  file(paths.desktop, "foreign desktop entry");
+  await run(["--all-global", "--uninstall"]);
+  expect(readFileSync(paths.executable, "utf8")).toBe("foreign executable");
+  expect(readFileSync(paths.desktop, "utf8")).toBe("foreign desktop entry");
+});
+
+const powershell = Bun.which("pwsh");
+test.skipIf(!powershell)("PowerShell bootstrap selects ref, delegates argument boundaries and cleans up on failure", () => {
+  file(join(fixture, "installer/main.ts"), "// bootstrap fixture");
+  file(join(root, "bin/bun"), `#!${process.execPath}\nimport {writeFileSync} from "node:fs"; writeFileSync(process.env.ARGUMENTS_LOG, JSON.stringify(process.argv.slice(2))); process.exit(17);`);
+  chmodSync(join(root, "bin/bun"), 0o755);
+  const argumentLog = join(root, "args.json");
+  const args = ["--claude-global", "--ref", "requested-ref", "--target", "proyecto con espacios ü", "--no-gui", "--dry-run"];
+  const child = Bun.spawnSync([powershell!, "-NoProfile", "-File", join(import.meta.dir, "../install.ps1"), ...args], { env: { ...env, ARGUMENTS_LOG: argumentLog, XDG_CACHE_HOME: join(root, "powershell-cache"), XDG_DATA_HOME: join(root, "powershell-data") }, stdout: "pipe", stderr: "pipe" });
+  expect(child.stderr.toString()).toBe("");
+  expect(child.exitCode).toBe(17);
+  const forwarded = JSON.parse(readFileSync(argumentLog, "utf8"));
+  expect(forwarded[0]).toBe("run");
+  expect(forwarded.slice(2)).toEqual(args);
+  expect(commands()[0]!.args.slice(0, 4)).toEqual(["clone", "--branch", "requested-ref", "--depth"]);
+  expect(existsSync(commands()[0]!.args.at(-2)!)).toBe(false);
+  expect(readdirSync(home)).toEqual([]);
 });
