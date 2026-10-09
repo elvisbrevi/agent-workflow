@@ -1,6 +1,6 @@
 # Workflow commands and flags
 
-The commands that open a session, the two that maintain or describe the tool,
+The commands that open a session, those that maintain, describe or open the tool,
 and every flag they accept. The deterministic tools have their own file
 ([TOOLS.md](TOOLS.md)), and what the agent flags actually change is in
 [CODING-AGENTS.md](CODING-AGENTS.md).
@@ -18,8 +18,13 @@ either is the authority whenever this file and the binary disagree.
 | `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
 | `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |
-| `update [installer options]` | — | no | Runs the platform installer with the options after it; `--all-global` when none |
+| `update [installer options]` | — | no | Runs the Bun installer directly with the options after it; `--all-global` when none |
+| `gui` | — | no | Opens the installed GUI detached; `LAZY_WORKFLOW_GUI` overrides the binary; takes no options or run log |
 | `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |
+
+`update` forwards installer flags, including `--no-gui`, unchanged. Global
+launcher modes include the GUI; Rust is required to build it. See
+[CONFIGURATION.md](CONFIGURATION.md#installation-and-updates) for modes.
 
 `plan` and `code` accept `--normas-sag` to load phase-appropriate norms opt-in,
 per run. The norms require `.sag/config.json` with an explicit `tipo` of `api`,

@@ -29,7 +29,7 @@ const help = (() => {
 const parserFlags = new Set([...(help.match(/--[a-z][a-z0-9-]*/g) ?? []), "--no-color", "--no-log-file"]);
 
 const installerFlags = new Set(
-  (await Bun.file(new URL("../../../install.sh", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? [],
+  (await Bun.file(new URL("../../../installer/options.ts", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? [],
 );
 
 /** Every invocation form `--help` prints, split into the command and the flags it shows. */

@@ -12,7 +12,9 @@ It supports **OpenCode**, **Claude Code**, and **Codex**.
 
 ## Install
 
-Install **Git** and **Bun** first. Choose the command for your shell:
+Install **Git** and **Bun** first. **Rust** (`cargo` and `rustc`) and
+[Tauri system libraries](agent/lazy-workflow/gui/README.md#requirements) are
+optional prerequisites for building the desktop GUI. Choose the command for your shell:
 
 ### Bash
 
@@ -36,8 +38,11 @@ Invoke-WebRequest https://raw.githubusercontent.com/elvisbrevi/agent-workflow/ma
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer --all-global
 ```
 
-`--all-global` installs the skills, agent entries, and CLI, and prepares its
-locked Bun dependencies. Add `~/.local/bin` to `PATH` (`$HOME\.local\bin` on
+`--all-global` installs the skills, agent entries, CLI and desktop GUI, and
+prepares locked Bun dependencies. Both shell scripts bootstrap the same
+dependency-free Bun installer in `installer/`. If Rust is missing or the GUI
+build fails, the CLI and skills still install successfully and any previous
+GUI is preserved. Use `--no-gui` to skip the desktop build. Add `~/.local/bin` to `PATH` (`$HOME\.local\bin` on
 Windows), then check the installation with `lz --help`.
 
 Windows installs `lz.cmd`; use `lz-powershell.ps1` for
@@ -51,7 +56,7 @@ The skill is named `lz`; reinstalling removes the old `lazy-workflow` skill link
 
 | Option | Installs into |
 |---|---|
-| `--claude-global` | Global Claude Code skills, agents, and CLI |
+| `--claude-global` | Global Claude Code skills, agents, CLI and GUI |
 | `--claude-local` | Project-local Claude Code skills, agents, and CLI |
 | `--global` | Shared global skills and agents |
 | `--local` | Shared project-local skills and agents |
@@ -88,7 +93,8 @@ lz update
 |---|---|
 | `plan` | Create a plan and publish its issues or Azure work items. |
 | `code` | Deliver eligible work, one unit at a time. |
-| `update` | Run the platform installer; defaults to `--all-global`. |
+| `update` | Run the Bun installer; defaults to `--all-global`. |
+| `gui` | Open the installed desktop GUI and return the terminal immediately. |
 | `catalog` | Print every command, its options, and its effect as JSON — what the [desktop GUI](#desktop-gui) renders. |
 
 Without `--hu`, workflows use GitHub. `code` selects open, unassigned,
@@ -330,12 +336,20 @@ secrets on stdin rather than the command line, and checks which tools and
 variables a run will find.
 
 ```bash
-# Requires Bun, Rust and Tauri's system libraries for your platform.
-cd agent/lazy-workflow/gui
-bun install
-bunx tauri dev     # open the window
-bunx tauri build   # build the installers into src-tauri/target/release/bundle/
+lz gui
+lz update                     # build/install GUI when its source changed
+lz update --all-global --no-gui
 ```
+
+The installer builds the GUI locally: `~/Applications/lz.app` on macOS,
+`~/.local/bin/lz-gui` and `~/.local/share/applications/lz.desktop` on Linux,
+and `~/.local/bin/lz-gui.exe` on Windows. `LAZY_WORKFLOW_GUI` overrides the
+binary opened by `lz gui`. Rust build artifacts persist outside the refreshed
+checkout in `~/.cache/agent-workflow-build/gui`; an installed GUI with the same
+Git tree hash skips compilation. `--uninstall --all-global` or
+`--uninstall --claude-global` removes the GUI, its stamp and build directory.
+The managed source cache remains available for other installation modes.
+For development, follow the [GUI build guide](agent/lazy-workflow/gui/README.md#run-and-build).
 
 Its settings live in `~/.config/lazy-workflow/gui.json`; the `lz` skill
 documents them and edits them safely. See the [GUI guide](agent/lazy-workflow/gui/README.md)
@@ -378,15 +392,18 @@ syntax, or let the client select a matching skill. Skills marked
 # Run the agent's tests.
 (cd agent/lazy-workflow && bun test)
 
-# Verify the installer in Bash.
+# Verify the shared installer.
+bun test installer
+
+# Verify the bootstrap in Bash.
 bash tests/install_test.sh
 
-# Verify the installer in Zsh.
+# Verify the bootstrap in Zsh.
 BASH_BIN=zsh bash tests/install_test.sh
 
 # Type-check the GUI and run its Rust tests.
 (cd agent/lazy-workflow/gui && bun install && bunx tsc --noEmit -p .)
-(cd agent/lazy-workflow/gui/src-tauri && cargo test)
+(cd agent/lazy-workflow/gui/src-tauri && cargo test && cargo clippy --all-targets)
 
 # Check the patch for whitespace errors.
 git diff --check

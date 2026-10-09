@@ -53,6 +53,7 @@ export interface CliBoundaries {
   processSignals?: Boundary[18];
   systemShutdown?: Boundary[19];
   runInstaller?: Boundary[20];
+  openGui?: Boundary[21];
 }
 
 /**
@@ -120,5 +121,6 @@ export function createCli(boundaries: CliBoundaries = {}): LazyWorkflowCli {
     boundaries.processSignals,
     boundaries.systemShutdown,
     boundaries.runInstaller,
+    boundaries.openGui,
   );
 }

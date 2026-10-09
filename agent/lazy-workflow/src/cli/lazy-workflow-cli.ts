@@ -71,6 +71,7 @@ import {
 } from "../github/github-workspace-checkpoint.ts";
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
 import { SudoSystemShutdown, type SystemShutdown } from "../system/shutdown-service.ts";
+import { launchGui, type GuiLauncher } from "../system/gui-launcher.ts";
 import { runSelfUpdate, type InstallerRunner } from "../system/self-update.ts";
 import {
   QUEUE_BLOCKED_MARKER,
@@ -510,6 +511,7 @@ export class LazyWorkflowCli {
      * test verifies what the command forwards without running the installer.
      */
     private readonly runInstaller: InstallerRunner = runSelfUpdate,
+    private readonly openGui: GuiLauncher = launchGui,
   ) {
     const coordinatorEnabled = githubManagedQueue instanceof GitHubManagedQueueService
       || githubCheckpointStore !== undefined
@@ -719,6 +721,20 @@ export class LazyWorkflowCli {
     // declared, the shared install this CLI is normally reached through.
     if (args[0] === "update") {
       return this.runInstaller(args.length > 1 ? args.slice(1) : ["--all-global"]);
+    }
+
+    if (args[0] === "gui") {
+      if (args.length > 1) {
+        getDefaultReporter().error("lazy-workflow: gui no acepta opciones");
+        return 1;
+      }
+      try {
+        await this.openGui();
+        return 0;
+      } catch (error) {
+        getDefaultReporter().error(`lazy-workflow: ${error instanceof Error ? error.message : error}`);
+        return 1;
+      }
     }
 
     // `catalog` describes the CLI rather than running anything, and a front end

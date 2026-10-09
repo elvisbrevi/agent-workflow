@@ -42,7 +42,7 @@ const parserFlags = new Set([...(help.match(/--[a-z][a-z0-9-]*/g) ?? []), "--no-
 
 /** Las banderas del instalador, que el README también documenta. */
 const installerFlags = new Set(
-  (await Bun.file(new URL("../../../install.sh", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? [],
+  (await Bun.file(new URL("../../../installer/options.ts", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? [],
 );
 
 /** Las opciones obligatorias de cada comando, tal como `--help` las declara. */

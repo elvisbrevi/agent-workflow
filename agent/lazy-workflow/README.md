@@ -30,10 +30,10 @@ The previous `lazy-workflow` command remains an alias for existing scripts.
 Codex resolves them from; without it a run that falls back to Codex has no
 skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,
 `--claude-local`, `--target D`, `--ref REF`, `--uninstall`, `--dry-run` and
-`--force`.
+`--force` and `--no-gui`.
 
 Once installed, `lz update` reinstalls it: it runs the repository's
-platform installer with the arguments declared after it, and with `--all-global` when
+Bun installer directly with the arguments declared after it, and with `--all-global` when
 none is declared.
 
 Every command has a runnable example in [Practical examples](#practical-examples);
@@ -199,9 +199,10 @@ lz credentials-migrate --name OPENAI_API_KEY --service openai
 ### Updating the tool and the credentials
 
 ```bash
-# Reinstall the tool; any argument is forwarded to the platform installer
+# Reinstall the tool; any argument is forwarded to the Bun installer
 lz update
 lz update --codex
+lz gui                        # open the installed desktop window
 
 # Bring this machine the secrets another machine published
 lz credentials-update
@@ -716,9 +717,15 @@ group, exactly as Ctrl-C does.
 `lz catalog` takes no options, opens no session and writes no run log;
 `src/cli/command-catalog.ts` builds it and `test/command-catalog.test.ts` pins it
 to the parser, so a catalog entry that the parser would reject fails the suite.
-Build and run the window with `bun install` and `bun run dev` inside `gui/`; its
-requirements and layout are in [gui/README.md](gui/README.md), and its settings
-file is documented with the `lz` skill.
+The global launcher modes (`--all-global`, `--claude-global`) build and install
+it by default. Open it with `lz gui`; this detached launch opens no run log or
+reporter panel. `LAZY_WORKFLOW_GUI` selects an alternate binary. Rust and
+Tauri system libraries are optional for CLI installation: a missing toolchain
+or failed GUI build warns, preserves any previous GUI and leaves the CLI usable.
+`--no-gui` skips it. Updates skip compilation when the installed GUI's tree hash
+matches, and keep Cargo artifacts outside the refreshed checkout. Requirements,
+platform destinations and development commands are in [gui/README.md](gui/README.md);
+the settings file is documented with the `lz` skill.
 
 ## Other flags
 

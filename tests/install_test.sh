@@ -2,365 +2,71 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALLER="${ROOT_DIR}/install.sh"
-BASH_BIN="${BASH_BIN:-bash}"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-workflow-installer.XXXXXX")"
-TESTS_RUN=0
-FIXTURE_SOURCE="${TEST_ROOT}/catalog-source"
-FIXTURE_REMOTE="${TEST_ROOT}/catalog-remote.git"
+SHELL_BIN="$(command -v "${BASH_BIN:-bash}")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-workflow-bootstrap-tests.XXXXXX")"
+trap 'rm -rf "$TEST_ROOT"' EXIT
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+pass() { printf 'PASS: %s\n' "$1"; }
 
-cleanup() {
-  rm -rf "$TEST_ROOT"
-}
-trap cleanup EXIT
+mkdir -p "$TEST_ROOT/source/installer" "$TEST_ROOT/home" "$TEST_ROOT/bin" "$TEST_ROOT/tmp"
+printf '%s\n' 'version-main' > "$TEST_ROOT/source/installer/main.ts"
+git -C "$TEST_ROOT/source" init --quiet
+git -C "$TEST_ROOT/source" config user.name 'Bootstrap Test'
+git -C "$TEST_ROOT/source" config user.email 'bootstrap@example.invalid'
+git -C "$TEST_ROOT/source" add .
+git -C "$TEST_ROOT/source" commit --quiet -m 'main fixture'
+git -C "$TEST_ROOT/source" branch -M main
+git -C "$TEST_ROOT/source" switch --quiet -c requested-ref
+printf '%s\n' 'version-requested' > "$TEST_ROOT/source/installer/main.ts"
+git -C "$TEST_ROOT/source" commit --quiet -am 'requested fixture'
+cat > "$TEST_ROOT/bin/bun" <<'BUN'
+#!/bin/sh
+[ "$1" = run ] || exit 91
+[ -f "$2" ] || exit 92
+cat "$2" > "$VERSION_LOG"
+shift 2
+printf '%s\n' "$@" > "$ARG_LOG"
+exit "${FAKE_EXIT:-0}"
+BUN
+chmod +x "$TEST_ROOT/bin/bun"
+export HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp" AGENT_WORKFLOW_REPO_URL="$TEST_ROOT/source"
+export ARG_LOG="$TEST_ROOT/args" VERSION_LOG="$TEST_ROOT/version"
+export PATH="$TEST_ROOT/bin:$PATH"
 
-fail() {
-  printf 'FAIL: %s\n' "$*" >&2
-  exit 1
-}
+cat "$ROOT_DIR/install.sh" | "$SHELL_BIN" -s -- --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --force --uninstall > "$TEST_ROOT/output" 2>&1 || fail 'piped bootstrap failed'
+printf '%s\n' --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --force --uninstall > "$TEST_ROOT/expected"
+cmp -s "$ARG_LOG" "$TEST_ROOT/expected" || fail 'arguments changed during delegation'
+[ "$(cat "$VERSION_LOG")" = version-requested ] || fail '--ref did not select bootstrap installer version'
+[ -z "$(ls -A "$TEST_ROOT/tmp")" ] || fail 'bootstrap left temporary checkout'
+[ -z "$(ls -A "$HOME")" ] || fail 'bootstrap wrote to installation HOME'
+pass 'stdin bootstrap obtains requested version and forwards every argument intact'
 
-pass() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  printf 'PASS: %s\n' "$1"
-}
+set +e
+FAKE_EXIT=17 "$SHELL_BIN" "$ROOT_DIR/install.sh" --global > "$TEST_ROOT/failure" 2>&1
+status=$?
+set -e
+[ "$status" = 17 ] || fail 'installer exit code was not propagated'
+[ -z "$(ls -A "$TEST_ROOT/tmp")" ] || fail 'failed delegation left temporary checkout'
+pass 'exit status and cleanup survive failed delegation'
 
-assert_contains() {
-  local file="$1" expected="$2"
-  grep -Fq "$expected" "$file" || fail "Expected '${expected}' in ${file}"
-}
+mkdir -p "$TEST_ROOT/no-bun"
+ln -s "$(command -v git)" "$TEST_ROOT/no-bun/git"
+set +e
+PATH="$TEST_ROOT/no-bun" "$SHELL_BIN" "$ROOT_DIR/install.sh" --all-global > "$TEST_ROOT/missing-bun" 2>&1
+status=$?
+set -e
+[ "$status" != 0 ] || fail 'missing Bun should fail'
+rg -q 'Se requiere Bun en PATH' "$TEST_ROOT/missing-bun" || fail 'missing Bun diagnostic is not actionable'
+pass 'missing Bun fails before cloning'
 
-assert_symlink() {
-  local path="$1"
-  [[ -L "$path" ]] || fail "Expected symlink: ${path}"
-  [[ -f "${path}/SKILL.md" ]] || fail "Expected linked SKILL.md: ${path}"
-}
+mkdir -p "$TEST_ROOT/no-git"
+ln -s "$TEST_ROOT/bin/bun" "$TEST_ROOT/no-git/bun"
+set +e
+PATH="$TEST_ROOT/no-git" "$SHELL_BIN" "$ROOT_DIR/install.sh" --global > "$TEST_ROOT/missing-git" 2>&1
+status=$?
+set -e
+[ "$status" != 0 ] || fail 'missing Git should fail'
+rg -q 'Se requiere Git en PATH' "$TEST_ROOT/missing-git" || fail 'missing Git diagnostic is not actionable'
+pass 'missing Git fails before cloning'
 
-assert_file_symlink() {
-  local path="$1"
-  [[ -L "$path" ]] || fail "Expected file symlink: ${path}"
-  [[ -f "$path" ]] || fail "Expected linked file: ${path}"
-}
-
-seed_cache() {
-  local home="$1"
-  local cache="${home}/.cache/agent-workflow"
-
-  mkdir -p \
-    "${cache}/.git" \
-    "${cache}/utility/alpha" \
-    "${cache}/design/beta" \
-    "${cache}/agent/runner"
-
-  printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' > "${cache}/utility/alpha/SKILL.md"
-  printf '%s\n' '---' 'name: beta' 'description: Beta fixture.' '---' > "${cache}/design/beta/SKILL.md"
-  printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' > "${cache}/agent/runner/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${cache}/agent/runner/run.sh"
-  chmod +x "${cache}/agent/runner/run.sh"
-}
-
-seed_remote() {
-  mkdir -p \
-    "${FIXTURE_SOURCE}/utility/alpha" \
-    "${FIXTURE_SOURCE}/design/beta" \
-    "${FIXTURE_SOURCE}/agent/runner"
-
-  printf '%s\n' '---' 'name: alpha' 'description: Alpha fixture.' '---' \
-    > "${FIXTURE_SOURCE}/utility/alpha/SKILL.md"
-  printf '%s\n' '---' 'name: beta' 'description: Beta fixture.' '---' \
-    > "${FIXTURE_SOURCE}/design/beta/SKILL.md"
-  printf '%s\n' '---' 'name: runner' 'description: Runner fixture.' '---' \
-    > "${FIXTURE_SOURCE}/agent/runner/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${FIXTURE_SOURCE}/agent/runner/run.sh"
-  printf '%s\n' '{"name":"runner","dependencies":{"fixture":"1.0.0"}}' \
-    > "${FIXTURE_SOURCE}/agent/runner/package.json"
-  printf '%s\n' '{"lockfileVersion":1}' > "${FIXTURE_SOURCE}/agent/runner/bun.lock"
-  chmod +x "${FIXTURE_SOURCE}/agent/runner/run.sh"
-  git -C "$FIXTURE_SOURCE" init --quiet
-  git -C "$FIXTURE_SOURCE" config user.name 'Installer Test'
-  git -C "$FIXTURE_SOURCE" config user.email 'installer@example.invalid'
-  git -C "$FIXTURE_SOURCE" add .
-  git -C "$FIXTURE_SOURCE" commit --quiet -m 'fixture catalog'
-  git -C "$FIXTURE_SOURCE" branch -M main
-  git clone --quiet --bare "$FIXTURE_SOURCE" "$FIXTURE_REMOTE"
-}
-
-test_no_tty_error() {
-  local home="${TEST_ROOT}/no-tty-home"
-  local stdout="${TEST_ROOT}/no-tty.stdout"
-  local stderr="${TEST_ROOT}/no-tty.stderr"
-  local status
-
-  mkdir -p "$home"
-
-  if { : </dev/tty; } 2>/dev/null; then
-    printf 'SKIP: no-TTY diagnostic (test process has a controlling TTY)\n'
-    return
-  fi
-
-  set +e
-  HOME="$home" "$BASH_BIN" "$INSTALLER" >"$stdout" 2>"$stderr"
-  status=$?
-  set -e
-
-  [[ "$status" -ne 0 ]] || fail 'Expected no-argument install without a TTY to fail'
-  assert_contains "$stderr" 'Interactive mode requires a TTY'
-  if grep -Fq 'Device not configured' "$stderr"; then
-    fail 'Raw /dev/tty error leaked to the user'
-  fi
-
-  pass 'no-TTY invocation reports an actionable error'
-}
-
-test_piped_explicit_mode() {
-  local home="${TEST_ROOT}/pipe-home"
-  local output="${TEST_ROOT}/pipe.log"
-
-  seed_cache "$home"
-
-  cat "$INSTALLER" | HOME="$home" "$BASH_BIN" -s -- --claude-global --dry-run >"$output" 2>&1 || \
-    fail 'Piped Claude Code install failed'
-
-  assert_contains "$output" "${home}/.claude/skills/alpha"
-  assert_contains "$output" "${home}/.claude/skills/beta"
-  assert_contains "$output" "${home}/.claude/agents/runner.md"
-  assert_contains "$output" "${home}/.local/bin/runner"
-  assert_contains "$output" '2 skills processed.'
-  assert_contains "$output" '1 Claude agents processed.'
-  assert_contains "$output" '1 runners processed.'
-  [[ ! -e "${home}/.claude/skills" ]] || fail 'Dry-run created a Claude Code skills directory'
-
-  pass 'piped invocation accepts an explicit non-interactive mode'
-}
-
-test_shared_global_round_trip() {
-  local home="${TEST_ROOT}/shared-home"
-  local install_output="${TEST_ROOT}/shared-install.log"
-  local uninstall_output="${TEST_ROOT}/shared-uninstall.log"
-
-  seed_cache "$home"
-  mkdir -p "${home}/.agents/agents"
-  ln -s "${home}/.cache/agent-workflow/agent/issue-killer" \
-    "${home}/.agents/agents/issue-killer"
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --global --force >"$install_output" 2>&1 || \
-    fail 'Shared global install failed'
-
-  assert_symlink "${home}/.agents/skills/alpha"
-  assert_symlink "${home}/.agents/skills/beta"
-  [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected runner agent symlink'
-  [[ ! -L "${home}/.agents/agents/issue-killer" ]] || \
-    fail 'Removed issue-killer symlink was not removed'
-  assert_contains "$install_output" '2 skills processed.'
-  assert_contains "$install_output" '1 agents processed.'
-  assert_contains "$install_output" 'Removed managed link:'
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --global >"$uninstall_output" 2>&1 || \
-    fail 'Shared global uninstall failed'
-
-  [[ ! -e "${home}/.agents/skills/alpha" && ! -L "${home}/.agents/skills/alpha" ]] || \
-    fail 'Alpha skill was not uninstalled'
-  [[ ! -e "${home}/.agents/skills/beta" && ! -L "${home}/.agents/skills/beta" ]] || \
-    fail 'Beta skill was not uninstalled'
-  [[ ! -e "${home}/.agents/agents/runner" && ! -L "${home}/.agents/agents/runner" ]] || \
-    fail 'Runner agent was not uninstalled'
-  assert_contains "$uninstall_output" '2 skills processed.'
-  assert_contains "$uninstall_output" '1 agents processed.'
-
-  pass 'shared global install and uninstall process every entry'
-}
-
-test_claude_destinations() {
-  local home="${TEST_ROOT}/claude-home"
-  local project="${TEST_ROOT}/claude-project"
-  local global_output="${TEST_ROOT}/claude-global.log"
-  local local_output="${TEST_ROOT}/claude-local.log"
-
-  seed_cache "$home"
-  mkdir -p "$project"
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --claude-global --force >"$global_output" 2>&1 || \
-    fail 'Claude Code global install failed'
-  assert_symlink "${home}/.claude/skills/alpha"
-  assert_symlink "${home}/.claude/skills/beta"
-  assert_file_symlink "${home}/.claude/agents/runner.md"
-  assert_file_symlink "${home}/.local/bin/runner"
-  assert_contains "$global_output" '2 skills processed.'
-  assert_contains "$global_output" '1 Claude agents processed.'
-  assert_contains "$global_output" '1 runners processed.'
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --claude-local --target "$project" --force >"$local_output" 2>&1 || \
-    fail 'Claude Code project install failed'
-  assert_symlink "${project}/.claude/skills/alpha"
-  assert_symlink "${project}/.claude/skills/beta"
-  assert_file_symlink "${project}/.claude/agents/runner.md"
-  assert_file_symlink "${project}/.claude/bin/runner"
-  assert_contains "$local_output" '2 skills processed.'
-  assert_contains "$local_output" '1 Claude agents processed.'
-  assert_contains "$local_output" '1 runners processed.'
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --claude-global >/dev/null 2>&1 || \
-    fail 'Claude Code global uninstall failed'
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --claude-local --target "$project" >/dev/null 2>&1 || \
-    fail 'Claude Code project uninstall failed'
-
-  [[ ! -e "${home}/.claude/agents/runner.md" && ! -L "${home}/.claude/agents/runner.md" ]] || \
-    fail 'Global Claude agent was not uninstalled'
-  [[ ! -e "${home}/.local/bin/runner" && ! -L "${home}/.local/bin/runner" ]] || \
-    fail 'Global runner was not uninstalled'
-  [[ ! -e "${project}/.claude/agents/runner.md" && ! -L "${project}/.claude/agents/runner.md" ]] || \
-    fail 'Project Claude agent was not uninstalled'
-  [[ ! -e "${project}/.claude/bin/runner" && ! -L "${project}/.claude/bin/runner" ]] || \
-    fail 'Project runner was not uninstalled'
-
-  pass 'Claude Code destinations install and uninstall skills, agents, and runners'
-}
-
-test_all_global_round_trip() {
-  local home="${TEST_ROOT}/all-global-home"
-  local install_output="${TEST_ROOT}/all-global-install.log"
-  local uninstall_output="${TEST_ROOT}/all-global-uninstall.log"
-
-  seed_cache "$home"
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --all-global >"$install_output" 2>&1 || \
-    fail 'Unified global install failed'
-
-  assert_symlink "${home}/.claude/skills/alpha"
-  assert_symlink "${home}/.agents/skills/alpha"
-  assert_file_symlink "${home}/.claude/agents/runner.md"
-  [[ -L "${home}/.agents/agents/runner" ]] || fail 'Expected shared runner agent symlink'
-  assert_file_symlink "${home}/.local/bin/runner"
-  [[ -f "${home}/.cache/agent-workflow/agent/runner/node_modules/.installed" ]] || \
-    fail 'Runner dependencies were not installed in the managed cache'
-  assert_contains "$install_output" 'Installing skills → all-global'
-  assert_contains "$install_output" 'Installing Claude agents → all-global'
-  assert_contains "$install_output" 'Installing agents → all-global'
-  assert_contains "$install_output" 'Installing runners → all-global'
-
-  HOME="$home" "$BASH_BIN" "$INSTALLER" --uninstall --all-global \
-    >"$uninstall_output" 2>&1 || fail 'Unified global uninstall failed'
-
-  [[ ! -L "${home}/.claude/skills/alpha" ]] || fail 'Claude skill survived unified uninstall'
-  [[ ! -L "${home}/.agents/skills/alpha" ]] || fail 'Shared skill survived unified uninstall'
-  [[ ! -L "${home}/.claude/agents/runner.md" ]] || \
-    fail 'Claude agent survived unified uninstall'
-  [[ ! -L "${home}/.agents/agents/runner" ]] || \
-    fail 'Shared agent survived unified uninstall'
-  [[ ! -L "${home}/.local/bin/runner" ]] || fail 'Runner survived unified uninstall'
-
-  pass 'unified global mode installs and uninstalls every global integration'
-}
-
-install_fake_bun() {
-  local bin_dir="${TEST_ROOT}/bin"
-
-  mkdir -p "$bin_dir"
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'set -euo pipefail' \
-    '[[ "$1" == "install" ]] || exit 2' \
-    'mkdir -p node_modules' \
-    'printf "%s\n" installed > node_modules/.installed' \
-    > "${bin_dir}/bun"
-  chmod +x "${bin_dir}/bun"
-  PATH="${bin_dir}:${PATH}"
-  export PATH
-}
-
-test_install_reconciles_dirty_cache_and_stale_managed_links() {
-  local home="${TEST_ROOT}/reconcile-home"
-  local source="${TEST_ROOT}/reconcile-source"
-  local remote="${TEST_ROOT}/reconcile-remote.git"
-  local cache="${home}/.cache/agent-workflow"
-  local output="${TEST_ROOT}/reconcile.log"
-  local unrelated_target="${TEST_ROOT}/unrelated-agent.md"
-
-  mkdir -p "${source}/utility/current-skill" "${source}/utility/lazy-workflow" "${source}/agent/issue-killer"
-  printf '%s\n' '---' 'name: current-skill' 'description: Current fixture.' '---' \
-    > "${source}/utility/current-skill/SKILL.md"
-  printf '%s\n' '---' 'name: lazy-workflow' 'description: Old skill fixture.' '---' \
-    > "${source}/utility/lazy-workflow/SKILL.md"
-  printf '%s\n' '---' 'name: issue-killer' 'description: Removed agent fixture.' '---' \
-    > "${source}/agent/issue-killer/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/issue-killer/run.sh"
-  chmod +x "${source}/agent/issue-killer/run.sh"
-
-  git -C "$source" init --quiet
-  git -C "$source" config user.name 'Installer Test'
-  git -C "$source" config user.email 'installer@example.invalid'
-  git -C "$source" add .
-  git -C "$source" commit --quiet -m 'old catalog'
-  git clone --quiet --bare "$source" "$remote"
-  git -C "$source" remote add origin "$remote"
-
-  mkdir -p "$(dirname "$cache")"
-  git clone --quiet "$remote" "$cache"
-
-  rm -rf "${source}/agent/issue-killer" "${source}/utility/lazy-workflow"
-  mkdir -p "${source}/agent/lazy-workflow" "${source}/utility/lz"
-  printf '%s\n' '---' 'name: lz' 'description: Current skill fixture.' '---' \
-    > "${source}/utility/lz/SKILL.md"
-  printf '%s\n' '---' 'name: lazy-workflow' 'description: Current agent fixture.' '---' \
-    > "${source}/agent/lazy-workflow/AGENT.md"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${source}/agent/lazy-workflow/run.sh"
-  chmod +x "${source}/agent/lazy-workflow/run.sh"
-  git -C "$source" add -A
-  git -C "$source" commit --quiet -m 'replace issue-killer with lazy-workflow'
-  git -C "$source" push --quiet origin HEAD:main
-
-  printf '%s\n' '# local cache modification' >> "${cache}/agent/issue-killer/run.sh"
-  mkdir -p "${home}/.claude/skills" "${home}/.claude/agents" "${home}/.local/bin"
-  ln -s "${cache}/utility/removed-skill" "${home}/.claude/skills/removed-skill"
-  ln -s "${cache}/utility/lazy-workflow" "${home}/.claude/skills/lazy-workflow"
-  ln -s "${cache}/agent/issue-killer/AGENT.md" "${home}/.claude/agents/issue-killer.md"
-  ln -s "${cache}/agent/issue-killer/run.sh" "${home}/.local/bin/issue-killer"
-  printf '%s\n' 'unrelated' > "$unrelated_target"
-  ln -s "$unrelated_target" "${home}/.claude/agents/unrelated.md"
-
-  HOME="$home" AGENT_WORKFLOW_REPO_URL="$remote" \
-    "$BASH_BIN" "$INSTALLER" --claude-global --force >"$output" 2>&1 || \
-    fail 'Reconciled Claude Code install failed'
-
-  assert_file_symlink "${home}/.claude/agents/lazy-workflow.md"
-  assert_symlink "${home}/.claude/skills/lz"
-  [[ ! -e "${home}/.claude/skills/lazy-workflow" && ! -L "${home}/.claude/skills/lazy-workflow" ]] || \
-    fail 'Old lazy-workflow skill survived reconciliation'
-  assert_file_symlink "${home}/.local/bin/lazy-workflow"
-  assert_file_symlink "${home}/.local/bin/lz"
-  [[ ! -e "${home}/.claude/skills/removed-skill" && \
-     ! -L "${home}/.claude/skills/removed-skill" ]] || \
-    fail 'Removed skill link survived reconciliation'
-  [[ ! -e "${home}/.claude/agents/issue-killer.md" && \
-     ! -L "${home}/.claude/agents/issue-killer.md" ]] || \
-    fail 'Removed issue-killer Claude link survived reconciliation'
-  [[ ! -e "${home}/.local/bin/issue-killer" && ! -L "${home}/.local/bin/issue-killer" ]] || \
-    fail 'Removed issue-killer runner link survived reconciliation'
-  [[ -L "${home}/.claude/agents/unrelated.md" ]] || \
-    fail 'Unrelated agent symlink was removed'
-  [[ -d "${cache}/agent/lazy-workflow" ]] || fail 'Cache was not refreshed to the current catalog'
-  [[ -d "${cache}/utility/lz" && ! -e "${cache}/utility/lazy-workflow" ]] || fail 'Cache kept the old skill name'
-  [[ ! -e "${cache}/agent/issue-killer" ]] || fail 'Dirty stale issue-killer survived refresh'
-  assert_contains "$output" 'Removed managed link:'
-
-  HOME="$home" AGENT_WORKFLOW_REPO_URL="$remote" \
-    "$BASH_BIN" "$INSTALLER" --claude-global --uninstall >"$output" 2>&1 || \
-    fail 'Uninstall after skill rename failed'
-  [[ ! -L "${home}/.claude/skills/lz" && ! -L "${home}/.local/bin/lz" &&
-     ! -L "${home}/.local/bin/lazy-workflow" ]] || \
-    fail 'Renamed skill or command alias survived uninstall'
-
-  pass 'install refreshes dirty cache and reconciles only repository-owned links'
-}
-
-seed_remote
-install_fake_bun
-export AGENT_WORKFLOW_REPO_URL="$FIXTURE_REMOTE"
-
-test_no_tty_error
-test_piped_explicit_mode
-test_shared_global_round_trip
-test_claude_destinations
-test_all_global_round_trip
-test_install_reconciles_dirty_cache_and_stale_managed_links
-
-printf '%s installer tests passed.\n' "$TESTS_RUN"
+printf 'All bootstrap tests passed (%s).\n' "$SHELL_BIN"
