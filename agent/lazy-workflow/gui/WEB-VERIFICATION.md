@@ -10,16 +10,23 @@ one owner per independent server/OS identity, as specified for this change.
 |---|---|
 | Code prepared | Shared Rust core, desktop adapter, headless authenticated API, responsive shared frontend, interview bridge, Cloudflare provisioning and service installer implemented |
 | Build artifacts | Linux `lz-gui` development binary and optimized `lz-web` binary built successfully |
-| Project DNS configured | **No**; no actual domain/subdomain was supplied and no Cloudflare resources were mutated |
-| Dedicated connector active | **No**; no target machine was supplied and no persistent services were installed |
+| Project DNS configured | **Yes**; `agent-workflow.elvisbrevi.cl` has a proxied CNAME to dedicated tunnel `f8c82b9c-49e9-43f6-a180-6bd8037487ea`; DNS and ingress were read back through the Cloudflare API |
+| Dedicated connector active | **No**; macOS was selected as the runtime host, but no remote access to that Mac is configured; Cloudflare reports the connector inactive with zero connections |
 | Application verified over public HTTPS | **No**; the automated check used loopback HTTPS and a synthetic certificate |
 | Browser/phone layout over local HTTPS | **Passed** in Chromium, 1280×800 and 390×844 touch/mobile viewports; this is not a physical-phone test |
 
-The environment advertises configured Cloudflare administration credentials;
-their permissions for a chosen zone/account have not been established. Finishing
-publication requires a concrete hostname, the corresponding Zone Read/DNS Edit
-and Cloudflare Tunnel Edit permissions, and execution access to the owner's
-persistent machine. No secret values were printed or committed. A real Mac,
+The configured Cloudflare administration credentials successfully read the
+`elvisbrevi.cl` zone, created this project's tunnel and proxied DNS record, and
+configured/verified its hostname ingress plus catch-all 404 without a Host
+override. No unrelated resources were modified. Connector credentials and
+ownership metadata were stored outside Git in private files for transfer to
+the Mac; no administration credential is included in that handoff.
+
+Finishing publication requires installing and starting the backend and connector
+on the owner's Mac and verifying the application at its real HTTPS origin.
+This session also lacks that subdomain in its HTTP destination allowlist.
+See [the macOS deployment handoff](DEPLOYMENT-elvisbrevi.cl.md).
+No secret values were printed or committed. A real Mac,
 Windows desktop, physical phone, live provider login and the target machine's
 service manager were not available for this verification.
 

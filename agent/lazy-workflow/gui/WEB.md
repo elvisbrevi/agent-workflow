@@ -6,6 +6,10 @@ Each owner installs it on their own server, under their own OS account, with
 their own repositories, configuration and CLI credentials. There is one owner
 per installation; this is not a multi-tenant service.
 
+The first owner's dedicated hostname, `agent-workflow.elvisbrevi.cl`, has its
+Cloudflare DNS/tunnel prepared. Its Mac installation and activation steps are
+in [the deployment handoff](DEPLOYMENT-elvisbrevi.cl.md).
+
 ```mermaid
 flowchart LR
   Browser[Browser or phone] -->|HTTPS| CF[Cloudflare hostname]
