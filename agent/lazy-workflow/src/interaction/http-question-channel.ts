@@ -30,6 +30,25 @@ export type HttpServeFn = (options: {
   fetch: (request: Request) => Promise<Response>;
 }) => HttpServer;
 
+export interface WebInterviewBridge {
+  callbackUrl: string;
+  token: string;
+  publicPath: string;
+}
+
+/** This private bridge comes from the headless parent, never from CLI arguments or a browser. */
+export function parseWebInterviewBridge(value: string | undefined): WebInterviewBridge | undefined {
+  if (!value) return undefined;
+  try {
+    const bridge = JSON.parse(value) as WebInterviewBridge;
+    const callback = new URL(bridge.callbackUrl);
+    const key = /^\/api\/interviews\/([a-f0-9]{64})$/.exec(bridge.publicPath)?.[1];
+    if (callback.protocol !== "http:" || callback.hostname !== "127.0.0.1" || !callback.port || callback.username || callback.password || callback.search || callback.hash
+      || !key || callback.pathname !== `/internal/interviews/${key}` || !/^[a-f0-9]{64}$/.test(bridge.token)) throw new Error("invalid bridge");
+    return bridge;
+  } catch { throw new QuestionChannelUnavailableError("El puente web privado no tiene una configuracion valida"); }
+}
+
 interface Waiting {
   round: QuestionRound;
   resolve: (answers: QuestionAnswers) => void;
@@ -182,13 +201,16 @@ export class HttpQuestionChannel implements QuestionChannel {
   /** Rounds already answered, so a resubmitted form is rejected, not replayed. */
   private readonly answered = new Set<number>();
   private closed = false;
+  private registered = false;
 
   constructor(
     private readonly settings: InterviewSettings,
     private readonly deps: QuestionChannelDependencies,
     serve: HttpServeFn = Bun.serve as unknown as HttpServeFn,
     token: string = crypto.randomUUID(),
+    private readonly bridge?: WebInterviewBridge,
   ) {
+    if (bridge && settings.host !== "127.0.0.1") throw new QuestionChannelUnavailableError("El puente web requiere un canal privado en 127.0.0.1");
     this.token = token;
     try {
       this.server = serve({
@@ -203,7 +225,7 @@ export class HttpQuestionChannel implements QuestionChannel {
         { cause: error },
       );
     }
-    this.deps.reporter.info(`Responde las preguntas del plan en ${this.url}`);
+    this.deps.reporter.info(`Responde las preguntas del plan en ${this.displayUrl}`);
     if (!isLoopback(settings.host)) {
       this.deps.reporter.warn(
         `El canal de preguntas escucha en ${settings.host}, fuera de loopback: la URL con su token es la única credencial.`,
@@ -218,12 +240,21 @@ export class HttpQuestionChannel implements QuestionChannel {
     return `http://${host.includes(":") ? `[${host}]` : host}:${this.server.port}/i/${this.token}`;
   }
 
+  private get displayUrl(): string { return this.bridge?.publicPath ?? this.url; }
+
   async ask(round: QuestionRound): Promise<QuestionAnswers> {
     if (this.closed) throw new QuestionChannelUnavailableError("El canal HTTP de preguntas ya fue cerrado");
+    if (this.bridge && !this.registered) {
+      try {
+        const response = await fetch(this.bridge.callbackUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.bridge.token}` }, body: JSON.stringify({ url: this.url }), signal: AbortSignal.timeout(3000), redirect: "error" });
+        if (!response.ok) throw new Error("registration rejected");
+        this.registered = true;
+      } catch { throw new QuestionChannelUnavailableError("No se pudo autorizar el canal de preguntas con el servidor web"); }
+    }
     const answers = new Promise<QuestionAnswers>((resolve) => {
       this.waiting = { round, resolve };
     });
-    this.deps.reporter.info(`Ronda ${round.round} publicada en ${this.url}`);
+    this.deps.reporter.info(`Ronda ${round.round} publicada en ${this.displayUrl}`);
     try {
       return await withRoundDeadline(round, this.settings.timeoutSeconds, this.deps.deadline, answers);
     } finally {

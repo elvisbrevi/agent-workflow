@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, isDesktop } from "../lib/platform.ts";
 import { backend, errorText, type RunLogDocument } from "../lib/backend.ts";
 import { foldRuns, formatDuration, type HistoryOutcome, type HistoryRun } from "../lib/history.ts";
 
@@ -86,7 +86,7 @@ export function HistoryView({ focusRunId }: { readonly focusRunId: string | null
           {Object.entries(OUTCOMES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <button type="button" className="button" onClick={refresh}>Actualizar</button>
-        {document?.exists && <button type="button" className="button" onClick={() => revealItemInDir(document.path)}>Mostrar archivo</button>}
+        {document?.exists && isDesktop && <button type="button" className="button" onClick={() => revealItemInDir(document.path)}>Mostrar archivo</button>}
       </div>
       {error && <div className="callout error">{error}</div>}
       {document && !document.exists && (

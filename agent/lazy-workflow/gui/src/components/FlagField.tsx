@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, isDesktop } from "../lib/platform.ts";
+import { backend } from "../lib/backend.ts";
 import type { CatalogFlag, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import { requirementMet, type FlagValue, type FlagValues } from "../lib/command-line.ts";
 
@@ -106,7 +107,7 @@ function DirectoriesField({ id, value, repositories, onChange }: { id: string; v
             {available.map((repository) => <option key={repository} value={repository}>{repository}</option>)}
           </select>
         )}
-        <button type="button" className="button" onClick={async () => add(await pick("directory"))}>Elegir carpeta…</button>
+        {isDesktop && <button type="button" className="button" onClick={async () => add(await pick("directory"))}>Elegir carpeta…</button>}
       </div>
     </div>
   );
@@ -151,9 +152,14 @@ export function FlagField({ catalog, flag, value, values, repositories, onChange
     control = (
       <div className="row">
         <TextInput id={id} value={text} placeholder={placeholder || (kind === "directory" ? "/ruta/al/repositorio" : "/ruta/al/archivo")} list={repoList} monospace onChange={onChange} />
-        <button type="button" className="button" onClick={async () => { const chosen = await pick(kind); if (chosen) onChange(chosen); }}>
+        {isDesktop && <button type="button" className="button" onClick={async () => { const chosen = await pick(kind); if (chosen) onChange(chosen); }}>
           Elegir…
-        </button>
+        </button>}
+        {!isDesktop && kind === "file" && <label className="button">Subir texto desde este dispositivo<input type="file" className="file-picker" accept="text/*,.md,.json" onChange={(event) => {
+          const input = event.currentTarget; const file = input.files?.[0]; if (!file) return;
+          if (file.size > 1024 * 1024) { window.alert("El archivo debe ser texto de hasta 1 MiB."); input.value = ""; return; }
+          void file.text().then((content) => backend.uploadText(content)).then(({ path }) => onChange(path), (error) => window.alert(String(error))).finally(() => { input.value = ""; });
+        }} /></label>}
         {repoList && (
           <datalist id={repoList}>
             {repositories.map((repository) => <option key={repository} value={repository} />)}
@@ -180,6 +186,7 @@ export function FlagField({ catalog, flag, value, values, repositories, onChange
       )}
       <div className="field-help">
         {flag.description}
+        {!isDesktop && ["file", "directory", "directories"].includes(flag.kind) && <span className="hint"> Las rutas son del servidor. Subir un archivo crea una copia en ese servidor.</span>}
         {unmet.length > 0 && <span className="hint"> Solo aplica con {unmet.join(" y ")}.</span>}
       </div>
     </div>

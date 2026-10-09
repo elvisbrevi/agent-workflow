@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, isDesktop } from "./lib/platform.ts";
 import type { CatalogCommand, CommandCatalog } from "../../src/cli/command-catalog-schema.ts";
-import { backend, errorText, onRunExit, onRunOutput, type Diagnostics, type FlagDefault, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
+import { backend, errorText, onRunExit, onRunOutput, onRunStarted, type Diagnostics, type FlagDefault, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
 import { applicableFlags, isSet, renderCommandLine, type FlagValues } from "./lib/command-line.ts";
 import { initialValues } from "./lib/form-defaults.ts";
 import { initialRunsState, runsReducer, type RunState } from "./lib/runs.ts";
@@ -51,6 +51,7 @@ export function App() {
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [state, dispatch] = useReducer(runsReducer, initialRunsState);
+  const pendingStart = useRef(false);
   const settings = settingsDocument?.settings ?? null;
   const catalog = catalogState.kind === "ready" ? catalogState.catalog : null;
 
@@ -92,9 +93,13 @@ export function App() {
 
   const pushOutput = useBatchedOutput(useCallback((lines: RunOutput[]) => dispatch({ type: "output", lines }), []));
   useEffect(() => {
-    const unlisten = [onRunOutput(pushOutput), onRunExit((exit) => dispatch({ type: "exit", exit }))];
+    if (!isDesktop && !catalog) return;
+    const unlisten = [onRunOutput(pushOutput), onRunExit((exit) => dispatch({ type: "exit", exit })), onRunStarted(({ started, args }) => {
+      const command = catalog?.commands.find((command) => command.name === args[0]);
+      if (catalog && command) dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
+    })];
     return () => { for (const promise of unlisten) void promise.then((stop) => stop()); };
-  }, [pushOutput]);
+  }, [pushOutput, !!catalog]);
 
   useEffect(() => {
     const theme = settings?.theme ?? "system";
@@ -140,18 +145,20 @@ export function App() {
 
   const run = async (command: CatalogCommand, args: string[], stdin?: string) => {
     if (!catalog || !settings) return;
-    if (command.effect !== "read" && settings.confirmWrites) {
-      const line = renderCommandLine(catalog, command, args, catalog.binary);
-      const confirmed = await ask(`${EFFECT_CONFIRMATION[command.effect]}\n\n${line}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
-      if (!confirmed) return;
-    }
+    if (!isDesktop && pendingStart.current) return;
+    pendingStart.current = true;
     try {
+      if (command.effect !== "read" && settings.confirmWrites) {
+        const line = renderCommandLine(catalog, command, args, catalog.binary);
+        const confirmed = await ask(`${EFFECT_CONFIRMATION[command.effect]}\n\n${line}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
+        if (!confirmed) return;
+      }
       const started = await backend.startRun(args, { stdin, cwd: settings.activeRepository ?? undefined });
       dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
       setDockCollapsed(false);
     } catch (error) {
       setNotice(errorText(error));
-    }
+    } finally { pendingStart.current = false; }
   };
 
   const rerun = (previous: RunState) => {

@@ -70,6 +70,8 @@ function append(lines: readonly string[], added: readonly string[]): { lines: st
 export function runsReducer(state: RunsState, action: RunsAction): RunsState {
   switch (action.type) {
     case "started": {
+      // A web start is acknowledged by HTTP and broadcast to every authenticated client.
+      if (state.runs.some((run) => run.id === action.started.id)) return state;
       const orphan = state.orphans[action.started.id];
       const { [action.started.id]: _, ...orphans } = state.orphans;
       const run: RunState = {

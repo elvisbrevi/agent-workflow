@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HttpQuestionChannel } from "../src/interaction/http-question-channel.ts";
+import { HttpQuestionChannel, parseWebInterviewBridge } from "../src/interaction/http-question-channel.ts";
 import {
   QuestionChannelUnavailableError,
   QuestionTimeoutError,
@@ -27,6 +27,33 @@ const settings = (overrides: Partial<InterviewSettings> = {}): InterviewSettings
   timeoutSeconds: 900,
   rounds: 8,
   ...overrides,
+});
+
+test("el puente web registra el callback con bearer y nunca anuncia el token privado", async () => {
+  const key = "a".repeat(64); const token = "b".repeat(64); const { reporterFn, messages } = captureReporter();
+  let localUrl = "";
+  const callback = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    expect(request.headers.get("authorization")).toBe(`Bearer ${token}`);
+    localUrl = (await request.json() as { url: string }).url;
+    return Response.json({ ok: true });
+  } });
+  const bridge = parseWebInterviewBridge(JSON.stringify({ callbackUrl: `http://127.0.0.1:${callback.port}/internal/interviews/${key}`, token, publicPath: `/api/interviews/${key}` }));
+  const channel = new HttpQuestionChannel(settings(), { reporter: reporterFn(true), deadline: neverExpires }, undefined, undefined, bridge);
+  try {
+    const asked = channel.ask(round);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (localUrl && (await fetch(`${localUrl}/round`).then((response) => response.json()) as { status: string }).status === "pending") break;
+      await Bun.sleep(5);
+    }
+    const response = await fetch(`${localUrl}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ round: 1, answers: [{ id: "q1", answer: "dos" }, { id: "q2", answer: "no" }] }) });
+    expect(response.status).toBe(200); expect((await asked).source).toBe("operator");
+    expect(messages.some((message) => message.includes(`/api/interviews/${key}`))).toBe(true);
+    expect(messages.some((message) => message.includes(channel.url) || message.includes(token))).toBe(false);
+  } finally { await channel.close(); callback.stop(true); }
+});
+
+test("el puente web rechaza direcciones internas arbitrarias y hosts fuera de loopback", () => {
+  expect(() => parseWebInterviewBridge(JSON.stringify({ callbackUrl: "http://metadata.internal/latest", token: "b".repeat(64), publicPath: `/api/interviews/${"a".repeat(64)}` }))).toThrow();
 });
 
 /** A deadline nothing fires: the tests that are not about expiry never wait. */

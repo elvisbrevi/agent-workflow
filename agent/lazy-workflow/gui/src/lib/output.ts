@@ -13,7 +13,7 @@ export function stripAnsi(line: string): string {
 }
 
 /** `Responde las preguntas del plan en http://127.0.0.1:PORT/i/TOKEN` and the round announcements. */
-const INTERVIEW_URL = /(https?:\/\/(?:\[[0-9a-f:]+\]|[A-Za-z0-9.-]+):\d+\/i\/[A-Za-z0-9_-]+)/i;
+const INTERVIEW_URL = /(https?:\/\/(?:\[[0-9a-f:]+\]|[A-Za-z0-9.-]+):\d+\/i\/[A-Za-z0-9_-]+|\/api\/interviews\/[a-f0-9]{64})/i;
 
 export function interviewUrl(lines: readonly string[]): string | null {
   for (let index = lines.length - 1; index >= 0; index -= 1) {

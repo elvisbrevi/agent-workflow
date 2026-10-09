@@ -351,6 +351,11 @@ Git tree hash skips compilation. `--uninstall --all-global` or
 The managed source cache remains available for other installation modes.
 For development, follow the [GUI build guide](agent/lazy-workflow/gui/README.md#run-and-build).
 
+For browser and phone access, the [self-hosting guide](agent/lazy-workflow/gui/WEB.md)
+builds the same interface with an authenticated Rust server and a dedicated
+Cloudflare tunnel. Each owner runs their own installation and credentials;
+the existing desktop application remains available.
+
 Its settings live in `~/.config/lazy-workflow/gui.json`; the `lz` skill
 documents them and edits them safely. See the [GUI guide](agent/lazy-workflow/gui/README.md)
 and the skill's [GUI reference](utility/lz/GUI.md).

@@ -6,7 +6,7 @@
 
 import { getDefaultReporter } from "../output/operator-output.ts";
 import type { Reporter } from "../output/reporter.ts";
-import { HttpQuestionChannel } from "./http-question-channel.ts";
+import { HttpQuestionChannel, parseWebInterviewBridge } from "./http-question-channel.ts";
 import {
   realDeadline,
   type InterviewSettings,
@@ -30,6 +30,6 @@ export const createQuestionChannel: QuestionChannelFactory = (settings, reporter
     case "off":
       return null;
     case "http":
-      return new HttpQuestionChannel(settings, deps);
+      return new HttpQuestionChannel(settings, deps, undefined, undefined, parseWebInterviewBridge(process.env.LAZY_WORKFLOW_WEB_BRIDGE));
   }
 };

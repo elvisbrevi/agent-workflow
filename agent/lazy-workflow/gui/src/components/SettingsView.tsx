@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { open, revealItemInDir, isDesktop } from "../lib/platform.ts";
 import type { CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import type { Diagnostics, FlagDefault, GuiSettings, SettingsDocument } from "../lib/backend.ts";
 
@@ -88,7 +87,8 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
         {document.error && <div className="callout error">{document.error} — se muestran los valores por defecto; guardar reemplaza el archivo.</div>}
       </header>
 
-      <section className="card">
+      {!isDesktop && <p className="callout">Los repositorios, el ejecutable y las credenciales se configuran en el servidor. Aqui puedes cambiar tus preferencias de interfaz.</p>}
+      <fieldset className="server-settings" disabled={!isDesktop}><section className="card">
         <h2>CLI</h2>
         <div className="field">
           <label className="field-label" htmlFor="lz-command">Comando lz</label>
@@ -182,7 +182,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
           />
           <div className="field-help">Cada nombre se lee con <code>lz credentials-get --name NOMBRE --force</code> al iniciar el run; el valor nunca toca este archivo.</div>
         </div>
-      </section>
+      </section></fieldset>
 
       <section className="card">
         <h2>Valores por defecto de los formularios</h2>
@@ -227,10 +227,10 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
         )}
       </section>
 
-      <section className="card">
+      <fieldset className="server-settings" disabled={!isDesktop}><section className="card">
         <h2>Repositorios</h2>
         <ListEditor values={draft.repositories} placeholder="/ruta/al/repositorio" pickDirectory onChange={(repositories) => update({ repositories, activeRepository: repositories.includes(draft.activeRepository ?? "") ? draft.activeRepository : (repositories[0] ?? null) })} />
-      </section>
+      </section></fieldset>
 
       <section className="card">
         <h2>Apariencia</h2>
@@ -242,7 +242,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
       </section>
 
       <div className="settings-actions">
-        <button type="button" className="button" onClick={() => revealItemInDir(document.path).catch(() => undefined)}>Mostrar archivo</button>
+        {isDesktop && <button type="button" className="button" onClick={() => revealItemInDir(document.path).catch(() => undefined)}>Mostrar archivo</button>}
         <button type="button" className="button ghost" disabled={!dirty} onClick={() => setDraft(document.settings)}>Descartar</button>
         <button type="button" className="button primary" disabled={!dirty || saving} onClick={async () => { setSaving(true); try { await onSave(draft); } finally { setSaving(false); } }}>
           {saving ? "Guardando…" : "Guardar"}

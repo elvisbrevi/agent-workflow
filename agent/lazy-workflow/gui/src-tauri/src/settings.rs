@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+#[cfg(feature = "desktop")]
 pub const SETTINGS_PATH_ENV: &str = "LAZY_WORKFLOW_GUI_SETTINGS";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -72,6 +73,7 @@ pub fn home_dir() -> PathBuf {
     from_env.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(feature = "desktop")]
 pub fn settings_path() -> PathBuf {
     match std::env::var_os(SETTINGS_PATH_ENV) {
         Some(path) if !path.is_empty() => PathBuf::from(path),

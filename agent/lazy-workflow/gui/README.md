@@ -11,6 +11,13 @@ command or flag in the CLI appears in the GUI without changing it. Runs execute
 the same `lz` a terminal would, with the same validation, checkpoints and run
 log.
 
+The same interface can also run in a browser or on a phone through `lz-web`.
+Each owner hosts it on their own server with their own configuration and CLI
+credentials. See [self-hosted web access](WEB.md) for the authenticated backend,
+Cloudflare tunnel, persistent services and verification procedure. Desktop
+remains the default build; one desktop/web process may open a given settings
+profile at a time.
+
 ## Requirements
 
 - `lz` installed (`install.sh --all-global`), or a checkout of this repository.
@@ -103,6 +110,7 @@ the [`lz` skill's GUI reference](../../../utility/lz/GUI.md).
 
 | Path | Contents |
 |---|---|
+| `src-tauri/src/core.rs`, `desktop.rs`, `web/` | Shared machine adapter, Tauri IPC and authenticated headless HTTP adapter |
 | `src-tauri/src/runner.rs` | Spawning `lz`, streaming its output, SIGINT-then-kill cancellation, stdin for secrets |
 | `src-tauri/src/environment.rs` | The login-shell environment, PATH composition, how `lzCommand` resolves |
 | `src-tauri/src/settings.rs` | `gui.json`: defaults, atomic save, unknown keys kept |

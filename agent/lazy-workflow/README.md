@@ -705,6 +705,10 @@ pushing: the coordinator pushes the verified commit itself.
 
 ## Desktop GUI
 
+The same interface also supports an owner's independent web installation for
+browser and phone access. See [gui/WEB.md](gui/WEB.md) for authentication,
+Cloudflare publishing and persistent services on the owner's machine.
+
 `gui/` is a Tauri app that renders this CLI as forms. It reads `lz catalog` —
 every command with its flags, their value kinds, defaults, requirements and the
 command's effect — so the window always matches the installed binary, shows the

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/platform.ts";
 
 /** A collapsible tree; long arrays and objects open collapsed past the second level. */
 export function JsonView({ value }: { readonly value: unknown }) {

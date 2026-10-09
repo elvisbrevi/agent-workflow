@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, isDesktop } from "../lib/platform.ts";
+import { WebInterview } from "./WebInterview.tsx";
 import { finalMarker, interviewUrl, parseStdout, runLogPointer } from "../lib/output.ts";
 import { formatDuration } from "../lib/history.ts";
 import { isFinished, type RunState, type RunStatus } from "../lib/runs.ts";
@@ -95,10 +96,10 @@ function InterviewBanner({ url }: { url: string }) {
     <div className="interview">
       <div className="row">
         <strong className="grow">La planificacion espera tus respuestas.</strong>
-        <button type="button" className="button primary" onClick={() => openUrl(url)}>Abrir en el navegador</button>
+        {isDesktop && <button type="button" className="button primary" onClick={() => openUrl(url)}>Abrir en el navegador</button>}
         <button type="button" className="button" onClick={() => setEmbedded(!embedded)}>{embedded ? "Ocultar" : "Responder aqui"}</button>
       </div>
-      {embedded && <iframe className="interview-frame" src={url} title="Entrevista de planificacion" />}
+      {embedded && (isDesktop ? <iframe className="interview-frame" src={url} title="Entrevista de planificacion" /> : <WebInterview path={url} />)}
     </div>
   );
 }

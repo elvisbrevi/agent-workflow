@@ -100,6 +100,17 @@ file, `~/.config/lazy-workflow/gui.json`, which only prefills forms and shapes a
 run's environment.
 _Avoid_: GUI-side validation the parser does not perform, secrets in the settings file
 
+**Owner-hosted web GUI**:
+The same catalog-driven interface served by `lz-web` on an owner's server,
+with a shared Rust machine adapter and an authenticated HTTP transport. Each
+installation has one owner, its own OS identity, repositories and credentials.
+The adapter narrows CLI operations and paths; it does not replace workflow
+validation or provide OS isolation. A dedicated Cloudflare tunnel exposes its
+explicit HTTPS origin while Rust and the CLI stay on the owner's machine
+(ADR-0044, proposed).
+_Avoid_: arbitrary remote invoke, browser credential management, shared-account
+directories presented as OS isolation
+
 **operator-output**:
 The name of the file module (`src/output/operator-output.ts`) that hosts
 the compat shim `reportOperator(message)`. The shim routes the call sites
