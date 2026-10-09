@@ -5,6 +5,16 @@ use std::{
 };
 use url::Url;
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum Authentication {
+    #[default]
+    Password,
+    CloudflareAccess {
+        access: super::access::Config,
+    },
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebConfig {
@@ -16,10 +26,15 @@ pub struct WebConfig {
     pub session_seconds: u64,
     pub max_runs: usize,
     pub allowed_commands: Vec<String>,
+    #[serde(default)]
+    pub authentication: Authentication,
 }
 
 impl WebConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if let Authentication::CloudflareAccess { access } = &self.authentication {
+            access.validate().map_err(|e| e.to_string())?;
+        }
         let url =
             Url::parse(&self.public_url).map_err(|_| "publicUrl must be an absolute HTTPS URL")?;
         if self.schema_version != 1

@@ -50,11 +50,12 @@ impl Fixture {
             session_seconds: 60,
             max_runs: 1,
             allowed_commands: vec!["code".into(), "git-branch-list".into()],
+            authentication: Authentication::Password,
         };
         initialize(
             directory,
             &config,
-            &Owner::create(username.into(), "synthetic-passphrase").unwrap(),
+            Some(&Owner::create(username.into(), "synthetic-passphrase").unwrap()),
         )
         .unwrap();
         let state = WebState::open(config.clone(), directory.into()).unwrap();
@@ -123,7 +124,7 @@ fn an_installation_cannot_start_twice_even_with_a_different_settings_path() {
     assert!(initialize(
         fixture.root.path(),
         &fixture.config,
-        &Owner::create("bob".into(), "another-synthetic-password").unwrap()
+        Some(&Owner::create("bob".into(), "another-synthetic-password").unwrap())
     )
     .is_err());
 }
@@ -476,4 +477,186 @@ async fn private_interview_callback_needs_its_own_bearer_and_rejects_arbitrary_e
         app.oneshot(callback(&token, body)).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn access_replaces_password_requires_assertion_and_csrf_and_blocks_logout_replay_after_restart(
+) {
+    use access::tests::{claims, config, identity, mock_verifier, mount_identity, token, SUBJECT};
+    let mut fixture = Fixture::new("alice");
+    let (verifier, server) = mock_verifier().await;
+    mount_identity(&server, identity(SUBJECT, "123456")).await;
+    fixture.config.authentication = Authentication::CloudflareAccess { access: config() };
+    fixture.config.session_seconds = 120;
+    let state = Arc::get_mut(&mut fixture.state).unwrap();
+    state.config = fixture.config.clone();
+    state.owner = None;
+    state.access = Some(verifier);
+    let app = router(fixture.state.clone());
+    let mut input = claims(SUBJECT);
+    input["exp"] = json!(auth::now() + 30);
+    let assertion = token(&input, "synthetic-key");
+    let signed = |method: &str, path: &str, cookie: &str, csrf: &str, body: Value| {
+        let mut value = request(method, path, cookie, csrf, body);
+        value
+            .headers_mut()
+            .insert("cf-access-jwt-assertion", assertion.parse().unwrap());
+        value
+    };
+    let info = value(
+        app.clone()
+            .oneshot(request("GET", "/api/auth", "", "", Value::Null))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(info["mode"], "cloudflareAccess");
+    assert_eq!(info["logoutUrl"], "/cdn-cgi/access/logout");
+    assert!(!info.to_string().contains("123456"));
+    assert_eq!(
+        app.clone()
+            .oneshot(signed(
+                "POST",
+                "/api/login",
+                "",
+                "",
+                json!({"username":"alice","password":"synthetic-passphrase"})
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    for path in ["/api/access-session", "/api/rpc/load_catalog"] {
+        assert_eq!(
+            app.clone()
+                .oneshot(request("POST", path, "", "", json!({})))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(signed("POST", "/api/access-session", "", "", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let document = value(response).await;
+    assert!(document["expiresAt"].as_u64().unwrap() <= input["exp"].as_u64().unwrap());
+    assert!(document.get("access").is_none());
+    let csrf = document["csrf"].as_str().unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(request("GET", "/api/session", &cookie, "", Value::Null))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let mut forged = request("GET", "/api/session", &cookie, "", Value::Null);
+    forged.headers_mut().insert(
+        "cf-access-authenticated-user-email",
+        "synthetic@example.test".parse().unwrap(),
+    );
+    assert_eq!(
+        app.clone().oneshot(forged).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(signed(
+                "POST",
+                "/api/rpc/load_catalog",
+                &cookie,
+                "wrong",
+                json!({})
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(signed(
+                "POST",
+                "/api/rpc/load_catalog",
+                &cookie,
+                csrf,
+                json!({})
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let response = app
+        .clone()
+        .oneshot(signed("POST", "/api/logout", &cookie, csrf, json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(value(response).await["logoutUrl"], "/cdn-cgi/access/logout");
+    assert_eq!(
+        app.clone()
+            .oneshot(signed("POST", "/api/access-session", "", "", json!({})))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    drop(app);
+    drop(fixture.state);
+    let mut restarted = WebState::open(fixture.config, fixture.root.path().into()).unwrap();
+    let (verifier, second_server) = mock_verifier().await;
+    mount_identity(&second_server, identity(SUBJECT, "123456")).await;
+    Arc::get_mut(&mut restarted).unwrap().access = Some(verifier);
+    assert_eq!(
+        router(restarted)
+            .oneshot(signed("POST", "/api/access-session", "", "", json!({})))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn an_unbound_or_different_github_subject_cannot_open_the_owner_installation() {
+    use access::tests::{claims, config, identity, mock_verifier, mount_identity, token, SUBJECT};
+    for owner_subject in [None, Some("other-github-user".to_string())] {
+        let mut fixture = Fixture::new("alice");
+        let (mut verifier, server) = mock_verifier().await;
+        mount_identity(&server, identity(SUBJECT, "123456")).await;
+        // Production config is immutable and never selected by a request.
+        verifier.set_test_owner(owner_subject.clone());
+        let state = Arc::get_mut(&mut fixture.state).unwrap();
+        let mut access = config();
+        access.owner_subject = owner_subject;
+        state.config.authentication = Authentication::CloudflareAccess { access };
+        state.owner = None;
+        state.access = Some(verifier);
+        let mut request = request("POST", "/api/access-session", "", "", json!({}));
+        request.headers_mut().insert(
+            "cf-access-jwt-assertion",
+            token(&claims(SUBJECT), "synthetic-key").parse().unwrap(),
+        );
+        assert_eq!(
+            router(fixture.state)
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 }

@@ -1,4 +1,5 @@
 //! One owner per installation, with its own OS account/server and CLI credentials.
+pub mod access;
 pub mod auth;
 pub mod config;
 mod policy;
@@ -8,7 +9,7 @@ use crate::{
     runner::{RunRequest, RunStarted},
     settings::GuiSettings,
 };
-use auth::{Owner, Session, Sessions};
+use auth::{AccessRevocations, Owner, Session, Sessions};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Extension, Path, Query, State},
@@ -18,7 +19,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use config::{private_directory, private_write, WebConfig};
+use config::{private_directory, private_write, Authentication, WebConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -106,7 +107,9 @@ struct Receipt {
 pub struct WebState {
     pub config: WebConfig,
     pub core: Core,
-    owner: Owner,
+    owner: Option<Owner>,
+    access: Option<access::Verifier>,
+    revocations: Mutex<AccessRevocations>,
     sessions: Mutex<Sessions>,
     catalog: Value,
     data_dir: PathBuf,
@@ -130,10 +133,22 @@ impl WebState {
         let instance_lease =
             crate::core::acquire_profile_lease(data_dir.join("web.instance.lock"))?;
         private_directory(&data_dir.join("uploads"))?;
-        let owner: Owner = serde_json::from_slice(
-            &std::fs::read(data_dir.join("owner.json")).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        let (owner, access) = match &config.authentication {
+            Authentication::Password => (
+                Some(
+                    serde_json::from_slice::<Owner>(
+                        &std::fs::read(data_dir.join("owner.json")).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+                None,
+            ),
+            Authentication::CloudflareAccess { access } => (
+                None,
+                Some(access::Verifier::new(access.clone()).map_err(|e| e.to_string())?),
+            ),
+        };
+        let revocations = AccessRevocations::load(&data_dir.join("access-revocations.json"))?;
         let core = Core::open(config.settings_path.clone())?;
         let catalog = policy::catalog(core.load_catalog()?, &config)?;
         let sessions = Sessions::load(data_dir.join("sessions.json"))?;
@@ -167,6 +182,8 @@ impl WebState {
             config,
             core,
             owner,
+            access,
+            revocations: Mutex::new(revocations),
             sessions: Mutex::new(sessions),
             catalog,
             data_dir,
@@ -193,12 +210,16 @@ impl WebState {
             .collect();
         (matches.len() == 1).then(|| matches[0].1.to_string())
     }
-    fn session(&self, headers: &HeaderMap) -> Option<Session> {
+    fn session(&self, headers: &HeaderMap, verified: Option<&access::Verified>) -> Option<Session> {
         self.sessions
             .lock()
             .unwrap()
             .get(&Self::token(headers)?)
-            .filter(|session| session.username == self.owner.username)
+            .filter(|session| match (&self.owner, &session.access, verified) {
+                (Some(owner), None, None) => session.username == owner.username,
+                (None, Some(bound), Some(current)) => bound == current,
+                _ => false,
+            })
     }
     fn push(&self, event: &str, payload: Value) {
         self.feed.lock().unwrap().push(event, payload);
@@ -209,6 +230,8 @@ pub fn router(state: Arc<WebState>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/api/login", post(login))
+        .route("/api/auth", get(authentication_info))
+        .route("/api/access-session", post(access_session))
         .route("/api/session", get(session))
         .route("/api/logout", post(logout))
         .route("/api/rpc/{operation}", post(rpc))
@@ -228,87 +251,7 @@ async fn secure(
     mut request: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
-    let checked = (|| -> Result<(), ApiError> {
-        let path = request.uri().path();
-        let headers = request.headers();
-        let host = headers
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        let local = host == state.config.listen.to_string();
-        if path.starts_with("/internal/") {
-            if !local || headers.contains_key(header::ORIGIN) {
-                return Err(ApiError(StatusCode::NOT_FOUND, "not found".into()));
-            }
-            return Ok(()); // Short-lived per-run bearer authorization is checked by the callback.
-        }
-        if !(path == "/health" && local)
-            && !host.eq_ignore_ascii_case(&state.config.host())
-            && !host.eq_ignore_ascii_case(&format!("{}:443", state.config.host()))
-        {
-            return Err(denied("unexpected Host"));
-        }
-        if headers
-            .get(header::ORIGIN)
-            .is_some_and(|origin| origin.to_str().ok() != Some(state.config.origin().as_str()))
-        {
-            return Err(denied("unexpected Origin"));
-        }
-        if headers
-            .get("sec-fetch-site")
-            .is_some_and(|site| site == "cross-site")
-        {
-            return Err(denied("cross-site request rejected"));
-        }
-        let mut rate = state.rate.lock().unwrap();
-        if rate.since.elapsed() >= Duration::from_secs(60) {
-            *rate = Rate {
-                since: Instant::now(),
-                requests: 0,
-                logins: 0,
-            };
-        }
-        rate.requests += 1;
-        if path == "/api/login" {
-            rate.logins += 1;
-        }
-        if rate.requests > 600 || (path == "/api/login" && rate.logins > 5) {
-            return Err(ApiError(
-                StatusCode::TOO_MANY_REQUESTS,
-                "rate limit exceeded; retry in a minute".into(),
-            ));
-        }
-        drop(rate);
-        if !path.starts_with("/api/") {
-            return Ok(());
-        }
-        let modifying = request.method() != axum::http::Method::GET;
-        if modifying
-            && (headers.get(header::ORIGIN).and_then(|h| h.to_str().ok())
-                != Some(state.config.origin().as_str())
-                || headers.get("x-lz-web").and_then(|h| h.to_str().ok()) != Some("1")
-                || !headers
-                    .get(header::CONTENT_TYPE)
-                    .and_then(|h| h.to_str().ok())
-                    .is_some_and(|h| h.split(';').next() == Some("application/json")))
-        {
-            return Err(denied("same-origin JSON and X-LZ-Web are required"));
-        }
-        if path == "/api/login" {
-            return Ok(());
-        }
-        let session = state.session(headers).ok_or_else(unauthorized)?;
-        if modifying
-            && !headers
-                .get("x-csrf-token")
-                .and_then(|h| h.to_str().ok())
-                .is_some_and(|token| auth::equal(token, &session.csrf))
-        {
-            return Err(denied("invalid CSRF token"));
-        }
-        request.extensions_mut().insert(session);
-        Ok(())
-    })();
+    let checked = check_request(&state, &mut request).await;
     let mut response = match checked {
         Ok(()) => next.run(request).await,
         Err(error) => error.into_response(),
@@ -329,6 +272,182 @@ async fn secure(
     response
 }
 
+async fn check_request(
+    state: &Arc<WebState>,
+    request: &mut axum::http::Request<Body>,
+) -> Result<(), ApiError> {
+    let path = request.uri().path();
+    let headers = request.headers();
+    if headers.get_all(header::HOST).iter().count() != 1
+        || headers.get_all(header::ORIGIN).iter().count() > 1
+    {
+        return Err(denied("ambiguous Host or Origin"));
+    }
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let local = host == state.config.listen.to_string();
+    if path.starts_with("/internal/") {
+        if !local || headers.contains_key(header::ORIGIN) {
+            return Err(ApiError(StatusCode::NOT_FOUND, "not found".into()));
+        }
+        return Ok(()); // Short-lived per-run bearer authorization is checked by the callback.
+    }
+    if !(path == "/health" && local)
+        && !host.eq_ignore_ascii_case(&state.config.host())
+        && !host.eq_ignore_ascii_case(&format!("{}:443", state.config.host()))
+    {
+        return Err(denied("unexpected Host"));
+    }
+    if headers
+        .get(header::ORIGIN)
+        .is_some_and(|origin| origin.to_str().ok() != Some(state.config.origin().as_str()))
+    {
+        return Err(denied("unexpected Origin"));
+    }
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|site| site == "cross-site")
+    {
+        return Err(denied("cross-site request rejected"));
+    }
+    {
+        let mut rate = state.rate.lock().unwrap();
+        if rate.since.elapsed() >= Duration::from_secs(60) {
+            *rate = Rate {
+                since: Instant::now(),
+                requests: 0,
+                logins: 0,
+            };
+        }
+        rate.requests += 1;
+        let login = path == "/api/login" || path == "/api/access-session";
+        if login {
+            rate.logins += 1;
+        }
+        if rate.requests > 600 || (login && rate.logins > 5) {
+            return Err(ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded; retry in a minute".into(),
+            ));
+        }
+    }
+    if path == "/health" && local {
+        return Ok(());
+    }
+    if path == "/api/auth" && request.method() == axum::http::Method::GET {
+        return Ok(());
+    }
+    if path == "/api/login" && state.access.is_some() {
+        return Err(denied(
+            "password login is disabled; use Cloudflare Access with GitHub",
+        ));
+    }
+    let verified = if let Some(verifier) = &state.access {
+        let verified = verifier.verify(headers).await.map_err(|code| {
+            ApiError(
+                code,
+                "Cloudflare Access authentication unavailable or invalid".into(),
+            )
+        })?;
+        if !verifier.owns(&verified) {
+            return Err(denied(
+                "GitHub identity is not bound to this installation; contact the local owner",
+            ));
+        }
+        if !state.revocations.lock().unwrap().permits(&verified) {
+            return Err(unauthorized());
+        }
+        Some(verified)
+    } else {
+        None
+    };
+    if !path.starts_with("/api/") {
+        return Ok(());
+    }
+    let modifying = request.method() != axum::http::Method::GET;
+    if modifying
+        && (headers.get(header::ORIGIN).and_then(|h| h.to_str().ok())
+            != Some(state.config.origin().as_str())
+            || headers.get("x-lz-web").and_then(|h| h.to_str().ok()) != Some("1")
+            || !headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|h| h.to_str().ok())
+                .is_some_and(|h| h.split(';').next() == Some("application/json")))
+    {
+        return Err(denied("same-origin JSON and X-LZ-Web are required"));
+    }
+    if path == "/api/access-session" {
+        request
+            .extensions_mut()
+            .insert(verified.ok_or_else(|| denied("Cloudflare Access is not configured"))?);
+        return Ok(());
+    }
+    if path == "/api/login" {
+        return Ok(());
+    }
+    let session = state
+        .session(headers, verified.as_ref())
+        .ok_or_else(unauthorized)?;
+    if modifying
+        && !headers
+            .get("x-csrf-token")
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|token| auth::equal(token, &session.csrf))
+    {
+        return Err(denied("invalid CSRF token"));
+    }
+    request.extensions_mut().insert(session);
+    Ok(())
+}
+
+async fn authentication_info(State(state): State<Arc<WebState>>) -> Json<Value> {
+    Json(match &state.config.authentication {
+        Authentication::Password => json!({"mode":"password"}),
+        Authentication::CloudflareAccess { access } => {
+            let mut login = url::Url::parse(&format!(
+                "{}/cdn-cgi/access/login/{}",
+                access.issuer, access.audience
+            ))
+            .unwrap();
+            login
+                .query_pairs_mut()
+                .append_pair("redirect_url", &state.config.origin());
+            json!({"mode":"cloudflareAccess","loginUrl":login.as_str(),"logoutUrl":"/cdn-cgi/access/logout"})
+        }
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+async fn access_session(
+    State(state): State<Arc<WebState>>,
+    Extension(verified): Extension<access::Verified>,
+    Json(_): Json<Empty>,
+) -> Result<Response, ApiError> {
+    let seconds = state
+        .config
+        .session_seconds
+        .min(verified.expires_at.saturating_sub(auth::now()));
+    if seconds == 0 {
+        return Err(unauthorized());
+    }
+    let (token, session) =
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .create_bound("GitHub", seconds, Some(verified))?;
+    let mut response = Json(session.public()).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        auth::cookie(&token, seconds).parse().unwrap(),
+    );
+    Ok(response)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Login {
@@ -343,19 +462,22 @@ async fn login(
         return Err(unauthorized());
     }
     let check = state.clone();
-    let valid =
-        tokio::task::spawn_blocking(move || check.owner.verify(&login.username, &login.password))
-            .await
-            .map_err(|_| unauthorized())?;
+    let valid = tokio::task::spawn_blocking(move || {
+        check
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.verify(&login.username, &login.password))
+    })
+    .await
+    .map_err(|_| unauthorized())?;
     if !valid {
         return Err(unauthorized());
     }
-    let (token, session) = state
-        .sessions
-        .lock()
-        .unwrap()
-        .create(&state.owner.username, state.config.session_seconds)?;
-    let mut response = Json(session).into_response();
+    let (token, session) = state.sessions.lock().unwrap().create(
+        &state.owner.as_ref().ok_or_else(unauthorized)?.username,
+        state.config.session_seconds,
+    )?;
+    let mut response = Json(session.public()).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         auth::cookie(&token, state.config.session_seconds)
@@ -364,19 +486,30 @@ async fn login(
     );
     Ok(response)
 }
-async fn session(Extension(session): Extension<Session>) -> Json<Session> {
-    Json(session)
+async fn session(Extension(session): Extension<Session>) -> Json<Value> {
+    Json(session.public())
 }
 async fn logout(
     State(state): State<Arc<WebState>>,
+    Extension(session): Extension<Session>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if let Some(verified) = &session.access {
+        state
+            .revocations
+            .lock()
+            .unwrap()
+            .revoke(&state.data_dir.join("access-revocations.json"), verified)?;
+    }
     state
         .sessions
         .lock()
         .unwrap()
         .revoke(&WebState::token(&headers).ok_or_else(unauthorized)?)?;
-    let mut response = Json(json!({"ok":true})).into_response();
+    let mut response = Json(
+        json!({"ok":true,"logoutUrl":session.access.as_ref().map(|_| "/cdn-cgi/access/logout")}),
+    )
+    .into_response();
     response
         .headers_mut()
         .insert(header::SET_COOKIE, auth::cookie("", 0).parse().unwrap());
@@ -629,7 +762,7 @@ pub fn load_config(data_dir: &std::path::Path) -> Result<WebConfig, String> {
 pub fn initialize(
     data_dir: &std::path::Path,
     config: &WebConfig,
-    owner: &Owner,
+    owner: Option<&Owner>,
 ) -> Result<(), String> {
     config.validate()?;
     config::outside_checkout(data_dir)?;
@@ -638,7 +771,13 @@ pub fn initialize(
     if data_dir.join("web.json").exists() || data_dir.join("owner.json").exists() {
         return Err("installation already initialized; existing configuration is preserved".into());
     }
-    private_write(&data_dir.join("owner.json"), owner)?;
+    match (&config.authentication, owner) {
+        (Authentication::Password, Some(owner)) => {
+            private_write(&data_dir.join("owner.json"), owner)?
+        }
+        (Authentication::CloudflareAccess { .. }, None) => {}
+        _ => return Err("owner credentials must match the authentication mode".into()),
+    }
     private_write(&data_dir.join("web.json"), config)
 }
 

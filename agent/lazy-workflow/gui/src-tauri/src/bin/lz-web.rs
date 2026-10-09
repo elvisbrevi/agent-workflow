@@ -2,8 +2,8 @@ use lz_gui_lib::{
     core::Core,
     web::{
         self,
-        auth::{Owner, Sessions},
-        config::{private_write, WebConfig},
+        auth::{AccessRevocations, Owner, Sessions},
+        config::{private_write, Authentication, WebConfig},
     },
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::atomic::Ordering};
@@ -11,9 +11,19 @@ use std::{collections::BTreeMap, path::PathBuf, sync::atomic::Ordering};
 fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
     let mut args = std::env::args().skip(1);
     let action = args.next().ok_or(
-        "usage: lz-web init|serve|set-password|revoke-sessions --data-dir <absolute-path>",
+        "usage: lz-web init|serve|use-access|bind-access|unbind-access|set-password|revoke-sessions --data-dir <absolute-path>",
     )?;
-    if !["init", "serve", "set-password", "revoke-sessions"].contains(&action.as_str()) {
+    if ![
+        "init",
+        "serve",
+        "use-access",
+        "bind-access",
+        "unbind-access",
+        "set-password",
+        "revoke-sessions",
+    ]
+    .contains(&action.as_str())
+    {
         return Err("unknown action".into());
     }
     let mut options = BTreeMap::new();
@@ -21,6 +31,7 @@ fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
         if action != "init"
             && flag != "--data-dir"
             && !(action == "set-password" && flag == "--password-stdin")
+            && !(action == "use-access" && flag == "--access-config")
         {
             return Err(format!("{flag} is not accepted by {action}"));
         }
@@ -32,6 +43,7 @@ fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
             "--frontend",
             "--owner",
             "--password-stdin",
+            "--access-config",
         ]
         .contains(&flag.as_str())
         {
@@ -48,6 +60,31 @@ fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
         }
     }
     Ok((action, options))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AccessSetup {
+    public_url: String,
+    access: web::access::Config,
+}
+fn access_setup(
+    options: &BTreeMap<String, String>,
+    public_url: &str,
+) -> Result<Authentication, String> {
+    let path = PathBuf::from(required(options, "--access-config")?);
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.len() > 65536 {
+        return Err("Access configuration is too large".into());
+    }
+    let setup: AccessSetup = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if setup.public_url.trim_end_matches('/') != public_url.trim_end_matches('/') {
+        return Err("Access configuration belongs to another public origin".into());
+    }
+    setup.access.validate().map_err(|e| e.to_string())?;
+    Ok(Authentication::CloudflareAccess {
+        access: setup.access,
+    })
 }
 fn required(options: &BTreeMap<String, String>, name: &str) -> Result<String, String> {
     options
@@ -83,9 +120,19 @@ async fn run() -> Result<(), String> {
         return Err("--data-dir must be an absolute server path".into());
     }
     if action == "init" {
+        let public_url = required(&options, "--public-url")?;
+        let authentication = if options.contains_key("--access-config") {
+            if options.contains_key("--owner") || options.contains_key("--password-stdin") {
+                return Err("Access initialization takes no password or username".into());
+            }
+            access_setup(&options, &public_url)?
+        } else {
+            Authentication::Password
+        };
         let config = WebConfig {
             schema_version: 1,
-            public_url: required(&options, "--public-url")?,
+            public_url,
+            authentication,
             listen: options
                 .get("--listen")
                 .map(String::as_str)
@@ -120,20 +167,27 @@ async fn run() -> Result<(), String> {
         if data_dir.join("web.json").exists() || data_dir.join("owner.json").exists() {
             return Err("installation already initialized".into());
         }
-        let owner = Owner::create(
-            options.get("--owner").cloned().unwrap_or("owner".into()),
-            &password(&options)?,
-        )?;
-        web::initialize(&data_dir, &config, &owner)?;
-        println!("Initialized owner and HTTPS configuration in {}. No DNS or connector has been changed.", data_dir.display());
+        let owner = if matches!(config.authentication, Authentication::Password) {
+            Some(Owner::create(
+                options.get("--owner").cloned().unwrap_or("owner".into()),
+                &password(&options)?,
+            )?)
+        } else {
+            None
+        };
+        web::initialize(&data_dir, &config, owner.as_ref())?;
+        println!("Initialized HTTPS configuration in {}. No DNS or connector has been changed.", data_dir.display());
         return Ok(());
     }
-    let config = web::load_config(&data_dir)?;
-    if action == "set-password" || action == "revoke-sessions" {
+    let mut config = web::load_config(&data_dir)?;
+    if action != "serve" {
         let _instance =
             lz_gui_lib::core::acquire_profile_lease(data_dir.join("web.instance.lock"))?;
         let _lease = Core::open(config.settings_path.clone())?;
         if action == "set-password" {
+            if !matches!(config.authentication, Authentication::Password) {
+                return Err("password authentication is disabled in Access mode".into());
+            }
             let current: Owner = serde_json::from_slice(
                 &std::fs::read(data_dir.join("owner.json")).map_err(|e| e.to_string())?,
             )
@@ -141,7 +195,44 @@ async fn run() -> Result<(), String> {
             let owner = Owner::create(current.username, &password(&options)?)?;
             private_write(&data_dir.join("owner.json"), &owner)?;
         }
+        if action == "use-access" {
+            config.authentication = access_setup(&options, &config.public_url)?;
+        }
+        if action == "bind-access" || action == "unbind-access" {
+            let Authentication::CloudflareAccess { access } = &mut config.authentication else {
+                return Err("configure Cloudflare Access first".into());
+            };
+            access.owner_subject = if action == "bind-access" {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::io::stdin()
+                    .take(65537)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                if bytes.len() > 65536 {
+                    return Err("identity response is too large".into());
+                }
+                let identity: web::access::Identity =
+                    serde_json::from_slice(&bytes).map_err(|_| "invalid verified identity JSON")?;
+                Some(
+                    identity
+                        .binding(access)
+                        .map_err(|e| e.to_string())?
+                        .provider_user_id,
+                )
+            } else {
+                None
+            };
+        }
+        config.validate()?;
         Sessions::revoke_all(&data_dir.join("sessions.json"))?;
+        if matches!(
+            config.authentication,
+            Authentication::CloudflareAccess { .. }
+        ) {
+            AccessRevocations::revoke_all(&data_dir.join("access-revocations.json"))?;
+        }
+        private_write(&data_dir.join("web.json"), &config)?;
         println!("Sessions revoked. Restart the backend service.");
         return Ok(());
     }

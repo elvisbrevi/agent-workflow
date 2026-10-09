@@ -14,9 +14,9 @@ export interface TunnelPlan { options: TunnelOptions; zone: Zone; tunnel: Tunnel
 
 export function administrationApi(token: string): CloudflareApi {
   return { async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error" });
-    const result = await response.json() as { success: boolean; result: T; errors?: Array<{ code: number; message: string }> };
-    if (!response.ok || !result.success) throw new Error(`Cloudflare ${method} ${path.split("?")[0]} failed (${response.status}): ${(result.errors ?? []).map((error) => `${error.code}: ${error.message}`).join("; ")}`);
+    const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: AbortSignal.timeout(25000) });
+    const result = await response.json() as { success: boolean; result: T; errors?: Array<{ code: number; message?: string; error?: string }> };
+    if (!response.ok || !result.success) throw new Error(`Cloudflare ${method} ${path.split("?")[0]} failed (${response.status}): ${(result.errors ?? []).map((error) => `${error.code}: ${error.message ?? error.error ?? "request rejected"}`).join("; ")}`);
     return result.result;
   } };
 }

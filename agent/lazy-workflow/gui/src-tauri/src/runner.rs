@@ -570,7 +570,16 @@ mod tests {
         kill_group(child.id(), true);
         child.wait().unwrap();
         assert!(still_locked);
-        assert!(crate::core::acquire_profile_lease(path).is_ok());
+        // Another concurrent test can briefly inherit the descriptor between fork
+        // and exec, where CLOEXEC closes it. Reaping this child does not reap those.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if crate::core::acquire_profile_lease(path.clone()).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "profile lease survived child exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

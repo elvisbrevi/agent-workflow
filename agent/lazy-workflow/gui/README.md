@@ -18,6 +18,12 @@ Cloudflare tunnel, persistent services and verification procedure. Desktop
 remains the default build; one desktop/web process may open a given settings
 profile at a time.
 
+`agent-workflow.elvisbrevi.cl` selects [Cloudflare Access with GitHub](ACCESS.md)
+instead of the password form. Rust verifies the signed Access assertion and
+operator-bound provider identity; Tauri retains its existing local transport.
+The [Mac deployment handoff](DEPLOYMENT-elvisbrevi.cl.md) records pending Access
+permissions/OAuth setup separately from the already configured DNS and tunnel.
+
 ## Requirements
 
 - `lz` installed (`install.sh --all-global`), or a checkout of this repository.

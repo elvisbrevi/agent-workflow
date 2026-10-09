@@ -24,7 +24,14 @@ proxy an arbitrary endpoint. Canonical registered paths constrain HTTP
 arguments; they do not sandbox a workflow's OS permissions.
 
 The backend serves assets and API from one origin, listens on literal loopback,
-and requires an explicit public HTTPS origin. Argon2id owner credentials,
+and requires an explicit public HTTPS origin. Explicit authentication modes use
+either Argon2id owner credentials or Cloudflare Access with a GitHub provider.
+The selected `agent-workflow.elvisbrevi.cl` deployment replaces the password form
+with Access. Rust verifies RS256, issuer/audience/time, resolves the pinned
+provider identity and authorizes an operator-bound provider subject, never an
+email header. The exact assertion is bound to a local session with a lifetime
+capped by JWT expiration; logout persists assertion revocation before leaving
+for Access's logout. Access mode exposes no password fallback. In both modes,
 expiring and revocable sessions, secure HttpOnly cookies, CSRF/Origin/Host checks
 and request limits precede operations. HTTP planning interviews keep their
 existing private server; a per-run bearer registers a validated loopback URL

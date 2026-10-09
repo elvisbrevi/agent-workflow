@@ -7,7 +7,9 @@ their own repositories, configuration and CLI credentials. There is one owner
 per installation; this is not a multi-tenant service.
 
 The first owner's dedicated hostname, `agent-workflow.elvisbrevi.cl`, has its
-Cloudflare DNS/tunnel prepared. Its Mac installation and activation steps are
+Cloudflare DNS/tunnel prepared. Its selected login is Cloudflare Access with
+GitHub; [ACCESS.md](ACCESS.md) describes configuration and local identity binding.
+Its Mac installation and activation steps are
 in [the deployment handoff](DEPLOYMENT-elvisbrevi.cl.md).
 
 ```mermaid
@@ -54,7 +56,8 @@ environment, starts/cancels child processes and reads the log. `core.rs` and
 | Provider authentication | Existing CLI/credential store on the local machine | Configure providers locally on the server; there is no browser credential-management endpoint |
 | Planning HTTP interview | Existing private local URL | Per-run bearer registers the private loopback URL; the logged-in owner answers through fixed authorized web endpoints |
 
-The browser has its own login; it never receives a Cloudflare administration
+The browser uses an expiring local session, authenticated either by the explicit
+password mode or verified Cloudflare Access. It never receives a Cloudflare administration
 token, connector token or the private interview-registration bearer. The
 existing interview server remains private. There is no generic HTTP proxy,
 client-selected profile or server-selected-by-the-client endpoint.
@@ -68,7 +71,10 @@ libraries. Install `cloudflared` through its
 [official packages](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
 (on macOS, `brew install cloudflared`). Use a version supporting `--token-file`.
 All commands below run as the owner, on the machine that will keep running Rust
-and the CLI. Replace the three example values before initialization.
+and the CLI. The example below retains password authentication for existing
+independent installations. For the selected `elvisbrevi.cl` deployment, provision
+Access and replace `--owner owner` with `--access-config "$LZ_WEB_DATA_DIR/access.json"`
+as in [ACCESS.md](ACCESS.md). Replace the example values before initialization.
 
 ```bash
 LZ_PROJECT_DIR="$HOME/src/agent-workflow"
@@ -273,7 +279,12 @@ bun run test:web
 
 It exercises login/logout/expiry, secure cookies, the shared forms, private
 interview answers, browser text upload, local-only settings, persistence after
-a real backend restart and desktop/phone viewport overflow. Rust tests cover
+a real backend restart and desktop/phone viewport overflow. Additional browser
+scenarios simulate the Access gateway to verify automatic SSO exchange, no
+password fallback and top-level sign-in/logout navigation. Rust tests cover
+real synthetic RSA signatures, JWKS rotation/failures, issuer/audience/time,
+pinned GitHub identity, local binding, migration and persistent logout replay
+protection, as well as
 authorization, two independent installations, callback authentication, paths,
 idempotency and duplicate-process prevention. See [the recorded checks](WEB-VERIFICATION.md).
 
