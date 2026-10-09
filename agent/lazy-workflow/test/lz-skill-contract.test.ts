@@ -52,7 +52,7 @@ const help = (() => {
   return parsed.kind === "help" ? parsed.output : "";
 })();
 const parserFlags = new Set([...(help.match(/--[a-z][a-z0-9-]*/g) ?? []), "--no-color", "--no-log-file"]);
-const installerFlags = new Set((await Bun.file(new URL("../../../install.sh", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? []);
+const installerFlags = new Set((await Bun.file(new URL("../../../installer/options.ts", import.meta.url)).text()).match(/--[a-z][a-z0-9-]*/g) ?? []);
 
 test("cada invocacion de la skill usa banderas reales y lleva las obligatorias", () => {
   const problems = invocations.flatMap(({ name, line, command }) => {

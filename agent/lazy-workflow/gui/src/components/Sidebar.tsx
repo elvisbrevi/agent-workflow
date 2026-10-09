@@ -40,7 +40,7 @@ export function Sidebar({ catalog, view, running, repositories, activeRepository
 
       <div className="nav-families">
         {catalog?.families.map((family) => {
-          const commands = catalog.commands.filter((command) => command.family === family.id
+          const commands = catalog.commands.filter((command) => command.family === family.id && command.name !== "gui"
             && (needle === "" || command.name.includes(needle) || command.summary.toLowerCase().includes(needle)));
           if (commands.length === 0) return null;
           const closed = needle === "" && collapsed[family.id] === true;

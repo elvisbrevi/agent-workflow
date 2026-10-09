@@ -135,8 +135,9 @@ const INSTALLER_FLAGS: readonly CatalogFlag[] = [
   { flag: "--both", kind: "boolean", label: "Compartido y OpenCode", description: "Entradas compartidas y OpenCode del proyecto.", forwarded: true },
   { flag: "--codex", kind: "boolean", label: "Codex", description: "Skills globales de Codex en ~/.codex/skills.", forwarded: true },
   { flag: "--target", kind: "directory", label: "Destino", description: "Directorio de los modos locales.", forwarded: true },
-  { flag: "--ref", kind: "string", label: "Ref", description: "Rama, tag o commit del repositorio a instalar.", forwarded: true },
+  { flag: "--ref", kind: "string", label: "Ref", description: "Rama o tag del repositorio a instalar.", forwarded: true },
   { flag: "--dry-run", kind: "boolean", label: "Simulacion", description: "Muestra lo que haria sin cambiar nada.", forwarded: true },
+  { flag: "--no-gui", kind: "boolean", label: "Omitir GUI", description: "No compila ni instala la GUI.", forwarded: true },
   { flag: "--force", kind: "boolean", label: "Forzar", description: "Reemplaza entradas existentes.", forwarded: true },
   { flag: "--uninstall", kind: "boolean", label: "Desinstalar", description: "Retira lo instalado por el modo elegido.", forwarded: true },
 ];
@@ -336,9 +337,18 @@ const CREDENTIALS_COMMANDS: readonly CatalogCommand[] = [
 
 const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
   {
+    name: "gui",
+    family: "maintenance",
+    summary: "Abre la GUI instalada y devuelve la terminal de inmediato.",
+    effect: "read",
+    output: "stream",
+    groups: [],
+    flags: [],
+  },
+  {
     name: "update",
     family: "maintenance",
-    summary: "Ejecuta el instalador de la plataforma; sin opciones usa --all-global.",
+    summary: "Ejecuta el instalador de Bun; sin opciones usa --all-global.",
     effect: "maintenance",
     output: "stream",
     groups: [],
@@ -369,6 +379,7 @@ const COMMANDS: readonly CatalogCommand[] = [
 ];
 
 const ENVIRONMENT: readonly CatalogEnvironmentVariable[] = [
+  { name: "LAZY_WORKFLOW_GUI", description: "Ruta alternativa del binario que abre lz gui.", secret: false },
   { name: AZURE_ORGANIZATION_ENV, description: "https://dev.azure.com/<organizacion>; requerida por todo flujo y herramienta Azure.", secret: false },
   { name: SAG_NORMS_REPOSITORY_ENV, description: "Repositorio canonico de las normas SAG que carga --normas-sag.", secret: false },
   { name: "LAZY_WORKFLOW_LOG_FILE", description: "Ruta del run log; --log-file la precede y el default es ~/.local/state/lazy-workflow/runs.jsonl.", secret: false },
