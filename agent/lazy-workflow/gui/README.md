@@ -20,6 +20,49 @@ log.
   - **Linux:** `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev build-essential`.
   - **Windows:** Microsoft C++ Build Tools and WebView2 (preinstalled on Windows 11).
 
+## Install and launch
+
+The repository's Bun installer includes the GUI in `--all-global` and
+`--claude-global`. After installing the prerequisites above:
+
+```bash
+lz update
+lz gui
+```
+
+If the GUI cannot be built, installation warns and completes the skills and
+CLI; a previous GUI is preserved. Rust is never installed automatically.
+`--no-gui` skips compilation. `LAZY_WORKFLOW_GUI` points `lz gui` to an alternate
+binary. The launcher returns immediately and opens no run log or reporter panel.
+
+| Platform | Installed artifact |
+|---|---|
+| macOS | `~/Applications/lz.app` (`--bundles app`, locally compiled) |
+| Linux | `~/.local/bin/lz-gui` (`--no-bundle`), `~/.local/share/applications/lz.desktop` |
+| Windows | `~/.local/bin/lz-gui.exe` (`--no-bundle`) |
+
+Cargo artifacts stay in `~/.cache/agent-workflow-build/gui` through cache refreshes.
+A `.lz-gui-tree` file beside the app or executable records
+`git rev-parse HEAD:agent/lazy-workflow/gui`: when it matches and the executable
+exists, the installer skips the build. Uninstalling either global launcher mode
+removes the app/binary, Linux entry, stamp and build directory, including with
+`--no-gui`. It retains the shared source cache for other installation modes.
+The window excludes `gui` from its command forms.
+
+To install build prerequisites on macOS, run `xcode-select --install` and install
+Rust through [rustup](https://rustup.rs). On Debian/Ubuntu:
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev build-essential
+```
+
+On Windows, install the MSVC toolchain with Rust and use:
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Microsoft.EdgeWebView2Runtime
+```
+
 ## Run and build
 
 ```bash

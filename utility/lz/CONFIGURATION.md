@@ -61,7 +61,7 @@ environment.
 
 | Mode | Installs |
 |---|---|
-| `--all-global` | skills, agent entries and the `lz` launcher globally (what `lz update` uses by default) |
+| `--all-global` | skills, agent entries and the `lz` launcher and GUI globally (what `lz update` uses by default) |
 | `--claude-global` / `--claude-local` | Claude Code skills, agents and the CLI, globally or into a project |
 | `--global` / `--local` | shared skills and agents |
 | `--opencode` / `--both` | OpenCode project entries, alone or with the shared ones |
@@ -69,7 +69,7 @@ environment.
 
 ```bash
 lz update                    # reinstall with --all-global
-lz update --codex            # forwarded as install.sh --codex
+lz update --codex            # forwarded to the Bun installer
 lz update --ref v1 --dry-run # another ref, without changing anything
 ```
 
@@ -78,10 +78,13 @@ and `--dry-run` combine with any of them. The launcher lands in `~/.local/bin`
 (`lz.cmd` on Windows), which must be on the PATH — and in `extraPath` for a GUI
 that does not inherit it.
 
-The GUI is built from the checkout, not installed by the installer:
-[GUI.md](GUI.md#install-and-launch). After `lz update`, the GUI renders the new
-catalog on its next start; it needs a rebuild only when `lz catalog` reports a
-newer schema than the GUI understands.
+The global launcher modes build and install the GUI by default; `--no-gui`
+skips it. Open it with `lz gui`, or set `LAZY_WORKFLOW_GUI` to another binary.
+Rust is optional for the CLI and required for the GUI. A failed build preserves
+the existing GUI and reports the prerequisite commands. `lz update` skips a
+GUI build when its Git tree hash matches the stamp beside the installed artifact.
+Cargo build artifacts persist in `~/.cache/agent-workflow-build/gui`.
+Locations, prerequisites and uninstall behavior: [GUI.md](GUI.md#install-and-launch).
 
 ## Defaults the CLI applies
 

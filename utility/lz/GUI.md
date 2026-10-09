@@ -13,27 +13,38 @@ Contents: [Install and launch](#install-and-launch) · [How it maps to the CLI](
 
 ## Install and launch
 
-The GUI needs `lz` installed (`install.sh --all-global`) or a checkout, plus
-Rust and Tauri's system libraries to build. From the repository:
+The shared Bun installer builds and installs the GUI by default in
+`--all-global` and `--claude-global`. Rust and Tauri's system libraries are
+required only for this build; missing tools or build failures warn, complete
+the CLI installation and preserve the previous GUI.
 
 ```bash
-cd agent/lazy-workflow/gui
-bun install
-bun run dev       # window with hot reload, against the dev server on localhost:1420
-bun run build     # release binary and installers under src-tauri/target/release/bundle/
+lz update
+lz gui
+lz update --all-global --no-gui    # skip GUI compilation and installation
 ```
 
-| Platform | Build prerequisites |
-|---|---|
-| macOS | Xcode Command Line Tools, Rust (`rustup`) |
-| Linux | Rust, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`, `build-essential` |
-| Windows | Rust (MSVC), Microsoft C++ Build Tools, WebView2 (preinstalled on Windows 11) |
+| Platform | Build prerequisites | Installation |
+|---|---|---|
+| macOS | Rust, Xcode Command Line Tools (`xcode-select --install`) | `~/Applications/lz.app` |
+| Linux | Rust, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`, `build-essential` | `~/.local/bin/lz-gui`, `~/.local/share/applications/lz.desktop` |
+| Windows | Rust MSVC, Microsoft C++ Build Tools, WebView2 | `~/.local/bin/lz-gui.exe` |
 
-`bun run build` produces the platform's installers (`.app`/`.dmg`, `.deb`/`.rpm`/
-AppImage, `.msi`/NSIS); `bun run tauri build --bundles deb` limits it to one.
-The installed binary is `lz-gui`. The GUI works with whatever `lz` its settings
-resolve, so an `lz update` changes what the GUI shows on its next start without
-rebuilding it.
+See [the GUI README](../../agent/lazy-workflow/gui/README.md#install-and-launch)
+for prerequisite commands. `LAZY_WORKFLOW_GUI` overrides the binary opened by
+`lz gui`, which detaches the process and returns the terminal immediately.
+Neither it nor `update` opens a session, reporter panel or run log. The GUI
+excludes its own launch command from the forms.
+
+Builds use persistent `CARGO_TARGET_DIR=~/.cache/agent-workflow-build/gui`.
+The `.lz-gui-tree` stamp beside the installed app or binary records the GUI's
+Git tree hash; an unchanged hash with an existing executable skips compilation.
+Uninstalling either global launcher mode removes the GUI, stamp, desktop entry
+and build directory, while preserving the shared source cache.
+
+For development, run `bun install && bun run dev` inside
+`agent/lazy-workflow/gui/`. The GUI reads the installed `lz catalog` at startup,
+so an updated CLI changes its forms without rebuilding an unchanged frontend.
 
 ## How it maps to the CLI
 
@@ -144,7 +155,7 @@ keeps them until they are saved or discarded.
 |---|---|
 | "No se pudo leer el CLI" with "lz no esta en el PATH" | The GUI cannot find `lz`. Install it (`install.sh --all-global`), add its directory to `extraPath`, or set `lzCommand` to the launcher or to a checkout's `main.ts` |
 | "`lz catalog` fallo" naming an unsupported command | The installed `lz` predates the GUI: `lz update` |
-| "el catalogo de lz usa el esquema N" | The GUI is older than the CLI's catalog: rebuild the GUI from the same checkout |
+| "el catalogo de lz usa el esquema N" | The GUI is older than the CLI's catalog: `lz update` rebuilds the GUI when its source tree changed |
 | A tool is "no encontrado" in Diagnostico but works in a terminal | The desktop session has a shorter PATH: keep `inheritShellEnvironment` on and press **Releer entorno**, or add the directory to `extraPath` |
 | Azure commands fail with a missing organization | Set `environment.LAZY_WORKFLOW_AZURE_ORGANIZATION`, or export it in the shell profile the GUI inherits |
 | "no se pudo resolver el secreto NAME" | `lz credentials-get --name NAME` fails: store it with `lz credentials-set --name NAME`, or remove it from `secretEnvironment` |
