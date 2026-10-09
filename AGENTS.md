@@ -50,7 +50,10 @@ renders `lz catalog` and runs `lz`, and holds no workflow logic.
 | Change which profile a run gets, or where each CLI reads its authority | `agent/lazy-workflow/src/prompts/authority-profile.ts` |
 | Change how a run powers the machine down when it ends (`--off`) | `agent/lazy-workflow/src/system/shutdown-service.ts` |
 | Change the executable entrypoint | `agent/lazy-workflow/main.ts` |
-| Change installation or symlink behavior | `install.sh`, `install.ps1`, and `tests/install_test.sh` |
+| Change installation, destinations, cache swap, links or Windows managed copies | `installer/install.ts`, `installer/options.ts`, and `installer/install.test.ts` |
+| Change GUI build, installation, stamp or removal | `installer/gui.ts` and `installer/install.test.ts` |
+| Change installer bootstrap acquisition or argument delegation | `install.sh`, `install.ps1`, and `tests/install_test.sh` |
+| Change the GUI launch or self-update boundary | `agent/lazy-workflow/src/system/gui-launcher.ts`, `self-update.ts`, and the CLI constructor/helper |
 | Change user-facing orientation | `README.md`, `agent/lazy-workflow/README.md`, and `agent/lazy-workflow/gui/README.md` |
 | Change tracker or domain conventions | `docs/agents/`, `docs/adr/`, or `CONTEXT.md` |
 
@@ -70,17 +73,22 @@ Run the focused suite for the changed area and the repository-level checks:
 
 ```bash
 (cd agent/lazy-workflow && bun test)
+bun test installer
 bash tests/install_test.sh
 BASH_BIN=zsh bash tests/install_test.sh
 git diff --check
 ```
 
-When `agent/lazy-workflow/gui/` changes, also run:
+When the GUI or its build/installation changes, also run:
 
 ```bash
 (cd agent/lazy-workflow/gui && bun install && bun run typecheck)
 (cd agent/lazy-workflow/gui/src-tauri && cargo test && cargo clippy --all-targets)
 ```
+
+For installer changes, also exercise the bootstrap and GUI install/launch, unchanged-tree
+skip and uninstall in a temporary HOME. Keep CARGO_HOME and RUSTUP_HOME pointed
+at the real toolchain, and leave the real installation untouched.
 
 Do not use real credentials or a live backlog in automated tests.
 
