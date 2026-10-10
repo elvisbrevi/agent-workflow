@@ -25,6 +25,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | What would a `code` run take next, and why does it skip the rest? | `github-issue-select`, `github-issue-list` |
 | Everything about one issue, with its eligibility reasons | `github-issue-info --issue` |
 | Free an issue an interrupted run still holds | `github-issue-release --issue` |
+| What work is assigned to my authenticated tracker account? | `work-assigned --working-directory <path>` |
 | Which branches exist, local and remote, newest first? | `git-branch-list` |
 | Switch to a branch, local or remote, and bring it up to date | `git-branch-checkout --branch` |
 | Did the session leave a deliverable branch? | `github-session-verify`, `ticket-session-verify` |

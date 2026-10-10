@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { open, revealItemInDir, isDesktop } from "../lib/platform.ts";
+import { revealItemInDir, isDesktop } from "../lib/platform.ts";
+import { DirectoryPicker } from "./DirectoryPicker.tsx";
+import { FlagField } from "./FlagField.tsx";
 import type { CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import type { Diagnostics, FlagDefault, GuiSettings, SettingsDocument } from "../lib/backend.ts";
 
@@ -27,13 +29,10 @@ function ListEditor({ values, placeholder, pickDirectory, onChange }: { values: 
           <button type="button" className="icon-button" title="Quitar" onClick={() => onChange(values.filter((entry) => entry !== value))}>✕</button>
         </div>
       ))}
-      <div className="row">
+      {pickDirectory ? <DirectoryPicker repositories={values} onPick={add} label="Agregar carpeta…" /> : <div className="row">
         <input className="input mono grow" value={draft} placeholder={placeholder} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") add(draft); }} />
         <button type="button" className="button" onClick={() => add(draft)}>Agregar</button>
-        {pickDirectory && (
-          <button type="button" className="button" onClick={async () => { const chosen = await open({ directory: true }); if (typeof chosen === "string") add(chosen); }}>Elegir carpeta…</button>
-        )}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -66,6 +65,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
     const flagDefaults = { ...draft.flagDefaults };
     if (value === "" || value === false) delete flagDefaults[flag];
     else flagDefaults[flag] = value;
+    if (flag === "--cli") { delete flagDefaults["--model"]; delete flagDefaults["--variant"]; }
     update({ flagDefaults });
   };
   const toggleSecret = (name: string, on: boolean) =>
@@ -74,7 +74,6 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
   const known = new Set(catalog?.environment.map((variable) => variable.name) ?? []);
   const custom = Object.entries(draft.environment).filter(([name]) => !known.has(name));
   const cli = asText(draft.flagDefaults["--cli"]) || catalog?.defaultCli || "opencode";
-  const agent = catalog?.agents.find((candidate) => candidate.cli === cli);
   const probe = (name: string) => diagnostics?.variables.find((variable) => variable.name === name);
 
   return (
@@ -88,6 +87,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
       </header>
 
       {!isDesktop && <p className="callout">Los repositorios, el ejecutable y las credenciales se configuran en el servidor. Aqui puedes cambiar tus preferencias de interfaz.</p>}
+      <details className="settings-advanced"><summary>Conexiones y configuración del equipo</summary>
       <fieldset className="server-settings" disabled={!isDesktop}><section className="card">
         <h2>CLI</h2>
         <div className="field">
@@ -183,9 +183,10 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
           <div className="field-help">Cada nombre se lee con <code>lz credentials-get --name NOMBRE --force</code> al iniciar el run; el valor nunca toca este archivo.</div>
         </div>
       </section></fieldset>
+      </details>
 
       <section className="card">
-        <h2>Valores por defecto de los formularios</h2>
+        <h2>Preferencias de ejecución</h2>
         <p className="muted small">Se aplican a todo comando que acepte la opcion (<code>flagDefaults</code>). Cada formulario puede guardar los suyos con «Guardar como predeterminado».</p>
         <div className="field-grid">
           <div className="field">
@@ -195,15 +196,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
               {catalog?.agents.map((candidate) => <option key={candidate.cli} value={candidate.cli}>{candidate.cli}</option>)}
             </select>
           </div>
-          <div className="field">
-            <label className="field-label" htmlFor="default-model">Modelo <code className="flag-name">--model</code></label>
-            <input id="default-model" className="input mono" value={asText(draft.flagDefaults["--model"])} placeholder={agent?.defaultModel} onChange={(event) => setFlagDefault("--model", event.target.value)} />
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="default-variant">Variante <code className="flag-name">--variant</code></label>
-            <input id="default-variant" className="input mono" list="default-variant-list" value={asText(draft.flagDefaults["--variant"])} placeholder="high" onChange={(event) => setFlagDefault("--variant", event.target.value)} />
-            <datalist id="default-variant-list">{(agent?.efforts ?? []).map((effort) => <option key={effort} value={effort} />)}</datalist>
-          </div>
+          {catalog && catalog.groups.find((group) => group.id === "agent")?.flags.filter((flag) => flag.flag === "--model" || flag.flag === "--variant").map((flag) => <FlagField key={flag.flag} catalog={catalog} flag={flag} values={{ "--cli": cli }} value={asText(draft.flagDefaults[flag.flag])} repositories={[]} onChange={(value) => setFlagDefault(flag.flag, String(value ?? ""))} />)}
         </div>
         <label className="toggle">
           <input type="checkbox" checked={draft.flagDefaults["--verbose"] === true} onChange={(event) => setFlagDefault("--verbose", event.target.checked)} />

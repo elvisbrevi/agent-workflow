@@ -279,8 +279,13 @@ pub fn capture(
     args: &[String],
     timeout: Duration,
 ) -> Result<Captured, String> {
-    let environment = run_environment(settings);
+    let mut environment = run_environment(settings);
     let launcher = resolve_launcher(settings, &environment)?;
+    // Catalog discovery must work before credentials are configured. Tracker
+    // reads need the same locally resolved credentials as an operator run.
+    if args.first().is_some_and(|command| command != "catalog") {
+        resolve_secrets(settings, &launcher, &mut environment)?;
+    }
     capture_with(
         &launcher,
         &environment,
@@ -554,6 +559,34 @@ mod tests {
             ),
             (Some(3), "out\n", "err\n")
         );
+    }
+
+    #[test]
+    fn tracker_capture_resolves_secrets_while_catalog_discovery_does_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join("fake-lz");
+        let marker = root.path().join("credential-read");
+        std::fs::write(&launcher, r#"#!/bin/sh
+if [ "$1" = catalog ]; then echo catalog; exit 0; fi
+if [ "$1" = credentials-get ]; then echo called > "$SYNTHETIC_MARKER"; echo synthetic-value; exit 0; fi
+printf '%s' "$SYNTHETIC_GUI_READ_SECRET"
+"#).unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let settings = GuiSettings {
+            lz_command: launcher.to_string_lossy().into_owned(),
+            inherit_shell_environment: false,
+            secret_environment: vec!["SYNTHETIC_GUI_READ_SECRET".into()],
+            environment: BTreeMap::from([("SYNTHETIC_MARKER".into(), marker.to_string_lossy().into_owned())]),
+            ..GuiSettings::default()
+        };
+        let read = capture(&settings, &["work-assigned".into()], Duration::from_secs(5)).unwrap();
+        assert_eq!(read.stdout, "synthetic-value");
+        assert!(marker.exists());
+        std::fs::remove_file(&marker).unwrap();
+        let catalog = capture(&settings, &["catalog".into()], Duration::from_secs(5)).unwrap();
+        assert_eq!(catalog.stdout, "catalog\n");
+        assert!(!marker.exists());
     }
 
     #[test]

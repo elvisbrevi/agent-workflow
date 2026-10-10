@@ -44,6 +44,7 @@ import {
 export * from "./command-catalog-schema.ts";
 
 const FAMILIES: readonly CatalogFamily[] = [
+  { id: "work", title: "Mi trabajo", description: "Tareas asignadas al usuario autenticado en el tracker del repositorio." },
   { id: "workflow", title: "Flujos de trabajo", description: "Planifican o entregan trabajo abriendo sesiones del agente de codificacion." },
   { id: "azure-read", title: "Azure DevOps · lectura", description: "Leen HU, tickets, ramas y gates sin abrir sesion." },
   { id: "azure-write", title: "Azure DevOps · escritura", description: "Modifican work items, ramas y evidencia con escrituras optimistas." },
@@ -368,6 +369,7 @@ const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
 
 const COMMANDS: readonly CatalogCommand[] = [
   ...WORKFLOW_COMMANDS,
+  tool({ name: "work-assigned", family: "work", summary: "Lista las issues o work items asignados al usuario autenticado en el repositorio GitHub o proyecto Azure.", effect: "read", flags: [required(WORKING_DIRECTORY)] }),
   ...AZURE_READ_COMMANDS,
   ...AZURE_WRITE_COMMANDS,
   ...GITHUB_QUEUE_COMMANDS,

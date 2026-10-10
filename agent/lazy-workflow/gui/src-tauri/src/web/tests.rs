@@ -130,6 +130,42 @@ fn an_installation_cannot_start_twice_even_with_a_different_settings_path() {
 }
 
 #[tokio::test]
+async fn dashboard_reads_require_read_effect_and_registered_repository() {
+    let fixture = Fixture::new("dashboard");
+    let app = router(fixture.state.clone());
+    let (cookie, csrf) = login_cookie(&app, "dashboard").await;
+    let directory = fixture.root.path().to_string_lossy().to_string();
+    for args in [
+        json!(["code"]),
+        json!(["credentials-get"]),
+        json!(["git-branch-list", "--working-directory", "/"]),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST", "/api/rpc/capture_lz", &cookie, &csrf, json!({"args":args}),
+            ))
+            .await
+            .unwrap();
+        assert!(!response.status().is_success());
+    }
+    assert!(!fixture.root.path().join("spawned").exists());
+    let response = app
+        .oneshot(request(
+            "POST", "/api/rpc/capture_lz", &cookie, &csrf,
+            json!({"args":["git-branch-list", "--working-directory", directory]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = value(response).await;
+    assert_eq!(captured["code"], 0);
+    assert!(captured["stdout"].as_str().unwrap().contains("synthetic"));
+    assert!(fixture.state.starts.lock().unwrap().is_empty());
+    assert!(!fixture.root.path().join("cli-runs.jsonl").exists());
+}
+
+#[tokio::test]
 async fn authentication_origin_host_csrf_logout_and_rate_limits_are_enforced() {
     let fixture = Fixture::new("alice");
     let app = router(fixture.state.clone());

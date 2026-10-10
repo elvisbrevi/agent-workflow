@@ -79,6 +79,22 @@ an already bound Access installation.
 
 ## How it maps to the CLI
 
+**Inicio** shows assigned work from saved repositories and recent Plan/Code
+history. `work-assigned` reads the authenticated account (`@me` on GitHub,
+`@Me` in Azure) without changing delivery eligibility. Query failures are shown
+per source; background reads do not create entries in the run log.
+
+**Planificar** and **Implementar** guide the user through work, options and
+review. The command catalog still supplies every flag and default. Azure HU
+and Task selectors use assigned work and `hu-children-info`; another ID can be
+entered when necessary. GitHub Code processes the entire eligible queue.
+The complete command forms live under **Herramientas avanzadas**.
+
+Folder buttons open the native selector on desktop. In the browser they search
+registered server repositories, keeping web path authorization intact. Existing
+web profiles need `work-assigned`, `hu-info` and `hu-children-info` added locally
+to `allowedCommands` to enable these reads; new web installations include them.
+
 | In the GUI | In the CLI |
 |---|---|
 | Sidebar families and commands | `lz catalog` → `families`, `commands` (the same list `lz --help` prints) |

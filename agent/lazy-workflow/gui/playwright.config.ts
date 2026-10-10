@@ -6,6 +6,7 @@ export default defineConfig({
   projects: [
     { name: "desktop", use: { viewport: { width: 1280, height: 800 } } },
     { name: "phone", use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } },
+    { name: "small-phone", use: { viewport: { width: 320, height: 740 }, isMobile: true, hasTouch: true } },
   ],
-  webServer: { command: "bun e2e/server.ts", url: "https://127.0.0.1/__test/health", ignoreHTTPSErrors: true, reuseExistingServer: false, timeout: 60000 },
+  webServer: { command: "bun e2e/server.ts", url: "https://127.0.0.1:18443/__test/health", ignoreHTTPSErrors: true, reuseExistingServer: false, timeout: 60000 },
 });

@@ -13,6 +13,9 @@
  */
 
 import { join } from "node:path";
+import { githubAssignedWork } from "../github/assigned-work.ts";
+import { azureAssignedWork } from "../azure/assigned-work.ts";
+import type { AssignedWork } from "../workspace/assigned-work.ts";
 import { checkoutGitBranchByName, type GitBranchCheckout } from "../git/git-branch-checkout.ts";
 import { listGitBranches, type GitBranchList } from "../git/git-branch-list.ts";
 import { GitTicketBranchCleaner, runGit } from "../git/git-ticket-branch-cleaner.ts";
@@ -144,6 +147,13 @@ export interface AzureToolBoundary {
 /** The pull request tools of the repository at `workingDirectory`, for the tracker its `origin` names. */
 export type PullRequestToolsResolver = (workingDirectory: string) => Promise<PullRequestTools>;
 
+async function readAssignedWork(directory: string): Promise<AssignedWork> {
+  const origin = (await runGit(["remote", "get-url", "origin"], directory)).trim();
+  if (isGitHubRemote(origin)) return githubAssignedWork(runGh, directory);
+  if (isAzureRemote(origin)) return azureAssignedWork(runAzureCommand, origin);
+  throw new Error("El repositorio debe tener un origin GitHub o Azure DevOps.");
+}
+
 async function resolvePullRequestTools(workingDirectory: string): Promise<PullRequestTools> {
   const origin = (await runGit(["remote", "get-url", "origin"], workingDirectory)).trim();
   if (isAzureRemote(origin)) return new AzurePullRequests(runAzureCommand, origin);
@@ -152,6 +162,7 @@ async function resolvePullRequestTools(workingDirectory: string): Promise<PullRe
 }
 
 export interface DeterministicToolServices {
+  assignedWork?: (directory: string) => Promise<AssignedWork>;
   azure: AzureToolBoundary;
   queue: GitHubQueueTools;
   delivery: GitHubDeliveryTools;
@@ -179,12 +190,14 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
     },
     credentials: productionCredentialTools,
     pullRequests: resolvePullRequestTools,
+    assignedWork: readAssignedWork,
   };
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export function deterministicFailureKind(command: DeterministicToolCommand) {
+  if (command === "work-assigned") return "tracker-read-failure" as const;
   if (command.endsWith("-info") || command === "pr-list" || command === "pr-thread-list" || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
@@ -532,7 +545,9 @@ export async function runDeterministicTool(
     if (command.startsWith("credentials-")) {
       return await runCredentialsTool(command, options, services.credentials ?? productionCredentialTools, print, isTerminal);
     }
-    const result = command.startsWith("pr-")
+    const result = command === "work-assigned"
+      ? await (services.assignedWork ?? readAssignedWork)(options.workingDirectory)
+      : command.startsWith("pr-")
       ? await runPullRequestTool(command, options, services.pullRequests ?? resolvePullRequestTools)
       : command.startsWith("github-")
         ? await runGitHubTool(command, options, services)

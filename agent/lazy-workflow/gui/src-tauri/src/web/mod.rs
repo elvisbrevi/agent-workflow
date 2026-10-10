@@ -593,6 +593,16 @@ async fn rpc(
                 let limit = body["limit"].as_u64().unwrap_or(4000).clamp(1, 4000) as usize;
                 Ok(serde_json::to_value(state.core.read_run_log(limit)?).unwrap())
             }
+            "capture_lz" => {
+                let args: Vec<String> = serde_json::from_value(body["args"].clone()).map_err(|_| denied("read needs CLI arguments"))?;
+                let command = state.catalog["commands"].as_array().unwrap().iter().find(|command| command["name"].as_str() == args.first().map(String::as_str)).ok_or_else(|| denied("read command is not allowed"))?;
+                if command["effect"] != "read" { return Err(denied("only read commands can be captured")); }
+                let mut request = RunRequest { args, stdin: None, cwd: None };
+                policy::validate(&mut request, &state.catalog, &state.core.settings()?, &state.data_dir.join("uploads"))?;
+                // Dashboard queries are background reads, not operator runs.
+                request.args.push("--no-log-file".into());
+                Ok(serde_json::to_value(state.core.capture(&request.args, std::time::Duration::from_secs(60))?).unwrap())
+            }
             "diagnose" => {
                 // The caller cannot declare a secret to be public, or probe arbitrary variables.
                 let variables = state.catalog["environment"].as_array().unwrap().iter().filter_map(|v| Some(EnvironmentProbe { name: v["name"].as_str()?.into(), secret: true })).collect();

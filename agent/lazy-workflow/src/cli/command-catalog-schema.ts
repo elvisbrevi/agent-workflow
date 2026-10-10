@@ -48,6 +48,7 @@ export interface CatalogFlag {
 }
 
 export type CatalogFamilyId =
+  | "work"
   | "workflow"
   | "azure-read"
   | "azure-write"

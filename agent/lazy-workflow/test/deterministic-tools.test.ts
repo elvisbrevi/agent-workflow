@@ -31,6 +31,7 @@ function recordingServices(): { services: DeterministicToolServices; calls: Call
     return Promise.resolve(result);
   };
   const services: DeterministicToolServices = {
+    assignedWork: record("assignedWork", { tracker: "github" as const, scope: "owner/repo", items: [], truncated: false }),
     azure: {
       getHuChildren: record("getHuChildren", [{ id: 51, type: "Task", state: "New" }]),
       setHuState: record("setHuState", { hu: 23438, state: "Done", revision: 13 }),
@@ -208,6 +209,7 @@ describe("herramientas deterministas como comandos", () => {
 
   test("clasifica cada comando determinista con su failure kind", () => {
     const expected: Record<typeof DETERMINISTIC_TOOL_COMMANDS[number], ReturnType<typeof deterministicFailureKind>> = {
+      "work-assigned": "tracker-read-failure",
       "hu-children-info": "tracker-read-failure",
       "hu-state-set": "deterministic-completion-failure",
       "hu-branch-ensure": "branch-preparation-failure",
@@ -254,6 +256,12 @@ describe("herramientas deterministas como comandos", () => {
   });
 
   describe("GitHub", () => {
+    test("work-assigned dispatches a read without a coding session", async () => {
+      const { code, printed, calls } = await runTool(["work-assigned", "--working-directory", "/repo"]);
+      expect(code).toBe(0);
+      expect(parsed(printed)).toEqual({ tracker: "github", scope: "owner/repo", items: [], truncated: false });
+      expect(calls).toEqual([{ operation: "assignedWork", args: ["/repo"] }]);
+    });
     test("github-auth-info devuelve la identidad autenticada", async () => {
       const { code, printed, calls } = await runTool(["github-auth-info", "--working-directory", "/repo"]);
 
