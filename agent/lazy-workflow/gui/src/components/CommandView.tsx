@@ -3,6 +3,7 @@ import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-ca
 import { buildArgs, renderCommandLine, validateFlags, type FlagValue, type FlagValues } from "../lib/command-line.ts";
 import { FlagField } from "./FlagField.tsx";
 import { EffectBadge } from "./EffectBadge.tsx";
+import { WorkflowSetup } from "./WorkflowSetup.tsx";
 
 interface CommandViewProps {
   readonly catalog: CommandCatalog;
@@ -19,6 +20,10 @@ export function CommandView({ catalog, command, values, repositories, onChange, 
   const [secret, setSecret] = useState("");
   const [revealSecret, setRevealSecret] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [step, setStep] = useState(0);
+  const [scopeReady, setScopeReady] = useState(true);
+  const [resetKey, setResetKey] = useState(0);
+  const workflow = command.name === "plan" || command.name === "code";
   const family = catalog.families.find((candidate) => candidate.id === command.family);
   const stdinFlag = command.stdinFlag;
 
@@ -41,18 +46,19 @@ export function CommandView({ catalog, command, values, repositories, onChange, 
   };
 
   return (
-    <div className="command-view">
+    <div className={`command-view${workflow ? " workflow-command" : ""}`}>
       <header className="command-header">
         <div className="eyebrow">{family?.title}</div>
         <div className="row baseline">
-          <h1 className="mono">{command.name}</h1>
+          <h1 className={workflow ? "" : "mono"}>{command.name === "plan" ? "Prepara tu plan" : command.name === "code" ? "Prepara la implementación" : command.name}</h1>
           <EffectBadge effect={command.effect} />
         </div>
         <p className="lead">{command.summary}</p>
-        {(command.notes ?? []).map((note) => <div className="callout" key={note}>{note}</div>)}
+        {!workflow && (command.notes ?? []).map((note) => <div className="callout" key={note}>{note}</div>)}
+        {workflow && <ol className="workflow-steps" aria-label="Pasos de ejecución">{["Trabajo", "Opciones", "Revisión"].map((label, index) => <li key={label} aria-current={index === step ? "step" : undefined} className={index <= step ? "current" : ""}><span>{index + 1}</span>{label}</li>)}</ol>}
       </header>
 
-      <section className="form-section">
+      {workflow ? <WorkflowSetup key={resetKey} catalog={catalog} command={command} values={values} repositories={repositories} step={step} onChange={onChange} onScopeReady={setScopeReady} onSaveDefaults={() => onSaveDefaults(values)} /> : <><section className="form-section">
         {command.flags.length === 0 && !stdinFlag && <p className="muted">Este comando no recibe opciones propias.</p>}
         <div className="field-grid">
           {command.flags.filter((flag) => flag.flag !== stdinFlag).map((flag) => (
@@ -100,30 +106,32 @@ export function CommandView({ catalog, command, values, repositories, onChange, 
           </details>
         );
       })}
+      </>}
 
       <footer className="command-footer">
-        <div className="preview">
+        {(!workflow || step === 2) && <div className="preview">
           <code className="mono preview-line" title={line}>{line}</code>
           <button type="button" className="button" onClick={copy}>{copied ? "Copiado" : "Copiar"}</button>
-        </div>
+        </div>}
         {issues.length > 0 && (
           <ul className="issues">
             {issues.map((issue) => <li key={`${issue.flag}-${issue.message}`} className={issue.severity}>{issue.message}</li>)}
           </ul>
         )}
         <div className="row end">
-          <button type="button" className="button ghost" onClick={() => { setSecret(""); onReset(); }}>Restablecer</button>
-          <button type="button" className="button ghost" title="Guarda estos valores en commandDefaults de gui.json" onClick={() => onSaveDefaults(values)}>
+          {workflow && step > 0 && <button type="button" className="button" onClick={() => setStep(step - 1)}>Atrás</button>}
+          {(!workflow || step === 0) && <button type="button" className="button ghost" onClick={() => { setSecret(""); setStep(0); setResetKey(resetKey + 1); onReset(); }}>Restablecer</button>}
+          {!workflow && <button type="button" className="button ghost" title="Guarda estos valores en commandDefaults de gui.json" onClick={() => onSaveDefaults(values)}>
             Guardar como predeterminado
-          </button>
-          <button
+          </button>}
+          {workflow && step < 2 ? <button type="button" className="button primary" disabled={errors.length > 0 || !scopeReady} onClick={() => setStep(step + 1)}>{step === 0 ? "Continuar" : "Revisar ejecución"} →</button> : <button
             type="button"
             className={`button primary${command.effect === "read" ? "" : " warn"}`}
-            disabled={errors.length > 0 || (stdinFlag !== undefined && secret.length === 0)}
+            disabled={errors.length > 0 || (workflow && !scopeReady) || (stdinFlag !== undefined && secret.length === 0)}
             onClick={() => onRun(args, stdinFlag && secret ? secret : undefined)}
           >
-            Ejecutar
-          </button>
+            {command.name === "plan" ? "Ejecutar Plan" : command.name === "code" ? "Ejecutar Code" : "Ejecutar"}
+          </button>}
         </div>
       </footer>
     </div>

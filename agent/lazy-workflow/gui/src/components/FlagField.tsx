@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 import { open, isDesktop } from "../lib/platform.ts";
+import { DirectoryPicker } from "./DirectoryPicker.tsx";
+import { repositoryName } from "../lib/work.ts";
+import { useState } from "react";
 import { backend } from "../lib/backend.ts";
 import type { CatalogFlag, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import { requirementMet, type FlagValue, type FlagValues } from "../lib/command-line.ts";
@@ -107,13 +110,14 @@ function DirectoriesField({ id, value, repositories, onChange }: { id: string; v
             {available.map((repository) => <option key={repository} value={repository}>{repository}</option>)}
           </select>
         )}
-        {isDesktop && <button type="button" className="button" onClick={async () => add(await pick("directory"))}>Elegir carpeta…</button>}
+        <DirectoryPicker repositories={repositories} onPick={add} />
       </div>
     </div>
   );
 }
 
 export function FlagField({ catalog, flag, value, values, repositories, onChange }: FlagFieldProps) {
+  const [custom, setCustom] = useState(false);
   const id = `flag-${flag.flag.slice(2)}`;
   const unmet = (flag.requires ?? []).filter((requirement) => !requirementMet(requirement, values));
   const list = suggestions(catalog, flag, values).length > 0 ? `${id}-list` : undefined;
@@ -136,22 +140,40 @@ export function FlagField({ catalog, flag, value, values, repositories, onChange
       <select id={id} className="input" value={current} onChange={(event) => onChange(event.target.value)}>
         {flag.default === undefined && <option value="">Elegir…</option>}
         {(flag.choices ?? []).map((choice) => (
-          <option key={choice} value={choice}>{choice}{`${flag.default}` === choice ? " (default)" : ""}</option>
+          <option key={choice} value={choice}>{(flag.flag === "--cli" ? ({ opencode: "OpenCode", claudecode: "Claude Code", codex: "Codex" } as Record<string, string>)[choice] : flag.flag === "--interview" ? ({ off: "Usar las recomendaciones", http: "Responder preguntas en la interfaz" } as Record<string, string>)[choice] : choice) ?? choice}{`${flag.default}` === choice ? " (predeterminado)" : ""}</option>
         ))}
       </select>
     );
+  } else if (flag.flag === "--model" || flag.flag === "--variant") {
+    const cli = typeof values["--cli"] === "string" && values["--cli"] ? values["--cli"] : catalog.defaultCli;
+    const agent = catalog.agents.find((candidate) => candidate.cli === cli);
+    const choices = flag.flag === "--model" ? [agent?.defaultModel ?? ""] : [...(agent?.efforts ?? ["low", "medium", "high"])];
+    const free = flag.flag === "--model" || agent?.efforts === null;
+    const current = text || (flag.flag === "--variant" ? String(flag.default ?? "") : "");
+    const other = custom || (!!current && !choices.includes(current));
+    control = <div className="stack"><select id={id} className="input" value={other ? "custom" : current} onChange={(event) => {
+      if (event.target.value === "custom") setCustom(true);
+      else { setCustom(false); onChange(event.target.value); }
+    }}>
+      {flag.flag === "--model" && <option value="">Predeterminado ({agent?.defaultModel})</option>}
+      {choices.filter(Boolean).map((choice) => <option key={choice} value={choice}>{choice}{choice === String(flag.default) ? " (predeterminado)" : ""}</option>)}
+      {free && <option value="custom">Otro…</option>}
+      {!free && other && <option value="custom">Valor guardado: {current} (elige uno válido)</option>}
+    </select>{other && free && <TextInput id={`${id}-custom`} value={text} placeholder={placeholder} onChange={onChange} />}</div>;
   } else if (flag.kind === "text") {
     control = (
       <textarea id={id} className="input textarea" value={text} placeholder={placeholder} rows={flag.flag === "--prompt" ? 4 : 3} onChange={(event) => onChange(event.target.value)} />
     );
   } else if (flag.kind === "directories") {
     control = <DirectoriesField id={id} value={text} repositories={repositories} onChange={onChange} />;
-  } else if (flag.kind === "file" || flag.kind === "directory") {
+  } else if (flag.kind === "directory") {
+    control = <div className="stack"><select id={id} className="input" value={text} onChange={(event) => onChange(event.target.value)}><option value="">Elegir repositorio…</option>{[...new Set([...repositories, ...(text ? [text] : [])])].map((path) => <option key={path} value={path}>{repositoryName(path)} · {path}</option>)}</select><DirectoryPicker repositories={repositories} onPick={onChange} /></div>;
+  } else if (flag.kind === "file") {
     const kind = flag.kind;
-    const repoList = kind === "directory" && repositories.length > 0 ? `${id}-repos` : undefined;
+    const repoList = undefined;
     control = (
       <div className="row">
-        <TextInput id={id} value={text} placeholder={placeholder || (kind === "directory" ? "/ruta/al/repositorio" : "/ruta/al/archivo")} list={repoList} monospace onChange={onChange} />
+        <TextInput id={id} value={text} placeholder={placeholder || "/ruta/al/archivo"} list={repoList} monospace onChange={onChange} />
         {isDesktop && <button type="button" className="button" onClick={async () => { const chosen = await pick(kind); if (chosen) onChange(chosen); }}>
           Elegir…
         </button>}

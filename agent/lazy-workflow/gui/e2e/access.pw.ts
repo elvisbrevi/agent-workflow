@@ -1,5 +1,5 @@
 /** UI-only Access gateway simulation. Real JWT/JWKS/identity checks are Rust integration tests. */
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixture.ts";
 
 const loginUrl = "https://synthetic.cloudflareaccess.com/cdn-cgi/access/login/synthetic-audience?redirect_url=https%3A%2F%2Flocalhost";
 const auth = { mode: "cloudflareAccess", loginUrl, logoutUrl: "/cdn-cgi/access/logout" };
@@ -18,6 +18,7 @@ test("Access UI exchanges the edge identity without a password form and navigate
     else if (path === "/api/logout") { csrf = request.headers()["x-csrf-token"] ?? ""; value = { ok: true, logoutUrl: auth.logoutUrl }; }
     else if (path.endsWith("load_catalog")) value = { schemaVersion: 1, binary: "lz", defaultCli: "codex", agents: [], families: [], environment: [], groups: [], commands: [] };
     else if (path.endsWith("get_settings")) value = { path: "local-only", settings, error: null };
+    else if (path.endsWith("read_run_log")) value = { path: "synthetic", exists: false, records: [] };
     else if (path.endsWith("diagnose")) value = { settingsPath: "local-only", runLogPath: "local-only", lzLauncher: "synthetic", lzError: null, shellEnvironment: false, binaries: [], variables: [] };
     else if (path === "/api/events") value = { events: [], cursor: 0, instance: "synthetic" };
     else if (path === "/api/runs") value = [];

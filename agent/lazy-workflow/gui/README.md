@@ -1,9 +1,10 @@
 # lz GUI
 
-A desktop window for `lz`, built with [Tauri](https://tauri.app). Every command
-of the CLI is a form, the exact command line is shown before it runs, and its
-output streams into a panel — operator lines (stderr) beside the result (stdout),
-with a JSON result rendered as a tree.
+A desktop window for `lz`, built with [Tauri](https://tauri.app). Start with your
+assigned work and recent Plan/Code activity. Prepare a run in three steps:
+choose the work, adjust the usual options, then review and execute. The full CLI
+catalog remains available under **Herramientas avanzadas**, and live output
+streams into the run panel.
 
 The window holds no workflow logic. It reads `lz catalog` — the CLI's own JSON
 description of its commands, flags and effects — and renders that, so a new
@@ -96,11 +97,29 @@ and embeds it. The release binary is `lz-gui`.
 
 | Area | Behaviour |
 |---|---|
-| **Inicio** | Quick actions, and a diagnosis of the launcher, the tools a run shells out to (`bun`, `git`, `gh`, `az`, `opencode`, `claude`, `codex`, `chezmoi`) and the variables a run will see |
-| **Commands** | One form per command, grouped as the CLI groups them; shared flags (agent, interview, reporter, shutdown) in collapsible sections; validation before running; confirmation before anything that writes, opens a session or reinstalls |
+| **Inicio** | Assigned GitHub issues and Azure work items from saved repositories, with search/platform/repository filters; recent Plan/Code history and direct preparation actions |
+| **Plan / Code** | Work → options → review. Azure HU and Task dropdowns, assistant/model/effort selectors and optional advanced settings. GitHub Code explicitly processes the complete eligible queue |
+| **Carpetas** | Native directory search on desktop; searchable registered server repositories in the browser. Paths always belong to the machine running lz |
+| **Móvil** | Compact header, fixed bottom navigation, touch controls of at least 44 px, single-column work lists and a short execution footer; safe areas and keyboard resizing keep controls reachable |
+| **Herramientas avanzadas** | Full catalog, searchable by command or description; confirmation before writes and sessions |
 | **Runs** | One tab per run, live output, **Interrumpir** sends SIGINT to the run's process group (Ctrl-C), a second click kills it; the planning interview URL opens in the browser or inside the window |
 | **Historial** | The CLI's run log, grouped by run, terminal runs included |
 | **Configuracion** | The settings file below |
+
+Assigned work uses the read-only `lz work-assigned --working-directory /repo`.
+GitHub lists open issues assigned to `@me` in that repository, including issues
+outside the managed queue; Azure queries `@Me` in the repository's project and
+verifies each Task/Bug's User Story parent. Results are capped at 200 per query,
+with a visible notice. Failed sources remain visible alongside successful ones.
+Background reads do not add operator runs to the history. GitHub's delivery
+eligibility is unchanged: assigned issues can be inspected, while Code drains
+the eligible unassigned `ready-for-agent` queue.
+
+Existing web installations must add `work-assigned`, `hu-info`, and
+`hu-children-info` to their local `web.json` `allowedCommands` when enabling
+these reads, and update both the CLI and backend/frontend. New installations
+include these commands. The browser keeps the configured repository boundary;
+register more server folders locally to make them available in the picker.
 
 Secrets never reach a command line: `credentials-set` takes its value in a
 password field and sends it on stdin, `credentials-get` output is masked, and

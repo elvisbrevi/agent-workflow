@@ -49,7 +49,7 @@ export function azureRepositoryFromRemote(origin: string): AzureRepository {
 }
 
 /** The organization name a `LAZY_WORKFLOW_AZURE_ORGANIZATION` URL points at. */
-function organizationName(organizationUrl: string): string {
+export function azureOrganizationName(organizationUrl: string): string {
   const url = new URL(organizationUrl);
   return url.hostname.endsWith(".visualstudio.com")
     ? url.hostname.slice(0, -".visualstudio.com".length)
@@ -112,7 +112,7 @@ export class AzurePullRequests implements PullRequestTools {
 
   constructor(private readonly az: AzRunner, origin: string, private readonly organization = azureOrganization()) {
     this.repository = azureRepositoryFromRemote(origin);
-    const declared = organizationName(organization);
+    const declared = azureOrganizationName(organization);
     if (declared.toLowerCase() !== this.repository.organization.toLowerCase()) {
       throw new Error(
         `El remote origin pertenece a la organización ${this.repository.organization}, ` +

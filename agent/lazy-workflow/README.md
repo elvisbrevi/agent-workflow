@@ -416,6 +416,12 @@ rather than inside any one repository.
 
 ## Deterministic tools as commands
 
+`lz work-assigned --working-directory /path/to/repository` lists work assigned
+to the authenticated user: open issues in that GitHub repository, or Azure
+work items in its project. It opens no coding session and changes no claim or
+delivery eligibility. The GUI's home screen uses this read alongside the run
+log, and prepares Plan/Code through work, options and review steps.
+
 Every operation the workflow performs against Azure Boards, GitHub or git
 without opening a session is reachable as its own command. They share the exact
 adapter a run uses, print what that adapter answered as JSON, and open no

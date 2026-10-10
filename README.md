@@ -270,6 +270,7 @@ write it and hand it over.
 | Command | Purpose |
 |---|---|
 | `pr-list` | List the open pull requests. |
+| `work-assigned` | Read issues or work items assigned to the authenticated user in the repository's tracker. |
 | `pr-info` | Show one pull request with its description, status, and reviewers. |
 | `pr-thread-list` | List its discussion threads and code comments, with file and line. |
 | `pr-thread-reply` | Reply to one thread. |
@@ -334,6 +335,12 @@ it runs that same `lz`, so validation, checkpoints and the run log are unchanged
 It also shows the run history, answers planning interviews in the window, sends
 secrets on stdin rather than the command line, and checks which tools and
 variables a run will find.
+
+The home screen shows your assigned GitHub/Azure work and recent Plan/Code
+history. A three-step assistant prepares Plan and Code, with native folder
+selection, dropdowns and a review before execution; the full catalog is under
+advanced tools. `work-assigned --working-directory <path>` reads assignments
+from the authenticated user in the repository's tracker.
 
 ```bash
 lz gui

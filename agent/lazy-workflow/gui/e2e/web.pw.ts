@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixture.ts";
 
 test("owner can run the shared UI, answer a private interview, upload device text and keep data through restart", async ({ page, context }, testInfo) => {
   const failures: string[] = [];
@@ -9,16 +9,27 @@ test("owner can run the shared UI, answer a private interview, upload device tex
   await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
   await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
   await expect(page.getByRole("button", { name: "Cerrar sesion", exact: true })).toBeVisible();
+  await page.getByLabel("Repositorio activo").selectOption({ label: "github-project" });
   const cookie = (await context.cookies()).find((cookie) => cookie.name === "__Host-lz-session");
   expect(cookie?.secure).toBe(true); expect(cookie?.httpOnly).toBe(true); expect(cookie?.sameSite).toBe("Strict");
+  await page.getByText("Herramientas avanzadas", { exact: true }).click();
   await page.getByRole("button", { name: "git-branch-list", exact: true }).click();
   await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
   await expect(page.locator(".dock")).toContainText("synthetic");
-  await page.getByRole("button", { name: "plan", exact: true }).click();
-  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await page.getByRole("button", { name: "Planificar", exact: true }).click();
+  await page.getByRole("button", { name: "GitHub", exact: true }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await page.getByRole("button", { name: "Revisar ejecución" }).click();
+  await page.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
   await page.getByRole("button", { name: "Responder aqui", exact: true }).click();
   await expect(page.getByText("Synthetic: one service or two?", { exact: true })).toBeVisible();
   await page.locator(".web-interview textarea").fill("two");
+  if (testInfo.project.use.isMobile) {
+    await page.getByRole("button", { name: "Enviar respuestas", exact: true }).scrollIntoViewIfNeeded();
+    const submit = await page.getByRole("button", { name: "Enviar respuestas", exact: true }).boundingBox();
+    const navigation = await page.getByRole("button", { name: "Inicio", exact: true }).boundingBox();
+    expect(submit!.y + submit!.height).toBeLessThan(navigation!.y);
+  }
   await page.getByRole("button", { name: "Enviar respuestas", exact: true }).click();
   await expect(page.locator(".dock")).toContainText("syntheticAnswers");
   await expect(page.locator(".dock")).not.toContainText("http://127.0.0.1");
@@ -26,6 +37,7 @@ test("owner can run the shared UI, answer a private interview, upload device tex
   await page.locator("input[type=file]").setInputFiles({ name: "synthetic.md", mimeType: "text/markdown", buffer: Buffer.from("Synthetic browser upload") });
   await expect(page.locator("#flag-description-file")).toHaveValue(/\/uploads\/[a-f0-9]+\.txt$/);
   await page.getByRole("button", { name: "Configuracion", exact: true }).click();
+  await page.getByText("Conexiones y configuración del equipo", { exact: true }).click();
   await expect(page.locator("#lz-command")).toBeDisabled();
   const theme = page.locator(".settings select").last();
   const nextTheme = (await theme.inputValue()) === "dark" ? "light" : "dark";
@@ -39,12 +51,12 @@ test("owner can run the shared UI, answer a private interview, upload device tex
   await page.screenshot({ path: screenshot, fullPage: true });
   await testInfo.attach("shared-interface", { path: screenshot, contentType: "image/png" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.request.post("/__test/restart", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
+  await page.request.post("https://127.0.0.1:18443/__test/restart", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
   await page.reload();
   await expect(page.getByRole("button", { name: "Cerrar sesion", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Configuracion", exact: true }).click();
   await expect(page.locator(".settings select").last()).toHaveValue(nextTheme);
-  await page.request.post("/__test/expire", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
+  await page.request.post("https://127.0.0.1:18443/__test/expire", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
   await page.reload();
   await expect(page.getByRole("button", { name: "Iniciar sesion", exact: true })).toBeVisible();
   await page.getByLabel("Usuario", { exact: true }).fill("owner");

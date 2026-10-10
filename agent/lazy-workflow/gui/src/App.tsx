@@ -48,7 +48,7 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [view, setView] = useState<View>({ kind: "home" });
   const [forms, setForms] = useState<Record<string, FlagValues>>({});
-  const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [dockCollapsed, setDockCollapsed] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [state, dispatch] = useReducer(runsReducer, initialRunsState);
   const pendingStart = useRef(false);
@@ -77,7 +77,7 @@ export function App() {
     void loadCatalog();
   }, [loadCatalog]);
 
-  useEffect(() => { void refreshDiagnostics(catalog); }, [catalog, refreshDiagnostics]);
+  useEffect(() => { if (view.kind === "settings") void refreshDiagnostics(catalog); }, [catalog, view.kind, refreshDiagnostics]);
 
   // The skill edits gui.json from outside the window; rereading it on focus picks
   // that up without a restart. An identical file leaves the state untouched.
@@ -107,14 +107,14 @@ export function App() {
     else document.documentElement.dataset.theme = theme;
   }, [settings?.theme]);
 
-  const saveSettings = useCallback(async (next: GuiSettings) => {
+  const saveSettings = useCallback(async (next: GuiSettings, announce = true) => {
     try {
       const saved = await backend.saveSettings(next);
       const lzChanged = saved.settings.lzCommand !== settingsDocument?.settings.lzCommand
         || JSON.stringify(saved.settings.extraPath) !== JSON.stringify(settingsDocument?.settings.extraPath)
         || saved.settings.inheritShellEnvironment !== settingsDocument?.settings.inheritShellEnvironment;
       setSettingsDocument(saved);
-      setNotice("Configuracion guardada.");
+      setNotice(announce ? "Configuracion guardada." : null);
       if (lzChanged || catalogState.kind === "error") void loadCatalog();
       else void refreshDiagnostics(catalog);
     } catch (error) {
@@ -126,6 +126,7 @@ export function App() {
     forms[command.name] ?? (catalog && settings ? initialValues(catalog, command, settings) : {});
 
   const openCommand = (name: string, preset?: Record<string, string>) => {
+    setDockCollapsed(true);
     if (preset && catalog && settings) {
       const command = catalog.commands.find((candidate) => candidate.name === name);
       if (command) setForms((current) => ({ ...current, [name]: { ...(current[name] ?? initialValues(catalog, command, settings)), ...preset } }));
@@ -140,7 +141,14 @@ export function App() {
       name,
       values["--working-directory"] === previous ? { ...values, "--working-directory": repository } : values,
     ])));
-    void saveSettings({ ...settings, activeRepository: repository });
+    void saveSettings({ ...settings, activeRepository: repository }, false);
+  };
+
+  const addRepository = (repository: string) => {
+    if (!settings) return;
+    if (!isDesktop || settings.repositories.includes(repository)) { selectRepository(repository); return; }
+    setForms((current) => Object.fromEntries(Object.entries(current).map(([name, values]) => [name, { ...values, "--working-directory": repository }])));
+    void saveSettings({ ...settings, repositories: [...settings.repositories, repository], activeRepository: repository }, false);
   };
 
   const run = async (command: CatalogCommand, args: string[], stdin?: string) => {
@@ -153,7 +161,9 @@ export function App() {
         const confirmed = await ask(`${EFFECT_CONFIRMATION[command.effect]}\n\n${line}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
         if (!confirmed) return;
       }
-      const started = await backend.startRun(args, { stdin, cwd: settings.activeRepository ?? undefined });
+      const directoryIndex = args.indexOf("--working-directory");
+      const cwd = directoryIndex >= 0 ? args[directoryIndex + 1]?.split(",")[0]?.trim() : settings.activeRepository ?? undefined;
+      const started = await backend.startRun(args, { stdin, cwd });
       dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
       setDockCollapsed(false);
     } catch (error) {
@@ -234,12 +244,12 @@ export function App() {
     main = (
       <HomeView
         catalog={catalog}
-        diagnostics={diagnostics}
         repositories={settings.repositories}
         activeRepository={settings.activeRepository}
+        revision={state.runs.filter((run) => run.exit !== null).length}
         onOpenCommand={openCommand}
-        onRefreshDiagnostics={() => void refreshDiagnostics(catalog)}
-        onOpenSettings={() => setView({ kind: "settings" })}
+        onOpenHistory={(runId) => setView({ kind: "history", runId })}
+        onAddRepository={addRepository}
       />
     );
   }
@@ -252,8 +262,9 @@ export function App() {
         running={running}
         repositories={settings?.repositories ?? []}
         activeRepository={settings?.activeRepository ?? null}
-        onNavigate={setView}
+        onNavigate={(next) => { setDockCollapsed(true); setView(next); }}
         onSelectRepository={selectRepository}
+        onAddRepository={addRepository}
       />
       <div className="workspace">
         {notice && (

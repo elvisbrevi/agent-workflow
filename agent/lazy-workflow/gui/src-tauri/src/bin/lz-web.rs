@@ -188,6 +188,9 @@ async fn run() -> Result<(), String> {
             allowed_commands: [
                 "plan",
                 "code",
+                "work-assigned",
+                "hu-info",
+                "hu-children-info",
                 "git-branch-list",
                 "git-branch-checkout",
                 "pr-list",
