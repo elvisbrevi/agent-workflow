@@ -1,10 +1,11 @@
 # Mac handoff: agent-workflow.elvisbrevi.cl
 
-Continue on `feat/self-hosted-web` in `elvisbrevi/agent-workflow`.
-The implementation in `5635764` is included in
-[PR #4](https://github.com/elvisbrevi/agent-workflow/pull/4). The Mac continuation
-started from `f51c051`; the snapshot below records the deployed services and
-actual HTTPS checks. The numbered steps remain a setup/recovery guide.
+Continue on `main` in `elvisbrevi/agent-workflow`. The initial web implementation
+was delivered in [PR #4](https://github.com/elvisbrevi/agent-workflow/pull/4),
+and the responsive work dashboard in
+[PR #5](https://github.com/elvisbrevi/agent-workflow/pull/5). The snapshots below
+record the deployed services and actual HTTPS checks. The numbered steps remain
+a setup/recovery guide.
 
 This is one owner per independent server/OS account, with that owner's
 configuration and CLI credentials. Another owner uses their own hostname,
@@ -12,13 +13,42 @@ tunnel and installation. Separate profile directories are not an OS sandbox.
 
 ## Recorded deployment status
 
+### Responsive GUI update, 2026-10-10
+
+PR #5 was merged and pushed to `main` at
+`566d029a58323cd4fb7fceace9e727ce5bcd61f3`. The optimized web backend and frontend
+were rebuilt and installed through `install-web-services.ts`, preserving the
+existing Access configuration and owner binding. Both LaunchAgents were running,
+local `/health` returned `ok`, and deployed frontend hashes matched the build.
+No workflow runs were active during the service update.
+
+The existing web command allowlist now includes `work-assigned`, `hu-info`,
+`hu-children-info` and `ticket-type-info`. The saved production repository is
+`/Users/elvis/code/agent-workflow`. The synthetic verification repository was
+removed from the production profile; its files remain available on disk.
+
+Authenticated Chrome showed the new dashboard at the public origin. The actual
+GitHub assigned-work query succeeded with zero assigned issues in this repository.
+Checks at 390 and 320 CSS pixels found no horizontal overflow and verified the
+mobile navigation and touch targets. These are browser viewport checks; physical
+phone authentication and live Azure queries remain unverified. No Plan or Code
+workflow was executed against the live backlog during this update.
+
+`lz update` also installed the new desktop application at
+`/Users/elvis/Applications/lz.app`. Its GUI tree stamp matched the merged source,
+the installed catalog included `work-assigned`, and `lz gui` launched the app.
+The pre-update backend, frontend and non-secret deployment configuration are
+available in `~/.local/share/lz-web/deployment-backups/before-mobile-ux-566d029`.
+
+### Initial web deployment
+
 DNS and the dedicated tunnel were configured on 2026-10-09 and read back on
 the owner's Mac on 2026-10-10. The following snapshot records that Mac session;
 consult the service manager and Cloudflare for current health.
 
 | Resource | Value or remaining work |
 |---|---|
-| Repository / branch | `elvisbrevi/agent-workflow` / `feat/self-hosted-web` |
+| Repository / branch at initial deployment | `elvisbrevi/agent-workflow` / `feat/self-hosted-web` |
 | Public origin | `https://agent-workflow.elvisbrevi.cl` |
 | Cloudflare account | `26f1f3a05cbfe51ade90a57362c15fad` |
 | Zone | `elvisbrevi.cl`, active |
@@ -54,8 +84,8 @@ login/phone work are recorded in [WEB-VERIFICATION.md](WEB-VERIFICATION.md).
 
 ## 1. Obtain the branch on the Mac
 
-Read the repository's `AGENTS.md`. Preserve existing changes and stay on
-`feat/self-hosted-web`; do not reset or force checkout over local work.
+Read the repository's `AGENTS.md`. Preserve existing changes and use `main`;
+do not reset or force checkout over local work.
 
 For a fresh checkout, start a Bash session in Terminal. Keep the same session
 for the following commands. Choose a different project directory if this one
@@ -72,7 +102,7 @@ export CLOUDFLARE_ACCOUNT_ID="26f1f3a05cbfe51ade90a57362c15fad"
 export LZ_OWNER_EMAIL="elvisbrevi@gmail.com"
 
 mkdir -p "$HOME/src"
-git clone --branch feat/self-hosted-web https://github.com/elvisbrevi/agent-workflow.git "$LZ_PROJECT_DIR"
+git clone --branch main https://github.com/elvisbrevi/agent-workflow.git "$LZ_PROJECT_DIR"
 cd "$LZ_PROJECT_DIR"
 git status --short --branch
 git log -1 --oneline
@@ -80,7 +110,7 @@ git log -1 --oneline
 
 For an existing checkout, set `LZ_PROJECT_DIR` to its absolute path before
 defining the other variables, inspect its status/branch, and use
-`git pull --ff-only origin feat/self-hosted-web` only when on that branch.
+`git pull --ff-only origin main` only when on that branch.
 If local work prevents an update, resolve it without discarding changes.
 
 The selected owner email came from the repository owner's public GitHub
