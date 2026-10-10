@@ -111,6 +111,14 @@ Access setup.
 
 ## Bind the owner and start services
 
+For the first deployment, initialize the Access installation, retrieve the
+existing tunnel's connector credentials and start the two LaunchAgents using
+[the numbered Mac handoff](DEPLOYMENT-elvisbrevi.cl.md) before signing in.
+An unbound backend returns 403 while Cloudflare still allows the owner to
+complete GitHub sign-in. Then stop only the backend to bind the identity and
+reload it, as shown in the handoff. This avoids requiring a public login while
+the connector is still offline.
+
 After GitHub sign-in, open
 `https://agent-workflow.elvisbrevi.cl/cdn-cgi/access/get-identity` in that browser
 and save its JSON response in a private file on the Mac. The operator verifies
