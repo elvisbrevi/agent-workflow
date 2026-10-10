@@ -146,7 +146,6 @@ async fn run() -> Result<(), String> {
             allowed_commands: [
                 "plan",
                 "code",
-                "review",
                 "git-branch-list",
                 "git-branch-checkout",
                 "pr-list",
@@ -176,7 +175,10 @@ async fn run() -> Result<(), String> {
             None
         };
         web::initialize(&data_dir, &config, owner.as_ref())?;
-        println!("Initialized HTTPS configuration in {}. No DNS or connector has been changed.", data_dir.display());
+        println!(
+            "Initialized HTTPS configuration in {}. No DNS or connector has been changed.",
+            data_dir.display()
+        );
         return Ok(());
     }
     let mut config = web::load_config(&data_dir)?;

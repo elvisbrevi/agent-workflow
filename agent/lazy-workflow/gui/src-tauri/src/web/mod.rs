@@ -306,9 +306,19 @@ async fn check_request(
     {
         return Err(denied("unexpected Origin"));
     }
-    if headers
-        .get("sec-fetch-site")
-        .is_some_and(|site| site == "cross-site")
+    let access_document_navigation = state.access.is_some()
+        && request.method() == axum::http::Method::GET
+        && path == "/"
+        && headers
+            .get("sec-fetch-mode")
+            .is_some_and(|mode| mode == "navigate")
+        && headers
+            .get("sec-fetch-dest")
+            .is_some_and(|destination| destination == "document");
+    if !access_document_navigation
+        && headers
+            .get("sec-fetch-site")
+            .is_some_and(|site| site == "cross-site")
     {
         return Err(denied("cross-site request rejected"));
     }
@@ -405,16 +415,9 @@ async fn check_request(
 async fn authentication_info(State(state): State<Arc<WebState>>) -> Json<Value> {
     Json(match &state.config.authentication {
         Authentication::Password => json!({"mode":"password"}),
-        Authentication::CloudflareAccess { access } => {
-            let mut login = url::Url::parse(&format!(
-                "{}/cdn-cgi/access/login/{}",
-                access.issuer, access.audience
-            ))
-            .unwrap();
-            login
-                .query_pairs_mut()
-                .append_pair("redirect_url", &state.config.origin());
-            json!({"mode":"cloudflareAccess","loginUrl":login.as_str(),"logoutUrl":"/cdn-cgi/access/logout"})
+        // The protected origin lets Access generate its own login metadata and redirect.
+        Authentication::CloudflareAccess { .. } => {
+            json!({"mode":"cloudflareAccess","loginUrl":state.config.origin(),"logoutUrl":"/cdn-cgi/access/logout"})
         }
     })
 }

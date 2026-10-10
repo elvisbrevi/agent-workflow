@@ -74,7 +74,9 @@ pub(crate) async fn mount_identity(server: &MockServer, value: Value) {
 #[tokio::test]
 async fn signed_jwt_and_pinned_identity_are_both_required() {
     let (verifier, server) = mock_verifier().await;
-    mount_identity(&server, identity(SUBJECT, "123456")).await;
+    let mut provider_identity = identity(SUBJECT, "123456");
+    provider_identity["id"] = json!(123456);
+    mount_identity(&server, provider_identity).await;
     let value = token(&claims(SUBJECT), "synthetic-key");
     let verified = verifier.verify(&headers(&value)).await.unwrap();
     assert_eq!(verified.binding.provider_user_id, "123456");
@@ -102,6 +104,31 @@ async fn signed_jwt_and_pinned_identity_are_both_required() {
         verifier.verify(&duplicate).await,
         Err(StatusCode::UNAUTHORIZED)
     ));
+}
+
+#[test]
+fn numeric_github_subject_is_canonical_and_non_integer_values_are_rejected() {
+    for id in [json!(123456), json!("123456")] {
+        let mut input = identity(SUBJECT, "123456");
+        input["id"] = id;
+        let parsed: Identity = serde_json::from_value(input).unwrap();
+        assert_eq!(
+            parsed.binding(&config()).unwrap().provider_user_id,
+            "123456"
+        );
+    }
+    for id in [
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!(true),
+        json!(null),
+        json!([]),
+    ] {
+        let mut input = identity(SUBJECT, "123456");
+        input["id"] = id;
+        assert!(serde_json::from_value::<Identity>(input).is_err());
+    }
 }
 
 #[tokio::test]

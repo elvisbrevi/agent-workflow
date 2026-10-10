@@ -217,6 +217,14 @@ mod tests {
         let first = Core::open(path.clone()).unwrap();
         assert!(Core::open(path.clone()).is_err());
         drop(first);
-        assert!(Core::open(path).is_ok());
+        // Parallel test children can briefly inherit a CLOEXEC lease before exec.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while Core::open(path.clone()).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "profile lease survived owner exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

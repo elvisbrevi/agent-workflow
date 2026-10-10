@@ -113,10 +113,25 @@ impl Binding {
 
 #[derive(Deserialize)]
 pub struct Identity {
+    #[serde(deserialize_with = "deserialize_provider_subject")]
     pub id: String,
     pub user_uuid: String,
     pub account_id: String,
     idp: IdentityProvider,
+}
+fn deserialize_provider_subject<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(id) => Ok(id),
+        value => value
+            .as_u64()
+            .filter(|id| *id > 0)
+            .map(|id| id.to_string())
+            .ok_or_else(|| {
+                serde::de::Error::custom("expected a provider subject string or positive integer")
+            }),
+    }
 }
 #[derive(Deserialize)]
 pub(super) struct IdentityProvider {

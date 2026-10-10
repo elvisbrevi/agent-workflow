@@ -503,6 +503,36 @@ async fn access_replaces_password_requires_assertion_and_csrf_and_blocks_logout_
             .insert("cf-access-jwt-assertion", assertion.parse().unwrap());
         value
     };
+    // OAuth returns through a cross-site top-level document navigation.
+    for (method, path, mode, destination, expected) in [
+        ("GET", "/", "navigate", "document", StatusCode::OK),
+        ("POST", "/", "navigate", "document", StatusCode::FORBIDDEN),
+        (
+            "GET",
+            "/api/session",
+            "navigate",
+            "document",
+            StatusCode::FORBIDDEN,
+        ),
+        ("GET", "/", "cors", "document", StatusCode::FORBIDDEN),
+        ("GET", "/", "navigate", "iframe", StatusCode::FORBIDDEN),
+    ] {
+        let mut navigation = signed(method, path, "", "", Value::Null);
+        navigation.headers_mut().remove(header::ORIGIN);
+        for (name, value) in [
+            ("sec-fetch-site", "cross-site"),
+            ("sec-fetch-mode", mode),
+            ("sec-fetch-dest", destination),
+        ] {
+            navigation
+                .headers_mut()
+                .insert(name, value.parse().unwrap());
+        }
+        assert_eq!(
+            app.clone().oneshot(navigation).await.unwrap().status(),
+            expected
+        );
+    }
     let info = value(
         app.clone()
             .oneshot(request("GET", "/api/auth", "", "", Value::Null))
@@ -511,6 +541,7 @@ async fn access_replaces_password_requires_assertion_and_csrf_and_blocks_logout_
     )
     .await;
     assert_eq!(info["mode"], "cloudflareAccess");
+    assert_eq!(info["loginUrl"], "https://workflow.test");
     assert_eq!(info["logoutUrl"], "/cdn-cgi/access/logout");
     assert!(!info.to_string().contains("123456"));
     assert_eq!(

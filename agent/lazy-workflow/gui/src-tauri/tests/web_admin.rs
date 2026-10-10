@@ -29,7 +29,7 @@ fn setup(root: &Path) -> std::path::PathBuf {
     file
 }
 fn identity() -> Value {
-    json!({"id":"123456","user_uuid":"2f102676-72cd-4d60-9f49-a94a33f9b231","account_id":"b".repeat(32),"idp":{"id":"f43dbf29-6f6b-4f38-ac06-d8a973fb4e47","type":"github"}})
+    json!({"id":123456,"user_uuid":"2f102676-72cd-4d60-9f49-a94a33f9b231","account_id":"b".repeat(32),"idp":{"id":"f43dbf29-6f6b-4f38-ac06-d8a973fb4e47","type":"github"}})
 }
 fn read(root: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(root.join("web.json")).unwrap()).unwrap()
@@ -70,6 +70,26 @@ fn access_initialization_binding_recovery_and_password_rejection_are_operator_lo
         read(root.path())["authentication"]["access"]["ownerSubject"],
         Value::Null
     );
+    let catalog_module =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/cli/command-catalog.ts");
+    let catalog = Command::new("bun")
+        .arg("-e")
+        .arg(format!(
+            "import {{ commandCatalog }} from {}; console.log(JSON.stringify(commandCatalog().commands.map(c => c.name)));",
+            serde_json::to_string(&catalog_module).unwrap()
+        ))
+        .output()
+        .expect("Bun is required to verify the CLI catalog contract");
+    assert!(catalog.status.success());
+    let names: Vec<String> = serde_json::from_slice(&catalog.stdout).unwrap();
+    for allowed in read(root.path())["allowedCommands"].as_array().unwrap() {
+        assert!(
+            names
+                .iter()
+                .any(|name| Some(name.as_str()) == allowed.as_str()),
+            "Default web command is absent from the CLI catalog: {allowed}"
+        );
+    }
     let output = command("bind-access", root.path(), &[], &identity().to_string());
     assert!(
         output.status.success(),

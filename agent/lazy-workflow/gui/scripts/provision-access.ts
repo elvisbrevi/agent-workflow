@@ -7,7 +7,7 @@ import { outsideCheckout } from "./web-paths.ts";
 
 interface Provider { id: string; type: string; name: string; config?: { client_id?: string } }
 interface Policy { name: string; decision: string; include: unknown[]; require?: unknown[]; exclude?: unknown[] }
-interface Application { id: string; name: string; type: string; domain?: string; self_hosted_domains?: string[]; destinations?: Array<{ type: string; uri?: string; hostname?: string }>; aud?: string; allowed_idps?: string[]; auto_redirect_to_identity?: boolean; http_only_cookie?: boolean; session_duration?: string }
+interface Application { id: string; name: string; type: string; domain?: string; self_hosted_domains?: string[]; destinations?: Array<{ type: string; uri?: string; hostname?: string }>; aud?: string; allowed_idps?: string[]; auto_redirect_to_identity?: boolean; http_only_cookie_attribute?: boolean; session_duration?: string }
 export interface AccessOptions { accountId: string; hostname: string; ownerEmail: string; ownedAppId?: string; ownedProviderId?: string; protectOnly?: boolean }
 export interface AccessPlan { options: AccessOptions; issuer: string; provider: Provider | null; application: Application | null; appName: string; providerName: string }
 export interface LoginCredentials { clientId: string; clientSecret: string }
@@ -73,14 +73,14 @@ export async function applyAccess(api: CloudflareApi, plan: AccessPlan, credenti
   }
   if (provider && credentials && provider.config?.client_id !== credentials.clientId) throw new Error("Existing GitHub provider uses another OAuth App; it is preserved");
   const expectedPolicy = policy(options, provider?.id);
-  const definition = { name: plan.appName, type: "self_hosted", domain: options.hostname, session_duration: "12h", app_launcher_visible: false, allowed_idps: options.protectOnly ? [] : [provider!.id], auto_redirect_to_identity: !options.protectOnly, http_only_cookie: true, policies: [expectedPolicy] };
+  const definition = { name: plan.appName, type: "self_hosted", domain: options.hostname, session_duration: "12h", app_launcher_visible: false, allowed_idps: options.protectOnly ? [] : [provider!.id], auto_redirect_to_identity: !options.protectOnly, http_only_cookie_attribute: true, policies: [expectedPolicy] };
   let created: Application;
   try { created = await api.call<Application>(plan.application ? "PUT" : "POST", `${base}/apps${plan.application ? `/${plan.application.id}` : ""}`, definition); }
   catch (error) { throw new Error(`Access application write failed. Required account permission: Access: Apps and Policies Write. ${error instanceof Error ? error.message : "Cloudflare rejected the operation"}`); }
   await recordOwnership({ appId: created.id, ...(provider ? { providerId: provider.id } : {}) });
   const actual = await api.call<Application>("GET", `${base}/apps/${created.id}`);
   const actualPolicies = await api.call<Policy[]>("GET", `${base}/apps/${created.id}/policies`);
-  if (actual.type !== "self_hosted" || actual.domain !== options.hostname || JSON.stringify(actual.allowed_idps ?? []) !== JSON.stringify(definition.allowed_idps) || actual.http_only_cookie !== true || actual.auto_redirect_to_identity !== definition.auto_redirect_to_identity || actual.session_duration !== definition.session_duration || JSON.stringify(actualPolicies.map(normalized)) !== JSON.stringify([normalized(expectedPolicy)]) || !/^[a-f0-9]{64}$/.test(actual.aud ?? "")) throw new Error("Access readback did not match the intended policy; do not activate the backend");
+  if (actual.type !== "self_hosted" || actual.domain !== options.hostname || JSON.stringify(actual.allowed_idps ?? []) !== JSON.stringify(definition.allowed_idps) || actual.http_only_cookie_attribute !== true || actual.auto_redirect_to_identity !== definition.auto_redirect_to_identity || actual.session_duration !== definition.session_duration || JSON.stringify(actualPolicies.map(normalized)) !== JSON.stringify([normalized(expectedPolicy)]) || !/^[a-f0-9]{64}$/.test(actual.aud ?? "")) throw new Error("Access readback did not match the intended policy; do not activate the backend");
   return options.protectOnly ? null : { publicUrl: `https://${options.hostname}`, access: { issuer: plan.issuer, audience: actual.aud!, accountId: options.accountId, githubIdpId: provider!.id, ownerSubject: null } };
 }
 

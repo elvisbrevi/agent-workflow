@@ -24,7 +24,7 @@ test("Access exchanges no password or bearer, uses CSRF and exits to Access logo
 const appId = "be853070-e8b0-4672-9346-e1db3fd4b01c";
 const providerId = "44f98379-e81f-4323-9b9b-ec11b856af08";
 const options: AccessOptions = { accountId: "a".repeat(32), hostname: "app.example.test", ownerEmail: "synthetic@example.test" };
-function fixture(initial: { apps?: unknown[]; providers?: unknown[]; policies?: unknown[]; readbackWrong?: boolean } = {}) {
+function fixture(initial: { apps?: unknown[]; providers?: unknown[]; policies?: unknown[]; readbackWrong?: boolean; cookieDisabled?: boolean } = {}) {
   const calls: Array<{ method: string; path: string; body?: any }> = []; let app: any = null; let provider: any = null;
   const api: CloudflareApi = { async call<T>(method: string, path: string, body?: any): Promise<T> {
     calls.push({ method, path, body }); let result: unknown;
@@ -33,7 +33,11 @@ function fixture(initial: { apps?: unknown[]; providers?: unknown[]; policies?: 
     else if (method === "GET" && path.includes("apps?")) result = initial.apps ?? [];
     else if (method === "POST" && path.endsWith("identity_providers")) result = provider = { ...body, id: providerId };
     else if (method === "GET" && path.endsWith(`identity_providers/${providerId}`)) result = provider;
-    else if (["POST", "PUT"].includes(method) && /\/apps(?:\/[^/]+)?$/.test(path)) result = app = { ...body, id: appId, aud: "b".repeat(64) };
+    else if (["POST", "PUT"].includes(method) && /\/apps(?:\/[^/]+)?$/.test(path)) {
+      // Cloudflare ignores the unsupported http_only_cookie field and returns its API attribute.
+      const { http_only_cookie: _ignored, ...accepted } = body;
+      result = app = { ...accepted, http_only_cookie_attribute: !initial.cookieDisabled, id: appId, aud: "b".repeat(64) };
+    }
     else if (method === "GET" && path.endsWith("policies")) result = app ? app.policies : initial.policies ?? [];
     else if (method === "GET" && path.endsWith(`apps/${appId}`)) result = initial.readbackWrong ? { ...app, allowed_idps: ["foreign-idp"] } : app;
     else throw new Error(`Unexpected mocked ${method} ${path}`);
@@ -53,7 +57,8 @@ test("Access plan is read-only and applies GitHub-only explicit owner policy wit
   expect(app.allowed_idps).toEqual([providerId]); expect(app.auto_redirect_to_identity).toBe(true);
   expect(app.policies[0].include).toEqual([{ email: { email: options.ownerEmail } }]);
   expect(app.policies[0].require).toEqual([{ login_method: { id: providerId } }]);
-  expect(app.domain).toBe(options.hostname); expect(app.http_only_cookie).toBe(true);
+  expect(app.domain).toBe(options.hostname); expect(app.http_only_cookie_attribute).toBe(true);
+  expect(app).not.toHaveProperty("http_only_cookie");
   expect(ownership).toEqual([{ providerId }, { appId, providerId }]);
   expect(JSON.stringify(setup)).not.toContain("synthetic-secret");
   expect(calls.every((c) => !c.path.includes("cfd_tunnel") && !c.path.includes("dns_records"))).toBe(true);
@@ -87,4 +92,12 @@ test("missing OAuth credentials cause no mutations; a protection-only app blocks
 test("Access refuses successful writes whose policy/provider readback is incompatible", async () => {
   const { api } = fixture({ readbackWrong: true }); const plan = await planAccess(api, options);
   await expect(applyAccess(api, plan, { clientId: "synthetic", clientSecret: "synthetic" }, async () => {})).rejects.toThrow("readback");
+});
+
+test("Access refuses a disabled HttpOnly attribute in both login and protection-only readback", async () => {
+  for (const protectOnly of [false, true]) {
+    const { api } = fixture({ cookieDisabled: true });
+    const plan = await planAccess(api, { ...options, protectOnly });
+    await expect(applyAccess(api, plan, { clientId: "synthetic", clientSecret: "synthetic" }, async () => {})).rejects.toThrow("readback");
+  }
 });

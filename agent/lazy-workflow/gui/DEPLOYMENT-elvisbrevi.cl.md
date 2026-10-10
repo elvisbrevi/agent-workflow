@@ -1,10 +1,10 @@
 # Mac handoff: agent-workflow.elvisbrevi.cl
 
 Continue on `feat/self-hosted-web` in `elvisbrevi/agent-workflow`.
-The implementation is already committed in `5635764` and included in
-[PR #4](https://github.com/elvisbrevi/agent-workflow/pull/4). This handoff adds
-the remaining operator steps; it does not claim the Mac services or public
-GitHub login have been verified.
+The implementation in `5635764` is included in
+[PR #4](https://github.com/elvisbrevi/agent-workflow/pull/4). The Mac continuation
+started from `f51c051`; the snapshot below records the deployed services and
+actual HTTPS checks. The numbered steps remain a setup/recovery guide.
 
 This is one owner per independent server/OS account, with that owner's
 configuration and CLI credentials. Another owner uses their own hostname,
@@ -12,9 +12,9 @@ tunnel and installation. Separate profile directories are not an OS sandbox.
 
 ## Recorded deployment status
 
-DNS and the dedicated tunnel were configured and read back on 2026-10-09.
-The read-only Access plan was inspected again on 2026-10-10. These are recorded
-observations, not a live health check of the Mac.
+DNS and the dedicated tunnel were configured on 2026-10-09 and read back on
+the owner's Mac on 2026-10-10. The following snapshot records that Mac session;
+consult the service manager and Cloudflare for current health.
 
 | Resource | Value or remaining work |
 |---|---|
@@ -28,17 +28,28 @@ observations, not a live health check of the Mac.
 | Ingress | Hostname to `http://127.0.0.1:8234`, then `http_status:404` |
 | Host override | None; preserve the public Host |
 | Access issuer | `https://small-forest-4923.cloudflareaccess.com` |
-| Access application/policy | Pending; creation returned HTTP 403, code 1010, with the configured token |
-| GitHub identity provider | Pending; dedicated OAuth App credentials and Access write permissions are missing |
-| Connector | Inactive, zero connections at provisioning verification |
-| Backend / LaunchAgents | Pending installation on the owner's Mac |
-| Owner identity binding | Pending real GitHub sign-in and local binding |
-| Public HTTPS / physical phone acceptance | Pending |
+| Access application/policy | App `282b30e3-efa8-4cff-901c-d26eff1b633b`; Allow requires the owner's email and the dedicated GitHub provider; HttpOnly enabled, session duration 12h; readback verified |
+| GitHub identity provider | `36e7861f-1008-4904-aa59-96baf1b83169`, dedicated `lz-web-agent-workflow.elvisbrevi.cl-login`; OAuth App `agent-workflow-login` (`3920572`) created and real sign-in verified |
+| Connector | LaunchAgent running; Cloudflare `healthy`, four connections, also after connector restart |
+| Backend / LaunchAgents | Frontend and optimized Rust backend installed; both LaunchAgents running; local `/health` returns `ok` |
+| Owner identity binding | Real provider response verified and bound locally with backend stopped; Access logout and fresh sign-in completed |
+| Public HTTPS | Mac GitHub sign-in, synthetic `git-branch-list`, protected settings, logout/reentry, actual Access expiry and persistence after restarting both services passed |
+| Physical phone acceptance | Operator reported a login error; supplied capture shows GitHub `/sessions/two-factor/webauthn` failure before returning to Access. Phone operations/logout/reentry remain unverified |
 
-The development environment has no remote access to the Mac. Its HTTP policy
-also excludes the public subdomain and team issuer. Complete real login and
-HTTPS acceptance from the Mac/phone. Earlier synthetic checks, desktop checks
-and their limits are recorded in [WEB-VERIFICATION.md](WEB-VERIFICATION.md).
+The Mac checkout is `/Users/elvis/code/agent-workflow`; private deployment state
+is `/Users/elvis/.local/share/lz-web`. Its backend and connector labels are
+`com.elvisbrevi.lz-web.f1e81b7ac52c.backend` and
+`com.elvisbrevi.lz-web.f1e81b7ac52c.connector`. `service.json` records their paths
+and hashes. This installation is already initialized in Access mode and bound;
+updates use step 9 without repeating `init`, `use-access` or owner binding.
+The existing Tauri installation was preserved and a new desktop build was
+opened using a separate synthetic profile. A synthetic repository remains at
+`/Users/elvis/.local/share/lz-web/verification-repo`, with branch
+`verification-check`, for the remaining physical-phone acceptance.
+
+The earlier development environment lacked Mac/public-host access. Those limits
+do not apply to the Mac's verified HTTPS requests. Actual checks and remaining
+login/phone work are recorded in [WEB-VERIFICATION.md](WEB-VERIFICATION.md).
 
 ## 1. Obtain the branch on the Mac
 
@@ -103,10 +114,13 @@ cargo build --locked --release --no-default-features --features web --bin lz-web
 
 Stop on a failed command and resolve that failure before continuing.
 
-## 3. Grant the Cloudflare administration token its missing permissions
+## 3. Check Cloudflare administration token permissions
 
 In [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens),
-edit the intended token or create a replacement. Restrict resources to this
+inspect the intended token; edit it only if the required API action is denied.
+The Mac token successfully wrote/read back the project app, policy and IdP and
+retrieved the existing connector token. Token policy introspection returned
+403/code 9109, so a full scope inventory was unavailable. Restrict resources to this
 account and zone:
 
 | Resource | Dashboard permission |
@@ -144,8 +158,11 @@ Device Flow. Do not reuse the `personal-teams` app or modify its resources.
 
 ## 5. Enter setup credentials and provision Access
 
-Enter values only in these Terminal prompts, not in command literals, chat or
-source files. Bash's hidden prompts keep the secrets out of shell history.
+Use configured credential bindings first; audit them with public
+`lz credentials-audit --name NAME` without displaying values. The Mac has private
+bindings in `~/.config/secrets/cloudflare.env` and `~/.config/secrets/lz-access.env`.
+If a binding is absent, enter values only in these Terminal prompts, not in
+command literals, chat or source files. Bash's hidden prompts keep secrets out of shell history.
 The variables are needed only for setup in this session:
 
 ```bash
@@ -157,6 +174,7 @@ read -rsp "GitHub OAuth Client Secret: " LZ_ACCESS_GITHUB_CLIENT_SECRET
 printf '\n'
 export CLOUDFLARE_API_TOKEN LZ_ACCESS_GITHUB_CLIENT_ID LZ_ACCESS_GITHUB_CLIENT_SECRET
 
+mkdir -p -m 700 "$LZ_WEB_DATA_DIR"
 cd "$LZ_PROJECT_DIR/agent/lazy-workflow/gui"
 bun scripts/provision-access.ts \
   --data-dir "$LZ_WEB_DATA_DIR" --hostname agent-workflow.elvisbrevi.cl \
@@ -198,8 +216,8 @@ For a **new** installation, run:
   --access-config "$LZ_WEB_DATA_DIR/access.json"
 ```
 
-This takes no application password. For an **existing** installation, stop its
-backend first and run this command **instead of `init`**:
+This takes no application password. For an **existing password-mode** installation,
+stop its backend first and run this command **instead of `init`**:
 
 ```bash
 "$LZ_WEB_BINARY" use-access --data-dir "$LZ_WEB_DATA_DIR" \
@@ -209,6 +227,8 @@ backend first and run this command **instead of `init`**:
 Migration preserves settings, repositories, credentials and run data while
 revoking sessions. Configuration from a different public origin is rejected.
 Do not initialize over existing data or use password mode to bypass Access.
+An existing bound Access installation needs only an artifact/service update;
+repeating `use-access` clears its binding and requires local owner binding again.
 
 ## 7. Configure the local CLI and repository
 
@@ -281,6 +301,12 @@ LaunchAgent labels and plist paths in `service.json`, and preserves unrelated
 or manually modified services. Cloudflare should now report the tunnel Healthy.
 Logs are in `$LZ_WEB_DATA_DIR/logs/`. The Mac must remain awake with the owner's
 session available; LaunchAgents start at login and restart after failures.
+
+On this Mac, immediate reinstallation once encountered launchctl bootstrap
+error 5 because bootout had not finished. Unload only the two labels recorded
+in this installation's manifest, wait until `launchctl print gui/$(id -u)/LABEL`
+reports each absent, and rerun the installer. Do not use sudo or unload unrelated
+services. The successful repeat restarted both services and preserved data.
 
 **Start services before the first real identity binding.** This makes the
 public hostname reachable for GitHub login. The backend still denies every
@@ -364,6 +390,9 @@ tunnel f8c82b9c-49e9-43f6-a180-6bd8037487ea already exist for
 https://agent-workflow.elvisbrevi.cl. Follow the numbered Mac handoff to finish
 Access permissions/OAuth/provider/app, local profile initialization or migration,
 connector retrieval, LaunchAgents, real owner binding and HTTPS/phone acceptance.
+The 2026-10-10 Mac snapshot is already configured and active; inspect it before
+repeating initialization or binding. Complete the remaining physical-phone
+GitHub 2FA/operation/logout acceptance and record any exact upstream error.
 Use configured credentials without printing or committing their values. Do not
 modify personal-teams or unrelated DNS/tunnels/Access resources. Keep one owner
 per independent installation and one process per profile. Finish independent

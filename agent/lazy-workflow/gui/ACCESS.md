@@ -55,6 +55,7 @@ credentials; the backend receives none of them.
 
 ```bash
 cd "$LZ_PROJECT_DIR/agent/lazy-workflow/gui"
+mkdir -p -m 700 "$LZ_WEB_DATA_DIR"
 bun scripts/provision-access.ts \
   --data-dir "$LZ_WEB_DATA_DIR" --hostname agent-workflow.elvisbrevi.cl \
   --owner-email elvisbrevi@gmail.com
@@ -131,7 +132,10 @@ it locally with the service stopped:
 ```
 
 Required fields are `id` (provider subject), `user_uuid`, `account_id`,
-`idp.id` and `idp.type: github`. Do not substitute GitHub login/email or the
+`idp.id` and `idp.type: github`. Cloudflare can return the GitHub `id` as a
+positive JSON integer; both local binding and runtime verification normalize
+that integer to the same decimal string. Save the original response unchanged.
+Do not substitute GitHub login/email or the
 email-associated Access JWT `sub`. If the actual identity response lacks these
 verified fields, investigate the provider setup; do not relax validation or
 invent a binding. Without a binding all protected requests fail closed. This
@@ -161,6 +165,19 @@ Browser logout first revokes the local session and persists the assertion's
 fingerprint until expiration, then navigates to `/cdn-cgi/access/logout` to clear
 Access's own session. Replay is blocked immediately by Rust, including after
 restart. Cloudflare's global revocation can take 20–30 seconds to propagate.
+
+Reentry uses the protected application origin, allowing Cloudflare to generate
+its signed login metadata and return URL. Do not construct an issuer login URL
+from the application audience. A verified Access identity may navigate back to
+the root document after OAuth; cross-site API requests, writes and frames remain
+rejected, and the root still requires the verified, bound identity.
+
+If GitHub itself fails at `/sessions/two-factor/webauthn`, the sign-in has not
+returned to Access or the backend. Retry GitHub sign-in in that browser with
+another already configured second factor, then reopen the protected origin.
+See [GitHub's 2FA guide](https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/accessing-github-using-two-factor-authentication).
+Do not send authentication codes to the operator or change the Access owner
+policy to bypass an upstream login failure.
 
 ## Acceptance
 
