@@ -36,6 +36,39 @@ fn read(root: &Path) -> Value {
 }
 
 #[test]
+fn help_is_read_only_without_a_valid_installation() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("web.json");
+    std::fs::write(&config, "invalid configuration left untouched").unwrap();
+    let path = root.path().to_str().unwrap();
+    for args in [
+        vec![],
+        vec!["--help"],
+        vec!["-h"],
+        vec!["help"],
+        vec!["serve", "--help", "--data-dir", path],
+        vec!["init", "--data-dir", path, "--help"],
+        vec!["bind-access", "--data-dir", path, "-h"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lz-web"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("Usage: lz-web"));
+        assert!(text.contains("bind-access"));
+        assert!(text.contains("GitHub"));
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "invalid configuration left untouched"
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn access_initialization_binding_recovery_and_password_rejection_are_operator_local() {
     let root = tempfile::tempdir().unwrap();
     let setup = setup(root.path());

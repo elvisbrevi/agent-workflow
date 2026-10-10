@@ -708,6 +708,12 @@ pushing: the coordinator pushes the verified commit itself.
 The same interface also supports an owner's independent web installation for
 browser and phone access. See [gui/WEB.md](gui/WEB.md) for authentication,
 Cloudflare publishing and persistent services on the owner's machine.
+`lz gui` opens the desktop app; the separately built `lz-web` binary hosts the
+web interface (`lz-web --help` lists its local administration commands).
+[GitHub Access setup](gui/ACCESS.md), the [Mac runbook](gui/DEPLOYMENT-elvisbrevi.cl.md)
+and [verification evidence](gui/WEB-VERIFICATION.md) cover deployment and recovery.
+`lz update` updates CLI/skills/desktop; frontend/backend web updates use the
+web service installer and retain the existing profile and owner binding.
 
 `gui/` is a Tauri app that renders this CLI as forms. It reads `lz catalog` —
 every command with its flags, their value kinds, defaults, requirements and the

@@ -705,6 +705,8 @@ function renderHelp(parser: YargsInstance): string {
     autoHelp.trimEnd(),
     "",
     "Notas:",
+    "  gui: abre la aplicacion de escritorio; el acceso web usa el binario separado lz-web (lz-web --help)",
+    "  web: configuracion, Access con GitHub y servicios en https://github.com/elvisbrevi/agent-workflow/blob/main/agent/lazy-workflow/gui/WEB.md",
     "  code: --base-branch solo aplica al crear hu/<HU> por primera vez; sin declararla se usa master o main de cada repositorio",
     "  code: --working-directory CSV acepta --hu para preparar la topología multi-repositorio Azure",
     "  code: --ticket fija una unica unidad de entrega; omitirlo drena los Task y Bug hijos elegibles de la HU",

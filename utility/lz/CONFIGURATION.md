@@ -2,7 +2,7 @@
 
 `lz` keeps no configuration file of its own: a run is decided by its flags, its
 environment variables, the credential store and the files installed with it.
-The desktop GUI adds one file, `gui.json`, that only prefills forms and shapes
+The GUI adds one file, `gui.json`, that only prefills forms and shapes
 the environment of the runs it starts. Find the setting in this table before
 changing anything.
 
@@ -85,6 +85,12 @@ the existing GUI and reports the prerequisite commands. `lz update` skips a
 GUI build when its Git tree hash matches the stamp beside the installed artifact.
 Cargo build artifacts persist in `~/.cache/agent-workflow-build/gui`.
 Locations, prerequisites and uninstall behavior: [GUI.md](GUI.md#install-and-launch).
+
+Web deployment is configured separately with `lz-web` and the dedicated
+provisioning/service scripts; `lz update` updates the CLI, skills and desktop
+installation. Use the web installation's existing absolute settings path with
+`LAZY_WORKFLOW_GUI_SETTINGS`, preserve its private state and Access binding,
+and follow [GUI.md#web-access](GUI.md#web-access) for deployment and updates.
 
 ## Defaults the CLI applies
 

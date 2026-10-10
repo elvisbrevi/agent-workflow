@@ -6,11 +6,19 @@ Each owner installs it on their own server, under their own OS account, with
 their own repositories, configuration and CLI credentials. There is one owner
 per installation; this is not a multi-tenant service.
 
+`lz gui` opens the desktop app. The separately built `lz-web` executable hosts
+the web interface; `lz-web --help` (also `<command> --help` or `-h`) lists its
+local administration without opening a profile. `lz update` updates CLI,
+skills and desktop; web artifacts/services are updated separately as below.
+
 The first owner's dedicated hostname, `agent-workflow.elvisbrevi.cl`, has its
-Cloudflare DNS/tunnel prepared. Its selected login is Cloudflare Access with
+Cloudflare DNS, Access and services active on the owner's Mac. Its login is
+Cloudflare Access with
 GitHub; [ACCESS.md](ACCESS.md) describes configuration and local identity binding.
 Its Mac installation and activation steps are
 in [the deployment handoff](DEPLOYMENT-elvisbrevi.cl.md).
+See [verification evidence](WEB-VERIFICATION.md) for actual HTTPS results and
+remaining physical-phone/reboot acceptance.
 
 ```mermaid
 flowchart LR

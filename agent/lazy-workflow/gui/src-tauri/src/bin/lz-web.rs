@@ -8,6 +8,40 @@ use lz_gui_lib::{
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::atomic::Ordering};
 
+const HELP: &str = "\
+Usage: lz-web <command> [options]
+
+Commands (all administration is local to the server):
+  init             Create a new installation; never overwrite existing data.
+  serve            Run the backend with its existing configuration.
+  use-access       Migrate to Cloudflare Access; revoke sessions and rebind the owner.
+  bind-access      Bind the verified GitHub owner from identity JSON on stdin.
+  unbind-access    Remove the owner binding and revoke sessions.
+  revoke-sessions  Revoke local sessions and Access assertions.
+  set-password     Change the password in password mode only.
+
+Options:
+  --data-dir <path>       Absolute private installation directory (required).
+  --public-url <https>   Public HTTPS origin (init).
+  --settings <path>      Absolute gui.json profile path (init).
+  --frontend <path>      Absolute built frontend directory (init).
+  --access-config <path> Access configuration JSON (init or use-access).
+  --listen <address>     Loopback address, default 127.0.0.1:8234 (init).
+  --owner <name>         Password-mode owner, default owner (init).
+  --password-stdin      Read a password from stdin (init or set-password).
+  -h, --help            Show this help without opening or changing a profile.
+
+Access initialization takes no password. bind-access, unbind-access, use-access,
+revoke-sessions and set-password require the backend stopped. After binding or
+local revocation, log out of Access and authenticate again. Keep one process per
+profile; each owner runs an independent installation on their own server.
+
+lz gui opens the desktop app. Web setup and service updates are separate from
+lz update. Build and install lz-web using the guides:
+https://github.com/elvisbrevi/agent-workflow/blob/main/agent/lazy-workflow/gui/WEB.md
+https://github.com/elvisbrevi/agent-workflow/blob/main/agent/lazy-workflow/gui/ACCESS.md
+";
+
 fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
     let mut args = std::env::args().skip(1);
     let action = args.next().ok_or(
@@ -114,6 +148,14 @@ async fn main() {
     }
 }
 async fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.is_empty()
+        || args.first().is_some_and(|arg| arg == "help")
+        || args.iter().any(|arg| arg == "--help" || arg == "-h")
+    {
+        print!("{HELP}");
+        return Ok(());
+    }
     let (action, options) = arguments()?;
     let data_dir = PathBuf::from(required(&options, "--data-dir")?);
     if !data_dir.is_absolute() {

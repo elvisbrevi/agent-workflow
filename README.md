@@ -353,8 +353,15 @@ For development, follow the [GUI build guide](agent/lazy-workflow/gui/README.md#
 
 For browser and phone access, the [self-hosting guide](agent/lazy-workflow/gui/WEB.md)
 builds the same interface with an authenticated Rust server and a dedicated
-Cloudflare tunnel. Each owner runs their own installation and credentials;
-the existing desktop application remains available.
+Cloudflare tunnel. `lz gui` opens the desktop app; the separate `lz-web` binary
+hosts the web interface and documents its administration with `lz-web --help`.
+The owner's [agent-workflow.elvisbrevi.cl](https://agent-workflow.elvisbrevi.cl)
+installation uses [GitHub through Cloudflare Access](agent/lazy-workflow/gui/ACCESS.md).
+Each additional owner runs their own server/OS identity, installation and
+credentials. See the [Mac runbook](agent/lazy-workflow/gui/DEPLOYMENT-elvisbrevi.cl.md)
+and [actual verification evidence](agent/lazy-workflow/gui/WEB-VERIFICATION.md).
+Web provisioning and service updates are separate from `lz update`; preserve
+the existing web data and binding. The desktop application remains available.
 
 Its settings live in `~/.config/lazy-workflow/gui.json`; the `lz` skill
 documents them and edits them safely. See the [GUI guide](agent/lazy-workflow/gui/README.md)

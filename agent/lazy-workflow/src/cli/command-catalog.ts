@@ -339,7 +339,7 @@ const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
   {
     name: "gui",
     family: "maintenance",
-    summary: "Abre la GUI instalada y devuelve la terminal de inmediato.",
+    summary: "Abre la GUI de escritorio instalada y devuelve la terminal de inmediato.",
     effect: "read",
     output: "stream",
     groups: [],

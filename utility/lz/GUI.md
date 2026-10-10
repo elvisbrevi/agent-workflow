@@ -1,4 +1,4 @@
-# The desktop GUI
+# Desktop and web interfaces
 
 `agent/lazy-workflow/gui/` is a Tauri app that renders the installed `lz` as
 forms. It holds no workflow logic of its own: it reads `lz catalog`, builds the
@@ -9,7 +9,7 @@ too.
 
 Contents: [Install and launch](#install-and-launch) · [How it maps to the CLI](#how-it-maps-to-the-cli) ·
 [Settings file](#settings-file) · [Configure it](#configure-it) ·
-[What the GUI adds](#what-the-gui-adds) · [Troubleshooting](#troubleshooting)
+[Web access](#web-access) · [What the GUI adds](#what-the-gui-adds) · [Troubleshooting](#troubleshooting)
 
 ## Install and launch
 
@@ -45,6 +45,37 @@ and build directory, while preserving the shared source cache.
 For development, run `bun install && bun run dev` inside
 `agent/lazy-workflow/gui/`. The GUI reads the installed `lz catalog` at startup,
 so an updated CLI changes its forms without rebuilding an unchanged frontend.
+
+## Web access
+
+`lz gui` opens the native desktop app. Browser access uses the separately built
+`lz-web` executable and frontend, a dedicated Cloudflare tunnel, HTTPS and the
+owner's service manager. The global CLI/desktop installer does not provision
+or update this web installation. `lz-web --help` lists its local administration
+commands; it does not open a profile or change data.
+
+For the deployed owner installation, open
+[agent-workflow.elvisbrevi.cl](https://agent-workflow.elvisbrevi.cl) and sign in
+through Cloudflare Access with GitHub. Each additional owner runs their own
+server/OS identity, hostname, tunnel, profile and credentials. Setup/recovery:
+[web guide](../../agent/lazy-workflow/gui/WEB.md),
+[GitHub Access guide](../../agent/lazy-workflow/gui/ACCESS.md),
+[Mac runbook](../../agent/lazy-workflow/gui/DEPLOYMENT-elvisbrevi.cl.md).
+[Verification evidence](../../agent/lazy-workflow/gui/WEB-VERIFICATION.md)
+distinguishes live HTTPS checks from mobile viewport emulation and pending
+physical-phone acceptance.
+
+Set `LAZY_WORKFLOW_GUI_SETTINGS` to the existing web profile's path before
+using `scripts/gui-settings.ts`. Launcher, repository registration, environment
+and credentials are configured on the server; the browser can change permitted
+preferences and execute only the configured catalog subset. Local credential
+commands, installer maintenance and shutdown are excluded. The web adapter
+bridges `plan --interview http` back to the authenticated page.
+
+Keep desktop and web on separate profiles or stop one before opening the other.
+Updates rebuild frontend/backend and repeat the web service installer while
+preserving the existing data and Access binding; do not repeat `init` or migrate
+an already bound Access installation.
 
 ## How it maps to the CLI
 

@@ -80,7 +80,7 @@ CLOEXEC descriptors; production lease handling is unchanged.
 | Bootstrap Bash / zsh suites | Both passed |
 | GUI frozen install / typecheck / `build:web` | Passed |
 | Desktop Rust tests / Clippy with `-D warnings` / native build | 14 tests passed; Clippy and build passed |
-| Web Rust tests / Clippy with `-D warnings` / optimized build | 34 library and 2 local administration tests passed; Clippy and build passed |
+| Web Rust tests / Clippy with `-D warnings` / optimized build | 34 library and 3 local administration tests passed; Clippy and build passed |
 | Synthetic HTTPS Chromium | 6 scenarios passed across desktop/touch viewports; synthetic read, planning interview, text upload, logout, expiry and fixture-backend restart covered |
 | LaunchAgent plists / restart | Both passed `plutil -lint`; both running after the normal installer restart; health/data/session comparisons passed |
 | `git diff --check` | Passed |
@@ -116,6 +116,23 @@ method was not recorded; this observation does not establish or fix the cause
 of GitHub's initial WebAuthn failure. It verifies incognito on the Mac, not a
 physical phone or mobile data. No authentication settings or policies changed
 for this comparison.
+
+### Documentation and CLI help follow-up
+
+The `lz` skill now routes desktop and web installation requests, identifies the
+web profile and permitted HTTP subset, and links the setup/recovery guides.
+READMEs no longer describe the completed Access/OAuth setup as pending.
+`lz --help` identifies the separate web executable; `lz-web --help`, `-h`,
+`help`, no arguments and command-level help return successfully without
+reading/writing installation data. A synthetic CLI regression first failed,
+then passed against an intentionally invalid profile; no locks/state files
+were created. The full Bun (922 passed, 2 skipped), installer (29 passed),
+Bash/zsh bootstrap, GUI typecheck, desktop Rust (14), web Rust (34 + 3), Clippy
+and optimized build checks passed again for these changes.
+
+The rebuilt binary was installed through the normal owned service installer.
+Settings, Access configuration/binding, sessions, revocations and run receipts
+were unchanged; local health and installed command-level help passed.
 
 ## Previous Linux publication snapshot (2026-10-09)
 

@@ -22,6 +22,10 @@ either is the authority whenever this file and the binary disagree.
 | `gui` | — | no | Opens the installed GUI detached; `LAZY_WORKFLOW_GUI` overrides the binary; takes no options or run log |
 | `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |
 
+`lz gui` opens the desktop app. Web hosting has a separate executable,
+`lz-web`; use `lz-web --help` and [GUI.md#web-access](GUI.md#web-access) for its
+local administration, GitHub Access login and service setup.
+
 `update` forwards installer flags, including `--no-gui`, unchanged. Global
 launcher modes include the GUI; Rust is required to build it. See
 [CONFIGURATION.md](CONFIGURATION.md#installation-and-updates) for modes.

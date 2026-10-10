@@ -21,8 +21,11 @@ profile at a time.
 `agent-workflow.elvisbrevi.cl` selects [Cloudflare Access with GitHub](ACCESS.md)
 instead of the password form. Rust verifies the signed Access assertion and
 operator-bound provider identity; Tauri retains its existing local transport.
-The [Mac deployment handoff](DEPLOYMENT-elvisbrevi.cl.md) records pending Access
-permissions/OAuth setup separately from the already configured DNS and tunnel.
+The [Mac runbook](DEPLOYMENT-elvisbrevi.cl.md) records the active Access/OAuth,
+backend and connector installation. [Verification evidence](WEB-VERIFICATION.md)
+records actual HTTPS/incognito checks and the remaining physical-phone and
+full-Mac-reboot acceptance. `lz-web --help` lists the local administration
+commands; web provisioning/service updates are separate from `lz update`.
 
 ## Requirements
 
