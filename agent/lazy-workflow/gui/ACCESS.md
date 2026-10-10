@@ -173,8 +173,10 @@ the root document after OAuth; cross-site API requests, writes and frames remain
 rejected, and the root still requires the verified, bound identity.
 
 If GitHub itself fails at `/sessions/two-factor/webauthn`, the sign-in has not
-returned to Access or the backend. Retry GitHub sign-in in that browser with
-another already configured second factor, then reopen the protected origin.
+returned to Access or the backend. Open `https://github.com/login` directly in
+that same browser and complete GitHub login, then reopen the protected origin.
+This sequence restored access in the Mac's incognito comparison. If needed,
+choose another already configured second factor on GitHub.
 See [GitHub's 2FA guide](https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/accessing-github-using-two-factor-authentication).
 Do not send authentication codes to the operator or change the Access owner
 policy to bypass an upstream login failure.

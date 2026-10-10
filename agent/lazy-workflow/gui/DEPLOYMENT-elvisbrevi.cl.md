@@ -34,6 +34,7 @@ consult the service manager and Cloudflare for current health.
 | Backend / LaunchAgents | Frontend and optimized Rust backend installed; both LaunchAgents running; local `/health` returns `ok` |
 | Owner identity binding | Real provider response verified and bound locally with backend stopped; Access logout and fresh sign-in completed |
 | Public HTTPS | Mac GitHub sign-in, synthetic `git-branch-list`, protected settings, logout/reentry, actual Access expiry and persistence after restarting both services passed |
+| Incognito on the Mac | Initial GitHub WebAuthn error reproduced; direct GitHub login followed by reopening the app succeeded, including synthetic read, logout and fresh Access reentry |
 | Physical phone acceptance | Operator reported a login error; supplied capture shows GitHub `/sessions/two-factor/webauthn` failure before returning to Access. Phone operations/logout/reentry remain unverified |
 
 The Mac checkout is `/Users/elvis/code/agent-workflow`; private deployment state

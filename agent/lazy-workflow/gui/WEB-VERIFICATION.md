@@ -27,6 +27,7 @@ verified. The checkout was clean before these changes. Private state is
 | Authorized operation | Real HTTPS UI ran actual `lz git-branch-list` against the synthetic `verification-repo`, displayed `verification-check` and exit code 0; run receipt persisted |
 | Protected configuration | An authenticated attempt to change the server launcher returned 400; allowed theme updates returned 200. Server-controlled fields are disabled in the rendered form |
 | Real logout / reentry | UI logout removed the local session, persisted assertion revocation and navigated to Access logout; revocation survived backend restart. Fresh GitHub/Access sign-in returned a working session without a password form |
+| Chrome incognito follow-up | Chrome 155.0.8059.39 on this Mac reproduced the supplied GitHub WebAuthn error. The owner then completed direct GitHub login in that same incognito window; reopening the protected origin succeeded. Actual synthetic read displayed `verification-check` and code 0; UI logout removed one session and added one persisted revocation; fresh Access reentry succeeded |
 | Real Access expiry | Temporarily set the same owner/provider policy's app session to 1m, minted a real 60s assertion, waited for expiry and observed API redirect plus the expired/sign-in interface. Local session was capped by assertion expiration. Restored/read back 12h and signed in again |
 | Persistence after service restart | Normal installer restarted both managed services. Settings, run receipts and existing sessions preserved; browser session remained authorized, saved theme restored, backend healthy and connector healthy. Logout revocation also survived a separate backend restart |
 | Physical phone / mobile data | **Not accepted**: operator reported a login error; supplied capture shows GitHub `/sessions/two-factor/webauthn` with an unexpected-browser error before returning to Access. Capture device/mobile-data status unconfirmed. No successful physical-phone operation, logout or reentry is claimed |
@@ -105,6 +106,16 @@ in [GitHub's 2FA guide](https://docs.github.com/en/authentication/securing-your-
 then reopen the protected origin. Do not alter the owner/provider policy to
 bypass this failure. See [the Mac handoff](DEPLOYMENT-elvisbrevi.cl.md) for
 service inspection/update and later OS-login/reboot acceptance.
+
+The incognito comparison reached GitHub's own error page at
+`/sessions/two-factor/webauthn` before returning to Access. Direct
+`https://github.com/login` subsequently completed with the owner's browser
+interaction and verified the expected account, after which the app, read,
+logout and fresh session worked. The successful direct-login second-factor
+method was not recorded; this observation does not establish or fix the cause
+of GitHub's initial WebAuthn failure. It verifies incognito on the Mac, not a
+physical phone or mobile data. No authentication settings or policies changed
+for this comparison.
 
 ## Previous Linux publication snapshot (2026-10-09)
 
