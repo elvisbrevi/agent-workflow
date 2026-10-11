@@ -36,6 +36,13 @@ for prerequisite commands. `LAZY_WORKFLOW_GUI` overrides the binary opened by
 Neither it nor `update` opens a session, reporter panel or run log. The GUI
 excludes its own launch command from the forms.
 
+The desktop tray icon (macOS menu bar) remains visible while lz is active;
+its tooltip and menu show how many runs are in progress. **Abrir lz** restores
+the window, **Ocultar ventana** hides it, and **Salir de lz** quits the app.
+Closing the window keeps runs alive in the background. Explicit Quit interrupts
+remaining runs; the menu labels this when runs are active. The macOS Dock also
+restores the window. Linux requires a desktop with an AppIndicator/system tray host.
+
 Builds use persistent `CARGO_TARGET_DIR=~/.cache/agent-workflow-build/gui`.
 The `.lz-gui-tree` stamp beside the installed app or binary records the GUI's
 Git tree hash; an unchanged hash with an existing executable skips compilation.

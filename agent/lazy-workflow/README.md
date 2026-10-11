@@ -743,6 +743,11 @@ matches, and keep Cargo artifacts outside the refreshed checkout. Requirements,
 platform destinations and development commands are in [gui/README.md](gui/README.md);
 the settings file is documented with the `lz` skill.
 
+The desktop tray (macOS menu bar) shows that lz is active and how many runs are
+in progress. Closing the window keeps the app and its runs in the background;
+use **Abrir lz** in the tray to restore it. **Salir de lz** exits and interrupts
+remaining runs through the normal shutdown path.
+
 ## Other flags
 
 `--prompt` supplies the operator's own request to a session. `--session` resumes

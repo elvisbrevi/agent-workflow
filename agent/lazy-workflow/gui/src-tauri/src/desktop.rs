@@ -1,7 +1,7 @@
 //! Tauri commands only adapt the shared core to the window's IPC and event bus.
 use crate::{
     core::{Core, Diagnostics, EnvironmentProbe, SettingsDocument},
-    environment, run_log,
+    desktop_tray, environment, run_log,
     runner::{Captured, RunRequest, RunStarted},
     settings::{self, GuiSettings},
 };
@@ -35,12 +35,18 @@ async fn start_run(
 ) -> Result<RunStarted, String> {
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        core.start(
+        let events_app = app.clone();
+        let result = core.start(
             Arc::new(move |event, payload| {
-                let _ = app.emit(event, payload);
+                let _ = events_app.emit(event, payload);
+                if event == crate::runner::EXIT_EVENT {
+                    desktop_tray::refresh_status(&events_app);
+                }
             }),
             request,
-        )
+        );
+        desktop_tray::refresh_status(&app);
+        result
     })
     .await
     .map_err(|error| error.to_string())?
@@ -103,6 +109,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(core)
+        .setup(|app| Ok(desktop_tray::install(app)?))
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Keep the webview and its runs alive; explicit Quit still shuts down.
+                    if window.hide().is_ok() {
+                        api.prevent_close();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
@@ -116,9 +133,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building the lz GUI")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                app.state::<Core>().runs.shutdown();
-            }
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit => app.state::<Core>().runs.shutdown(),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => desktop_tray::show_main_window(app),
+            _ => {}
         });
 }

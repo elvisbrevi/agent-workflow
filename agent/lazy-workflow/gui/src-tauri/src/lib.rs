@@ -2,6 +2,8 @@
 pub mod core;
 #[cfg(feature = "desktop")]
 mod desktop;
+#[cfg(feature = "desktop")]
+mod desktop_tray;
 mod environment;
 mod run_log;
 mod runner;

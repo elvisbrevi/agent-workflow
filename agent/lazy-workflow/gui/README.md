@@ -66,6 +66,13 @@ removes the app/binary, Linux entry, stamp and build directory, including with
 `--no-gui`. It retains the shared source cache for other installation modes.
 The window excludes `gui` from its command forms.
 
+The desktop tray icon (menu bar on macOS) shows that lz is active and reports
+the number of runs in progress. Its menu offers **Abrir lz**, **Ocultar ventana**
+and **Salir de lz**. Closing the window keeps the app and its runs in the
+background; reopen it from the tray or the macOS Dock. Explicitly quitting lz
+interrupts remaining runs through the same shutdown path as before. On Linux,
+the desktop environment must provide an AppIndicator/system tray host.
+
 To install build prerequisites on macOS, run `xcode-select --install` and install
 Rust through [rustup](https://rustup.rs). On Debian/Ubuntu:
 
@@ -103,6 +110,7 @@ and embeds it. The release binary is `lz-gui`.
 | **Móvil** | Compact header, fixed bottom navigation, touch controls of at least 44 px, single-column work lists and a short execution footer; safe areas and keyboard resizing keep controls reachable |
 | **Herramientas avanzadas** | Full catalog, searchable by command or description; confirmation before writes and sessions |
 | **Runs** | One tab per run, live output, **Interrumpir** sends SIGINT to the run's process group (Ctrl-C), a second click kills it; the planning interview URL opens in the browser or inside the window |
+| **Tray de escritorio** | Persistent active indicator and running count; open, hide and quit from the native menu. Closing the window keeps runs alive |
 | **Historial** | The CLI's run log, grouped by run, terminal runs included |
 | **Configuracion** | The settings file below |
 
@@ -139,6 +147,7 @@ the [`lz` skill's GUI reference](../../../utility/lz/GUI.md).
 | Path | Contents |
 |---|---|
 | `src-tauri/src/core.rs`, `desktop.rs`, `web/` | Shared machine adapter, Tauri IPC and authenticated headless HTTP adapter |
+| `src-tauri/src/desktop_tray.rs` | Native tray presence, run status and window controls |
 | `src-tauri/src/runner.rs` | Spawning `lz`, streaming its output, SIGINT-then-kill cancellation, stdin for secrets |
 | `src-tauri/src/environment.rs` | The login-shell environment, PATH composition, how `lzCommand` resolves |
 | `src-tauri/src/settings.rs` | `gui.json`: defaults, atomic save, unknown keys kept |
@@ -155,3 +164,8 @@ bun run typecheck                 # the frontend
 (cd src-tauri && cargo test)      # settings, environment, run log, runner
 (cd .. && bun test)               # the CLI suite, which includes the catalog and the GUI's pure logic
 ```
+
+On macOS, quit other lz desktop instances, build the release app, and run
+`bun scripts/verify-tray-macos.ts`. With Accessibility permission for the
+terminal, this checks the actual tray, close/hide/restore, live run count and
+interruption on Quit using an isolated profile and a synthetic CLI.
