@@ -342,6 +342,10 @@ selection, dropdowns and a review before execution; the full catalog is under
 advanced tools. `work-assigned --working-directory <path>` reads assignments
 from the authenticated user in the repository's tracker.
 
+The desktop tray icon shows that lz is active and reports running commands.
+Closing the window keeps runs alive; the tray menu restores the window or quits
+the app. Explicit Quit interrupts remaining runs.
+
 ```bash
 lz gui
 lz update                     # build/install GUI when its source changed
