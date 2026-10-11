@@ -53,7 +53,7 @@ import {
   type CredentialValue,
   type StoredCredential,
 } from "../credentials/credential-store.ts";
-import { publishChezmoiSource, updateChezmoiSecrets } from "../credentials/chezmoi-source.ts";
+import { publishChezmoiSource, updateChezmoiDotfiles } from "../credentials/chezmoi-source.ts";
 import { keychainPresence, readKeychainCredential, type KeychainPresence } from "../credentials/keychain.ts";
 import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
@@ -71,8 +71,8 @@ export interface CredentialTools {
   /** Writes the value and answers where it landed and how far its publication got. */
   store(directory: string, name: string, service: string | null, value: string): Promise<StoredCredential>;
   migrate(directory: string, name: string, service: string | null): Promise<StoredCredential>;
-  /** Brings the secrets directory to what the published source declares. */
-  update(directory: string): Promise<void>;
+  /** Brings all chezmoi-managed dotfiles, including secrets, to the published source. */
+  update(): Promise<void>;
 }
 
 /** The boundaries a run uses when its boundary does not declare one. */
@@ -93,7 +93,7 @@ const productionCredentialTools: CredentialTools = {
   readSecret: readCredentialSecret,
   store: storeAndPublish,
   migrate: async (directory, name, service) => storeAndPublish(directory, name, service, await readKeychainCredential(name)),
-  update: updateChezmoiSecrets,
+  update: updateChezmoiDotfiles,
 };
 
 /** The GitHub queue operations a tool command drives. */
@@ -490,8 +490,8 @@ async function runPullRequestTool(
  * pipe or log. `credentials-audit` reports file and Keychain presence only.
  *
  * `credentials-update` is the other direction: it fetches what another machine
- * published and applies only the secrets directory, so this machine's values
- * become the repository's.
+ * published and applies all chezmoi-managed dotfiles, including shell profiles
+ * and secrets.
  */
 async function runCredentialsTool(
   command: DeterministicToolCommand,
@@ -511,7 +511,7 @@ async function runCredentialsTool(
     return 0;
   }
   if (command === "credentials-update") {
-    await credentials.update(directory);
+    await credentials.update();
     print(JSON.stringify({ updated: true, directory }, null, 2));
     return 0;
   }

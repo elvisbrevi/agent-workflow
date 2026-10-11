@@ -288,7 +288,7 @@ write it and hand it over.
 | `credentials-get` | Print one credential; piping requires `--force`. |
 | `credentials-set` | Store or rotate a credential using a hidden prompt or `--stdin`. |
 | `credentials-migrate` | Copy a legacy macOS Keychain credential into the secrets files. |
-| `credentials-update` | Pull the chezmoi source and apply its secrets, replacing local changes. |
+| `credentials-update` | Pull the chezmoi source and apply all managed dotfiles, including bashrc and secrets, replacing local changes. |
 
 Credentials live in `~/.config/secrets/*.env`. When chezmoi manages the file,
 `credentials-set` and `credentials-migrate` also commit and push its encrypted

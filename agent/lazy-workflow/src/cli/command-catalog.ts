@@ -333,7 +333,7 @@ const CREDENTIALS_COMMANDS: readonly CatalogCommand[] = [
     stdinFlag: "--stdin",
   }),
   tool({ name: "credentials-migrate", family: "credentials", summary: "Copia una credencial heredada del Keychain de macOS a los archivos de secretos.", effect: "write", flags: [required(NAME), SERVICE] }),
-  tool({ name: "credentials-update", family: "credentials", summary: "Trae la fuente chezmoi y aplica sus secretos, reemplazando cambios locales.", effect: "write", flags: [] }),
+  tool({ name: "credentials-update", family: "credentials", summary: "Trae la fuente chezmoi y aplica todos sus dotfiles, incluidos bashrc y secretos, reemplazando cambios locales.", effect: "write", flags: [] }),
 ];
 
 const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [

@@ -461,9 +461,10 @@ printing the value. It requires `--name`; `--service` selects the file when the
 name is new. It leaves the Keychain item in place.
 
 `credentials-update` brings this machine to what the repository declares: it
-pulls the private dotfiles repository and applies only the credentials
-directory, so a value another machine published becomes the value here. Local
-modifications of the secrets files are replaced by the repository's version.
+runs `chezmoi update --force` to pull the private dotfiles repository and apply
+all managed files, including `~/.bashrc` and `~/.config/secrets`. Local
+modifications of managed files are replaced by the repository's version,
+without an interactive prompt.
 
 Beside them sit the Azure work-item commands the planning and delivery paths
 use: `hu-info`, `hu-branch-info`, `hu-branch-set`, `ticket-info`,

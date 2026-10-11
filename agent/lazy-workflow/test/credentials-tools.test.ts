@@ -6,7 +6,7 @@
  * bandera, y lo guarda sin imprimirlo.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import {
 } from "../src/cli/deterministic-tools.ts";
 import { buildCli, type CliOptions } from "../src/cli/parse-cli-options.ts";
 import {
+  defaultSecretsDirectory,
   listCredentials,
   auditCredentialFiles,
   readCredential,
@@ -319,11 +320,11 @@ describe("credentials como comandos", () => {
     expect(() => parseOptions(["credentials-migrate", "--name", "ALPHA_API_KEY", "--stdin"])).toThrow();
   });
 
-  test("credentials-update trae los valores publicados sin pedir nombre", async () => {
+  test("credentials-update trae los dotfiles publicados sin pedir nombre", async () => {
     const printed: string[] = [];
-    const updated: string[] = [];
+    let updates = 0;
     const credentials = credentialTools({
-      update: async (directory) => { updated.push(directory); },
+      update: async () => { updates++; },
     });
 
     const options = parseOptions(["credentials-update"]);
@@ -336,9 +337,9 @@ describe("credentials como comandos", () => {
     );
 
     expect(code).toBe(0);
-    expect(updated).toHaveLength(1);
+    expect(updates).toBe(1);
     expect(printed).toHaveLength(1);
-    expect(JSON.parse(printed[0]!)).toEqual({ updated: true, directory: updated[0] });
+    expect(JSON.parse(printed[0]!)).toEqual({ updated: true, directory: defaultSecretsDirectory() });
   });
 
   test("credentials-update falla ruidosamente cuando el pull o el apply fallan", async () => {
@@ -358,6 +359,84 @@ describe("credentials como comandos", () => {
 
     expect({ code, printed }).toEqual({ code: 1, printed: [] });
     expect(messages.length).toBeGreaterThan(0);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("credentials-update con chezmoi", () => {
+  async function withChezmoi(
+    failOn: string,
+    check: (result: { directory: string; stdout: string; stderr: string; code: number; calls: string[][] }) => Promise<void>,
+  ): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "credential-update."));
+    try {
+      const bin = join(directory, "bin");
+      const secrets = join(directory, ".config", "secrets");
+      await mkdir(bin);
+      await mkdir(secrets, { recursive: true });
+      await Bun.write(join(directory, ".bashrc"), "# local bashrc\n");
+      await Bun.write(join(secrets, "alpha.env"), "export ALPHA_API_KEY='local-fake-secret'\n");
+      const chezmoi = join(bin, "chezmoi");
+      await Bun.write(chezmoi, `#!${process.execPath}
+import { appendFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = Bun.argv.slice(2);
+const root = process.env.FAKE_CHEZMOI_ROOT;
+appendFileSync(join(root, "calls.jsonl"), JSON.stringify(args) + "\\n");
+console.log("published-fake-secret");
+console.error("published-fake-secret");
+if (args[0] === process.env.FAKE_CHEZMOI_FAIL_ON) process.exit(1);
+if (args[0] === "apply" || (args[0] === "update" && !args.includes("--apply=false"))) {
+  if (!args.some((arg) => arg === process.env.LAZY_WORKFLOW_SECRETS_DIR)) {
+    writeFileSync(join(root, ".bashrc"), "# published bashrc\\n");
+  }
+  writeFileSync(join(root, ".config", "secrets", "alpha.env"), "export ALPHA_API_KEY='published-fake-secret'\\n");
+}
+`);
+      await chmod(chezmoi, 0o700);
+      const child = Bun.spawn([
+        process.execPath,
+        Bun.fileURLToPath(new URL("../main.ts", import.meta.url)),
+        "credentials-update", "--no-log-file", "--no-color",
+      ], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          LAZY_WORKFLOW_SECRETS_DIR: secrets,
+          FAKE_CHEZMOI_ROOT: directory,
+          FAKE_CHEZMOI_FAIL_ON: failOn,
+        },
+        stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+      ]);
+      const calls = (await Bun.file(join(directory, "calls.jsonl")).text()).trim().split("\n").map((line) => JSON.parse(line));
+      await check({ directory, stdout, stderr, code, calls });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  test("actualiza bashrc y secretos sin exponer valores ni pedir confirmacion", async () => {
+    await withChezmoi("", async ({ directory, stdout, stderr, code, calls }) => {
+      expect(code).toBe(0);
+      expect(await Bun.file(join(directory, ".bashrc")).text()).toBe("# published bashrc\n");
+      expect(await Bun.file(join(directory, ".config", "secrets", "alpha.env")).text()).toContain("published-fake-secret");
+      expect(calls).toEqual([["update", "--force"]]);
+      expect(JSON.parse(stdout)).toEqual({ updated: true, directory: join(directory, ".config", "secrets") });
+      expect(stdout + stderr).not.toContain("fake-secret");
+    });
+  });
+
+  test("un error de chezmoi falla sin anunciar actualizacion ni exponer valores", async () => {
+    await withChezmoi("update", async ({ directory, stdout, stderr, code }) => {
+      expect(code).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("chezmoi update --force");
+      expect(stdout + stderr).not.toContain("fake-secret");
+      expect(await Bun.file(join(directory, ".bashrc")).text()).toBe("# local bashrc\n");
+      expect(await Bun.file(join(directory, ".config", "secrets", "alpha.env")).text()).toContain("local-fake-secret");
+    });
   });
 });
 
