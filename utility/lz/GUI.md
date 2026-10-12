@@ -1,11 +1,12 @@
 # Desktop and web interfaces
 
-`agent/lazy-workflow/gui/` is a Tauri app that renders the installed `lz` as
-forms. It holds no workflow logic of its own: it reads `lz catalog`, builds the
-same argument vector an operator would type, shows it before running, and runs
-`lz` as a child process. Every effect, validation, checkpoint and run-log record
-is still the CLI's, so anything this skill says about a command holds in the GUI
-too.
+`agent/lazy-workflow/gui/` is a Tauri app for the work itself: the Azure HU and
+GitHub issues assigned to the operator, Plan or Code on them, and the runs that
+followed. It holds no workflow logic of its own: it reads `lz catalog` to build
+the same argument vector an operator would type for `plan`, `code` and `setup`,
+and runs `lz` as a child process. Every effect, validation, checkpoint and
+run-log record is still the CLI's, so anything this skill says about a command
+holds in the GUI too.
 
 Contents: [Install and launch](#install-and-launch) · [How it maps to the CLI](#how-it-maps-to-the-cli) ·
 [Settings file](#settings-file) · [Configure it](#configure-it) ·
@@ -33,8 +34,7 @@ lz update --all-global --no-gui    # skip GUI compilation and installation
 See [the GUI README](../../agent/lazy-workflow/gui/README.md#install-and-launch)
 for prerequisite commands. `LAZY_WORKFLOW_GUI` overrides the binary opened by
 `lz gui`, which detaches the process and returns the terminal immediately.
-Neither it nor `update` opens a session, reporter panel or run log. The GUI
-excludes its own launch command from the forms.
+Neither it nor `update` opens a session, reporter panel or run log.
 
 The desktop tray icon (macOS menu bar) remains visible while lz is active;
 its tooltip and menu show how many runs are in progress. **Abrir lz** restores
@@ -51,7 +51,8 @@ and build directory, while preserving the shared source cache.
 
 For development, run `bun install && bun run dev` inside
 `agent/lazy-workflow/gui/`. The GUI reads the installed `lz catalog` at startup,
-so an updated CLI changes its forms without rebuilding an unchanged frontend.
+so an updated CLI's flags and defaults apply without rebuilding an unchanged
+frontend.
 
 ## Web access
 
@@ -78,10 +79,13 @@ and credentials are configured on the server; the browser can change permitted
 preferences and execute only the configured catalog subset. Local credential
 commands, installer maintenance and shutdown are excluded. The web adapter
 bridges `plan --interview http` back to the authenticated page.
-**Ajustes → Conexiones del servidor** displays loaded values with a lock and no
-editable fields: public values are visible, while secret values never reach
-the browser. Configure them locally with the credentials skill and CLI, then
-reload the page to inspect `lz credentials-status` through the diagnostic view.
+**Ajustes → Estado del equipo** shows, read-only, which tools the server's runs
+find and whether the Azure organization is configured; secret values never
+reach the browser. A missing piece raises a notice: with `setup` in
+`allowedCommands`, **Reparar con agente** runs `lz setup` on the server;
+otherwise configure it locally with the credentials skill and CLI. The web
+profile needs `work-assigned`, `agent-models`, `hu-info`, `hu-children-info`
+and `github-issue-list` in `allowedCommands`.
 
 Keep desktop and web on separate profiles or stop one before opening the other.
 Updates rebuild frontend/backend and repeat the web service installer while
@@ -90,37 +94,31 @@ an already bound Access installation.
 
 ## How it maps to the CLI
 
-**Inicio** shows assigned work from saved repositories and recent Plan/Code
-history. `work-assigned` reads the authenticated account (`@me` on GitHub,
-`@Me` in Azure) without changing delivery eligibility. Query failures are shown
-per source; background reads do not create entries in the run log.
-
-**Planificar** and **Implementar** guide the user through work, options and
-review. The command catalog still supplies every flag and default. Azure HU
-and Task selectors use assigned work and `hu-children-info`; another ID can be
-entered when necessary. GitHub Code processes the entire eligible queue.
-The complete command forms live under **Herramientas avanzadas**.
-
-Folder buttons open the native selector on desktop. In the browser they search
-registered server repositories, keeping web path authorization intact. Existing
-web profiles need `work-assigned`, `hu-info` and `hu-children-info` added locally
-to `allowedCommands` to enable these reads; new web installations include them.
+**Trabajo** reads `work-assigned` for every saved repository (`@me` on GitHub,
+`@Me` in Azure) without changing delivery eligibility. Azure tasks are grouped
+under their verified HU; a repository with nothing assigned keeps its section,
+and any other HU of the project opens by number. Background reads never create
+run-log entries; a read that fails becomes a configuration notice.
 
 | In the GUI | In the CLI |
 |---|---|
-| Sidebar families and commands | `lz catalog` → `families`, `commands` (the same list `lz --help` prints) |
-| A form's fields | the command's `flags`, then its shared `groups`: `agent`, `interview`, `reporter`, `shutdown` |
-| The dark line above **Ejecutar** | the exact command the run executes; copy it to run it in a terminal |
-| An empty field | the flag is not sent, so the CLI applies its own default (shown as the placeholder) |
-| A greyed field | a flag whose `requires` is unmet (`--ticket` without `--hu`); it is not sent |
-| Effect badge and confirmation | `effect`: `read` runs at once; `write`, `session` and `maintenance` ask first unless `confirmWrites` is off |
-| Run panel: Operador / Resultado | stderr / stdout, exactly as in a terminal; one JSON document is shown as a tree |
+| An HU's tasks, their state and progress | `hu-children-info --hu <id>` (Task and Bug children) |
+| **Planificar** / **Implementar** on an HU | `plan --hu <id>` / `code --hu <id> [--ticket <id>]` |
+| **Planificar desde esta issue** | `plan` with a `--prompt` naming the issue; the session reads it with `gh issue view` |
+| **Nuevo plan** / **Implementar la cola** | `plan --prompt <text>` / `code` on the repository |
+| **Cola de Code** | `github-issue-list`: what `code` would take, in order, and why it skips the rest |
+| Agent, model and effort menus | `--cli`, `--model`, `--variant`; the lists come from `agent-models`, the defaults from `lz catalog` |
+| **Más opciones** | extra repositories (`--working-directory a,b`, in delivery order), `--base-branch`, `--number-of-questions`, `--normas-sag`, `--fallback`, `--idle-timeout`, `--verbose` |
+| An option left at its default | not sent, so the CLI applies its own default |
+| **Reparar con agente** | `setup --prompt <detected problems>` with an installed agent |
+| Confirmation before a run | `confirmWrites`: Plan, Code and setup open sessions |
+| A run in **Ejecuciones** | its operator lines (stderr) as a progress feed with their time, and its stdout as the result — a setup report as text, a plan's JSON under **Resultado técnico** |
 | **Interrumpir** | Ctrl-C: SIGINT to the run's process group, so the run is recorded as interrupted and a pending `--off` is cancelled; a second click kills it. Windows has no SIGINT for a windowless process, so there it ends the run's process tree at once |
-| Historial | the CLI's run log (`LAZY_WORKFLOW_LOG_FILE` or `~/.local/state/lazy-workflow/runs.jsonl`), terminal runs included |
+| **Ejecuciones** | runs in progress, and the CLI's run log (`LAZY_WORKFLOW_LOG_FILE` or `~/.local/state/lazy-workflow/runs.jsonl`) for Plan, Code and setup, terminal runs included |
 
-To answer "what will this button do", compose the command the form would show
-and read it with [COMMANDS.md](COMMANDS.md) or [TOOLS.md](TOOLS.md). To know
-which flags a form will offer for the installed version, read `lz catalog`:
+The deterministic tools a workflow calls internally are not buttons in the
+window; run them from a terminal ([TOOLS.md](TOOLS.md)). To know which flags the
+installed version offers, read `lz catalog`:
 
 ```bash
 lz catalog | jq '.commands[] | select(.name == "code") | .flags[].flag'
@@ -130,8 +128,10 @@ lz catalog | jq -r '.commands[] | "\(.family)\t\(.effect)\t\(.name)"'
 ## Settings file
 
 `~/.config/lazy-workflow/gui.json` on every platform, or the path in
-`LAZY_WORKFLOW_GUI_SETTINGS`. The window's **Configuracion** page edits it; so
-does [`scripts/gui-settings.ts`](scripts/gui-settings.ts). A missing key takes
+`LAZY_WORKFLOW_GUI_SETTINGS`. The window's **Ajustes** page edits only the
+preferences (`flagDefaults` for the agent, model and effort, `confirmWrites`,
+`theme`, and `repositories` on desktop); every key can be edited with
+[`scripts/gui-settings.ts`](scripts/gui-settings.ts). A missing key takes
 its default, unknown keys are kept on save, and a malformed file is reported in
 the window rather than replaced.
 
@@ -152,8 +152,8 @@ the window rather than replaced.
 A run's environment is layered: the GUI process, then the login shell (when
 inherited), then the PATH with `extraPath` first, then `environment`, then each
 `secretEnvironment` name not already set, and finally `NO_COLOR=1` for the
-panel. Defaults only prefill a form — the operator can still change any field
-before running, and the preview always shows what will run.
+panel. Defaults only prefill a form — the operator can still change any option
+before running.
 The CLI then loads missing catalog-declared stored variables from its credential
 store. `credentials-status` uses the same precedence for diagnostics.
 
@@ -188,36 +188,35 @@ lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure
 lz credentials-status
 ```
 
-For `--off`, store `LAZY_WORKFLOW_OFF_PASSWORD` the same way: the GUI sends a
-bare `--off`, so the password never reaches the command line, `ps` or the
-preview. The window rereads the file whenever it regains focus, so an edit made
+The window offers no `--off`; a terminal run takes its password from
+`LAZY_WORKFLOW_OFF_PASSWORD`, stored the same way. The window rereads the file whenever it regains focus, so an edit made
 with the helper shows up without a restart; a settings page with unsaved edits
 keeps them until they are saved or discarded.
 
 ## What the GUI adds
 
-- **Ordered workspaces.** A multi-repository `--working-directory` is an ordered
-  list; the order is the delivery order.
-- **Interviews.** When `plan --interview http` prints its URL, the run panel
-  offers it in the browser or embedded in the window.
-- **Secrets by stdin.** `credentials-set` takes the value in a password field
-  and writes it to the child's stdin with `--stdin`; it never enters the command.
-  `credentials-get` output is masked until revealed.
-- **Diagnostics.** **Inicio** lists the launcher `lzCommand` resolves to, each
-  tool the CLI shells out to (`bun`, `git`, `gh`, `az`, `opencode`, `claude`,
-  `codex`, `chezmoi`) and which catalog variables a run will see — names only for
-  secrets.
-- **Several runs at once**, each in its own tab; a finished one can be repeated
-  with the same arguments.
+- **Work-first.** Assigned HU and issues per repository, each HU's tasks with
+  their state, and GitHub's queue before Code drains it.
+- **Real model lists.** Each installed CLI's models and efforts from
+  `agent-models`, grouped by provider, with the default and a free entry.
+- **Ordered workspaces.** Extra repositories join a run in order; the order is
+  the delivery order.
+- **Interviews.** When `plan --interview http` prints its URL, the run's page
+  offers it in the browser or embedded in the window, and every screen shows that
+  the plan is waiting.
+- **Configuration repair.** A notice lists what a run would miss and runs
+  `lz setup` on request; there are no credential fields.
+- **Several runs at once**, each followed in **Ejecuciones**; a finished one can
+  be repeated with the same arguments.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| "No se pudo leer el CLI" with "lz no esta en el PATH" | The GUI cannot find `lz`. Install it (`install.sh --all-global`), add its directory to `extraPath`, or set `lzCommand` to the launcher or to a checkout's `main.ts` |
+| "No se pudo iniciar lz" with "lz no esta en el PATH" | The GUI cannot find `lz`. Install it (`install.sh --all-global`), add its directory to `extraPath`, or set `lzCommand` to the launcher or to a checkout's `main.ts` |
 | "`lz catalog` fallo" naming an unsupported command | The installed `lz` predates the GUI: `lz update` |
 | "el catalogo de lz usa el esquema N" | The GUI is older than the CLI's catalog: `lz update` rebuilds the GUI when its source tree changed |
-| A tool is "no encontrado" in Diagnostico but works in a terminal | The desktop session has a shorter PATH: keep `inheritShellEnvironment` on and press **Releer entorno**, or add the directory to `extraPath` |
+| A tool is "No encontrado" in **Ajustes → Estado del equipo** but works in a terminal | The desktop session has a shorter PATH: keep `inheritShellEnvironment` on and reopen the window, or add the directory to `extraPath` |
 | Azure commands fail with a missing organization | Store it with `lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure` under the server's account; inspect `lz credentials-status` for a profile override |
 | "no se pudo resolver el secreto NAME" | `lz credentials-get --name NAME` fails: store it with `lz credentials-set --name NAME`, or remove it from `secretEnvironment` |
 | The window shows an error about `gui.json` | The file is not valid JSON or has a wrong type: `bun scripts/gui-settings.ts validate` names the key |

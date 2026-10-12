@@ -30,6 +30,8 @@ export const AUTHORITY_PROFILES = [
   "lazy-azure-plan",
   "lazy-azure-code",
   "lazy-review",
+  /** `setup`: configures the machine; never a repository, a branch or a tracker item. */
+  "lazy-setup",
 ] as const;
 
 export type AuthorityProfile = typeof AUTHORITY_PROFILES[number];

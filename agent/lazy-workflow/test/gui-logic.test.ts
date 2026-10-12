@@ -9,9 +9,14 @@ import { expect, test } from "bun:test";
 import { commandCatalog, type CatalogCommand } from "../src/cli/command-catalog.ts";
 import { buildArgs, renderCommandLine, shellQuote, validateFlags, MASK } from "../gui/src/lib/command-line.ts";
 import { initialValues } from "../gui/src/lib/form-defaults.ts";
-import { finalMarker, interviewUrl, parseStdout, runLogPointer, stripAnsi } from "../gui/src/lib/output.ts";
+import { finalMarker, interviewUrl, operatorFeed, parseStdout, runLogPointer, stripAnsi } from "../gui/src/lib/output.ts";
 import { foldRuns, formatDuration } from "../gui/src/lib/history.ts";
 import { initialRunsState, runsReducer, statusOf, type RunsAction } from "../gui/src/lib/runs.ts";
+import { emptyRunOptions, prepareRun, prepareSetup, type RunTarget } from "../gui/src/lib/run-request.ts";
+import { effortChoices, installedClis, modelGroups } from "../gui/src/lib/models.ts";
+import { repairCli, repairPrompt, setupProblems } from "../gui/src/lib/setup-check.ts";
+import type { AgentModels } from "../src/coding-agent/agent-models-schema.ts";
+import type { Diagnostics } from "../gui/src/lib/backend.ts";
 
 const catalog = commandCatalog();
 const command = (name: string): CatalogCommand => catalog.commands.find((candidate) => candidate.name === name)!;
@@ -141,4 +146,98 @@ test("Ctrl-C se lee como interrumpido, no como fallo", () => {
   expect(statusOf({ ...exit, code: null, signal: 9, cancelled: true } as never)).toBe("interrupted");
   expect(statusOf({ ...exit, code: 1, cancelled: false })).toBe("failure");
   expect(statusOf({ ...exit, code: 0, cancelled: false })).toBe("success");
+});
+
+// ---------------------------------------------------------------------------
+// Plan and Code from a piece of work, the model menus, and what is missing.
+// ---------------------------------------------------------------------------
+
+const hu: RunTarget = { kind: "azure-hu", repository: "/r/azure", hu: 50, title: "Portal" };
+
+test("Code sobre una HU nombra la tarea elegida y omite lo que el CLI ya tiene por defecto", () => {
+  const prepared = prepareRun(catalog, "code", hu, { ...emptyRunOptions("/r/azure"), ticket: "51", cli: "codex", variant: "high", fallbacks: ["claudecode:claude-x:max", ""] })!;
+  expect(prepared.issues).toEqual([]);
+  expect(prepared.args).toEqual(["code", "--working-directory", "/r/azure", "--hu", "50", "--ticket", "51", "--cli", "codex", "--fallback", "claudecode:claude-x:max"]);
+  // Plan on the same HU never carries a ticket, and its interview is the http channel.
+  expect(prepareRun(catalog, "plan", { ...hu, ticket: 51 }, { ...emptyRunOptions("/r/azure"), ticket: "51", interview: true })!.args)
+    .toEqual(["plan", "--working-directory", "/r/azure", "--hu", "50", "--interview", "http"]);
+});
+
+test("un plan de GitHub exige que se describa; desde una issue la sesion la lee con gh", () => {
+  const repository: RunTarget = { kind: "github-repository", repository: "/r/github", scope: "owner/repo" };
+  expect(prepareRun(catalog, "plan", repository, emptyRunOptions("/r/github"))!.issues.map((issue) => issue.flag)).toEqual(["--prompt"]);
+  expect(prepareRun(catalog, "code", repository, emptyRunOptions("/r/github"))!.args).toEqual(["code", "--working-directory", "/r/github"]);
+  const issue: RunTarget = { kind: "github-issue", repository: "/r/github", issue: 9, title: "[Epic] Portal", url: "https://github.com/o/r/issues/9" };
+  const args = prepareRun(catalog, "plan", issue, { ...emptyRunOptions("/r/github"), repositories: ["/r/github", "/r/web"], prompt: "Solo el backend" })!.args;
+  expect(args.slice(0, 3)).toEqual(["plan", "--working-directory", "/r/github,/r/web"]);
+  const prompt = args[args.indexOf("--prompt") + 1]!;
+  expect(prompt).toContain("#9 «[Epic] Portal»");
+  expect(prompt).toContain("gh issue view 9 --comments");
+  expect(prompt.endsWith("Solo el backend")).toBe(true);
+});
+
+const models: AgentModels[] = [
+  { cli: "opencode", installed: true, defaultModel: "opencode-go/pro", error: null, models: [{ id: "deepseek/flash", name: "flash", provider: "deepseek", efforts: null, defaultEffort: null }] },
+  { cli: "claudecode", installed: false, defaultModel: "claude-x", error: "claude no esta en el PATH", models: [] },
+  { cli: "codex", installed: true, defaultModel: "gpt-x", error: null, models: [{ id: "gpt-new", name: "GPT New", provider: "openai", efforts: ["low", "medium"], defaultEffort: "medium" }] },
+];
+
+test("el menu de modelos agrupa por proveedor y conserva el default y lo ya elegido", () => {
+  expect(modelGroups(catalog, models, "opencode", "custom/model").map((group) => [group.provider, group.models.map((model) => model.id)])).toEqual([
+    ["deepseek", ["deepseek/flash"]],
+    ["opencode-go", ["opencode-go/pro"]],
+    ["custom", ["custom/model"]],
+  ]);
+  expect(effortChoices(catalog, models, "codex", "gpt-new")).toEqual(["low", "medium"]);
+  // Without a list, a CLI's fixed efforts come from the catalog.
+  expect(effortChoices(catalog, null, "codex", "gpt-new")).toEqual(catalog.agents.find((agent) => agent.cli === "codex")!.efforts!);
+  expect(installedClis(catalog, models)).toEqual(["opencode", "codex"]);
+  expect(installedClis(catalog, null)).toEqual(catalog.agents.map((agent) => agent.cli));
+});
+
+const diagnostics = (missing: string[], organization: boolean): Diagnostics => ({
+  settingsPath: "", runLogPath: "", lzLauncher: "lz", lzError: null, credentialsError: null, shellEnvironment: true,
+  binaries: ["lz", "git", "gh", "az", "opencode", "claude", "codex"].map((name) => ({ name, path: missing.includes(name) ? null : `/bin/${name}` })),
+  variables: [{ name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", present: organization, value: organization ? "https://dev.azure.com/o" : null, source: organization ? "credentials" : "missing" }],
+});
+
+test("lo que falta se deriva de los trackers en uso, los binarios y las lecturas fallidas", () => {
+  const problems = setupProblems({
+    catalog, models, preferredCli: "claudecode",
+    diagnostics: diagnostics(["gh", "az"], false),
+    repositories: [
+      { repository: "/r/azure", tracker: "azure", error: null },
+      { repository: "/r/broken", tracker: null, error: "gh: not logged in" },
+    ],
+  });
+  // gh is missing but no repository is known to be GitHub: it is not asked for.
+  expect(problems.map((problem) => problem.id)).toEqual(["agent-claudecode", "az", "azure-organization", "read:/r/broken"]);
+  expect(repairCli(catalog, models, null, "claudecode")).toBe("opencode");
+  expect(repairPrompt(problems).split("\n")).toHaveLength(4);
+  const setup = prepareSetup(catalog, "/r/azure", repairPrompt(problems), "codex")!;
+  expect(setup.args.slice(0, 3)).toEqual(["setup", "--working-directory", "/r/azure"]);
+  expect(setup.args).toContain("codex");
+  // Nothing can repair anything without an agent to run it.
+  const stranded = setupProblems({ catalog, models: null, preferredCli: "opencode", diagnostics: diagnostics(["opencode", "claude", "codex"], true), repositories: [] });
+  expect(stranded).toEqual([expect.objectContaining({ id: "agents", fixable: false })]);
+  expect(repairCli(catalog, null, diagnostics(["opencode", "claude", "codex"], true), "opencode")).toBeNull();
+});
+
+test("el progreso de un run se lee como hora y mensaje, sin el panel ni los margenes del reporter", () => {
+  const feed = operatorFeed([
+    "╭──────────────────────────────╮",
+    "│ lazy-workflow · code         │",
+    "╰──────────────────────────────╯",
+    "12/10/26 00:22:29 │ ● Sesion abierta con codex",
+    "12/10/26 00:22:31 │ ▲ La rama ya existia",
+    "                  │   se reutiliza",
+    "12/10/26 00:22:40 │ ✖ La verificacion fallo",
+    "salida propia del agente",
+  ]);
+  expect(feed).toEqual([
+    { time: "00:22:29", level: "info", text: "Sesion abierta con codex" },
+    { time: "00:22:31", level: "warn", text: "La rama ya existia\nse reutiliza" },
+    { time: "00:22:40", level: "error", text: "La verificacion fallo" },
+    { time: null, level: "info", text: "salida propia del agente" },
+  ]);
 });

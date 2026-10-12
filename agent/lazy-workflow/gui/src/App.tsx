@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { ask, isDesktop } from "./lib/platform.ts";
 import type { CatalogCommand, CommandCatalog } from "../../src/cli/command-catalog-schema.ts";
-import { backend, errorText, onRunExit, onRunOutput, onRunStarted, type Diagnostics, type FlagDefault, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
-import { applicableFlags, isSet, renderCommandLine, type FlagValues } from "./lib/command-line.ts";
-import { initialValues } from "./lib/form-defaults.ts";
-import { initialRunsState, runsReducer, type RunState } from "./lib/runs.ts";
-import { CommandView } from "./components/CommandView.tsx";
-import { EFFECT_CONFIRMATION } from "./components/EffectBadge.tsx";
-import { HistoryView } from "./components/HistoryView.tsx";
-import { HomeView } from "./components/HomeView.tsx";
-import { RunDock } from "./components/RunDock.tsx";
-import { SettingsView } from "./components/SettingsView.tsx";
+import { backend, errorText, onRunExit, onRunOutput, onRunStarted, type Diagnostics, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
+import { renderCommandLine } from "./lib/command-line.ts";
+import { initialRunsState, isFinished, runsReducer, type RunState } from "./lib/runs.ts";
+import { interviewUrl } from "./lib/output.ts";
+import { cliOf } from "./lib/models.ts";
+import { prepareSetup } from "./lib/run-request.ts";
+import { repairCli, repairPrompt, setupProblems } from "./lib/setup-check.ts";
+import { runTitle } from "./lib/work.ts";
+import { useAgentModels, useAssignedWork, useRunLog } from "./hooks.ts";
+import { ActivityView } from "./components/ActivityView.tsx";
+import { PreferencesView } from "./components/PreferencesView.tsx";
 import { Sidebar, type View } from "./components/Sidebar.tsx";
+import { WorkView } from "./components/WorkView.tsx";
 
 type CatalogState = { kind: "loading" } | { kind: "ready"; catalog: CommandCatalog } | { kind: "error"; message: string };
 
@@ -31,29 +33,28 @@ function useBatchedOutput(dispatch: (lines: RunOutput[]) => void) {
   }, [dispatch]);
 }
 
-/** What `commandDefaults` keeps from a form: everything but the repository, which follows the active one. */
-function storableDefaults(catalog: CommandCatalog, command: CatalogCommand, values: FlagValues): Record<string, FlagDefault> {
-  const stored: Record<string, FlagDefault> = {};
-  for (const flag of applicableFlags(catalog, command)) {
-    const value = values[flag.flag];
-    if (flag.flag === "--working-directory" || flag.kind === "secret" || !isSet(value)) continue;
-    stored[flag.flag] = Array.isArray(value) ? value.filter((entry) => entry.trim()) : (value as string | boolean);
-  }
-  return stored;
-}
+/** What the operator confirms before a session opens: what it may change, in their terms. */
+const CONFIRMATION: Record<string, string> = {
+  plan: "Plan abre una sesión del agente que puede editar la documentación del repositorio y publicará las tareas resultantes.",
+  code: "Code abre sesiones del agente que implementan, empujan, mergean y cierran tareas.",
+  setup: "Una sesión del agente revisará y reparará la configuración de este equipo. No edita repositorios ni el tracker.",
+};
 
 export function App() {
   const [settingsDocument, setSettingsDocument] = useState<SettingsDocument | null>(null);
   const [catalogState, setCatalogState] = useState<CatalogState>({ kind: "loading" });
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
-  const [view, setView] = useState<View>({ kind: "home" });
-  const [forms, setForms] = useState<Record<string, FlagValues>>({});
-  const [dockCollapsed, setDockCollapsed] = useState(true);
+  const [view, setView] = useState<View>({ kind: "work" });
   const [notice, setNotice] = useState<string | null>(null);
   const [state, dispatch] = useReducer(runsReducer, initialRunsState);
   const pendingStart = useRef(false);
   const settings = settingsDocument?.settings ?? null;
   const catalog = catalogState.kind === "ready" ? catalogState.catalog : null;
+  // Every finished run can change the work, the history and what is configured.
+  const finished = state.runs.filter((run) => run.exit !== null).length;
+  const work = useAssignedWork(catalog, settings?.repositories ?? [], finished);
+  const history = useRunLog(finished);
+  const { models } = useAgentModels(catalog);
 
   const loadCatalog = useCallback(async () => {
     setCatalogState({ kind: "loading" });
@@ -64,23 +65,21 @@ export function App() {
     }
   }, []);
 
-  const refreshDiagnostics = useCallback(async (current: CommandCatalog | null) => {
-    try {
-      setDiagnostics(await backend.diagnose(current?.environment.map(({ name, secret }) => ({ name, secret })) ?? []));
-    } catch (error) {
-      setNotice(errorText(error));
-    }
-  }, []);
-
   useEffect(() => {
     void backend.getSettings().then(setSettingsDocument, (error) => setNotice(errorText(error)));
     void loadCatalog();
   }, [loadCatalog]);
 
-  useEffect(() => { if (view.kind === "settings") void refreshDiagnostics(catalog); }, [catalog, view.kind, refreshDiagnostics]);
+  useEffect(() => {
+    if (!catalog) return;
+    let cancelled = false;
+    backend.diagnose(catalog.environment.map(({ name, secret }) => ({ name, secret })))
+      .then((next) => { if (!cancelled) setDiagnostics(next); }, () => undefined);
+    return () => { cancelled = true; };
+  }, [catalog, finished]);
 
-  // The skill edits gui.json from outside the window; rereading it on focus picks
-  // that up without a restart. An identical file leaves the state untouched.
+  // The `lz` skill edits gui.json from outside the window; rereading it on focus
+  // picks that up without a restart. An identical file leaves the state untouched.
   useEffect(() => {
     const reread = () => {
       void backend.getSettings().then((next) => {
@@ -95,7 +94,7 @@ export function App() {
   useEffect(() => {
     if (!isDesktop && !catalog) return;
     const unlisten = [onRunOutput(pushOutput), onRunExit((exit) => dispatch({ type: "exit", exit })), onRunStarted(({ started, args }) => {
-      const command = catalog?.commands.find((command) => command.name === args[0]);
+      const command = catalog?.commands.find((candidate) => candidate.name === args[0]);
       if (catalog && command) dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
     })];
     return () => { for (const promise of unlisten) void promise.then((stop) => stop()); };
@@ -109,76 +108,48 @@ export function App() {
 
   const saveSettings = useCallback(async (next: GuiSettings, announce = true) => {
     try {
-      const saved = await backend.saveSettings(next);
-      const lzChanged = saved.settings.lzCommand !== settingsDocument?.settings.lzCommand
-        || JSON.stringify(saved.settings.extraPath) !== JSON.stringify(settingsDocument?.settings.extraPath)
-        || saved.settings.inheritShellEnvironment !== settingsDocument?.settings.inheritShellEnvironment;
-      setSettingsDocument(saved);
-      setNotice(announce ? "Configuracion guardada." : null);
-      if (lzChanged || catalogState.kind === "error") void loadCatalog();
-      else void refreshDiagnostics(catalog);
+      setSettingsDocument(await backend.saveSettings(next));
+      setNotice(announce ? "Ajustes guardados." : null);
     } catch (error) {
       setNotice(errorText(error));
     }
-  }, [settingsDocument, catalogState.kind, catalog, loadCatalog, refreshDiagnostics]);
-
-  const valuesFor = (command: CatalogCommand): FlagValues =>
-    forms[command.name] ?? (catalog && settings ? initialValues(catalog, command, settings) : {});
-
-  const openCommand = (name: string, preset?: Record<string, string>) => {
-    setDockCollapsed(true);
-    if (preset && catalog && settings) {
-      const command = catalog.commands.find((candidate) => candidate.name === name);
-      if (command) setForms((current) => ({ ...current, [name]: { ...(current[name] ?? initialValues(catalog, command, settings)), ...preset } }));
-    }
-    setView({ kind: "command", name });
-  };
+  }, []);
 
   const selectRepository = (repository: string) => {
-    if (!settings || !repository) return;
-    const previous = settings.activeRepository;
-    setForms((current) => Object.fromEntries(Object.entries(current).map(([name, values]) => [
-      name,
-      values["--working-directory"] === previous ? { ...values, "--working-directory": repository } : values,
-    ])));
-    void saveSettings({ ...settings, activeRepository: repository }, false);
+    if (settings && repository && repository !== settings.activeRepository) void saveSettings({ ...settings, activeRepository: repository }, false);
   };
 
   const addRepository = (repository: string) => {
     if (!settings) return;
     if (!isDesktop || settings.repositories.includes(repository)) { selectRepository(repository); return; }
-    setForms((current) => Object.fromEntries(Object.entries(current).map(([name, values]) => [name, { ...values, "--working-directory": repository }])));
     void saveSettings({ ...settings, repositories: [...settings.repositories, repository], activeRepository: repository }, false);
   };
 
-  const run = async (command: CatalogCommand, args: string[], stdin?: string) => {
-    if (!catalog || !settings) return;
-    if (!isDesktop && pendingStart.current) return;
+  /** Starts a run; resolves true once it is running, so a form can close. */
+  const run = async (command: CatalogCommand, args: string[]): Promise<boolean> => {
+    if (!catalog || !settings || pendingStart.current) return false;
     pendingStart.current = true;
     try {
       if (command.effect !== "read" && settings.confirmWrites) {
-        const line = renderCommandLine(catalog, command, args, catalog.binary);
-        const confirmed = await ask(`${EFFECT_CONFIRMATION[command.effect]}\n\n${line}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
-        if (!confirmed) return;
+        const confirmed = await ask(`${runTitle(command.name, args)}\n\n${CONFIRMATION[command.name] ?? "Este comando modifica el repositorio o el tracker."}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
+        if (!confirmed) return false;
       }
       const directoryIndex = args.indexOf("--working-directory");
       const cwd = directoryIndex >= 0 ? args[directoryIndex + 1]?.split(",")[0]?.trim() : settings.activeRepository ?? undefined;
-      const started = await backend.startRun(args, { stdin, cwd });
+      const started = await backend.startRun(args, { cwd });
       dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
-      setDockCollapsed(false);
+      // A run is followed where it is tracked: its progress opens in Ejecuciones.
+      setView({ kind: "activity", runId: null, liveId: started.id });
+      return true;
     } catch (error) {
       setNotice(errorText(error));
+      return false;
     } finally { pendingStart.current = false; }
   };
 
   const rerun = (previous: RunState) => {
     const command = catalog?.commands.find((candidate) => candidate.name === previous.command);
-    if (!command) return;
-    if (command.stdinFlag) {
-      openCommand(command.name);
-      return;
-    }
-    void run(command, [...previous.args]);
+    if (command) void run(command, [...previous.args]);
   };
 
   const cancel = async (id: number) => {
@@ -190,66 +161,62 @@ export function App() {
     }
   };
 
+  const preferredCli = catalog ? cliOf(catalog, typeof settings?.flagDefaults["--cli"] === "string" ? settings.flagDefaults["--cli"] : undefined) : "";
+  const problems = catalog && settings ? setupProblems({ catalog, diagnostics, models, repositories: work.loading ? [] : work.results, preferredCli }) : [];
+  const repairing = state.runs.some((entry) => entry.command === "setup" && (entry.status === "running" || entry.status === "cancelling"));
+  const repairWith = catalog ? repairCli(catalog, models, diagnostics, preferredCli) : null;
+  const canRepair = !!catalog?.commands.some((command) => command.name === "setup") && repairWith !== null && problems.some((problem) => problem.fixable);
+  const repair = () => {
+    if (!catalog || !settings || !repairWith) return;
+    const prepared = prepareSetup(catalog, settings.activeRepository, repairPrompt(problems), repairWith);
+    if (prepared) void run(prepared.command, prepared.args);
+  };
+  const setup = { problems, canRepair, repairing, onRepair: repair };
+
   const running = state.runs.filter((entry) => entry.status === "running" || entry.status === "cancelling").length;
+  const openRun = (id: number) => setView({ kind: "activity", runId: null, liveId: id });
+  // A plan waiting for answers is announced everywhere but on its own page.
+  const waiting = state.runs.find((entry) => !isFinished(entry) && interviewUrl(entry.stderr) !== null
+    && !(view.kind === "activity" && view.liveId === entry.id));
 
   let main: ReactNode;
   if (!settingsDocument) {
     main = <div className="page muted">Cargando…</div>;
-  } else if (view.kind === "settings") {
-    main = (
-      <SettingsView
-        catalog={catalog}
-        document={settingsDocument}
-        diagnostics={diagnostics}
-        onSave={saveSettings}
-        onOpenCommand={openCommand}
-        onReloadEnvironment={() => { void backend.reloadEnvironment().then(() => refreshDiagnostics(catalog)); }}
-      />
-    );
-  } else if (view.kind === "history") {
-    main = <HistoryView focusRunId={view.runId} />;
   } else if (catalogState.kind === "loading") {
-    main = <div className="page muted">Leyendo <code>lz catalog</code>…</div>;
+    main = <div className="page muted">Conectando con lz…</div>;
   } else if (catalogState.kind === "error") {
     main = (
       <div className="page">
-        <h1>No se pudo leer el CLI</h1>
+        <h1>No se pudo iniciar lz</h1>
         <div className="callout error">{catalogState.message}</div>
-        <p>
-          La GUI dibuja lo que <code>lz catalog</code> describe. Instala o actualiza lz (<code>install.sh --all-global</code> o <code>lz update</code>),
-          o apunta <code>lzCommand</code> al <code>main.ts</code> de un checkout.
-        </p>
-        <div className="row">
-          <button type="button" className="button primary" onClick={loadCatalog}>Reintentar</button>
-          <button type="button" className="button" onClick={() => setView({ kind: "settings" })}>Configuracion</button>
-        </div>
+        <p>Instala o actualiza lz con <code>lz update</code> (o <code>install.sh --all-global</code>) en {isDesktop ? "este equipo" : "el servidor"} y vuelve a intentar.</p>
+        <div className="row"><button type="button" className="button primary" onClick={loadCatalog}>Reintentar</button></div>
       </div>
     );
-  } else if (view.kind === "command" && catalog && settings) {
-    const command = catalog.commands.find((candidate) => candidate.name === view.name);
-    main = command ? (
-      <CommandView
-        key={command.name}
-        catalog={catalog}
-        command={command}
-        values={valuesFor(command)}
-        repositories={settings.repositories}
-        onChange={(values) => setForms((current) => ({ ...current, [command.name]: values }))}
-        onReset={() => setForms((current) => ({ ...current, [command.name]: initialValues(catalog, command, settings) }))}
-        onSaveDefaults={(values) => void saveSettings({ ...settings, commandDefaults: { ...settings.commandDefaults, [command.name]: storableDefaults(catalog, command, values) } })}
-        onRun={(args, stdin) => void run(command, args, stdin)}
-      />
-    ) : <div className="page">El comando {view.name} no esta en el catalogo de este lz.</div>;
+  } else if (catalog && settings && view.kind === "activity") {
+    main = (
+      <ActivityView runs={state.runs} history={history} selected={view.liveId} focusRunId={view.runId}
+        onSelect={(id) => setView({ kind: "activity", runId: null, liveId: id })}
+        onCancel={cancel} onRerun={rerun} onDismiss={(id) => dispatch({ type: "close", id })}
+        onOpenHistory={(runId) => setView({ kind: "activity", runId, liveId: null })} />
+    );
+  } else if (catalog && settings && view.kind === "preferences") {
+    main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} />;
   } else if (catalog && settings) {
     main = (
-      <HomeView
+      <WorkView
         catalog={catalog}
-        repositories={settings.repositories}
-        activeRepository={settings.activeRepository}
-        revision={state.runs.filter((run) => run.exit !== null).length}
-        onOpenCommand={openCommand}
-        onOpenHistory={(runId) => setView({ kind: "history", runId })}
+        settings={settings}
+        work={work}
+        history={history.runs}
+        runs={state.runs}
+        models={models}
+        setup={setup}
+        onRun={run}
+        onSaveSettings={saveSettings}
         onAddRepository={addRepository}
+        onOpenActivity={(runId) => setView({ kind: "activity", runId, liveId: null })}
+        onFocusRun={openRun}
       />
     );
   }
@@ -257,12 +224,12 @@ export function App() {
   return (
     <div className="app">
       <Sidebar
-        catalog={catalog}
         view={view}
         running={running}
+        attention={problems.length}
         repositories={settings?.repositories ?? []}
         activeRepository={settings?.activeRepository ?? null}
-        onNavigate={(next) => { setDockCollapsed(true); setView(next); }}
+        onNavigate={setView}
         onSelectRepository={selectRepository}
         onAddRepository={addRepository}
       />
@@ -270,27 +237,22 @@ export function App() {
         {notice && (
           <div className="notice" role="status">
             <span className="grow">{notice}</span>
-            <button type="button" className="icon-button" onClick={() => setNotice(null)}>✕</button>
+            <button type="button" className="icon-button" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>✕</button>
           </div>
         )}
-        {settingsDocument?.error && view.kind !== "settings" && (
+        {waiting && (
+          <div className="notice attention" role="status">
+            <span className="grow"><strong>{runTitle(waiting.command, waiting.args)}</strong> espera tus respuestas.</span>
+            <button type="button" className="button primary small" onClick={() => openRun(waiting.id)}>Responder</button>
+          </div>
+        )}
+        {settingsDocument?.error && view.kind !== "preferences" && (
           <div className="notice error">
             <span className="grow">{settingsDocument.error}</span>
-            <button type="button" className="link-button" onClick={() => setView({ kind: "settings" })}>Revisar</button>
+            <button type="button" className="link-button" onClick={() => setView({ kind: "preferences" })}>Revisar</button>
           </div>
         )}
         <main className="main">{main}</main>
-        <RunDock
-          runs={state.runs}
-          activeId={state.activeId}
-          collapsed={dockCollapsed}
-          onToggle={() => setDockCollapsed(!dockCollapsed)}
-          onFocus={(id) => { dispatch({ type: "focus", id }); setDockCollapsed(false); }}
-          onCancel={cancel}
-          onClose={(id) => dispatch({ type: "close", id })}
-          onRerun={rerun}
-          onOpenHistory={(runId) => setView({ kind: "history", runId })}
-        />
       </div>
     </div>
   );

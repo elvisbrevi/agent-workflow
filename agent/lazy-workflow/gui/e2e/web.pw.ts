@@ -1,74 +1,88 @@
 import { test, expect } from "./fixture.ts";
 
-test("owner can run the shared UI, answer a private interview, upload device text and keep data through restart", async ({ page, context }, testInfo) => {
+test("owner plans from the browser, answers a private interview, repairs setup and keeps data through restart", async ({ page, context }, testInfo) => {
   const failures: string[] = [];
+  const starts: Array<{ request: { args: string[] } }> = [];
   page.on("pageerror", (error) => failures.push(error.message));
+  page.on("request", (request) => { if (request.url().endsWith("/api/rpc/start_run")) starts.push(request.postDataJSON()); });
   page.on("dialog", (dialog) => { void dialog.accept(); });
   await page.goto("/");
   await page.getByLabel("Usuario", { exact: true }).fill("owner");
   await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
   await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Cerrar sesion", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Trabajo", exact: true })).toBeVisible();
   await page.getByLabel("Repositorio activo").selectOption({ label: "github-project" });
   const cookie = (await context.cookies()).find((cookie) => cookie.name === "__Host-lz-session");
   expect(cookie?.secure).toBe(true); expect(cookie?.httpOnly).toBe(true); expect(cookie?.sameSite).toBe("Strict");
-  await page.getByText("Herramientas avanzadas", { exact: true }).click();
-  await page.getByRole("button", { name: "git-branch-list", exact: true }).click();
-  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
-  await expect(page.locator(".dock")).toContainText("synthetic");
-  await page.getByRole("button", { name: "Planificar", exact: true }).click();
-  await page.getByRole("button", { name: "GitHub", exact: true }).click();
-  await page.getByRole("button", { name: "Continuar" }).click();
-  await page.getByRole("button", { name: "Revisar ejecución" }).click();
-  await page.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
-  await page.getByRole("button", { name: "Responder aqui", exact: true }).click();
+
+  // A GitHub repository offers its queue and a new plan from its section.
+  await page.locator(".section-header").filter({ hasText: "synthetic/github" }).click();
+  const panel = page.locator(".work-panel");
+  await expect(panel.locator(".task-list")).toContainText("Agregar el menú lateral");
+  await expect(panel.locator(".task-list")).toContainText("asignada");
+  await panel.getByRole("button", { name: "Nuevo plan", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "Ejecutar Plan", exact: true })).toBeDisabled();
+  await panel.getByLabel("Qué quieres planificar").fill("Un menú lateral con accesos rápidos");
+  await expect(panel.getByLabel("Responder las preguntas del agente antes de planificar")).toBeChecked();
+  await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
   await expect(page.getByText("Synthetic: one service or two?", { exact: true })).toBeVisible();
+  const planArgs = starts.at(-1)!.request.args;
+  expect(planArgs[0]).toBe("plan");
+  expect(planArgs[planArgs.indexOf("--prompt") + 1]).toBe("Un menú lateral con accesos rápidos");
+  expect(planArgs[planArgs.indexOf("--interview") + 1]).toBe("http");
   await page.locator(".web-interview textarea").fill("two");
-  if (testInfo.project.use.isMobile) {
+  if (testInfo.project.use.isMobile && page.viewportSize()!.height > page.viewportSize()!.width) {
     await page.getByRole("button", { name: "Enviar respuestas", exact: true }).scrollIntoViewIfNeeded();
     const submit = await page.getByRole("button", { name: "Enviar respuestas", exact: true }).boundingBox();
-    const navigation = await page.getByRole("button", { name: "Inicio", exact: true }).boundingBox();
+    const navigation = await page.getByRole("button", { name: "Trabajo", exact: true }).boundingBox();
     expect(submit!.y + submit!.height).toBeLessThan(navigation!.y);
   }
   await page.getByRole("button", { name: "Enviar respuestas", exact: true }).click();
-  await expect(page.locator(".dock")).toContainText("syntheticAnswers");
-  await expect(page.locator(".dock")).not.toContainText("http://127.0.0.1");
-  await page.getByRole("button", { name: "pr-create", exact: true }).click();
-  await page.locator("input[type=file]").setInputFiles({ name: "synthetic.md", mimeType: "text/markdown", buffer: Buffer.from("Synthetic browser upload") });
-  await expect(page.locator("#flag-description-file")).toHaveValue(/\/uploads\/[a-f0-9]+\.txt$/);
-  await page.getByRole("button", { name: "Configuracion", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Conexiones del servidor" })).toBeVisible();
-  await expect(page.getByText("Conexiones y configuración del equipo", { exact: true })).toHaveCount(0);
-  await expect(page.locator("#lz-command")).toHaveCount(0);
-  await expect(page.locator(".server-connections input")).toHaveCount(0);
-  const azureOrganization = page.locator(".server-connections .field").filter({ hasText: "LAZY_WORKFLOW_AZURE_ORGANIZATION" });
-  await expect(azureOrganization).toContainText("https://dev.azure.com/synthetic");
-  await expect(azureOrganization.getByLabel("Solo lectura")).toBeVisible();
-  const pat = page.locator(".server-connections .field").filter({ hasText: "AZURE_DEVOPS_EXT_PAT" });
-  await expect(pat).toContainText("Configurado (privado)");
-  await expect(pat).toContainText("••••••••");
-  await expect(page.locator(".server-connections")).not.toContainText("synthetic-pat");
-  const theme = page.locator(".settings select").last();
+  await expect(page.locator(".run-detail")).toContainText("syntheticAnswers");
+  await expect(page.locator(".run-detail")).not.toContainText("http://127.0.0.1");
+
+  // An epic plans through the issue itself: the session reads it with gh.
+  // A started run opens in Ejecuciones; the work is one tap away.
+  await page.getByRole("button", { name: "Trabajo", exact: true }).click();
+  // Narrow screens show the list or the panel; wide ones show both.
+  const back = page.getByRole("button", { name: "Volver a la lista" });
+  if (await back.isVisible()) await back.click();
+  await page.locator(".work-list").getByText("[Epic] Portal de autoservicio", { exact: true }).click();
+  await panel.getByRole("button", { name: "Planificar desde esta issue", exact: true }).click();
+  await panel.getByLabel("Responder las preguntas del agente antes de planificar").uncheck();
+  await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
+  const epicArgs = starts.at(-1)!.request.args;
+  expect(epicArgs[epicArgs.indexOf("--prompt") + 1]).toContain("gh issue view 9 --comments");
+  expect(epicArgs).not.toContain("--interview");
+  await expect(page.locator(".run-detail")).toContainText("syntheticPlan");
+
+  // Settings hold no credential fields; a missing piece is repaired by an agent session.
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Estado del equipo" })).toBeVisible();
+  await expect(page.locator(".preferences-page input[type=password]")).toHaveCount(0);
+  await expect(page.locator(".preferences-page")).not.toContainText("AZURE_DEVOPS_EXT_PAT");
+  await expect(page.locator(".preferences-page")).not.toContainText("synthetic-pat");
+  await expect(page.locator(".status-list")).toContainText("https://dev.azure.com/synthetic");
+  const banner = page.getByRole("status", { name: "Configuración pendiente" }).first();
+  await banner.getByRole("button", { name: "Reparar con agente", exact: true }).click();
+  await expect(page.locator(".run-detail")).toContainText("synthetic setup report");
+  const setupArgs = starts.at(-1)!.request.args;
+  expect(setupArgs[0]).toBe("setup");
+  expect(setupArgs[setupArgs.indexOf("--prompt") + 1]).toContain("broken-project");
+  const screenshot = testInfo.outputPath(`${testInfo.project.name}-settings.png`);
+  await page.screenshot({ path: screenshot, fullPage: true });
+  await testInfo.attach("settings", { path: screenshot, contentType: "image/png" });
+
+  // The repair opened its progress in Ejecuciones; preferences are back in Ajustes.
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  const theme = page.getByLabel("Tema");
   const nextTheme = (await theme.inputValue()) === "dark" ? "light" : "dark";
   await theme.selectOption(nextTheme);
-  await page.getByRole("button", { name: "Guardar preferencias", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("guardada");
+  await page.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Ajustes guardados." })).toBeVisible();
   await page.reload();
-  await page.getByRole("button", { name: "Configuracion", exact: true }).click();
-  await expect(page.locator(".settings select").last()).toHaveValue(nextTheme);
-  await expect(azureOrganization).toContainText("https://dev.azure.com/synthetic");
-  await expect(pat).toContainText("Configurado (privado)");
-  const screenshot = testInfo.outputPath(`${testInfo.project.name}.png`);
-  await page.screenshot({ path: screenshot, fullPage: true });
-  await testInfo.attach("shared-interface", { path: screenshot, contentType: "image/png" });
-  const organizationImage = testInfo.outputPath(`${testInfo.project.name}-organization.png`);
-  await azureOrganization.evaluate((element) => element.scrollIntoView({ block: "center" }));
-  await azureOrganization.screenshot({ path: organizationImage });
-  await testInfo.attach("locked-azure-organization", { path: organizationImage, contentType: "image/png" });
-  const credentialImage = testInfo.outputPath(`${testInfo.project.name}-credential.png`);
-  await pat.evaluate((element) => element.scrollIntoView({ block: "center" }));
-  await pat.screenshot({ path: credentialImage });
-  await testInfo.attach("private-azure-credential", { path: credentialImage, contentType: "image/png" });
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByLabel("Tema")).toHaveValue(nextTheme);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   // The event feed reloads the page when the server instance changes. A second
   // manual reload races that navigation and aborts intercepted requests.
@@ -76,16 +90,18 @@ test("owner can run the shared UI, answer a private interview, upload device tex
   await page.request.post("https://127.0.0.1:18443/__test/restart", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
   await restarted;
   await page.waitForLoadState();
-  await expect(page.getByRole("button", { name: "Cerrar sesion", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Configuracion", exact: true }).click();
-  await expect(page.locator(".settings select").last()).toHaveValue(nextTheme);
+  await expect(page.getByRole("button", { name: "Trabajo", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByLabel("Tema")).toHaveValue(nextTheme);
   await page.request.post("https://127.0.0.1:18443/__test/expire", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
   // The next authenticated poll detects the expired session and opens login.
   await expect(page.getByRole("button", { name: "Iniciar sesion", exact: true })).toBeVisible();
   await page.getByLabel("Usuario", { exact: true }).fill("owner");
   await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
   await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
-  await page.getByRole("button", { name: "Cerrar sesion", exact: true }).click();
+  // The account control sits in the sidebar on wide screens and in Ajustes on phones.
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await page.getByRole("button", { name: "Cerrar sesión", exact: true }).click();
   await expect(page.getByRole("button", { name: "Iniciar sesion", exact: true })).toBeVisible();
   expect(failures).toEqual([]);
 });

@@ -132,6 +132,6 @@ rerun with a chain whose rungs still have quota.
 
 The window runs the same `lz` a terminal would, so first make sure the terminal
 works (`lz catalog > /dev/null`), then compare what the GUI resolves:
-**Inicio → Diagnostico**, or [GUI.md](GUI.md#troubleshooting) for each symptom.
+**Ajustes → Estado del equipo**, or [GUI.md](GUI.md#troubleshooting) for each symptom.
 A run that fails inside the GUI fails for the reasons in this file — its operator
 panel is the same stderr.

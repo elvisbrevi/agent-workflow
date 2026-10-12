@@ -172,34 +172,36 @@ bun scripts/gui-settings.ts add extraPath ~/.bun/bin
 bun scripts/gui-settings.ts set lzCommand /path/to/agent-workflow/agent/lazy-workflow/main.ts
 ```
 
-Then **Inicio → Diagnostico → Actualizar** lists the launcher and every tool the
-run will find. A missing `LAZY_WORKFLOW_*` variable is the same problem: export
+Then **Ajustes → Estado del equipo** (after reopening the window) shows which
+tools the run will find. A missing `LAZY_WORKFLOW_*` variable is the same problem: export
 it from the shell profile, or set it for GUI runs only with
 `bun scripts/gui-settings.ts set environment.<NAME> <value>`.
 
-## "Give the GUI my Azure PAT and the shutdown password"
+## "Give the GUI my Azure PAT"
+
+The window has no credential fields. Store the value with the CLI, and list the
+name for GUI runs:
 
 ```bash
 lz credentials-set --name AZURE_DEVOPS_EXT_PAT
-lz credentials-set --name LAZY_WORKFLOW_OFF_PASSWORD
 bun scripts/gui-settings.ts add secretEnvironment AZURE_DEVOPS_EXT_PAT
-bun scripts/gui-settings.ts add secretEnvironment LAZY_WORKFLOW_OFF_PASSWORD
 ```
 
-Each GUI run reads them with `lz credentials-get` as it starts; neither value is
-written to `gui.json`, shown in a form, or placed on a command line. `--off` in
-the GUI is a checkbox that sends a bare `--off`, which takes the password from
-that variable.
+Each GUI run reads it with `lz credentials-get` as it starts; the value is never
+written to `gui.json`, shown in the window or placed on a command line. When the
+GUI reports something missing, **Reparar con agente** runs `lz setup` with the
+detected problems; whatever needs the operator (a token, a browser login) comes
+back in its report as the exact step to take.
 
-## "What exactly will this GUI form run?"
+## "What exactly will this GUI run?"
 
-The dark line above **Ejecutar** is the command, with secrets masked; **Copiar**
-puts it on the clipboard for a terminal. To reason about a form without the
-window, read the command's definition from the installed binary:
+The window runs `plan`, `code` or `setup` with only the options that differ from
+the CLI's defaults; **Ejecuciones** names the run by its work and shows what it
+reported. To reason about a run without the window, read the command's
+definition from the installed binary:
 
 ```bash
 lz catalog | jq '.commands[] | select(.name == "code")'
 ```
 
-Fields left empty are not sent, so the CLI's defaults apply; a greyed field's
-flag is not sent either, because the flag it `requires` is missing.
+Options left at their default are not sent, so the CLI's defaults apply.

@@ -1,4 +1,5 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
+
 
 export default defineConfig({
   testDir: "./e2e", testMatch: "**/*.pw.ts", workers: 1, timeout: 60000,
@@ -7,6 +8,9 @@ export default defineConfig({
     { name: "desktop", use: { viewport: { width: 1280, height: 800 } } },
     { name: "phone", use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } },
     { name: "small-phone", use: { viewport: { width: 320, height: 740 }, isMobile: true, hasTouch: true } },
+    // Safari's own engine at an iPhone 15's visible area: `bunx playwright install --with-deps webkit`.
+    { name: "iphone-15", use: { ...devices["iPhone 15"], browserName: "webkit" } },
+    { name: "iphone-15-landscape", use: { ...devices["iPhone 15 landscape"], browserName: "webkit" } },
   ],
   webServer: { command: "bun e2e/server.ts", url: "https://127.0.0.1:18443/__test/health", ignoreHTTPSErrors: true, reuseExistingServer: false, timeout: 60000 },
 });

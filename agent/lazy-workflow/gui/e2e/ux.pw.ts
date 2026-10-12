@@ -1,6 +1,6 @@
 import { test, expect } from "./fixture.ts";
 
-test("work dashboard, server folder search and guided Azure execution", async ({ page }, testInfo) => {
+test("assigned work, HU task tracking and a Code run with a listed model", async ({ page }, testInfo) => {
   const failures: string[] = [];
   const starts: unknown[] = [];
   page.on("pageerror", (error) => failures.push(error.message));
@@ -10,55 +10,74 @@ test("work dashboard, server folder search and guided Azure execution", async ({
   await page.getByLabel("Usuario", { exact: true }).fill("owner");
   await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
   await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Tu trabajo, a mano" })).toBeVisible();
-  await expect(page.getByText("Mejorar la navegación principal", { exact: true })).toBeVisible();
-  await expect(page.getByText("Simplificar el formulario de ingreso", { exact: true })).toBeVisible();
-  await expect(page.getByText("Implementación · HU #45 · Task #46")).toBeVisible();
-  if (testInfo.project.use.isMobile) {
-    const homeButton = await page.getByRole("button", { name: "Inicio", exact: true }).boundingBox();
-    expect(homeButton!.height).toBeGreaterThanOrEqual(44);
-    expect(homeButton!.y).toBeGreaterThan(page.viewportSize()!.height - 80);
+  await expect(page.getByRole("heading", { name: "Trabajo", exact: true })).toBeVisible();
+  const list = page.locator(".work-list");
+  await expect(list.getByText("Mejorar el portal de clientes", { exact: true })).toBeVisible();
+  await expect(list.getByText("Simplificar el formulario de ingreso", { exact: true })).toBeVisible();
+  await expect(list.getByText("Mejorar la navegación principal", { exact: true })).toBeVisible();
+  await expect(list.getByText("Épica", { exact: true })).toBeVisible();
+  // Internal tools and credential forms are not part of the interface.
+  await expect(page.getByText("Herramientas avanzadas")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "git-branch-list" })).toHaveCount(0);
+  // A repository whose work cannot be read raises the configuration notice.
+  await expect(page.getByRole("status", { name: "Configuración pendiente" })).toContainText("broken-project");
+  // Upright, the navigation sits at the bottom; on its side it joins the top bar.
+  if (testInfo.project.use.isMobile && page.viewportSize()!.height > page.viewportSize()!.width) {
+    const work = await page.getByRole("button", { name: "Trabajo", exact: true }).boundingBox();
+    expect(work!.height).toBeGreaterThanOrEqual(44);
+    expect(work!.y).toBeGreaterThan(page.viewportSize()!.height - 80);
     expect((await page.locator(".sidebar").boundingBox())!.height).toBeLessThan(140);
   }
-  await expect(page.getByRole("button", { name: "git-branch-list", exact: true })).toBeHidden();
   await page.getByLabel("Filtrar por plataforma").selectOption("github");
-  await expect(page.getByText("Simplificar el formulario de ingreso", { exact: true })).toBeHidden();
+  await expect(list.getByText("Mejorar el portal de clientes", { exact: true })).toBeHidden();
   await page.getByLabel("Filtrar por plataforma").selectOption("all");
-  await page.getByLabel("Buscar tarea asignada").fill("formulario");
-  await expect(page.getByText("Mejorar la navegación principal", { exact: true })).toBeHidden();
-  await page.getByLabel("Buscar tarea asignada").fill("");
-  await page.locator(".sidebar").getByRole("button", { name: "Buscar carpeta…", exact: true }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.getByLabel("Buscar carpeta del servidor").fill("azure");
-  await expect(page.locator(".folder-result")).toHaveCount(1);
-  await page.locator(".folder-result").click();
-  await expect(page.getByLabel("Repositorio activo")).toHaveValue(/azure-project$/);
-  await expect(page.getByRole("button", { name: "Preparar Code", exact: true })).toBeVisible();
-  await expect(page.getByText("Buscando tus tareas…", { exact: true })).toBeHidden();
-  const home = testInfo.outputPath(`${testInfo.project.name}-dashboard.png`);
+  await page.getByLabel("Buscar trabajo").fill("formulario");
+  await expect(list.getByText("Mejorar la navegación principal", { exact: true })).toBeHidden();
+  await page.getByLabel("Buscar trabajo").fill("");
+  const home = testInfo.outputPath(`${testInfo.project.name}-work.png`);
   await page.screenshot({ path: home, fullPage: true });
-  await testInfo.attach("work-dashboard", { path: home, contentType: "image/png" });
-  await page.getByRole("button", { name: "Preparar Code", exact: true }).click();
-  await expect(page.locator("#workflow-hu")).toHaveValue("50");
-  await expect(page.locator("#workflow-ticket")).toHaveValue("51");
-  await page.getByRole("button", { name: "Continuar" }).click();
-  await expect(page.getByText("Opciones avanzadas", { exact: true })).toBeVisible();
-  await expect(page.locator("#flag-idle-timeout")).toBeHidden();
-  await page.locator("#flag-cli").selectOption("codex");
-  await expect(page.locator("#flag-model")).toHaveValue("");
-  await page.locator("#flag-variant").selectOption("high");
-  await page.getByRole("button", { name: "Revisar ejecución" }).click();
-  await expect(page.locator(".run-summary")).toContainText("HU #50 · Task #51");
-  await expect(page.locator(".preview-line")).toContainText("--hu 50 --ticket 51");
+  await testInfo.attach("work", { path: home, contentType: "image/png" });
+
+  await list.getByText("Mejorar el portal de clientes", { exact: true }).click();
+  const panel = page.locator(".work-panel");
+  await expect(panel.getByRole("heading", { name: "Mejorar el portal de clientes" })).toBeVisible();
+  await expect(panel.getByText("1 de 2 tareas terminadas")).toBeVisible();
+  await expect(panel.locator(".task-list")).toContainText("Publicar el portal");
+  const detail = testInfo.outputPath(`${testInfo.project.name}-hu.png`);
+  await page.screenshot({ path: detail, fullPage: true });
+  await testInfo.attach("hu-detail", { path: detail, contentType: "image/png" });
+
+  await panel.getByRole("button", { name: "Implementar", exact: true }).click();
+  await expect(panel.getByRole("heading", { name: "Implementar HU #50" })).toBeVisible();
+  await expect(panel.getByText("Todas las tareas pendientes (1)")).toBeVisible();
+  await panel.getByRole("radio", { name: /#51/ }).check();
+  await expect(panel.getByRole("radio", { name: /#52/ })).toBeDisabled();
+  await panel.getByRole("radio", { name: "Codex" }).click();
+  await expect(panel.locator("#run-model")).toHaveValue("");
+  await expect(panel.locator("#run-model option")).toContainText(["Predeterminado · gpt-synthetic", "GPT Synthetic Sol"]);
+  await panel.locator("#run-model").selectOption("gpt-synthetic-sol");
+  await expect(panel.locator("#run-variant option")).toHaveText(["Predeterminado · high", "low", "medium", "high"]);
+  await panel.locator("#run-variant").selectOption("high");
   expect(starts).toHaveLength(0);
-  const review = testInfo.outputPath(`${testInfo.project.name}-review.png`);
-  await page.screenshot({ path: review, fullPage: true });
-  await testInfo.attach("execution-review", { path: review, contentType: "image/png" });
+  const form = testInfo.outputPath(`${testInfo.project.name}-code-form.png`);
+  await page.screenshot({ path: form, fullPage: true });
+  await testInfo.attach("code-form", { path: form, contentType: "image/png" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("button", { name: "Ejecutar Code", exact: true }).click();
-  await expect(page.locator(".dock")).toContainText("synthetic");
+  await panel.getByRole("button", { name: "Ejecutar Code", exact: true }).click();
+  // The run opens where runs are followed, with its progress.
+  await expect(page.locator(".run-detail h2")).toHaveText("Code · HU #50 · Task #51");
+  const progress = testInfo.outputPath(`${testInfo.project.name}-run.png`);
+  await page.screenshot({ path: progress, fullPage: true });
+  await testInfo.attach("run-progress", { path: progress, contentType: "image/png" });
   expect(starts).toHaveLength(1);
   const args = (starts[0] as { request: { args: string[] } }).request.args;
-  expect(args).toContain("50"); expect(args).toContain("51"); expect(args).toContain("codex");
+  expect(args.slice(0, 1)).toEqual(["code"]);
+  for (const [flag, value] of [["--hu", "50"], ["--ticket", "51"], ["--cli", "codex"], ["--model", "gpt-synthetic-sol"]]) expect(args[args.indexOf(flag!) + 1]).toBe(value);
+  // `high` is the CLI's default effort, so the shortest command line leaves it out.
+  expect(args).not.toContain("--variant");
+
+  await page.getByRole("button", { name: "Ejecuciones", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Historial" })).toBeVisible();
+  await expect(page.locator(".history-list")).toContainText("Code · HU #45 · Task #46");
   expect(failures).toEqual([]);
 });

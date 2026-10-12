@@ -147,6 +147,14 @@ forwarded flags, shutdown, custom log paths and interview bind options are
 always excluded from web execution. The API requires long flags as separate
 arguments; it rejects aliases, unknown flags and unregistered paths.
 
+The interface needs these reads in `allowedCommands`: `work-assigned`,
+`agent-models`, `hu-info`, `hu-children-info` and `github-issue-list` (new
+installations include them; add the missing ones to an existing `web.json`).
+`setup` is opt-in: with it, the configuration notice offers **Reparar con
+agente**, which opens one coding-agent session on the server under the
+`lazy-setup` authority (no repository, git or tracker mutation, no secret read).
+Without it, the notice tells the owner to configure the server locally.
+
 To check the backend before installing services, run in one terminal:
 
 ```bash

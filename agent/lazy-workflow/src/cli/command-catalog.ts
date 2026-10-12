@@ -52,7 +52,7 @@ const FAMILIES: readonly CatalogFamily[] = [
   { id: "git", title: "Git", description: "Listar, cambiar y borrar ramas del repositorio." },
   { id: "pull-request", title: "Pull requests", description: "PR del tracker que nombra origin: GitHub o Azure DevOps." },
   { id: "credentials", title: "Credenciales", description: "Secretos en ~/.config/secrets/*.env, con chezmoi si lo administra." },
-  { id: "maintenance", title: "Mantenimiento", description: "Reinstalar la herramienta y describir el propio CLI." },
+  { id: "maintenance", title: "Mantenimiento", description: "Reinstalar la herramienta y describir el propio CLI y los agentes instalados." },
 ];
 
 // ---------------------------------------------------------------------------
@@ -338,6 +338,19 @@ const CREDENTIALS_COMMANDS: readonly CatalogCommand[] = [
 
 const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
   {
+    name: "setup",
+    family: "maintenance",
+    summary: "Abre una sesion del agente que repara lo que plan y code necesitan: binarios, logins y el entorno guardado de lz.",
+    effect: "session",
+    output: "stream",
+    groups: ["agent", "reporter"],
+    flags: [
+      { ...WORKING_DIRECTORY, description: "Repositorio desde el que se diagnostica; sin declarar, el directorio actual." },
+      { flag: "--prompt", kind: "text", label: "Problemas", description: "Lo que falta configurar; sin declarar, la sesion revisa todo.", default: DEFAULT_PROMPT },
+    ],
+    notes: ["La sesion no edita repositorios ni el tracker, y nunca imprime secretos: lo que requiere al operador queda en su reporte final."],
+  },
+  {
     name: "gui",
     family: "maintenance",
     summary: "Abre la GUI de escritorio instalada y devuelve la terminal de inmediato.",
@@ -356,6 +369,7 @@ const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
     flags: INSTALLER_FLAGS,
     notes: ["Todo lo declarado despues de update se reenvia al instalador."],
   },
+  tool({ name: "agent-models", family: "maintenance", summary: "Lista los modelos y esfuerzos que ofrece cada agente CLI instalado, leidos del propio CLI.", effect: "read", flags: [] }),
   {
     name: "catalog",
     family: "maintenance",

@@ -38,7 +38,9 @@ type PromptAsset =
   | "plan-interview-auto"
   | "plan-interview-interactive"
   | "plan-interview-answers"
-  | "plan-interview-round-repair";
+  | "plan-interview-round-repair"
+  /** La sesión que repara la configuración de la máquina, no un flujo de trabajo. */
+  | "setup";
 
 export type SagContext = SagNormsContext;
 
@@ -159,6 +161,20 @@ export async function readPromptAsset(
   runtimeBindings?: Record<string, string>,
 ): Promise<string> {
   return renderContract(await readAsset(name), runtimeBindings);
+}
+
+/**
+ * What a `setup` session is told: the standing instruction, then the problems
+ * the operator (or the window that detected them) names. It has no spec of its
+ * own because it fixes no tracker unit — only the machine the units run on.
+ */
+export async function buildSetupPrompt(problems: string, workingDirectory: string): Promise<string> {
+  return [
+    await readPromptAsset("setup"),
+    `The working directory is ${workingDirectory}`,
+    "Problems to fix:",
+    problems.trim() || "None were named: run `lz credentials-status`, check gh, az and the coding agent CLIs, and fix what plan and code would need.",
+  ].join("\n");
 }
 
 /**

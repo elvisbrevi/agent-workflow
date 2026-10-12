@@ -15,7 +15,9 @@ export const test = base.extend({
       }
     });
     await use(page);
-    await page.unrouteAll({ behavior: "wait" });
+    // A finished run refreshes work, history and diagnostics in the background;
+    // teardown must not wait for those proxied reads to answer a closing page.
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   },
 });
 export { expect };

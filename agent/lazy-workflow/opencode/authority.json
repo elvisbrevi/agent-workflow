@@ -115,6 +115,46 @@
           "az*": "deny"
         }
       }
+    },
+    "lazy-setup": {
+      "description": "lazy-workflow setup authority: configure the machine lz runs on. No repository edit, git or tracker mutation, workflow run or secret read.",
+      "mode": "primary",
+      "permission": {
+        "bash": {
+          "az boards*": "deny",
+          "az pipelines*": "deny",
+          "az repos*": "deny",
+          "az rest*": "deny",
+          "gh api*": "deny",
+          "gh issue*": "deny",
+          "gh pr*": "deny",
+          "gh repo*": "deny",
+          "git add*": "deny",
+          "git apply*": "deny",
+          "git branch*": "deny",
+          "git checkout*": "deny",
+          "git cherry-pick*": "deny",
+          "git clean*": "deny",
+          "git commit*": "deny",
+          "git merge*": "deny",
+          "git mv*": "deny",
+          "git push*": "deny",
+          "git rebase*": "deny",
+          "git remote*": "deny",
+          "git reset*": "deny",
+          "git restore*": "deny",
+          "git revert*": "deny",
+          "git rm*": "deny",
+          "git stash*": "deny",
+          "git switch*": "deny",
+          "git tag*": "deny",
+          "lz code*": "deny",
+          "lz credentials-get*": "deny",
+          "lz plan*": "deny",
+          "lz setup*": "deny"
+        },
+        "edit": "deny"
+      }
     }
   }
 }

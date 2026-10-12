@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { githubAssignedWork } from "../src/github/assigned-work.ts";
 import { azureAssignedWork } from "../src/azure/assigned-work.ts";
-import { workPreset, historyLabel, type WorkItem } from "../gui/src/lib/work.ts";
+import { deliveryChildren, groupWork, historyLabel, lastLine, matchesQuery, runTitle, type RepositoryWork, type WorkItem } from "../gui/src/lib/work.ts";
 import { foldRuns } from "../gui/src/lib/history.ts";
 
 const previousOrganization = process.env.LAZY_WORKFLOW_AZURE_ORGANIZATION;
@@ -46,16 +46,60 @@ test("Azure rejects a different organization before reading and handles an empty
   expect(reads).toBe(1);
 });
 
-test("task selection clears previous workflow scope and never presents a GitHub issue as a fixed Code run", () => {
-  const item: WorkItem = { id: 8, title: "Task", type: "Task", state: "Active", url: "https://example.com/8", hu: 50, tracker: "azure", scope: "project", repository: "/synthetic/repo" };
-  expect(workPreset(item)).toMatchObject({ name: "code", values: { "--working-directory": "/synthetic/repo", "--hu": "50", "--ticket": "8", "--session": "" } });
-  expect(workPreset({ ...item, hu: null }).name).toBe("ticket-type-info");
-  expect(workPreset({ ...item, tracker: "github", type: "Issue" }).name).toBe("github-issue-info");
-  expect(workPreset({ ...item, type: "Feature" }).name).toBe("hu-info");
+const azureItem = (id: number, type: string, hu: number | null, title = `Item ${id}`): WorkItem =>
+  ({ id, title, type, state: "Active", url: `https://example.com/${id}`, hu, tracker: "azure", scope: "Project", repository: "/synthetic/azure" });
+
+test("assigned Azure tasks gather under their HU; an empty repository still has its section", () => {
+  const results: RepositoryWork[] = [
+    { repository: "/synthetic/azure", tracker: "azure", scope: "Project", truncated: false, error: null, items: [azureItem(8, "Task", 50), azureItem(50, "User Story", null, "Portal"), azureItem(9, "Bug", 60), azureItem(10, "Task", null), azureItem(11, "Feature", null)] },
+    // A second folder of the same project answers the same items: the first one keeps them.
+    { repository: "/synthetic/azure-2", tracker: "azure", scope: "Project", truncated: false, error: null, items: [{ ...azureItem(8, "Task", 50), repository: "/synthetic/azure-2" }] },
+    { repository: "/synthetic/github", tracker: "github", scope: "owner/repo", truncated: false, error: null, items: [] },
+    { repository: "/synthetic/broken", tracker: null, scope: "broken", truncated: false, error: "gh: not logged in", items: [] },
+  ];
+  const sections = groupWork(results);
+  expect(sections.map((section) => [section.key, section.repository, section.entries.length])).toEqual([
+    ["azure:Project", "/synthetic/azure", 4],
+    ["github:owner/repo", "/synthetic/github", 0],
+  ]);
+  const [story, other, task, feature] = sections[0]!.entries;
+  expect(story).toMatchObject({ kind: "hu", hu: 50, story: { title: "Portal" } });
+  expect(story!.kind === "hu" && story.tasks.map((item) => item.id)).toEqual([8]);
+  expect(other).toMatchObject({ kind: "hu", hu: 60, story: null });
+  expect(task).toMatchObject({ kind: "item", item: { id: 10 } });
+  expect(feature).toMatchObject({ kind: "item", item: { id: 11 } });
+  expect(matchesQuery(story!, "item 8")).toBe(true);
+  expect(matchesQuery(story!, "#50")).toBe(true);
+  expect(matchesQuery(other!, "portal")).toBe(false);
+});
+
+test("hu-children-info answers { hu, children }; only Tasks and Bugs are delivery units", () => {
+  const children = [{ id: 1, type: "Task", state: "New" }, { id: 2, type: "Test Case", state: "New" }, { id: 3, type: "Bug", state: "Done" }];
+  expect(deliveryChildren({ hu: 50, children }).map((child) => child.id)).toEqual([1, 3]);
+  expect(deliveryChildren(children).map((child) => child.id)).toEqual([1, 3]);
+  expect(deliveryChildren(null)).toEqual([]);
+});
+
+test("a failed read shows its reason, not the panel, the stamps or the run-log pointer", () => {
+  const stderr = [
+    "╭──────────────╮",
+    "│ lazy-workflow · work-assigned │",
+    "╰──────────────╯",
+    "11/10/26 23:34:58 │ ✖ \u001b[31mlazy-workflow: no se pudo ejecutar work-assigned (gh: not logged in)\u001b[0m",
+    "lazy-workflow: revisa el run log para el detalle del fallo: grep 0 /tmp/runs.jsonl",
+  ].join("\n");
+  expect(lastLine(stderr)).toBe("no se pudo ejecutar work-assigned (gh: not logged in)");
+});
+
+test("a run is titled by the work it names, or by its repository", () => {
+  expect(runTitle("code", ["code", "--working-directory", "/r/azure", "--hu", "50", "--ticket", "51"])).toBe("Code · HU #50 · Task #51");
+  expect(runTitle("code", ["code", "--working-directory", "/r/github,/r/other"])).toBe("Code · github");
+  expect(runTitle("plan", ["plan", "--working-directory", "/r/github", "--prompt", "Planifica a partir de la issue #9 «Epic» (url).\n\nmás"])).toBe("Plan · Issue #9");
+  expect(runTitle("setup", ["setup", "--working-directory", "/r/github"])).toBe("Configuración");
 });
 
 test("recent activity keeps incomplete runs distinct from completed work", () => {
   const run = foldRuns([{ run_id: "synthetic", ts: "2026-10-10T12:00:00Z", event: "run.started", command: "code", context: { hu: 50, ticket: 8 } }])[0]!;
   expect(run.outcome).toBe("unfinished");
-  expect(historyLabel(run)).toBe("Implementación · HU #50 · Task #8");
+  expect(historyLabel(run)).toBe("Code · HU #50 · Task #8");
 });

@@ -96,7 +96,6 @@ export const backend = {
   diagnose: (variables: Array<{ name: string; secret: boolean }>) => command<Diagnostics>("diagnose", { variables }),
   reloadEnvironment: () => command<void>("reload_environment"),
   captureLz: (args: string[]) => command<Captured>("capture_lz", { args }),
-  uploadText: (content: string) => webTransport.rpc<{ path: string }>("upload_file", { content }),
 };
 
 type FeedEvent = { sequence: number; event: string; payload: unknown };
