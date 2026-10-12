@@ -6,7 +6,7 @@ import { openUrl } from "../lib/platform.ts";
 import type { RunTarget } from "../lib/run-request.ts";
 import { isFinished, type RunState } from "../lib/runs.ts";
 import {
-  deliveryChildren, historyLabel, isDone, isEpic, progressOf, QUEUE_REASONS, runConcerns, runTitle,
+  deliveryChildren, historyLabel, huLabel, isDone, isEpic, planTarget, progressOf, QUEUE_REASONS, runConcerns, runTitle,
   type GitHubQueue, type HuChild, type WorkEntry, type WorkSection,
 } from "../lib/work.ts";
 import type { FormRequest } from "./WorkView.tsx";
@@ -94,13 +94,14 @@ function HuDetail({ catalog, entry, props }: { catalog: CommandCatalog; entry: E
   const children = useRead<unknown>(catalog, "hu-children-info", { "--hu": String(entry.hu) });
   const info = useRead<{ title?: string; state?: string }>(catalog, "hu-info", entry.story ? null : { "--hu": String(entry.hu) });
   const tasks = children.value === null ? (children.error ? [] : null) : deliveryChildren(children.value);
-  const title = entry.story?.title ?? info.value?.title ?? `HU #${entry.hu}`;
+  const label = huLabel(entry);
+  const title = entry.story?.title ?? info.value?.title ?? `${label} #${entry.hu}`;
   const url = entry.story?.url ?? entry.tasks[0]?.url.replace(/\/\d+$/, `/${entry.hu}`);
-  const target: RunTarget = { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title };
+  const target: RunTarget = { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title, bug: label === "Bug" };
   const mine = new Set(entry.tasks.map((task) => task.id));
   return (
     <div className="panel-card">
-      <Header id={`HU #${entry.hu}`} state={entry.story?.state ?? info.value?.state} title={title} url={url} onBack={props.onBack} />
+      <Header id={`${label} #${entry.hu}`} state={entry.story?.state ?? info.value?.state} title={title} url={url} onBack={props.onBack} />
       <div className="panel-actions">
         {can(catalog, "plan") && <button type="button" className="button" onClick={() => props.onPrepare({ action: "plan", target })}>Planificar</button>}
         {can(catalog, "code") && <button type="button" className="button primary" onClick={() => props.onPrepare({ action: "code", target })}>Implementar</button>}
@@ -109,7 +110,7 @@ function HuDetail({ catalog, entry, props }: { catalog: CommandCatalog; entry: E
         <h3>Tareas</h3>
         {tasks === null && <p className="muted small" role="status">Cargando tareas…</p>}
         {children.error && <p className="read-errors">{children.error}</p>}
-        {tasks && tasks.length === 0 && !children.error && <p className="muted small">La HU todavía no tiene tareas: Planificar las crea.</p>}
+        {tasks && tasks.length === 0 && !children.error && <p className="muted small">{label === "Bug" ? "El Bug" : "La HU"} todavía no tiene tareas: Planificar las crea.</p>}
         {tasks && tasks.length > 0 && <TaskList tasks={tasks} mine={mine} onCode={can(catalog, "code") ? (task) => props.onPrepare({ action: "code", target: { ...target, ticket: task.id } }) : undefined} />}
       </section>
       <RunsFor runs={props.runs} history={props.history} onOpenActivity={props.onOpenActivity} onFocusRun={props.onFocusRun}
@@ -190,12 +191,13 @@ export function WorkDetail(props: WorkDetailProps) {
   if (entry.kind === "hu") return <HuDetail catalog={catalog} entry={entry} props={props} />;
   const { item } = entry;
   if (item.tracker === "github") {
-    const target: RunTarget = { kind: "github-issue", repository: item.repository, issue: item.id, title: item.title, url: item.url };
+    // An epic is sliced by the coordinator into its sub-issues; any other issue is named to the session.
+    const target: RunTarget = planTarget(entry) ?? { kind: "github-issue", repository: item.repository, issue: item.id, title: item.title, url: item.url };
     return (
       <div className="panel-card">
         <Header id={`#${item.id}`} state={item.state} title={item.title} url={item.url} chips={isEpic(item) ? <span className="kind-chip">Épica</span> : null} onBack={onBack} />
         <div className="panel-actions">
-          {can(catalog, "plan") && <button type="button" className="button" onClick={() => onPrepare({ action: "plan", target })}>Planificar desde esta issue</button>}
+          {can(catalog, "plan") && <button type="button" className="button" onClick={() => onPrepare({ action: "plan", target })}>{target.kind === "github-epic" ? "Planificar esta épica" : "Planificar desde esta issue"}</button>}
           {can(catalog, "code") && <button type="button" className="button primary" onClick={() => onPrepare({ action: "code", target: { kind: "github-repository", repository: item.repository, scope: item.scope } })}>Implementar la cola</button>}
         </div>
         <p className="muted small">Plan publica issues ready-for-agent; Code las implementa una a una, en orden y respetando sus dependencias.</p>
@@ -208,9 +210,9 @@ export function WorkDetail(props: WorkDetailProps) {
   return (
     <div className="panel-card">
       <Header id={`${item.type} #${item.id}`} state={item.state} title={item.title} url={item.url} onBack={onBack} />
-      <p className="muted">{["Task", "Bug"].includes(item.type)
-        ? "Esta tarea no cuelga de una HU. Code implementa tareas dentro de su HU: vincúlala a una en Azure DevOps."
-        : "Plan y Code trabajan sobre historias de usuario. Abre una de sus HU desde el proyecto."}</p>
+      <p className="muted">{item.type === "Task"
+        ? "Esta tarea no cuelga de una HU ni de un Bug. Code implementa tareas dentro de su HU: vincúlala a una en Azure DevOps."
+        : "Plan y Code trabajan sobre historias de usuario y Bugs. Abre una de sus HU desde el proyecto."}</p>
     </div>
   );
 }

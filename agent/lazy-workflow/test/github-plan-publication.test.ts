@@ -279,3 +279,128 @@ test("una publicacion que falla detiene la corrida", async () => {
 
   expect(code).toBe(1);
 });
+
+/**
+ * Un plan cortado de una épica (`plan --issue`, ADR-0047): la sesión recibe la
+ * épica que leyó el coordinador, y cada Issue publicado queda como sub-issue
+ * de ella, que es la relación que la reconciliación de padres lee para cerrarla.
+ */
+test("con épica, cada Issue cuelga de ella en orden de publicación y antes de las aristas", async () => {
+  const order: string[] = [];
+  const { boundary } = recordingBoundary();
+  const publication = await publishPlanIssues({
+    createReadyIssue: async (input, directory) => { order.push(`create:${input.title}`); return boundary.createReadyIssue(input, directory); },
+    linkBlockedBy: async (blocked, blockerId, directory) => { order.push(`block:${blocked}`); return boundary.linkBlockedBy(blocked, blockerId, directory); },
+    addSubIssue: async (parent, childId) => { order.push(`sub:${parent}:${childId}`); return { linked: true }; },
+  }, [ticket("segundo", ["primero"]), ticket("primero")], "/repo", 40);
+
+  expect(order).toEqual(["create:primero", "create:segundo", "sub:40:42000", "sub:40:43000", "block:43"]);
+  expect(publication.epic).toEqual({ issue: 40, subIssues: [{ issue: 42, linked: true }, { issue: 43, linked: true }] });
+});
+
+test("sin épica la publicación no toca la relación de sub-issues", async () => {
+  const { boundary } = recordingBoundary();
+  let subIssues = 0;
+  const publication = await publishPlanIssues({ ...boundary, addSubIssue: async () => { subIssues += 1; return { linked: true }; } }, [ticket("solo")], "/repo");
+
+  expect(subIssues).toBe(0);
+  expect(publication.epic).toBeUndefined();
+});
+
+test("el sub-issue usa la relación nativa, se verifica y no se duplica", async () => {
+  const calls: string[] = [];
+  const list = "api --paginate --slurp repos/{owner}/{repo}/issues/40/sub_issues?per_page=100";
+  let linked = false;
+  const service = new GitHubManagedQueueService(ghRunner([
+    [list, () => JSON.stringify([linked ? [{ id: 6100 }] : []])],
+    ["api --method POST repos/{owner}/{repo}/issues/40/sub_issues -F sub_issue_id=6100", () => { linked = true; return "{}"; }],
+  ], calls));
+
+  expect(await service.addSubIssue(40, 6100, "/repo")).toEqual({ linked: true });
+  expect(await service.addSubIssue(40, 6100, "/repo")).toEqual({ linked: false });
+  expect(calls).toEqual([list, "api --method POST repos/{owner}/{repo}/issues/40/sub_issues -F sub_issue_id=6100", list, list]);
+});
+
+test("un sub-issue que GitHub no registra detiene la publicación", async () => {
+  const service = new GitHubManagedQueueService(ghRunner([
+    ["api --paginate --slurp repos/{owner}/{repo}/issues/40/sub_issues?per_page=100", JSON.stringify([[]])],
+    ["api --method POST repos/{owner}/{repo}/issues/40/sub_issues -F sub_issue_id=6100", "{}"],
+  ]));
+
+  expect(service.addSubIssue(40, 6100, "/repo")).rejects.toThrow("sub-issue 6100 verificable");
+});
+
+const EPIC_VIEW = "issue view 40 --json number,title,state,labels,assignees,createdAt,blockedBy,body,comments";
+
+function epicDetail(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    number: 40, title: "[Epic] Portal de pagos", state: "OPEN", labels: [], assignees: [], createdAt: "2026-10-01T00:00:00Z",
+    blockedBy: { nodes: [] }, body: "Cuerpo de la épica", comments: [{ body: "Un comentario" }], ...overrides,
+  });
+}
+
+test("plan --issue entrega la épica a la sesión y publica sus rebanadas como sub-issues", async () => {
+  const calls: string[] = [];
+  const prompts: string[] = [];
+  const list = "api --paginate --slurp repos/{owner}/{repo}/issues/40/sub_issues?per_page=100";
+  const children = new Set<number>();
+  const service = new GitHubManagedQueueService(ghRunner([
+    [EPIC_VIEW, epicDetail()],
+    ["label list --limit 100 --json name", JSON.stringify([{ name: "ready-for-agent" }])],
+    ["api repos/{owner}/{repo}/issues -f title=uno -f body=cuerpo de uno -f labels[]=ready-for-agent", createdIssue(61, 6100, ["ready-for-agent"])],
+    [list, () => JSON.stringify([[...children].map((id) => ({ id }))])],
+    ["api --method POST repos/{owner}/{repo}/issues/40/sub_issues -F sub_issue_id=6100", () => { children.add(6100); return "{}"; }],
+  ], calls));
+  const result = new AgentResult({ sessionId: "ses_plan", text: planReady([ticket("uno")]) });
+
+  const code = await silently(() => createCli({
+    agentSource: { run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; }, resume: async () => result },
+    githubManagedQueue: service,
+    git: async () => "",
+  }).run(["plan", "--issue", "40", "--working-directory", "/repo"]));
+
+  expect(code).toBe(0);
+  expect(calls[0]).toBe(EPIC_VIEW);
+  expect(prompts[0]).toContain("GitHub epic #40");
+  expect(prompts[0]).toContain("Cuerpo de la épica");
+  expect(children).toEqual(new Set([6100]));
+});
+
+test("plan --issue no abre sesión si la issue no es una épica o está cerrada", async () => {
+  for (const detail of [epicDetail({ title: "Arreglar el login" }), epicDetail({ state: "CLOSED" })]) {
+    let sessions = 0;
+    const service = new GitHubManagedQueueService(ghRunner([[EPIC_VIEW, detail]]));
+    const code = await silently(() => createCli({
+      agentSource: { run: async () => { sessions += 1; throw new Error("no session"); }, resume: async () => { throw new Error("no session"); } },
+      githubManagedQueue: service,
+      git: async () => "",
+    }).run(["plan", "--issue", "40", "--working-directory", "/repo"]));
+
+    expect(code).toBe(1);
+    expect(sessions).toBe(0);
+  }
+});
+
+test("una épica por etiqueta también se planifica", async () => {
+  const service = new GitHubManagedQueueService(ghRunner([[EPIC_VIEW, epicDetail({ title: "Portal de pagos", labels: [{ name: "epic" }] })]]));
+  const result = new AgentResult({ sessionId: "ses_plan", text: planReady([]) });
+
+  const code = await silently(() => createCli({
+    agentSource: { run: async () => ({ result, azureLoginRequired: false }), resume: async () => result },
+    githubManagedQueue: service,
+    git: async () => "",
+  }).run(["plan", "--issue", "40", "--working-directory", "/repo"]));
+
+  expect(code).toBe(0);
+});
+
+test("plan no acepta una épica GitHub y una HU Azure a la vez", async () => {
+  let sessions = 0;
+  const code = await silently(() => createCli({
+    agentSource: { run: async () => { sessions += 1; throw new Error("no session"); }, resume: async () => { throw new Error("no session"); } },
+    git: async () => "",
+  }).run(["plan", "--issue", "40", "--hu", "7", "--working-directory", "/repo"]));
+
+  expect(code).toBe(1);
+  expect(sessions).toBe(0);
+});

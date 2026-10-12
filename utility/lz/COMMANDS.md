@@ -14,7 +14,8 @@ either is the authority whenever this file and the binary disagree.
 | Command | Required | Opens a session | Notes |
 |---|---|---|---|
 | `plan` | — | yes | GitHub scope: the session slices the work, the coordinator publishes one `ready-for-agent` issue per slice |
-| `plan --hu <id>` | `--hu` | yes | Slices the HU; the coordinator publishes the work items in dependency order |
+| `plan --issue <n>` | `--issue` | yes | Slices that GitHub epic of the first repository; the coordinator publishes its issues as the epic's sub-issues |
+| `plan --hu <id>` | `--hu` | yes | Slices the HU — or a Bug no story owns; the coordinator publishes the work items in dependency order |
 | `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
 | `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |

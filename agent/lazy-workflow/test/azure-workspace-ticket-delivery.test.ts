@@ -55,6 +55,28 @@ test("deliverAzureWorkspaceTicket associates every changed-repository PR and mer
 });
 
 
+test("deliverAzureWorkspaceTicket deja un Bug planificado en En revisión, no en Desarrollo Terminado (ADR-0047)", async () => {
+  const harness = createHarness();
+  let bugState = "En progreso";
+  const transitions: Array<{ desiredState: string; expectedState: string }> = [];
+  let exit = -1;
+  try {
+    const { cli, pathA, pathB } = await harness.setupCli({
+      getHuState: async (id) => ({ hu: id, type: "Bug", state: bugState, revision: 7 }),
+      setHuState: async (id, desiredState, expectedState) => {
+        transitions.push({ desiredState, expectedState });
+        bugState = desiredState;
+        return { hu: id, state: desiredState, revision: 8 };
+      },
+    });
+    exit = await cli.run(["code", "--hu", `${hu}`, "--ticket", `${ticket}`, "--working-directory", `${pathA}, ${pathB}`]);
+  } finally {
+    await harness.cleanup();
+  }
+  expect(exit).toBe(0);
+  expect(transitions).toEqual([{ desiredState: "En revisión", expectedState: "En progreso" }]);
+});
+
 test("deliverAzureWorkspaceTicket sitúa cada participante en la rama del ticket antes de la sesión", async () => {
   const harness = createHarness();
   let exit = -1;

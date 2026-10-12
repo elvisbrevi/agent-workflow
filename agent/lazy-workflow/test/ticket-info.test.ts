@@ -1034,7 +1034,7 @@ test("getHuChildren still rejects a parent that is neither User Story nor Produc
     relations: [],
   }));
 
-  await expect(service.getHuChildren(23438)).rejects.toThrow("no es una User Story ni un Product Backlog Item");
+  await expect(service.getHuChildren(23438)).rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("validateDirectTicketContext accepts a Product Backlog Item HU and still rejects other types", async () => {
@@ -1057,7 +1057,7 @@ test("validateDirectTicketContext accepts a Product Backlog Item HU and still re
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).validateDirectTicketContext(23438, 51))
     .resolves.toBeUndefined();
   await expect(new AzureTicketInfoService(az("Epic")).validateDirectTicketContext(23438, 51))
-    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("getTicketInfo accepts a Product Backlog Item HU and still rejects other types", async () => {
@@ -1091,7 +1091,7 @@ test("getTicketInfo accepts a Product Backlog Item HU and still rejects other ty
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).getTicketInfo(23438, 51))
     .resolves.toMatchObject({ hu: { id: 23438, title: "HU" }, branch: "refs/heads/ticket/51-read" });
   await expect(new AzureTicketInfoService(az("Epic")).getTicketInfo(23438, 51))
-    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("setHuState accepts a Product Backlog Item HU and still rejects other types", async () => {
@@ -1106,7 +1106,7 @@ test("setHuState accepts a Product Backlog Item HU and still rejects other types
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).setHuState(23438, "Active", "Active", 7))
     .resolves.toEqual({ hu: 23438, state: "Active", revision: 7 });
   await expect(new AzureTicketInfoService(az("Epic")).setHuState(23438, "Active", "Active", 7))
-    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("getHuState reads a Product Backlog Item HU that getState (Task/Bug-only) rejects", async () => {
@@ -1121,13 +1121,16 @@ test("getHuState reads a Product Backlog Item HU that getState (Task/Bug-only) r
   });
 
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).getHuState(23438))
-    .resolves.toEqual({ hu: 23438, state: "En Desarrollo", revision: 7 });
+    .resolves.toEqual({ hu: 23438, type: "Product Backlog Item", state: "En Desarrollo", revision: 7 });
   await expect(new AzureTicketInfoService(az("User Story")).getHuState(23438))
-    .resolves.toEqual({ hu: 23438, state: "En Desarrollo", revision: 7 });
+    .resolves.toEqual({ hu: 23438, type: "User Story", state: "En Desarrollo", revision: 7 });
+  // A Bug planned on its own is an HU too (ADR-0047); its type decides where it finishes.
+  await expect(new AzureTicketInfoService(az("Bug")).getHuState(23438))
+    .resolves.toEqual({ hu: 23438, type: "Bug", state: "En Desarrollo", revision: 7 });
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).getState(23438))
     .rejects.toThrow("no es un Task o Bug de entrega");
   await expect(new AzureTicketInfoService(az("Epic")).getHuState(23438))
-    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("linkPullRequest accepts a Product Backlog Item HU and still rejects other types", async () => {
@@ -1179,7 +1182,7 @@ test("linkPullRequest accepts a Product Backlog Item HU and still rejects other 
     mergeCommit: "merge-commit",
   });
   await expect(new AzureTicketInfoService(az("Epic")).linkPullRequest(23438, 51, 99))
-    .rejects.toThrow("no es una User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una User Story, un Product Backlog Item ni un Bug");
 });
 
 test("the direct parent gate accepts a Product Backlog Item parent and still rejects other types", async () => {
@@ -1215,7 +1218,7 @@ test("the direct parent gate accepts a Product Backlog Item parent and still rej
   await expect(new AzureTicketInfoService(az("Product Backlog Item")).setState(51, "En progreso", "Active"))
     .resolves.toEqual({ ticket: 51, state: "En progreso", revision: 5 });
   await expect(new AzureTicketInfoService(az("Epic")).setState(51, "En progreso", "Active"))
-    .rejects.toThrow("no es una HU User Story ni un Product Backlog Item");
+    .rejects.toThrow("no es una HU User Story, Product Backlog Item ni Bug");
 });
 
 test("ticket field mutation commands validate their explicit contracts", async () => {

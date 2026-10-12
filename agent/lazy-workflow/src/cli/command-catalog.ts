@@ -162,7 +162,8 @@ const WORKFLOW_COMMANDS: readonly CatalogCommand[] = [
     groups: ["agent", "interview", "reporter", "shutdown"],
     flags: [
       WORKSPACE,
-      { ...HU, description: "Rebana esa HU de Azure; sin ella el plan publica issues GitHub." },
+      { ...HU, description: "Rebana esa HU o Bug de Azure; sin ella el plan publica issues GitHub.", conflicts: ["--issue"] },
+      { ...ISSUE, label: "Épica", description: "Rebana esa épica GitHub del primer repositorio; sus issues se publican como sub-issues de ella.", conflicts: ["--hu"] },
       { flag: "--prompt", kind: "text", label: "Prompt", description: "Lo que hay que planificar; complementa el workflow, no lo reemplaza.", default: DEFAULT_PROMPT },
       { flag: "--number-of-questions", kind: "integer", label: "Preguntas", description: "Presupuesto de preguntas aclaratorias de toda la entrevista.", default: DEFAULT_NUMBER_OF_QUESTIONS },
       { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga las normas del componente de .sag/config.json; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },

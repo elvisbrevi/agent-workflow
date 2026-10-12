@@ -10,7 +10,7 @@ import { backend } from "./backend.ts";
 import { isDesktop } from "./platform.ts";
 import type { HistoryRun } from "./history.ts";
 import { stripAnsi } from "./output.ts";
-import { ISSUE_PLAN_PREFIX } from "./run-request.ts";
+import { ISSUE_PLAN_PREFIX, type RunTarget } from "./run-request.ts";
 
 export type Tracker = AssignedWork["tracker"];
 export type WorkItem = AssignedWorkItem & { tracker: Tracker; scope: string; repository: string };
@@ -50,8 +50,15 @@ export const repositoryName = (path: string): string => path.split(/[\\/]/).filt
 export const homePath = (path: string, home: string | null): string =>
   !home ? path : path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 
-export const isEpic = (item: Pick<WorkItem, "tracker" | "title">): boolean =>
-  item.tracker === "github" && EPIC_PREFIXES.some((prefix) => item.title.startsWith(prefix));
+/** `work-assigned` types an epic by the queue's predicate; an older lz only left its title prefix to go by. */
+export const isEpic = (item: Pick<WorkItem, "tracker" | "title" | "type">): boolean =>
+  item.tracker === "github" && (item.type === "Epic" || EPIC_PREFIXES.some((prefix) => item.title.startsWith(prefix)));
+
+/** A Bug no story owns is planned and delivered as an HU of its own (ADR-0047). */
+const isHuItem = (item: WorkItem): boolean => STORY_TYPES.includes(item.type) || (item.type === "Bug" && item.hu === null);
+
+/** "HU" or "Bug": what the operator calls the HU entry, by the work item it is. */
+export const huLabel = (entry: Extract<WorkEntry, { kind: "hu" }>): string => (entry.story?.type === "Bug" ? "Bug" : "HU");
 
 /** What the list shows: an HU with my tasks under it, or an item that stands alone. */
 export type WorkEntry =
@@ -108,12 +115,33 @@ export function groupWork(results: readonly RepositoryWork[]): WorkSection[] {
       const itemKey = entryKey(section.tracker, section.scope, item.id);
       if (seen.has(itemKey)) continue;
       seen.add(itemKey);
-      if (section.tracker === "azure" && STORY_TYPES.includes(item.type)) storyOf(item.id).story = item;
+      if (section.tracker === "azure" && isHuItem(item)) storyOf(item.id).story = item;
       else if (section.tracker === "azure" && item.hu !== null && DELIVERY_TYPES.includes(item.type)) storyOf(item.hu).tasks.push(item);
       else section.entries.push({ kind: "item", key: itemKey, repository: section.repository, scope: section.scope, item });
     }
   }
   return [...sections.values()];
+}
+
+/**
+ * What Planificar lists: the work a plan slices that is assigned to the
+ * operator — a GitHub epic, an Azure HU or a Bug no story owns. An HU shown
+ * only because a task of it is assigned is not the operator's to plan.
+ */
+export function plannableSections(sections: readonly WorkSection[]): WorkSection[] {
+  return sections.map((section) => ({
+    ...section,
+    entries: section.entries.filter((entry) => entry.kind === "hu" ? entry.story !== null : isEpic(entry.item)),
+  }));
+}
+
+/** What planning this entry slices: an HU or lone Bug with `--hu`, an epic with `--issue`; null for anything else. */
+export function planTarget(entry: WorkEntry): RunTarget | null {
+  if (entry.kind === "hu") {
+    return { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title: entry.story?.title ?? `HU #${entry.hu}`, bug: entry.story?.type === "Bug" };
+  }
+  const { item } = entry;
+  return isEpic(item) ? { kind: "github-epic", repository: item.repository, issue: item.id, title: item.title, url: item.url } : null;
 }
 
 export function matchesQuery(entry: WorkEntry, query: string): boolean {
@@ -174,7 +202,7 @@ export function historyLabel(run: Pick<HistoryRun, "command" | "context">): stri
 /** The identifiers a run's own arguments name, in the run log's vocabulary. */
 export function argsContext(args: readonly string[]): Record<string, string> {
   const context: Record<string, string> = {};
-  for (const [flag, key] of [["--hu", "hu"], ["--ticket", "ticket"], ["--working-directory", "repository"]] as const) {
+  for (const [flag, key] of [["--hu", "hu"], ["--ticket", "ticket"], ["--issue", "issue"], ["--working-directory", "repository"]] as const) {
     const index = args.indexOf(flag);
     if (index >= 0 && args[index + 1]) context[key] = args[index + 1]!;
   }

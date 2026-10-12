@@ -3,7 +3,7 @@ import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-ca
 import type { FlagDefault, GuiSettings } from "../lib/backend.ts";
 import { initialValues } from "../lib/form-defaults.ts";
 import { cliLabel, cliOf, defaultModelOf, type AgentModels } from "../lib/models.ts";
-import { emptyRunOptions, prepareRun, type RunAction, type RunOptions, type RunTarget } from "../lib/run-request.ts";
+import { emptyRunOptions, plansUnit, prepareRun, type RunAction, type RunOptions, type RunTarget } from "../lib/run-request.ts";
 import { deliveryChildren, isDone, repositoryName, type HuChild } from "../lib/work.ts";
 import { can, useRead } from "../hooks.ts";
 import { AgentPicker, defaultVariant, type AgentChoice } from "./AgentPicker.tsx";
@@ -14,6 +14,8 @@ interface RunFormProps {
   readonly models: readonly AgentModels[] | null;
   readonly action: RunAction;
   readonly target: RunTarget;
+  /** The saved repositories of the target's tracker, the target's own first: where a plan of it may work. */
+  readonly candidates: readonly string[];
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
   readonly onSaveDefaults: (settings: GuiSettings) => void;
   readonly onClose: () => void;
@@ -21,11 +23,22 @@ interface RunFormProps {
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
+/**
+ * Where a run opens: the target's repository, except for the plan of an HU,
+ * whose repositories the operator picks unless only one could serve. An epic
+ * keeps its own repository first, because its sub-issues are published there.
+ */
+function initialRepositories(action: RunAction, target: RunTarget, candidates: readonly string[]): string[] {
+  if (!plansUnit(action, target) || target.kind === "github-epic") return [target.repository];
+  return candidates.length === 1 ? [candidates[0]!] : [];
+}
+
 /** The operator's saved defaults for this command, as the options the form opens with. */
-function initialOptions(catalog: CommandCatalog, command: CatalogCommand | undefined, settings: GuiSettings, target: RunTarget): RunOptions {
+function initialOptions(catalog: CommandCatalog, command: CatalogCommand | undefined, settings: GuiSettings, action: RunAction, target: RunTarget, candidates: readonly string[]): RunOptions {
   const values = command ? initialValues(catalog, command, settings) : {};
   return {
     ...emptyRunOptions(target.repository),
+    repositories: initialRepositories(action, target, candidates),
     ticket: target.kind === "azure-hu" && target.ticket ? String(target.ticket) : "",
     cli: text(values["--cli"]),
     model: text(values["--model"]),
@@ -40,16 +53,17 @@ function initialOptions(catalog: CommandCatalog, command: CatalogCommand | undef
 }
 
 function heading(action: RunAction, target: RunTarget): { title: string; subtitle: string } {
-  if (target.kind === "azure-hu") return { title: `${action === "plan" ? "Planificar" : "Implementar"} HU #${target.hu}`, subtitle: target.title };
+  if (target.kind === "azure-hu") return { title: `${action === "plan" ? "Planificar" : "Implementar"} ${target.bug ? "Bug" : "HU"} #${target.hu}`, subtitle: target.title };
+  if (target.kind === "github-epic") return { title: `Planificar la épica #${target.issue}`, subtitle: target.title };
   if (target.kind === "github-issue") return { title: `Planificar desde la issue #${target.issue}`, subtitle: target.title };
   return action === "plan"
     ? { title: "Nuevo plan", subtitle: target.scope }
     : { title: "Implementar la cola", subtitle: `${target.scope} · issues ready-for-agent sin asignar ni bloqueos, una por sesión` };
 }
 
-export function RunForm({ catalog, settings, models, action, target, onRun, onSaveDefaults, onClose }: RunFormProps) {
+export function RunForm({ catalog, settings, models, action, target, candidates, onRun, onSaveDefaults, onClose }: RunFormProps) {
   const command = catalog.commands.find((candidate) => candidate.name === action);
-  const [options, setOptions] = useState<RunOptions>(() => initialOptions(catalog, command, settings, target));
+  const [options, setOptions] = useState<RunOptions>(() => initialOptions(catalog, command, settings, action, target, candidates));
   const [rung, setRung] = useState<AgentChoice>({ cli: "", model: "", variant: "" });
   const [starting, setStarting] = useState(false);
   const update = (patch: Partial<RunOptions>) => setOptions((current) => ({ ...current, ...patch }));
@@ -61,7 +75,10 @@ export function RunForm({ catalog, settings, models, action, target, onRun, onSa
   // Null while loading; an unreadable list leaves the number field instead.
   const tasks: HuChild[] | null = children.value !== null ? deliveryChildren(children.value) : children.error || !can(catalog, "hu-children-info") ? [] : null;
   const githubPlan = action === "plan" && target.kind === "github-repository";
+  const unitPlan = plansUnit(action, target);
   const others = settings.repositories.filter((repository) => !options.repositories.includes(repository));
+  const toggleRepository = (repository: string, chosen: boolean) =>
+    update({ repositories: chosen ? [...options.repositories, repository] : options.repositories.filter((entry) => entry !== repository) });
   const pending = (tasks ?? []).filter((task) => !isDone(task.state));
 
   const submit = async () => {
@@ -89,6 +106,26 @@ export function RunForm({ catalog, settings, models, action, target, onRun, onSa
         <button type="button" className="link-button back" aria-label="Volver" onClick={onClose}>← Volver</button>
         <div className="grow"><h2>{title}</h2><p className="muted small">{subtitle}</p></div>
       </header>
+
+      {unitPlan && (
+        <fieldset className="field">
+          <legend className="field-label">Dónde trabajar</legend>
+          <span className="field-help">{target.kind === "github-epic"
+            ? `Las issues se publican en ${repositoryName(target.repository)}, el repositorio de la épica, como sus sub-issues. Agrega otros si el plan también los toca.`
+            : `La sesión lee y documenta en estos repositorios; las tareas se publican en ${target.kind === "azure-hu" && target.bug ? "el Bug" : "la HU"}. El orden es el de entrega.`}</span>
+          {candidates.map((repository) => {
+            const position = options.repositories.indexOf(repository);
+            const fixed = target.kind === "github-epic" && repository === target.repository;
+            return (
+              <label key={repository} className="choice">
+                <input type="checkbox" checked={position >= 0} disabled={fixed} onChange={(event) => toggleRepository(repository, event.target.checked)} />
+                <span className="grow ellipsis" title={repository}>{repositoryName(repository)}</span>
+                {position >= 0 && options.repositories.length > 1 && <span className="order" aria-label={`Orden ${position + 1}`}>{position + 1}</span>}
+              </label>
+            );
+          })}
+        </fieldset>
+      )}
 
       {azureCode && (
         <fieldset className="field">
@@ -119,7 +156,7 @@ export function RunForm({ catalog, settings, models, action, target, onRun, onSa
       <details className="more-options">
         <summary>Más opciones</summary>
         <div className="stack-lg">
-          {(settings.repositories.length > 1 || options.repositories.length > 1) && (
+          {!unitPlan && (settings.repositories.length > 1 || options.repositories.length > 1) && (
             <div className="field">
               <span className="field-label">Repositorios</span>
               {options.repositories.map((repository, index) => (

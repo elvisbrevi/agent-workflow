@@ -5,7 +5,7 @@ export interface AssignedWorkItem {
   type: string;
   state: string;
   url: string;
-  /** Verified User Story parent, never an inferred HU from a title. */
+  /** Verified HU parent — a story, or a Bug planned on its own — never an HU inferred from a title. */
   hu: number | null;
 }
 

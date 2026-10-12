@@ -34,7 +34,8 @@ else if (command === "work-assigned") {
   const github = process.argv.includes(${JSON.stringify(github)});
   console.log(JSON.stringify({ tracker: azure ? "azure" : "github", scope: azure ? "Synthetic Azure" : github ? "synthetic/github" : "synthetic/other", truncated: false, items: azure ? [
     { id: 50, title: "Mejorar el portal de clientes", type: "User Story", state: "Active", url: "https://example.com/hu/50", hu: null },
-    { id: 51, title: "Simplificar el formulario de ingreso", type: "Task", state: "New", url: "https://example.com/task/51", hu: 50 }
+    { id: 51, title: "Simplificar el formulario de ingreso", type: "Task", state: "New", url: "https://example.com/task/51", hu: 50 },
+    { id: 70, title: "Falla el cierre de sesión", type: "Bug", state: "En progreso", url: "https://example.com/bug/70", hu: null }
   ] : !github ? [] : [
     { id: 7, title: "Mejorar la navegación principal", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/7", hu: null },
     { id: 9, title: "[Epic] Portal de autoservicio", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/9", hu: null }

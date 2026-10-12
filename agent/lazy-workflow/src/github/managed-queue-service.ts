@@ -97,14 +97,18 @@ function titlePrefix(title: string): string | null {
   return null;
 }
 
+/** An epic or spec: a parent the queue never delivers, by title prefix or the `epic` label. */
+export function isEpicIssue(issue: Pick<ManagedIssue, "title" | "labels">): boolean {
+  return titlePrefix(issue.title) !== null || labelNames(issue).includes("epic");
+}
+
 export function evaluateEligibility(issue: ManagedIssue): ManagedQueueReason[] {
   const reasons: ManagedQueueReason[] = [];
   if (issue.state !== "OPEN") reasons.push("closed");
   if (assigneeLogins(issue).length > 0) reasons.push("assigned");
   if (!labelNames(issue).includes(READY_FOR_AGENT_LABEL)) reasons.push("wrong-label");
   if (openBlockers(issue).length > 0) reasons.push("has-blocker");
-  if (titlePrefix(issue.title) !== null) reasons.push("epic-or-spec");
-  if (labelNames(issue).includes("epic")) reasons.push("epic-or-spec");
+  if (isEpicIssue(issue)) reasons.push("epic-or-spec");
   return reasons;
 }
 
@@ -142,6 +146,7 @@ export interface GitHubManagedQueueAdapter {
   reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   createReadyIssue?(input: { title: string; body: string }, workingDirectory: string): Promise<{ number: number; id: number }>;
   linkBlockedBy?(blocked: number, blockerId: number, workingDirectory: string): Promise<{ linked: boolean }>;
+  addSubIssue?(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }>;
   releaseOwnClaim?(issueNumber: number, login: string, workingDirectory: string): Promise<void>;
 }
 
@@ -266,6 +271,28 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
       throw new Error(`el Issue #${blocked} no conserva la arista de bloqueo verificable`);
     }
     return { linked: true };
+  }
+
+  /**
+   * Cuelga un Issue del plan de su epica con la relacion nativa de sub-issues,
+   * que es la que la reconciliacion de padres lee para cerrarla (ADR-0047).
+   * Como `linkBlockedBy`, se lee antes y despues: una relacion existente
+   * responde `linked: false`, y una que GitHub no registro detiene la publicacion.
+   */
+  async addSubIssue(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }> {
+    const endpoint = `repos/{owner}/{repo}/issues/${parent}/sub_issues`;
+    if (await this.hasSubIssue(endpoint, childId, workingDirectory)) return { linked: false };
+    await this.gh(["api", "--method", "POST", endpoint, "-F", `sub_issue_id=${childId}`], workingDirectory);
+    if (!await this.hasSubIssue(endpoint, childId, workingDirectory)) {
+      throw new Error(`la epica #${parent} no conserva el sub-issue ${childId} verificable`);
+    }
+    return { linked: true };
+  }
+
+  private async hasSubIssue(endpoint: string, childId: number, workingDirectory: string): Promise<boolean> {
+    const pages = JSON.parse(await this.gh(["api", "--paginate", "--slurp", `${endpoint}?per_page=100`], workingDirectory)) as unknown;
+    const children = Array.isArray(pages) ? pages.flat() as Array<{ id?: number }> : [];
+    return children.some((child) => child?.id === childId);
   }
 
   private async blockedBy(endpoint: string, blockerId: number, workingDirectory: string): Promise<boolean> {

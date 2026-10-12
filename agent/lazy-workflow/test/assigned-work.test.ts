@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { githubAssignedWork } from "../src/github/assigned-work.ts";
 import { azureAssignedWork } from "../src/azure/assigned-work.ts";
-import { deliveryChildren, groupWork, historyLabel, homePath, lastLine, matchesQuery, runTitle, type RepositoryWork, type WorkItem } from "../gui/src/lib/work.ts";
+import { deliveryChildren, groupWork, historyLabel, homePath, huLabel, lastLine, matchesQuery, plannableSections, planTarget, runTitle, type RepositoryWork, type WorkItem } from "../gui/src/lib/work.ts";
 import { foldRuns } from "../gui/src/lib/history.ts";
 
 const previousOrganization = process.env.LAZY_WORKFLOW_AZURE_ORGANIZATION;
@@ -19,6 +19,26 @@ test("assigned GitHub work uses the authenticated account, including issues outs
   expect(calls[1]).toContain("@me");
   expect(calls[1]).not.toContain("--label");
   expect(result.items[0]).toMatchObject({ id: 7, type: "Issue", hu: null });
+});
+
+test("an assigned GitHub epic answers its type, by title prefix or label, so Plan can offer it", async () => {
+  const result = await githubAssignedWork(async (args) => JSON.stringify(args[0] === "repo" ? { nameWithOwner: "owner/repo" } : [
+    { number: 1, title: "[Epic] Pagos", state: "OPEN", url: "u1", labels: [] },
+    { number: 2, title: "Portal", state: "OPEN", url: "u2", labels: [{ name: "epic" }] },
+    { number: 3, title: "Login", state: "OPEN", url: "u3", labels: [{ name: "bug" }] },
+  ]), "/synthetic/repo");
+  expect(result.items.map((item) => item.type)).toEqual(["Epic", "Epic", "Issue"]);
+});
+
+test("Azure groups a Task under a Bug planned on its own, as it would under a story (ADR-0047)", async () => {
+  process.env.LAZY_WORKFLOW_AZURE_ORGANIZATION = "https://dev.azure.com/synthetic";
+  const result = await azureAssignedWork(async (args) => {
+    const body = JSON.parse(args[args.indexOf("--body") + 1]!);
+    if (args[args.indexOf("--uri") + 1]!.includes("wiql")) return JSON.stringify({ workItems: [{ id: 8 }] });
+    if (body.fields) return JSON.stringify({ value: [{ id: 70, fields: { "System.WorkItemType": "Bug" } }] });
+    return JSON.stringify({ value: [{ id: 8, fields: { "System.Title": "Fix", "System.WorkItemType": "Task", "System.State": "Active" }, relations: [{ rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://dev.azure.com/synthetic/_apis/wit/workItems/70" }] }] });
+  }, "git@ssh.dev.azure.com:v3/synthetic/Project/repo");
+  expect(result.items[0]!.hu).toBe(70);
 });
 
 test("Azure uses @Me and only offers a verified User Story as a Task's HU", async () => {
@@ -71,6 +91,22 @@ test("assigned Azure tasks gather under their HU; an empty repository still has 
   expect(matchesQuery(story!, "item 8")).toBe(true);
   expect(matchesQuery(story!, "#50")).toBe(true);
   expect(matchesQuery(other!, "portal")).toBe(false);
+});
+
+test("Planificar lists my epics, HUs and lone Bugs, and each one plans with its own flag", () => {
+  const github = (id: number, title: string, type = "Issue"): WorkItem =>
+    ({ id, title, type, state: "OPEN", url: `https://github.com/o/r/issues/${id}`, hu: null, tracker: "github", scope: "o/r", repository: "/synthetic/github" });
+  const sections = plannableSections(groupWork([
+    // HU 60 is listed in Trabajo for my task 9, but the HU itself is not mine to plan.
+    { repository: "/synthetic/azure", tracker: "azure", scope: "Project", truncated: false, error: null, items: [azureItem(50, "User Story", null, "Portal"), azureItem(9, "Task", 60), azureItem(70, "Bug", null, "Falla el login"), azureItem(71, "Bug", 50), azureItem(10, "Task", null)] },
+    { repository: "/synthetic/github", tracker: "github", scope: "o/r", truncated: false, error: null, items: [github(1, "Portal", "Epic"), github(2, "[Epic] Pagos"), github(3, "Login")] },
+  ]));
+  const [azure, gh] = sections;
+  expect(azure!.entries.map((entry) => entry.kind === "hu" && `${huLabel(entry)} #${entry.hu}`)).toEqual(["HU #50", "Bug #70"]);
+  expect(gh!.entries.map((entry) => entry.kind === "item" && entry.item.id)).toEqual([1, 2]);
+  expect(planTarget(azure!.entries[1]!)).toEqual({ kind: "azure-hu", repository: "/synthetic/azure", hu: 70, title: "Falla el login", bug: true });
+  expect(planTarget(gh!.entries[0]!)).toMatchObject({ kind: "github-epic", issue: 1, repository: "/synthetic/github" });
+  expect(runTitle("plan", ["plan", "--working-directory", "/r/github", "--issue", "1"])).toBe("Plan · Issue #1");
 });
 
 test("hu-children-info answers { hu, children }; only Tasks and Bugs are delivery units", () => {

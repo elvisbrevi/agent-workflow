@@ -100,7 +100,9 @@ lz update
 
 Without `--hu`, workflows use GitHub. `code` selects open, unassigned,
 non-epic issues labelled `ready-for-agent` with no open blockers. Each delivery
-must pass Git verification before it is pushed and merged.
+must pass Git verification before it is pushed and merged. `plan --issue <n>`
+slices an epic and publishes its issues as the epic's sub-issues, which close it
+once they are delivered.
 
 ## Examples
 
@@ -141,7 +143,7 @@ SAG norms require `.sag/config.json` (`tipo`: `api`, `bff`, or `nextjs`) and
 Set `LAZY_WORKFLOW_AZURE_ORGANIZATION` to `https://dev.azure.com/<organization>`.
 
 ```bash
-# Split a User Story into linked work items.
+# Split a User Story — or a Bug no story owns — into linked work items.
 lz plan --hu 23438 --working-directory /path/to/repository
 
 # Deliver the HU's Task and Bug tickets; use main to create its integration branch.

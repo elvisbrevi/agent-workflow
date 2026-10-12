@@ -56,8 +56,14 @@ lz plan --interview http --working-directory /path/to/repository
 # Plan against the norms of the component declared in .sag/config.json
 lz plan --normas-sag --working-directory /path/to/repository
 
+# Slice a GitHub epic: its issues are published as the epic's sub-issues
+lz plan --issue 40 --working-directory /path/to/repository
+
 # Slice an Azure HU and publish its work items in dependency order
 lz plan --hu 23438 --working-directory /path/to/repository
+
+# A Bug no User Story owns is planned the same way, as an HU of its own
+lz plan --hu 23500 --working-directory /path/to/repository
 
 # Plan one unit of work across several repositories in a single session
 lz plan --working-directory /path/to/api,/path/to/web
@@ -300,6 +306,15 @@ A planning session may also write documentation. The coordinator commits what
 git already tracks when the session ends, so the next `code` run finds the clean
 tree it needs to prepare a branch.
 
+With `--issue <n>` the plan slices that epic instead of a prompt (ADR-0047). The
+coordinator reads it before the session opens — it must be open and read as an
+epic: an `[Epic]`/`[Spec]` title prefix or the `epic` label — and gives the
+session that snapshot. Publication then hangs every issue it created from the
+epic as a native sub-issue, read back to confirm it, so GitHub parent
+reconciliation closes the epic once `code` has closed them. The issues are
+published in the epic's repository, the first one of `--working-directory`.
+`--issue` and `--hu` are exclusive.
+
 ### `code`
 
 A `code` run is not a pass over a list of issues. It asks the tracker for the
@@ -385,6 +400,12 @@ ticket inherits its HU's iteration and is assigned to the HU's `Desarrollador 1`
 answers to a lead, the ticket lands on the developer. `--assignee` overrides
 that identity. Publication is idempotent, so republishing a plan reuses its work
 items instead of duplicating them.
+
+A Bug that no User Story or Product Backlog Item owns is an HU of its own
+(ADR-0047): `plan --hu <bug>` hangs Tasks under it and `code --hu <bug>` drains
+them. A Bug under a story is that story's delivery ticket, and `plan` refuses it
+before opening a session. Where a delivery moves the HU once no child is open, a
+Bug moves to `En revisión` rather than `Desarrollo Terminado`.
 
 `code --hu` drains the HU's direct Task and Bug tickets. It ensures the
 `hu/<HU>` integration branch exists — `--base-branch` names what to create it
@@ -726,7 +747,7 @@ the prompt does not restate what the profile already denies.
 |---|---|---|
 | `lazy-github-plan` | `plan` without `--hu` | `gh issue create`, `gh issue edit`, pushes, branch and remote mutation, `gh pr`, `gh repo`, `gh api`, all `az` |
 | `lazy-azure-plan` | `plan --hu` | pushes, branch and remote mutation, all `gh`, all `az` |
-| `lazy-github-code` | `code` without `--hu`, including the conflict session | pushes, branch and remote mutation, `gh pr`, `gh repo`, `gh api`, `gh issue edit/close/reopen/comment/delete/transfer/lock/unlock`, all `az` |
+| `lazy-github-code` | `code` without `--hu`, including the conflict session | pushes, branch and remote mutation, every `gh pr` subcommand but `merge`, `gh repo`, `gh api`, `gh issue edit/close/reopen/comment/delete/transfer/lock/unlock`, all `az` |
 | `lazy-azure-code` | `code --hu` | pushes, branch and remote mutation, all `gh`, all `az` |
 
 `lazy-review`, which denies editing outright, is still in the profile set; no run
@@ -735,6 +756,8 @@ selects it since the review workflows it served were removed.
 Planning profiles allow editing and committing, because documentation is a
 planning session's own deliverable. Delivery profiles allow committing and deny
 pushing: the coordinator pushes the verified commit itself.
+The GitHub delivery profile also allows `gh pr merge` (ADR-0046); the
+coordinator still opens and merges the unit's own pull request.
 
 ## Desktop GUI
 
@@ -749,7 +772,9 @@ and [verification evidence](gui/WEB-VERIFICATION.md) cover deployment and recove
 web service installer and retain the existing profile and owner binding.
 
 `gui/` is a Tauri app for this CLI's workflows. It lists the work assigned in
-each saved repository's tracker (`work-assigned`), an HU's tasks and their state
+each saved repository's tracker (`work-assigned`) — under **Planificar**, only
+the epics, HUs and lone Bugs a plan slices, each planned in the repositories the
+operator then picks — an HU's tasks and their state
 (`hu-children-info`) and GitHub's managed queue (`github-issue-list`), and runs
 `plan`, `code` and `setup` with the options an operator chooses; model menus
 come from `agent-models`. It reads `lz catalog` — every command with its flags,

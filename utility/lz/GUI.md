@@ -103,8 +103,11 @@ run-log entries; a read that fails becomes a configuration notice.
 | In the GUI | In the CLI |
 |---|---|
 | An HU's tasks, their state and progress | `hu-children-info --hu <id>` (Task and Bug children) |
-| **Planificar** / **Implementar** on an HU | `plan --hu <id>` / `code --hu <id> [--ticket <id>]` |
-| **Planificar desde esta issue** | `plan` with a `--prompt` naming the issue; the session reads it with `gh issue view` |
+| **Planificar** view | the `work-assigned` items a plan slices: GitHub epics, Azure HUs and Bugs no story owns |
+| **Dónde trabajar** in a plan form | `--working-directory a,b`, in delivery order; an epic's own repository stays first |
+| **Planificar** / **Implementar** on an HU or lone Bug | `plan --hu <id>` / `code --hu <id> [--ticket <id>]` |
+| **Planificar esta épica** | `plan --issue <n>`: the coordinator reads the epic and publishes its issues as sub-issues |
+| **Planificar desde esta issue** (not an epic) | `plan` with a `--prompt` naming the issue; the session reads it with `gh issue view` |
 | **Nuevo plan** / **Implementar la cola** | `plan --prompt <text>` / `code` on the repository |
 | **Cola de Code** | `github-issue-list`: what `code` would take, in order, and why it skips the rest |
 | Agent, model and effort menus | `--cli`, `--model`, `--variant`; the lists come from `agent-models`, the defaults from `lz catalog` |

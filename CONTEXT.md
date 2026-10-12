@@ -383,8 +383,8 @@ _Avoid_: Azure HU prompt
 
 **Azure HU planning run**:
 A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
-User Story, combines that data with the English autoplan prompt, and starts
-OpenCode in the selected working directory. OpenCode decides how to slice the
+User Story — or a **Bug HU** — combines that data with the English autoplan
+prompt, and starts OpenCode in the selected working directory. OpenCode decides how to slice the
 User Story and returns the slices as a delivery plan; it publishes no Azure work
 items. The coordinator validates that plan and publishes it. It may hold a
 planning interview on the way, which changes who answers its questions and
@@ -440,10 +440,29 @@ the slices and returns them behind `PLAN_READY` — type, title, body, blocking
 edges, estimate. The coordinator creates the items, wires parents and blocking
 relations, applies `ready-for-agent` on GitHub in the same call that creates the
 issue, and sets every derivable Azure field: assignee, month, remaining work,
-and the HU's integration branch. The agent supplies title, description and
+and the HU's integration branch. For a GitHub epic plan it also hangs each
+issue from the epic as a sub-issue. The agent supplies title, description and
 estimate; everything else about a published item is derivable, and therefore not
 the agent's to state (ADR-0040).
 _Avoid_: a session publishing to the tracker, a numbering watermark
+
+**Bug HU**:
+A Bug no User Story or Product Backlog Item owns, planned and delivered as an
+HU of its own: `plan --hu` hangs Tasks under it and `code --hu` drains them.
+When no delivery child is left open its developed state is `En revisión`, where
+a story's is `Desarrollo Terminado`. A Bug under a story is that story's
+delivery ticket, and `plan` refuses it before any session opens (ADR-0047).
+_Avoid_: planning a story's Bug, a Bug the coordinator closes in `Done`
+
+**GitHub epic plan**:
+A GitHub planning run with `plan --issue <n>`. The coordinator reads the epic
+from the first repository — open, and an epic by the managed queue's own
+predicate — and gives that snapshot to the session; publication hangs every
+issue it created from the epic as a native sub-issue, which is what GitHub
+parent reconciliation reads to close it. The issues are published in the epic's
+repository, never another one, because reconciliation reads a parent by number
+in the repository of the issue it closed (ADR-0047).
+_Avoid_: an epic named only in `--prompt`, sub-issues published across repositories
 
 **Desarrollador 1**:
 The developer a User Story names in `Custom.Desarrollador1`, and the owner every
@@ -511,7 +530,8 @@ declared base, an implicit base in `hu-branch-set`
   pull request and merge commit with the same ticket through native Azure
   ArtifactLinks, applies every existing completion gate before moving the ticket
   to `Done`, and only then transitions the HU from exactly `En Desarrollo` to
-  exactly `Desarrollo Terminado` once no direct delivery children remain open.
+  exactly `Desarrollo Terminado` once no direct delivery children remain open —
+  a **Bug HU** to `En revisión` instead.
   The single primary ticket Branch ArtifactLink points to the first changed
   repository and is written only once that repository is known, while
   participant repositories keep their workspace branches without native links. Single-repository Azure ticket delivery remains

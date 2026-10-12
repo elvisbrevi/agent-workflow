@@ -7,11 +7,21 @@
 import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import { buildArgs, validateFlags, type FlagIssue, type FlagValues } from "./command-line.ts";
 
-/** The piece of work a run is about. */
+/**
+ * The piece of work a run is about. `repository` is where it was read; an HU
+ * or an epic is planned from wherever the operator chooses (`RunOptions.repositories`).
+ */
 export type RunTarget =
-  | { kind: "azure-hu"; repository: string; hu: number; title: string; ticket?: number }
+  /** `bug`: a Bug no story owns, planned and delivered as an HU of its own (ADR-0047). */
+  | { kind: "azure-hu"; repository: string; hu: number; title: string; ticket?: number; bug?: boolean }
+  /** An epic: `plan --issue` slices it and publishes its sub-issues in this, its own repository. */
+  | { kind: "github-epic"; repository: string; issue: number; title: string; url: string }
   | { kind: "github-issue"; repository: string; issue: number; title: string; url: string }
   | { kind: "github-repository"; repository: string; scope: string };
+
+/** A plan of one tracker unit, whose repositories the operator picks before it runs. */
+export const plansUnit = (action: RunAction, target: RunTarget): boolean =>
+  action === "plan" && (target.kind === "azure-hu" || target.kind === "github-epic");
 
 export type RunAction = "plan" | "code";
 
@@ -63,6 +73,7 @@ export function runValues(action: RunAction, target: RunTarget, options: RunOpti
   return {
     "--working-directory": options.repositories.filter(Boolean).join(","),
     "--hu": azure ? String(target.hu) : "",
+    "--issue": target.kind === "github-epic" && action === "plan" ? String(target.issue) : "",
     "--ticket": azure && action === "code" ? options.ticket : "",
     "--base-branch": azure && action === "code" ? options.baseBranch.trim() : "",
     "--prompt": prompt,
@@ -93,6 +104,11 @@ export function prepareRun(catalog: CommandCatalog, action: RunAction, target: R
   // A GitHub plan with nothing to plan would only state the workflow's own default.
   if (action === "plan" && target.kind === "github-repository" && !options.prompt.trim()) {
     issues.push({ flag: "--prompt", severity: "error", message: "Describe qué quieres planificar." });
+  }
+  // Said in the operator's terms, in place of the catalog's generic "Falta Repositorios".
+  if (plansUnit(action, target) && !options.repositories.some(Boolean)) {
+    const others = issues.filter((issue) => issue.flag !== "--working-directory");
+    return { command, args: buildArgs(catalog, command, values), issues: [{ flag: "--working-directory", severity: "error", message: "Elige el repositorio donde trabajar." }, ...others] };
   }
   return { command, args: buildArgs(catalog, command, values), issues };
 }

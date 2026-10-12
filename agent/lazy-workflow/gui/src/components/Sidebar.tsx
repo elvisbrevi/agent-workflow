@@ -5,6 +5,8 @@ import { repositoryName } from "../lib/work.ts";
 
 export type View =
   | { kind: "work" }
+  /** The epics, HUs and lone Bugs assigned to the operator, each one a plan away from its tasks. */
+  | { kind: "plan" }
   /** `liveId` opens a run of this window; `runId` expands one of the run log. */
   | { kind: "activity"; runId: string | null; liveId: number | null }
   | { kind: "preferences" };
@@ -40,6 +42,7 @@ export function Sidebar({ view, running, attention, repositories, activeReposito
       </div>
       <div className="nav-items">
         {item({ kind: "work" }, "☰", "Trabajo")}
+        {item({ kind: "plan" }, "◇", "Planificar")}
         {item({ kind: "activity", runId: null, liveId: null }, "◷", "Ejecuciones", running > 0 ? <span className="pill running-count">{running}</span> : null)}
         {item({ kind: "preferences" }, "⚙", "Ajustes", attention > 0 ? <span className="pill attention-count" title="Configuración pendiente">{attention}</span> : null)}
       </div>

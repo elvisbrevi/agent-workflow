@@ -199,7 +199,7 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
 .choice { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .choice.done { opacity: 0.55; cursor: not-allowed; }
-.choice input[type="radio"] { accent-color: var(--accent); }
+.choice input[type="radio"], .choice input[type="checkbox"] { accent-color: var(--accent); }
 .agent-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .agent-picker > .field:first-child { grid-column: 1 / -1; }
 .more-options > summary { cursor: pointer; color: var(--muted); font-weight: 600; }
@@ -302,7 +302,7 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
   .repo-select { min-height: 44px; }
   .repo-picker .folder-button { font-size: 0; min-width: 44px; min-height: 44px; padding: 8px; }
   .repo-picker .folder-button::before { content: "+"; font-size: 20px; color: var(--text); }
-  .nav-items { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0;
+  .nav-items { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0;
     background: var(--panel); border-top: 1px solid var(--border);
     padding: 4px env(safe-area-inset-right) calc(4px + env(safe-area-inset-bottom)) env(safe-area-inset-left); }
   .nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: 6px 2px; font-size: 11px; min-height: 56px; position: relative; text-align: center; }
