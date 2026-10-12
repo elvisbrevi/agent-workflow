@@ -11,8 +11,9 @@ changing anything.
 | Which command, flags and defaults exist | nothing — read `lz catalog` (or `lz --help`) | both |
 | Agent, model, effort, fallback, verbosity of one run | that run's flags ([COMMANDS.md](COMMANDS.md), [CODING-AGENTS.md](CODING-AGENTS.md)) | CLI |
 | The flags a GUI form opens with | `flagDefaults` / `commandDefaults` in `gui.json` ([GUI.md](GUI.md#settings-file)) | GUI |
-| Azure organization, SAG norms source, run-log path, secrets directory | the environment variables below | both |
-| A secret a run needs (`AZURE_DEVOPS_EXT_PAT`, `LAZY_WORKFLOW_OFF_PASSWORD`) | `lz credentials-set`, then export it or list it in `secretEnvironment` | both |
+| Azure organization, SAG norms source, run-log path | `lz credentials-set` or an environment override | both |
+| Secrets directory | `LAZY_WORKFLOW_SECRETS_DIR` in the consuming process's environment | both |
+| A secret lz consumes (`AZURE_DEVOPS_EXT_PAT`, `GH_TOKEN`, `LAZY_WORKFLOW_OFF_PASSWORD`) | `lz credentials-set`; lz loads it automatically | both |
 | Where skills, agents and the launcher are installed | `install.sh` / `install.ps1` modes, or `lz update <mode>` | CLI |
 | How the GUI finds `lz`, its PATH, its repositories, its theme | `gui.json` | GUI |
 | What a session may execute | the authority profiles in the repository ([CODING-AGENTS.md](CODING-AGENTS.md#authority-what-a-session-may-execute)) | both |
@@ -29,14 +30,15 @@ changing anything.
 | `LAZY_WORKFLOW_SECRETS_DIR` | moving the credential store | `~/.config/secrets` |
 | `LAZY_WORKFLOW_OFF_PASSWORD` | `--off` without a value on Unix | passwordless `sudo -n` |
 | `AZURE_DEVOPS_EXT_PAT` | `az` without an interactive login, and authenticated SAG sources | `az`'s own login |
+| `GH_TOKEN` / `GITHUB_TOKEN` | `gh` without an interactive login | `gh`'s own login; `GH_TOKEN` precedes `GITHUB_TOKEN` |
 | `NO_COLOR` | plain output, as `--no-color` | colored on a terminal |
 
-**One place for both.** Export non-secret variables from the shell profile
-(`~/.zshrc`, `~/.bashrc`, the PowerShell `$PROFILE`): a terminal run sees them,
-and the GUI reads the login shell's environment while `inheritShellEnvironment`
-is on. Put a variable in `gui.json`'s `environment` only when it should differ
-for GUI runs, or when the GUI cannot inherit the shell (Windows apps take the
-user environment from the system settings instead):
+**One place for both.** `lz credentials-set` stores both secrets and the public
+variables the catalog marks `credentialStore: true`. `lz` automatically loads
+them for commands, desktop runs and web runs, without editing a shell profile.
+Bootstrap variables such as `LAZY_WORKFLOW_SECRETS_DIR` stay in the process
+environment. An explicit environment value takes precedence over the store.
+Put a public variable in `gui.json`'s `environment` only for a profile override:
 
 ```bash
 bun scripts/gui-settings.ts set environment.LAZY_WORKFLOW_AZURE_ORGANIZATION https://dev.azure.com/acme
@@ -48,14 +50,15 @@ manages the file:
 
 ```bash
 lz credentials-set --name AZURE_DEVOPS_EXT_PAT                 # hidden prompt
-printf '%s\n' "$VALUE" | lz credentials-set --name X --stdin   # non-interactive
+printf '%s\n' 'https://dev.azure.com/acme' | lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure --stdin
 lz credentials-audit --name AZURE_DEVOPS_EXT_PAT               # where it exists, never the value
-bun scripts/gui-settings.ts add secretEnvironment AZURE_DEVOPS_EXT_PAT   # GUI runs read it at start
+lz credentials-status                                       # effective public values; secrets masked
 ```
 
-For terminal runs, load the secrets file into the shell the way the operator's
-dotfiles already do (the file header names the loader); `lz` reads only its
-environment.
+For arbitrary secrets that other programs consume, load the file into that
+program's shell or list the name in a GUI profile's `secretEnvironment`.
+Configure the account and `LAZY_WORKFLOW_SECRETS_DIR` used by the web server;
+the browser displays locked connections and cannot change them.
 
 ## Installation and updates
 
@@ -116,3 +119,5 @@ bun scripts/gui-settings.ts validate                  # gui.json is readable by 
 
 In the GUI, **Inicio → Diagnostico** shows the launcher, every tool on the run's
 PATH and which variables a run will see, with names only for secrets.
+Web **Ajustes → Conexiones del servidor** shows the same effective state with a
+lock: public values are visible and secret values never reach the browser.

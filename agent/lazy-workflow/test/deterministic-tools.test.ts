@@ -243,6 +243,7 @@ describe("herramientas deterministas como comandos", () => {
       "pr-thread-reply": "pull-request-failure",
       "pr-create": "pull-request-failure",
       "credentials-audit": "deterministic-completion-failure",
+      "credentials-status": "deterministic-completion-failure",
       "credentials-list": "deterministic-completion-failure",
       "credentials-get": "deterministic-completion-failure",
       "credentials-set": "deterministic-completion-failure",

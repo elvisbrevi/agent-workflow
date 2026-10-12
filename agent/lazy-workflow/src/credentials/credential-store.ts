@@ -13,6 +13,7 @@ import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ChezmoiPublication } from "./chezmoi-source.ts";
+import { WORKFLOW_ENVIRONMENT } from "../system/workflow-environment.ts";
 
 export interface CredentialEntry {
   name: string;
@@ -134,14 +135,14 @@ export async function auditCredentialFiles(directory: string, requested: string 
   const locations = new Map<string, string[]>();
   for (const file of await envFiles(directory)) {
     for (const assignment of assignments(await readEnvFile(directory, file))) {
-      if (!CREDENTIAL_MARKER.test(assignment.name.toUpperCase())) continue;
+      if (!isCredentialName(assignment.name) && !isStoredEnvironmentName(assignment.name)) continue;
       const files = locations.get(assignment.name) ?? [];
       if (!files.includes(file)) files.push(file);
       locations.set(assignment.name, files);
     }
   }
   if (requested !== null) {
-    const name = validateCredentialName(requested);
+    const name = validateStoredName(requested);
     return [{ name, secrets: locations.get(name) ?? [] }];
   }
   return [...locations].sort(([left], [right]) => left.localeCompare(right))
@@ -166,6 +167,16 @@ const CREDENTIAL_NAME = /^[A-Z_][A-Z0-9_]*$/;
 /** The same names the credentials skill accepts: storing `PATH` is a mistake, not a credential. */
 const CREDENTIAL_MARKER = /(?:^|_)(?:TOKEN|PASSWORD|PASSWD|PASSPHRASE|SECRET|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|PAT|KEY)(?:_|$)/;
 const SERVICE = /^[a-z0-9][a-z0-9._-]*$/;
+
+export const isCredentialName = (name: string): boolean => CREDENTIAL_NAME.test(name) && CREDENTIAL_MARKER.test(name);
+export const isStoredEnvironmentName = (name: string): boolean =>
+  WORKFLOW_ENVIRONMENT.some((variable) => variable.name === name && variable.credentialStore === true);
+
+/** Public configuration is restricted to catalog entries; never allow PATH or arbitrary shell settings. */
+export function validateStoredName(name: string): string {
+  const text = name.trim();
+  return isStoredEnvironmentName(text) ? text : validateCredentialName(text);
+}
 
 export function validateCredentialName(name: string): string {
   const text = name.trim();
@@ -252,7 +263,7 @@ export async function storeCredential(
   service: string | null,
   value: string,
 ): Promise<CredentialEntry> {
-  const credential = validateCredentialName(name);
+  const credential = validateStoredName(name);
   const secret = validateValue(credential, value);
   const file = await credentialFile(directory, credential, service);
   const content = await readEnvFile(directory, file);

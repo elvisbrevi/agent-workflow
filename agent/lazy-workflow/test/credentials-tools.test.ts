@@ -441,6 +441,21 @@ if (args[0] === "apply" || (args[0] === "update" && !args.includes("--apply=fals
 });
 
 describe("credential-store", () => {
+  test("la organizacion Azure se guarda y audita junto al PAT sin exponer valores", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "credential-azure."));
+    try {
+      await storeCredential(directory, "LAZY_WORKFLOW_AZURE_ORGANIZATION", "azure", "https://dev.azure.com/synthetic");
+      await storeCredential(directory, "AZURE_DEVOPS_EXT_PAT", "azure", "synthetic-pat");
+      expect(await auditCredentialFiles(directory, "LAZY_WORKFLOW_AZURE_ORGANIZATION")).toEqual([
+        { name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", secrets: ["azure.env"] },
+      ]);
+      expect((await readCredential(directory, "LAZY_WORKFLOW_AZURE_ORGANIZATION"))?.value).toBe("https://dev.azure.com/synthetic");
+      expect((await stat(join(directory, "azure.env"))).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("auditCredentialFiles informa duplicados y ausencias sin decodificar valores", async () => {
     const directory = await mkdtemp(join(tmpdir(), "credential-audit."));
     try {

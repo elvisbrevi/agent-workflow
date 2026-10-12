@@ -1,17 +1,50 @@
 ---
 name: credentials
-description: Credentials: audit before asking, load existing secrets, and store or migrate on request. Use when a task needs a token, password, API key, or authentication environment variable.
+description: Audit, load, store, rotate and migrate credentials, and configure lz's stored environment, including its Azure organization. Use for tokens, passwords, API keys or configuring lz connections from any coding agent.
 ---
 
 # Credentials
 
 Use `lz credentials-*` to audit, store, read, migrate, and update credentials,
-and for every credential command you suggest to the user. Values stay in
+and for every credential command you suggest to the user. Secret values stay in
 `~/.config/secrets/*.env` or the consuming process's environment; keep them
 out of tool output, command text, logs, issues, commits, other files, and chat.
 Run secret-loading commands with shell
 tracing disabled. Names must be uppercase shell identifiers containing a
-credential word such as `TOKEN`, `PASSWORD`, or `API_KEY`.
+credential word such as `TOKEN`, `PASSWORD`, or `API_KEY`. Non-secret lz variables
+are also accepted when `lz catalog` marks them `credentialStore: true`.
+
+## Configure lz connections
+
+Use the same commands for the CLI, desktop and owner-hosted web server. Configure
+the OS account and credential directory that actually run lz; saving on another
+machine or under another account does not configure that server. GUI profile
+environment values override the shared store; shell/process values also take
+precedence. Inspect `lz credentials-status [--name NAME]` first: it reports the
+effective source and public values, with presence only for secrets.
+
+For an Azure setup, audit both `LAZY_WORKFLOW_AZURE_ORGANIZATION` and
+`AZURE_DEVOPS_EXT_PAT` before asking for missing values. The organization URL is
+public: when supplied by the user or verified from their target repository, an
+agent can store it directly:
+
+```bash
+printf '%s\n' 'https://dev.azure.com/acme' | lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure --stdin
+lz credentials-set --name AZURE_DEVOPS_EXT_PAT --service azure
+lz credentials-status
+```
+
+Replace the example URL with the intended organization; never guess it. The
+PAT uses the hidden prompt or an existing protected input stream, never chat or
+command text. Audit each write again. `lz` automatically loads the catalog's
+stored variables for its commands and child tools; no shell-profile edit or GUI
+`secretEnvironment` entry is needed for those names. For arbitrary secrets that
+other programs need, follow **Find and use** below.
+
+The web settings page is read-only for connections: a lock accompanies public
+values, and secrets show only configured/missing status. Reload its environment
+after a server-side change to verify the effective result. Use the lz skill's
+settings helper only for a profile override or other GUI preferences.
 
 ## Find and use
 

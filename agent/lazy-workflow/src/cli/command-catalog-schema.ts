@@ -110,6 +110,8 @@ export interface CatalogEnvironmentVariable {
   readonly name: string;
   readonly description: string;
   readonly secret: boolean;
+  /** `credentials-set` can persist it and lz loads it when no environment override exists. */
+  readonly credentialStore?: boolean;
 }
 
 export interface CommandCatalog {

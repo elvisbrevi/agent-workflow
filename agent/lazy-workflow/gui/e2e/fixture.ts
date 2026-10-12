@@ -7,7 +7,12 @@ export const test = base.extend({
       const url = new URL(route.request().url());
       url.hostname = "127.0.0.1"; url.port = "18443";
       const response = await route.fetch({ url: url.href, headers: { ...route.request().headers(), host: "localhost" } });
-      await route.fulfill({ response });
+      try {
+        await route.fulfill({ response });
+      } catch (error) {
+        // Navigation/logout can cancel a background poll while its proxy fetch completes.
+        if (!(error instanceof Error) || !error.message.includes("Route is already handled!")) throw error;
+      }
     });
     await use(page);
     await page.unrouteAll({ behavior: "wait" });

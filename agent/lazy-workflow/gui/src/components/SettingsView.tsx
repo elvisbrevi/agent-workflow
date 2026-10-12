@@ -81,13 +81,26 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
       <header className="page-header">
         <h1>Configuracion</h1>
         <p className="lead">
-          Se guarda en <code className="mono">{document.path}</code>; la skill <code className="mono">lz</code> documenta el mismo archivo para configurarlo desde un agente.
+          {isDesktop ? <>Se guarda en <code className="mono">{document.path}</code>; las skills <code>lz</code> y <code>credentials</code> permiten configurarlo desde un agente.</> : "Personaliza tus preferencias y consulta las conexiones del servidor."}
         </p>
         {document.error && <div className="callout error">{document.error} — se muestran los valores por defecto; guardar reemplaza el archivo.</div>}
       </header>
 
-      {!isDesktop && <p className="callout">Los repositorios, el ejecutable y las credenciales se configuran en el servidor. Aqui puedes cambiar tus preferencias de interfaz.</p>}
-      <details className="settings-advanced"><summary>Conexiones y configuración del equipo</summary>
+      {!isDesktop && <section className="card server-connections">
+        <h2>Conexiones del servidor</h2>
+        <p className="muted small">🔒 Solo lectura. Los valores se configuran en el servidor con la CLI y la skill <code>credentials</code>.</p>
+        {diagnostics?.credentialsError && <p className="callout error">{diagnostics.credentialsError}</p>}
+        {catalog?.environment.filter((variable) => variable.name !== "NO_COLOR").map((variable) => {
+          const state = probe(variable.name);
+          const privateValue = variable.secret || looksSecret(variable.name) || document.settings.secretEnvironment.includes(variable.name) || (state?.present === true && state.value === null);
+          return <div className="field" key={variable.name}>
+            <div className="field-label"><span aria-label="Solo lectura">🔒</span><code className="mono">{variable.name}</code></div>
+            <div className="mono server-value">{!state ? "Consultando…" : state.present ? (privateValue ? "•••••••• · Configurado (privado)" : state.value ?? "Configurado") : diagnostics?.credentialsError ? "Estado no disponible" : "Sin configurar"}</div>
+            <div className="field-help">{variable.description}</div>
+          </div>;
+        })}
+      </section>}
+      {isDesktop && <details className="settings-advanced"><summary>Conexiones y configuración del equipo</summary>
       <fieldset className="server-settings" disabled={!isDesktop}><section className="card">
         <h2>CLI</h2>
         <div className="field">
@@ -116,6 +129,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
       <section className="card">
         <h2>Variables de entorno</h2>
         <p className="muted small">Cada run recibe estas variables sobre el entorno heredado. Los secretos nunca se guardan aqui: se leen con <code>lz credentials-get</code> al iniciar el run.</p>
+        {diagnostics?.credentialsError && <p className="callout error">{diagnostics.credentialsError}</p>}
         {/* NO_COLOR is the GUI's own: every run gets it, so the panel shows plain text. */}
         {catalog?.environment.filter((variable) => variable.name !== "NO_COLOR").map((variable) => {
           const state = probe(variable.name);
@@ -138,7 +152,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
                   id={`env-${variable.name}`}
                   className="input mono"
                   value={draft.environment[variable.name] ?? ""}
-                  placeholder={state?.value ? `heredado: ${state.value}` : ""}
+                  placeholder={state?.value ? `${state.source === "credentials" ? "almacen" : "entorno"}: ${state.value}` : ""}
                   onChange={(event) => setEnvironment(variable.name, event.target.value)}
                 />
               )}
@@ -183,7 +197,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
           <div className="field-help">Cada nombre se lee con <code>lz credentials-get --name NOMBRE --force</code> al iniciar el run; el valor nunca toca este archivo.</div>
         </div>
       </section></fieldset>
-      </details>
+      </details>}
 
       <section className="card">
         <h2>Preferencias de ejecución</h2>
@@ -220,10 +234,10 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
         )}
       </section>
 
-      <fieldset className="server-settings" disabled={!isDesktop}><section className="card">
+      {isDesktop && <section className="card">
         <h2>Repositorios</h2>
         <ListEditor values={draft.repositories} placeholder="/ruta/al/repositorio" pickDirectory onChange={(repositories) => update({ repositories, activeRepository: repositories.includes(draft.activeRepository ?? "") ? draft.activeRepository : (repositories[0] ?? null) })} />
-      </section></fieldset>
+      </section>}
 
       <section className="card">
         <h2>Apariencia</h2>
@@ -238,7 +252,7 @@ export function SettingsView({ catalog, document, diagnostics, onSave, onOpenCom
         {isDesktop && <button type="button" className="button" onClick={() => revealItemInDir(document.path).catch(() => undefined)}>Mostrar archivo</button>}
         <button type="button" className="button ghost" disabled={!dirty} onClick={() => setDraft(document.settings)}>Descartar</button>
         <button type="button" className="button primary" disabled={!dirty || saving} onClick={async () => { setSaving(true); try { await onSave(draft); } finally { setSaving(false); } }}>
-          {saving ? "Guardando…" : "Guardar"}
+          {saving ? "Guardando…" : isDesktop ? "Guardar" : "Guardar preferencias"}
         </button>
       </div>
     </div>

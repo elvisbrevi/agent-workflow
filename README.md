@@ -284,9 +284,10 @@ write it and hand it over.
 | `git-branch-checkout` | Fetch, switch to a local or remote branch, and fast-forward it (`yp checkout` without the menu). |
 | `git-branch-delete` | Delete the local and remote delivery branch with verification. |
 | `credentials-audit` | Report which secrets files and Keychain contain a credential, without its value. |
+| `credentials-status` | Show effective lz configuration and its sources; secret values stay hidden. |
 | `credentials-list` | Print the names stored in the local secrets files. |
 | `credentials-get` | Print one credential; piping requires `--force`. |
-| `credentials-set` | Store or rotate a credential using a hidden prompt or `--stdin`. |
+| `credentials-set` | Store or rotate a credential or catalog-declared lz setting using a hidden prompt or `--stdin`. |
 | `credentials-migrate` | Copy a legacy macOS Keychain credential into the secrets files. |
 | `credentials-update` | Pull the chezmoi source and apply all managed dotfiles, including bashrc and secrets, replacing local changes. |
 

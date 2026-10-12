@@ -4,6 +4,7 @@ use runner::{Captured, EventSink, RunRequest, RunStarted, Runs};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use settings::GuiSettings;
+use std::collections::{BTreeMap, HashMap};
 use std::{fs::File, path::PathBuf, sync::Arc, time::Duration};
 
 const CATALOG_SCHEMA_VERSION: u64 = 1;
@@ -23,13 +24,13 @@ pub struct EnvironmentProbe {
     pub secret: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbedVariable {
     pub name: String,
     pub present: bool,
     pub value: Option<String>,
-    pub source: &'static str,
+    pub source: String,
 }
 
 #[derive(Serialize)]
@@ -46,6 +47,7 @@ pub struct Diagnostics {
     pub run_log_path: String,
     pub lz_launcher: Option<String>,
     pub lz_error: Option<String>,
+    pub credentials_error: Option<String>,
     pub shell_environment: bool,
     pub binaries: Vec<ProbedBinary>,
     pub variables: Vec<ProbedVariable>,
@@ -54,6 +56,46 @@ pub struct Diagnostics {
 const PROBED_BINARIES: [&str; 9] = [
     "lz", "bun", "git", "gh", "az", "opencode", "claude", "codex", "chezmoi",
 ];
+
+/// A secret-looking name remains private even if a caller labels it public.
+pub fn is_secret_name(name: &str) -> bool {
+    name.to_ascii_uppercase().split('_').any(|word| {
+        [
+            "TOKEN",
+            "PASSWORD",
+            "PASSWD",
+            "PASSPHRASE",
+            "SECRET",
+            "APIKEY",
+            "KEY",
+            "CREDENTIAL",
+            "CREDENTIALS",
+            "AUTH",
+            "PAT",
+        ]
+        .contains(&word)
+    })
+}
+
+fn configured_run_log_path(
+    environment: &BTreeMap<String, String>,
+    statuses: &[ProbedVariable],
+) -> PathBuf {
+    let mut environment = environment.clone();
+    if !environment
+        .get("LAZY_WORKFLOW_LOG_FILE")
+        .is_some_and(|value| !value.is_empty())
+    {
+        if let Some(value) = statuses
+            .iter()
+            .find(|status| status.name == "LAZY_WORKFLOW_LOG_FILE")
+            .and_then(|status| status.value.as_ref())
+        {
+            environment.insert("LAZY_WORKFLOW_LOG_FILE".into(), value.clone());
+        }
+    }
+    run_log::run_log_path(&environment)
+}
 
 #[derive(Clone)]
 pub struct Core {
@@ -141,12 +183,37 @@ impl Core {
     }
 
     pub fn read_run_log(&self, limit: usize) -> Result<run_log::RunLog, String> {
-        let path = run_log::run_log_path(&environment::run_environment(&self.settings()?));
+        let environment = environment::run_environment(&self.settings()?);
+        let statuses = if environment
+            .get("LAZY_WORKFLOW_LOG_FILE")
+            .is_some_and(|value| !value.is_empty())
+        {
+            Vec::new()
+        } else {
+            self.credential_statuses().unwrap_or_default()
+        };
+        let path = configured_run_log_path(&environment, &statuses);
         run_log::read(&path, limit)
     }
 
     pub fn capture(&self, args: &[String], timeout: Duration) -> Result<Captured, String> {
         runner::capture(&self.settings()?, args, timeout)
+    }
+
+    fn credential_statuses(&self) -> Result<Vec<ProbedVariable>, String> {
+        // One CLI read shares its store, parsing and precedence; Rust never decodes secret files.
+        let captured = self.capture(
+            &["credentials-status".into(), "--no-log-file".into()],
+            Duration::from_secs(30),
+        )?;
+        if captured.code != Some(0) {
+            return Err(
+                "No se pudo consultar el almacen de credenciales; actualiza lz y vuelve a cargar."
+                    .into(),
+            );
+        }
+        serde_json::from_str(&captured.stdout)
+            .map_err(|_| "lz credentials-status no devolvio un estado valido; actualiza lz.".into())
     }
 
     pub fn diagnose(&self, variables: Vec<EnvironmentProbe>) -> Result<Diagnostics, String> {
@@ -158,13 +225,20 @@ impl Core {
                 .collect::<Vec<_>>()
                 .join(" ")
         });
+        let statuses = self.credential_statuses();
+        let credentials_error = statuses.as_ref().err().cloned();
+        let statuses = statuses.unwrap_or_default();
+        let run_log_path = configured_run_log_path(&run_environment, &statuses);
+        let stored: HashMap<_, _> = statuses
+            .into_iter()
+            .map(|status| (status.name.clone(), status))
+            .collect();
         Ok(Diagnostics {
             settings_path: self.settings_path.to_string_lossy().into_owned(),
-            run_log_path: run_log::run_log_path(&run_environment)
-                .to_string_lossy()
-                .into_owned(),
+            run_log_path: run_log_path.to_string_lossy().into_owned(),
             lz_launcher: lz.as_ref().ok().cloned(),
             lz_error: lz.err(),
+            credentials_error,
             shell_environment: settings.inherit_shell_environment
                 && environment::shell_environment().is_some(),
             binaries: PROBED_BINARIES
@@ -178,27 +252,35 @@ impl Core {
             variables: variables
                 .into_iter()
                 .map(|probe| {
-                    let from_settings = settings
-                        .secret_environment
-                        .iter()
-                        .any(|name| name == &probe.name);
+                    let private = probe.secret
+                        || is_secret_name(&probe.name)
+                        || settings
+                            .secret_environment
+                            .iter()
+                            .any(|name| name == &probe.name);
                     let value = run_environment
                         .get(&probe.name)
                         .filter(|value| !value.is_empty());
+                    let status = stored.get(&probe.name);
                     ProbedVariable {
-                        present: value.is_some() || from_settings,
-                        value: if probe.secret { None } else { value.cloned() },
+                        present: value.is_some() || status.is_some_and(|status| status.present),
+                        value: if private {
+                            None
+                        } else {
+                            value
+                                .cloned()
+                                .or_else(|| status.and_then(|status| status.value.clone()))
+                        },
                         source: if value.is_some() {
                             if settings.environment.contains_key(&probe.name) {
                                 "settings"
                             } else {
                                 "environment"
                             }
-                        } else if from_settings {
-                            "credentials"
                         } else {
-                            "missing"
-                        },
+                            status.map_or("missing", |status| status.source.as_str())
+                        }
+                        .into(),
                         name: probe.name,
                     }
                 })
@@ -210,6 +292,28 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn history_uses_the_stored_log_path_unless_the_profile_overrides_it() {
+        let statuses = vec![ProbedVariable {
+            name: "LAZY_WORKFLOW_LOG_FILE".into(),
+            present: true,
+            value: Some("/synthetic/stored.jsonl".into()),
+            source: "credentials".into(),
+        }];
+        assert_eq!(
+            configured_run_log_path(&BTreeMap::new(), &statuses),
+            PathBuf::from("/synthetic/stored.jsonl")
+        );
+        let environment = BTreeMap::from([(
+            "LAZY_WORKFLOW_LOG_FILE".into(),
+            "/synthetic/profile.jsonl".into(),
+        )]);
+        assert_eq!(
+            configured_run_log_path(&environment, &statuses),
+            PathBuf::from("/synthetic/profile.jsonl")
+        );
+    }
+
     #[test]
     fn desktop_and_web_cannot_open_the_same_profile_twice() {
         let directory = tempfile::tempdir().unwrap();

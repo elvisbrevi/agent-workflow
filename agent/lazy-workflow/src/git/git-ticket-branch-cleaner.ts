@@ -2,6 +2,7 @@ export type GitRunner = (args: string[], workingDirectory: string) => Promise<st
 
 export const runGit: GitRunner = async (args, workingDirectory) => {
   const child = Bun.spawn(["git", ...args], {
+    env: process.env,
     cwd: workingDirectory,
     stdout: "pipe",
     stderr: "pipe",

@@ -428,6 +428,8 @@ select.input { cursor: pointer; }
 .web-session + .app { height: calc(100dvh - 36px); }
 .server-settings { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .server-settings:disabled { opacity: .75; }
+.server-value { overflow-wrap: anywhere; }
+.server-connections .field-label code { overflow-wrap: anywhere; min-width: 0; }
 .file-picker { width: 1px; height: 1px; opacity: 0; position: absolute; }
 .web-interview { max-height: 45dvh; overflow: auto; }
 

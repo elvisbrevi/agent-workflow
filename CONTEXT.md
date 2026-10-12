@@ -100,6 +100,16 @@ file, `~/.config/lazy-workflow/gui.json`, which only prefills forms and shapes a
 run's environment.
 _Avoid_: GUI-side validation the parser does not perform, secrets in the settings file
 
+**Stored workflow environment**:
+The public settings and secrets the command catalog marks `credentialStore`.
+`credentials-set` saves them in the same private env files; the executable
+loads those names before a run unless the process or GUI profile supplies an
+override. `credentials-status` reports their effective sources and public
+values, while secrets carry only presence. The web GUI displays this state
+with a lock and keeps connection management on the server.
+_Avoid_: a second credential store, assuming a saved name means a present value,
+browser forms for server credentials
+
 **Owner-hosted web GUI**:
 The same catalog-driven interface served by `lz-web` on an owner's server,
 with a shared Rust machine adapter and an authenticated HTTP transport. Each

@@ -142,6 +142,13 @@ launcher, PATH additions, environment variables, secrets resolved through
 confirmation and theme. The full schema, and a helper that edits it safely, are in
 the [`lz` skill's GUI reference](../../../utility/lz/GUI.md).
 
+The browser shows server connections with a lock and no editable fields.
+Public values are visible; tokens and passwords show configured/missing status
+without reaching the browser. Configure them on the server with the
+[`credentials` skill](../../../utility/credentials/SKILL.md) and `lz credentials-set`.
+`lz` loads its stored catalog variables automatically; the process and GUI
+profile environment take precedence.
+
 ## Layout
 
 | Path | Contents |

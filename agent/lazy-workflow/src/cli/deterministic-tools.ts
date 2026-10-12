@@ -48,6 +48,8 @@ import {
   listCredentials,
   readCredential,
   storeCredential,
+  validateStoredName,
+  isCredentialName,
   type CredentialEntry,
   type CredentialLocation,
   type CredentialValue,
@@ -56,6 +58,8 @@ import {
 import { publishChezmoiSource, updateChezmoiDotfiles } from "../credentials/chezmoi-source.ts";
 import { keychainPresence, readKeychainCredential, type KeychainPresence } from "../credentials/keychain.ts";
 import { readCredentialSecret } from "../credentials/secret-input.ts";
+import { credentialStatus } from "../credentials/credential-environment.ts";
+import { WORKFLOW_ENVIRONMENT } from "../system/workflow-environment.ts";
 import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
 
@@ -501,6 +505,15 @@ async function runCredentialsTool(
   isTerminal: boolean,
 ): Promise<number> {
   const directory = defaultSecretsDirectory();
+  if (command === "credentials-status") {
+    const names = options.name === null ? [...new Set([
+      ...WORKFLOW_ENVIRONMENT.map((variable) => variable.name),
+      ...(await credentials.list(directory)).filter((entry) => isCredentialName(entry.name)).map((entry) => entry.name),
+    ])] : [options.name];
+    const statuses = await credentialStatus(names, credentials.read.bind(credentials));
+    print(JSON.stringify(options.name === null ? statuses : statuses[0], null, 2));
+    return 0;
+  }
   if (command === "credentials-audit") {
     const entries = await credentials.audit(directory, options.name);
     print(JSON.stringify(options.name === null ? entries : entries[0], null, 2));
@@ -515,7 +528,7 @@ async function runCredentialsTool(
     print(JSON.stringify({ updated: true, directory }, null, 2));
     return 0;
   }
-  const name = requireText(options.name, "--name <NAME>", command);
+  const name = validateStoredName(requireText(options.name, "--name <NAME>", command));
   if (command === "credentials-get") {
     if (!isTerminal && !options.force) {
       throw new MissingArgument("credentials-get requiere una terminal o --force para imprimir el valor");

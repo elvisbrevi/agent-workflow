@@ -61,7 +61,7 @@ const REMOVE_ASSIGNEE_FLAG = "--remove-assignee";
 const ME_HANDLE = "@me";
 
 export const runGh: GhRunner = async (args, workingDirectory) => {
-  const child = Bun.spawn(["gh", ...args], { cwd: workingDirectory, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["gh", ...args], { cwd: workingDirectory, env: process.env, stdout: "pipe", stderr: "pipe" });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),

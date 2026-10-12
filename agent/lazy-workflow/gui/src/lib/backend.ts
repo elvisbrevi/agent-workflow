@@ -61,6 +61,7 @@ export interface Diagnostics {
   runLogPath: string;
   lzLauncher: string | null;
   lzError: string | null;
+  credentialsError: string | null;
   shellEnvironment: boolean;
   binaries: Array<{ name: string; path: string | null }>;
   variables: Array<{ name: string; present: boolean; value: string | null; source: "settings" | "environment" | "credentials" | "missing" }>;

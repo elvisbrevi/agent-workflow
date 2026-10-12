@@ -19,12 +19,11 @@ import {
   type CatalogFlag,
   type CatalogFlagGroup,
   type CatalogFlagGroupId,
-  type CatalogEnvironmentVariable,
   type CommandCatalog,
 } from "./command-catalog-schema.ts";
 import { DEFAULT_IDLE_TIMEOUT_MINUTES } from "../coding-agent/idle-watchdog.ts";
 import { INTERVIEW_CHANNELS } from "../interaction/question-channel.ts";
-import { AZURE_ORGANIZATION_ENV } from "../azure/azure-organization.ts";
+import { WORKFLOW_ENVIRONMENT } from "../system/workflow-environment.ts";
 import { SAG_NORMS_REPOSITORY_ENV } from "../sag/sag-norms-service.ts";
 import {
   DEFAULT_FALLBACK_WAIT_MAX_SECONDS,
@@ -313,6 +312,7 @@ const PULL_REQUEST_COMMANDS: readonly CatalogCommand[] = [
 ];
 
 const CREDENTIALS_COMMANDS: readonly CatalogCommand[] = [
+  tool({ name: "credentials-status", family: "credentials", summary: "Muestra los valores efectivos de lz y su origen; los secretos solo indican presencia.", effect: "read", flags: [NAME] }),
   tool({ name: "credentials-audit", family: "credentials", summary: "Informa que archivos y Keychain contienen una credencial, sin su valor.", effect: "read", flags: [NAME] }),
   tool({ name: "credentials-list", family: "credentials", summary: "Imprime los nombres guardados en los archivos de secretos.", effect: "read", output: "lines", flags: [] }),
   tool({
@@ -327,7 +327,7 @@ const CREDENTIALS_COMMANDS: readonly CatalogCommand[] = [
   tool({
     name: "credentials-set",
     family: "credentials",
-    summary: "Guarda o rota una credencial; con chezmoi tambien publica su fuente cifrada.",
+    summary: "Guarda una credencial o una variable de lz admitida por el catalogo; con chezmoi publica su fuente cifrada.",
     effect: "write",
     flags: [required(NAME), SERVICE, { flag: "--stdin", kind: "boolean", label: "Leer de stdin", description: "Lee el valor de la entrada estandar en vez del prompt oculto." }],
     stdinFlag: "--stdin",
@@ -380,17 +380,6 @@ const COMMANDS: readonly CatalogCommand[] = [
   ...MAINTENANCE_COMMANDS,
 ];
 
-const ENVIRONMENT: readonly CatalogEnvironmentVariable[] = [
-  { name: "LAZY_WORKFLOW_GUI", description: "Ruta alternativa del binario que abre lz gui.", secret: false },
-  { name: AZURE_ORGANIZATION_ENV, description: "https://dev.azure.com/<organizacion>; requerida por todo flujo y herramienta Azure.", secret: false },
-  { name: SAG_NORMS_REPOSITORY_ENV, description: "Repositorio canonico de las normas SAG que carga --normas-sag.", secret: false },
-  { name: "LAZY_WORKFLOW_LOG_FILE", description: "Ruta del run log; --log-file la precede y el default es ~/.local/state/lazy-workflow/runs.jsonl.", secret: false },
-  { name: "LAZY_WORKFLOW_SECRETS_DIR", description: "Directorio de los archivos de secretos; default ~/.config/secrets.", secret: false },
-  { name: OFF_PASSWORD_ENV, description: "Contrasena de sudo que --off usa sin dejarla en ps ni en el historial.", secret: true },
-  { name: "AZURE_DEVOPS_EXT_PAT", description: "PAT de Azure DevOps para az y para leer normas SAG autenticadas; nunca se envia al agente.", secret: true },
-  { name: "NO_COLOR", description: "Con cualquier valor deshabilita los colores ANSI, como --no-color.", secret: false },
-];
-
 /** The whole document `lz catalog` prints. */
 export function commandCatalog(): CommandCatalog {
   return {
@@ -403,7 +392,7 @@ export function commandCatalog(): CommandCatalog {
       defaultModel: profile.defaultModel,
       efforts: profile.efforts ? [...profile.efforts] : null,
     })),
-    environment: ENVIRONMENT,
+    environment: WORKFLOW_ENVIRONMENT,
     families: FAMILIES,
     groups: GROUPS,
     commands: COMMANDS,

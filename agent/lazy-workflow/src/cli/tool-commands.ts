@@ -64,6 +64,7 @@ export const PULL_REQUEST_TOOL_COMMANDS = [
  */
 export const CREDENTIALS_TOOL_COMMANDS = [
   "credentials-audit",
+  "credentials-status",
   "credentials-list",
   "credentials-get",
   "credentials-set",
@@ -124,6 +125,7 @@ export const DETERMINISTIC_TOOL_FORMS = [
   "  lz pr-thread-reply --pr <id> --thread <id> --body <text> --working-directory <path>",
   "  lz pr-create --branch <name> --base-branch <name> --title <title> [--description <text> | --description-file <path>] --working-directory <path>",
   "  lz credentials-audit [--name <NAME>]",
+  "  lz credentials-status [--name <NAME>]",
   "  lz credentials-list",
   "  lz credentials-get --name <NAME> [--force]",
   "  lz credentials-set --name <NAME> [--service <service>] [--stdin]",

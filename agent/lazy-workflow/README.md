@@ -434,7 +434,12 @@ workflow stays the only thing a run has to trust.
 | GitHub | `github-auth-info`, `github-repo-info`, `github-issue-list`, `github-issue-select`, `github-issue-info`, `github-issue-claim`, `github-issue-release`, `github-issue-close`, `github-branch-prepare`, `github-branch-checkout`, `github-branch-verify`, `github-branch-cleanup`, `github-session-verify`, `github-commit-push`, `github-pr-create`, `github-pr-merge` |
 | git | `git-branch-list`, `git-branch-checkout`, `git-branch-delete` |
 | pull requests | `pr-list`, `pr-info`, `pr-thread-list`, `pr-thread-reply`, `pr-create` |
-| credentials | `credentials-audit`, `credentials-list`, `credentials-get`, `credentials-set`, `credentials-migrate`, `credentials-update` |
+| credentials | `credentials-status`, `credentials-audit`, `credentials-list`, `credentials-get`, `credentials-set`, `credentials-migrate`, `credentials-update` |
+
+`lz credentials-status [--name NAME]` reports effective values and their source
+(`environment`, `credentials`, `missing`). Public lz settings are visible;
+secret values are always null, with only presence reported. The GUI uses this
+same read, so a stored Azure organization appears without exporting it in a shell.
 
 `credentials-audit` reports the declaring `.env` file names and whether macOS
 Keychain has the named item, never its value. Omit `--name` to audit every
@@ -445,7 +450,11 @@ they read the operator's encrypted `~/.config/secrets/*.env` files and write one
 name per line or the decoded value, so they feed the shell directly.
 `credentials-get` prints only to a terminal unless `--force` declares the pipe.
 
-`credentials-set` stores or rotates one credential. The value comes from a
+`credentials-set` stores or rotates one credential or a public lz variable
+marked `credentialStore: true` in the catalog. lz automatically loads those
+catalog-declared names before running commands; process and GUI profile values
+take precedence. Arbitrary non-credential names such as `PATH` are rejected.
+The value comes from a
 hidden prompt — or from the first line of the standard input when `--stdin`
 declares a pipe, for a session that is not interactive — and never from a flag,
 so it stays out of `ps` and the shell history. It writes the declaring file, or

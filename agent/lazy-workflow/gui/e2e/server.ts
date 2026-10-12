@@ -17,6 +17,10 @@ await writeFile(launcher, `import { commandCatalog } from ${JSON.stringify(catal
 import { createQuestionChannel } from ${JSON.stringify(factory)};
 const command = process.argv[2];
 if (command === "catalog") console.log(JSON.stringify(commandCatalog()));
+else if (command === "credentials-status") console.log(JSON.stringify([
+  { name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", present: true, value: "https://dev.azure.com/synthetic", source: "credentials" },
+  { name: "AZURE_DEVOPS_EXT_PAT", present: true, value: null, source: "credentials" }
+]));
 else if (command === "work-assigned") {
   const azure = process.argv.includes(${JSON.stringify(azure)});
   console.log(JSON.stringify({ tracker: azure ? "azure" : "github", scope: azure ? "Synthetic Azure" : "synthetic/github", truncated: false, items: azure ? [

@@ -402,7 +402,7 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .option("child", positiveIntegerOption("--child", "Work item hijo."))
     .option("blocker", positiveIntegerOption("--blocker", "Work item que bloquea."))
     .option("blocked", positiveIntegerOption("--blocked", "Work item bloqueado."))
-    .option("name", stringOption("--name", "Nombre de la credencial para credentials-audit, credentials-get, credentials-set o credentials-migrate."))
+    .option("name", stringOption("--name", "Nombre de la credencial o variable de lz para credentials-status, credentials-audit, credentials-get, credentials-set o credentials-migrate."))
     .option("service", stringOption("--service", "Servicio cuyo archivo .env recibe la credencial; sin el, el archivo que ya la declara u other.env."))
     .option("force", { type: "boolean", default: false, describe: "Permite que credentials-get imprima el valor fuera de una terminal." })
     .option("stdin", { type: "boolean", default: false, describe: "Lee de la entrada estandar el valor de credentials-set, en vez del prompt oculto; para sesiones no interactivas." })

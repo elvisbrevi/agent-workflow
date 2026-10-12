@@ -78,6 +78,10 @@ and credentials are configured on the server; the browser can change permitted
 preferences and execute only the configured catalog subset. Local credential
 commands, installer maintenance and shutdown are excluded. The web adapter
 bridges `plan --interview http` back to the authenticated page.
+**Ajustes → Conexiones del servidor** displays loaded values with a lock and no
+editable fields: public values are visible, while secret values never reach
+the browser. Configure them locally with the credentials skill and CLI, then
+reload the page to inspect `lz credentials-status` through the diagnostic view.
 
 Keep desktop and web on separate profiles or stop one before opening the other.
 Updates rebuild frontend/backend and repeat the web service installer while
@@ -150,6 +154,8 @@ inherited), then the PATH with `extraPath` first, then `environment`, then each
 `secretEnvironment` name not already set, and finally `NO_COLOR=1` for the
 panel. Defaults only prefill a form — the operator can still change any field
 before running, and the preview always shows what will run.
+The CLI then loads missing catalog-declared stored variables from its credential
+store. `credentials-status` uses the same precedence for diagnostics.
 
 ## Configure it
 
@@ -178,7 +184,8 @@ Secrets go through the CLI's credential store, never the settings file:
 
 ```bash
 lz credentials-set --name AZURE_DEVOPS_EXT_PAT                  # prompts for the value
-bun scripts/gui-settings.ts add secretEnvironment AZURE_DEVOPS_EXT_PAT
+lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure
+lz credentials-status
 ```
 
 For `--off`, store `LAZY_WORKFLOW_OFF_PASSWORD` the same way: the GUI sends a
@@ -211,7 +218,7 @@ keeps them until they are saved or discarded.
 | "`lz catalog` fallo" naming an unsupported command | The installed `lz` predates the GUI: `lz update` |
 | "el catalogo de lz usa el esquema N" | The GUI is older than the CLI's catalog: `lz update` rebuilds the GUI when its source tree changed |
 | A tool is "no encontrado" in Diagnostico but works in a terminal | The desktop session has a shorter PATH: keep `inheritShellEnvironment` on and press **Releer entorno**, or add the directory to `extraPath` |
-| Azure commands fail with a missing organization | Set `environment.LAZY_WORKFLOW_AZURE_ORGANIZATION`, or export it in the shell profile the GUI inherits |
+| Azure commands fail with a missing organization | Store it with `lz credentials-set --name LAZY_WORKFLOW_AZURE_ORGANIZATION --service azure` under the server's account; inspect `lz credentials-status` for a profile override |
 | "no se pudo resolver el secreto NAME" | `lz credentials-get --name NAME` fails: store it with `lz credentials-set --name NAME`, or remove it from `secretEnvironment` |
 | The window shows an error about `gui.json` | The file is not valid JSON or has a wrong type: `bun scripts/gui-settings.ts validate` names the key |
 | **Interrumpir** does nothing | The run ignores SIGINT; click again (**Forzar**) to kill its process group, then follow [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the checkpoint it left |

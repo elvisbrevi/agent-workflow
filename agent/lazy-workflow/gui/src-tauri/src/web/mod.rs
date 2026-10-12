@@ -605,7 +605,7 @@ async fn rpc(
             }
             "diagnose" => {
                 // The caller cannot declare a secret to be public, or probe arbitrary variables.
-                let variables = state.catalog["environment"].as_array().unwrap().iter().filter_map(|v| Some(EnvironmentProbe { name: v["name"].as_str()?.into(), secret: true })).collect();
+                let variables = state.catalog["environment"].as_array().unwrap().iter().filter_map(|v| Some(EnvironmentProbe { name: v["name"].as_str()?.into(), secret: v["secret"].as_bool().unwrap_or(true) })).collect();
                 Ok(serde_json::to_value(state.core.diagnose(variables)?).unwrap())
             }
             "reload_environment" => { crate::environment::reload_shell_environment(); Ok(Value::Null) }

@@ -14,10 +14,10 @@ impl Fixture {
         let directory = root.path();
         std::fs::create_dir(directory.join("frontend")).unwrap();
         std::fs::write(directory.join("frontend/index.html"), "<h1>synthetic</h1>").unwrap();
-        let catalog = json!({"schemaVersion":1,"environment":[{"name":"SYNTHETIC_SECRET","secret":false}],"groups":[],"commands":[{"name":"code","effect":"session","flags":[],"groups":[]},{"name":"git-branch-list","effect":"read","flags":[{"flag":"--working-directory","kind":"directory"}],"groups":[]},{"name":"credentials-get","effect":"read","flags":[],"groups":[]}]});
+        let catalog = json!({"schemaVersion":1,"environment":[{"name":"SYNTHETIC_SECRET","secret":false},{"name":"LAZY_WORKFLOW_AZURE_ORGANIZATION","secret":false},{"name":"STORED_TOKEN","secret":true},{"name":"MISSING_TOKEN","secret":true}],"groups":[],"commands":[{"name":"code","effect":"session","flags":[],"groups":[]},{"name":"git-branch-list","effect":"read","flags":[{"flag":"--working-directory","kind":"directory"}],"groups":[]},{"name":"credentials-get","effect":"read","flags":[],"groups":[]}]});
         std::fs::write(directory.join("catalog.json"), catalog.to_string()).unwrap();
         let launcher = directory.join("fake-lz");
-        std::fs::write(&launcher, format!("#!/bin/sh\nif [ \"$1\" = catalog ]; then cat '{}'; exit 0; fi\nprintf 'run\\n' >> '{}'\nprintf '{{\"synthetic\":true}}\\n'\n", directory.join("catalog.json").display(), directory.join("spawned").display())).unwrap();
+        std::fs::write(&launcher, format!("#!/bin/sh\nif [ \"$1\" = catalog ]; then cat '{}'; exit 0; fi\nif [ \"$1\" = credentials-status ]; then printf '[{{\"name\":\"STORED_TOKEN\",\"present\":true,\"value\":null,\"source\":\"credentials\"}}]\\n'; exit 0; fi\nprintf 'run\\n' >> '{}'\nprintf '{{\"synthetic\":true}}\\n'\n", directory.join("catalog.json").display(), directory.join("spawned").display())).unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
         let settings_path = directory.join("gui.json");
         let settings = GuiSettings {
@@ -26,6 +26,7 @@ impl Fixture {
             repositories: vec![directory.to_string_lossy().into_owned()],
             active_repository: Some(directory.to_string_lossy().into_owned()),
             environment: BTreeMap::from([
+                ("LAZY_WORKFLOW_AZURE_ORGANIZATION".into(), "https://dev.azure.com/synthetic".into()),
                 (
                     "SYNTHETIC_SECRET".into(),
                     "synthetic-not-for-browser".into(),
@@ -309,6 +310,9 @@ async fn browser_cannot_reconfigure_launcher_read_secrets_select_another_profile
             .status(),
         StatusCode::BAD_REQUEST
     );
+    let mut local_settings = fixture.state.core.settings().unwrap();
+    local_settings.secret_environment.push("MISSING_TOKEN".into());
+    fixture.state.core.save_settings(local_settings).unwrap();
     let diagnostics = value(
         app.oneshot(request(
             "POST",
@@ -321,14 +325,15 @@ async fn browser_cannot_reconfigure_launcher_read_secrets_select_another_profile
         .unwrap(),
     )
     .await;
-    assert!(diagnostics["variables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|variable| variable["value"].is_null()));
+    let variables = diagnostics["variables"].as_array().unwrap();
+    assert_eq!(variables.iter().find(|variable| variable["name"] == "LAZY_WORKFLOW_AZURE_ORGANIZATION").unwrap()["value"], "https://dev.azure.com/synthetic");
+    assert!(variables.iter().filter(|variable| variable["name"] != "LAZY_WORKFLOW_AZURE_ORGANIZATION").all(|variable| variable["value"].is_null()));
+    assert_eq!(variables.iter().find(|variable| variable["name"] == "STORED_TOKEN").unwrap()["present"], true);
+    assert_eq!(variables.iter().find(|variable| variable["name"] == "MISSING_TOKEN").unwrap()["present"], false);
     assert!(!diagnostics
         .to_string()
         .contains("synthetic-not-for-browser"));
+    assert!(diagnostics["credentialsError"].is_null());
 }
 
 #[tokio::test]

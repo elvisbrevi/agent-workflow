@@ -105,8 +105,9 @@ prints the same surface as text. From `agent/lazy-workflow/`,
   preflight and `lz catalog` are available for diagnosis. The GUI asks before
   every such command unless `confirmWrites` is off.
 - Secrets never go on a command line, in a prompt, or in `gui.json`: store them
-  with `lz credentials-set` and let the GUI resolve them through
-  `secretEnvironment`.
+  with `lz credentials-set`. lz automatically loads its catalog-declared stored
+  variables; `secretEnvironment` resolves additional names for GUI runs. The
+  credentials skill also configures public values such as the Azure organization.
 - Web deployment uses the separate `lz-web` executable; `lz gui` opens the
   desktop app. Configure launcher, registered repositories and credentials
   locally. Each owner uses an independent server/OS identity; the browser

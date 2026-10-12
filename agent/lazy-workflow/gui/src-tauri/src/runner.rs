@@ -283,7 +283,7 @@ pub fn capture(
     let launcher = resolve_launcher(settings, &environment)?;
     // Catalog discovery must work before credentials are configured. Tracker
     // reads need the same locally resolved credentials as an operator run.
-    if args.first().is_some_and(|command| command != "catalog") {
+    if args.first().is_some_and(|command| command != "catalog" && !command.starts_with("credentials-")) {
         resolve_secrets(settings, &launcher, &mut environment)?;
     }
     capture_with(
@@ -368,7 +368,9 @@ impl Runs {
         }
         let mut environment = run_environment(settings);
         let launcher = resolve_launcher(settings, &environment)?;
-        resolve_secrets(settings, &launcher, &mut environment)?;
+        if !request.args[0].starts_with("credentials-") {
+            resolve_secrets(settings, &launcher, &mut environment)?;
+        }
         for name in remove {
             environment.remove(*name);
         }
