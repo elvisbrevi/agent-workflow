@@ -124,6 +124,20 @@ test("ningun perfil de entrega puede empujar, ramificar ni usar el proveedor aje
   expect(config.agent["lazy-azure-code"].permission.bash["az*"]).toBe("deny");
 });
 
+/** Every `gh pr` subcommand gh 2.x knows, with its aliases and the `-R` spellings that precede one. */
+const GH_PR_SUBCOMMANDS = ["-R", "--repo", "checkout", "co", "checks", "close", "comment", "create", "new", "diff", "edit", "list", "ls", "lock", "merge", "ready", "reopen", "revert", "review", "status", "unlock", "update-branch", "view"];
+
+test("la entrega GitHub puede mergear un pull request y ninguna otra operacion de gh pr (ADR-0046)", async () => {
+  const opencode = (await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json()).agent["lazy-github-code"].permission.bash;
+  const { permissions } = await Bun.file(authorityConfigPath("claudecode", "lazy-github-code")).json();
+  expect(Object.keys(opencode).filter((pattern) => pattern === "gh pr*" || pattern.startsWith("gh pr merge"))).toEqual([]);
+  expect(permissions.deny.filter((rule: string) => rule === "Bash(gh pr:*)" || rule.startsWith("Bash(gh pr merge"))).toEqual([]);
+  for (const subcommand of GH_PR_SUBCOMMANDS.filter((entry) => entry !== "merge")) {
+    expect(`${subcommand}: ${opencode[`gh pr ${subcommand}*`]}`).toBe(`${subcommand}: deny`);
+    expect(`${subcommand}: ${permissions.deny.includes(`Bash(gh pr ${subcommand}:*)`)}`).toBe(`${subcommand}: true`);
+  }
+});
+
 test("ningun perfil de planificacion puede mutar el tracker", async () => {
   const config = await Bun.file(authorityConfigPath("opencode", "lazy-github-code")).json();
   // The coordinator publishes planning work items, so no planning run needs `az`.

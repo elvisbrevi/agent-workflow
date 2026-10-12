@@ -726,7 +726,7 @@ the prompt does not restate what the profile already denies.
 |---|---|---|
 | `lazy-github-plan` | `plan` without `--hu` | `gh issue create`, `gh issue edit`, pushes, branch and remote mutation, `gh pr`, `gh repo`, `gh api`, all `az` |
 | `lazy-azure-plan` | `plan --hu` | pushes, branch and remote mutation, all `gh`, all `az` |
-| `lazy-github-code` | `code` without `--hu`, including the conflict session | pushes, branch and remote mutation, `gh pr`, `gh repo`, `gh api`, `gh issue edit/close/reopen/comment/delete/transfer/lock/unlock`, all `az` |
+| `lazy-github-code` | `code` without `--hu`, including the conflict session | pushes, branch and remote mutation, every `gh pr` subcommand but `merge`, `gh repo`, `gh api`, `gh issue edit/close/reopen/comment/delete/transfer/lock/unlock`, all `az` |
 | `lazy-azure-code` | `code --hu` | pushes, branch and remote mutation, all `gh`, all `az` |
 
 `lazy-review`, which denies editing outright, is still in the profile set; no run
@@ -735,6 +735,8 @@ selects it since the review workflows it served were removed.
 Planning profiles allow editing and committing, because documentation is a
 planning session's own deliverable. Delivery profiles allow committing and deny
 pushing: the coordinator pushes the verified commit itself.
+The GitHub delivery profile also allows `gh pr merge` (ADR-0046); the
+coordinator still opens and merges the unit's own pull request.
 
 ## Desktop GUI
 

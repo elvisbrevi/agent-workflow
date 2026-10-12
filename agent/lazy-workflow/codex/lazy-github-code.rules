@@ -1,6 +1,7 @@
-# lazy-workflow GitHub delivery authority: implement, validate, commit. Every
-# remote effect belongs to the coordinator. Hand-written from ADR-0021; not
-# generated from opencode/authority.json or claudecode/*.json.
+# lazy-workflow GitHub delivery authority: implement, validate, commit, merge a
+# pull request (ADR-0046). Every other remote effect belongs to the coordinator.
+# Hand-written from ADR-0021; not generated from opencode/authority.json or
+# claudecode/*.json.
 
 prefix_rule(pattern=["git", "push"], decision="forbidden")
 prefix_rule(pattern=["git", "branch"], decision="forbidden")
@@ -13,7 +14,28 @@ prefix_rule(pattern=["git", "switch", "--create"], decision="forbidden")
 prefix_rule(pattern=["git", "switch", "--force-create"], decision="forbidden")
 prefix_rule(pattern=["git", "remote"], decision="forbidden")
 prefix_rule(pattern=["git", "tag"], decision="forbidden")
-prefix_rule(pattern=["gh", "pr"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "-R"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "--repo"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "checkout"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "co"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "checks"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "close"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "comment"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "create"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "new"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "diff"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "edit"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "list"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "ls"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "lock"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "ready"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "reopen"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "revert"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "review"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "status"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "unlock"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "update-branch"], decision="forbidden")
+prefix_rule(pattern=["gh", "pr", "view"], decision="forbidden")
 prefix_rule(pattern=["gh", "repo"], decision="forbidden")
 prefix_rule(pattern=["gh", "api"], decision="forbidden")
 prefix_rule(pattern=["gh", "issue", "edit"], decision="forbidden")

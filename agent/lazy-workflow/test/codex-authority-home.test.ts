@@ -157,3 +157,14 @@ test.skipIf(!Bun.which("codex"))(
     }
   },
 );
+
+test.skipIf(!Bun.which("codex"))(
+  "la entrega GitHub de Codex permite gh pr merge y prohibe el resto de gh pr, segun el evaluador del proveedor",
+  async () => {
+    const rulesPath = codexRulesPath("lazy-github-code");
+    expect(await evaluate(rulesPath, ["gh", "pr", "merge", "7", "--squash"])).not.toBe("forbidden");
+    for (const command of [["gh", "pr", "create"], ["gh", "pr", "new"], ["gh", "pr", "close", "7"], ["gh", "pr", "-R", "o/r", "create"], ["gh", "pr", "review", "7"]]) {
+      expect(`${command.join(" ")}: ${await evaluate(rulesPath, command)}`).toBe(`${command.join(" ")}: forbidden`);
+    }
+  },
+);
