@@ -1,7 +1,29 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { errorText, webTransport } from "../lib/backend.ts";
 import { isDesktop } from "../lib/platform.ts";
 import { HttpError, type WebAuthentication, type WebSession } from "../lib/http-transport.ts";
+
+/** The signed-in owner of a web installation; absent on the desktop, which has no session. */
+interface WebAccount {
+  readonly username: string;
+  readonly error: string | null;
+  readonly logout: () => void;
+}
+
+const WebAccountContext = createContext<WebAccount | null>(null);
+
+/** Who is signed in and how to leave: the sidebar shows it on wide screens, Ajustes on phones. */
+export function AccountControl({ className }: { className: string }) {
+  const account = useContext(WebAccountContext);
+  if (!account) return null;
+  return (
+    <div className={className}>
+      <span className="muted ellipsis grow">{account.username}</span>
+      <button type="button" className="link-button" onClick={account.logout}>Cerrar sesión</button>
+      {account.error && <span role="alert">{account.error}</span>}
+    </div>
+  );
+}
 
 export function WebAccess({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<WebSession | null | undefined>(undefined);
@@ -63,5 +85,11 @@ export function WebAccess({ children }: { children: ReactNode }) {
       : <div className="card stack"><h1>lz · agent-workflow</h1><p role="alert">{error ?? "No se pudo comprobar el acceso al servidor."}</p><button className="button primary" onClick={() => window.location.reload()}>Volver a conectar</button></div>}
     </main>
   );
-  return <><div className="web-session"><span>{session.username}</span><button type="button" className="link-button" onClick={() => { void webTransport.logout().then((logoutUrl) => { setSession(null); if (logoutUrl === "/cdn-cgi/access/logout") window.location.assign(logoutUrl); }, (error) => setError(errorText(error))); }}>Cerrar sesion</button>{error && <span role="alert">{error}</span>}</div>{children}</>;
+  const logout = () => {
+    void webTransport.logout().then((logoutUrl) => {
+      setSession(null);
+      if (logoutUrl === "/cdn-cgi/access/logout") window.location.assign(logoutUrl);
+    }, (error) => setError(errorText(error)));
+  };
+  return <WebAccountContext.Provider value={{ username: session.username, error, logout }}>{children}</WebAccountContext.Provider>;
 }

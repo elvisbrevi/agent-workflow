@@ -122,6 +122,7 @@ const REPRESENTATIVE: Record<AuthorityProfile, { forbidden: string[]; allowed: s
   "lazy-azure-plan": { forbidden: ["az", "boards", "query"], allowed: ["git", "commit", "-m", "x"] },
   "lazy-azure-code": { forbidden: ["gh", "pr", "create"], allowed: ["git", "commit", "-m", "x"] },
   "lazy-review": { forbidden: ["apply_patch"], allowed: ["git", "log"] },
+  "lazy-setup": { forbidden: ["lz", "credentials-get", "--name", "GH_TOKEN"], allowed: ["gh", "auth", "status"] },
 };
 
 const BRANCH_CREATION_COMMANDS: string[][] = [

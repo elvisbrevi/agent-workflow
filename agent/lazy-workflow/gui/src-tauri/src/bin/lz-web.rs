@@ -189,6 +189,7 @@ async fn run() -> Result<(), String> {
                 "plan",
                 "code",
                 "work-assigned",
+                "agent-models",
                 "hu-info",
                 "hu-children-info",
                 "git-branch-list",

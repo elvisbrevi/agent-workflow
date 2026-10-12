@@ -74,6 +74,7 @@ export const CREDENTIALS_TOOL_COMMANDS = [
 
 export const DETERMINISTIC_TOOL_COMMANDS = [
   "work-assigned",
+  "agent-models",
   ...AZURE_TOOL_COMMANDS,
   ...GITHUB_TOOL_COMMANDS,
   ...GIT_TOOL_COMMANDS,
@@ -92,6 +93,7 @@ export function isDeterministicToolCommand(command: string): command is Determin
 /** The invocation forms shown in `--help`, in the order the families are listed. */
 export const DETERMINISTIC_TOOL_FORMS = [
   "  lz work-assigned --working-directory <path>",
+  "  lz agent-models",
   "  lz hu-children-info --hu <id>",
   "  lz hu-state-set --hu <id> --state <state> --expected-state <state> --expected-rev <rev>",
   "  lz hu-branch-ensure --hu <id> [--base-branch <name>] --working-directory <path>",

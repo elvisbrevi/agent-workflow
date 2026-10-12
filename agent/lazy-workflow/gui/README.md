@@ -1,16 +1,16 @@
 # lz GUI
 
-A desktop window for `lz`, built with [Tauri](https://tauri.app). Start with your
-assigned work and recent Plan/Code activity. Prepare a run in three steps:
-choose the work, adjust the usual options, then review and execute. The full CLI
-catalog remains available under **Herramientas avanzadas**, and live output
-streams into the run panel.
+A desktop window for `lz`, built with [Tauri](https://tauri.app), focused on the
+work itself: the Azure DevOps HU and GitHub issues assigned to you, Plan or Code
+on them with their options, and the progress of what ran or is running, which
+**Ejecuciones** shows as a readable feed rather than a console.
 
 The window holds no workflow logic. It reads `lz catalog` — the CLI's own JSON
-description of its commands, flags and effects — and renders that, so a new
-command or flag in the CLI appears in the GUI without changing it. Runs execute
-the same `lz` a terminal would, with the same validation, checkpoints and run
-log.
+description of its commands, flags, defaults and effects — to validate and build
+the `plan`, `code` and `setup` command lines, and runs the same `lz` a terminal
+would, with the same validation, checkpoints and run log. The deterministic
+tools a workflow calls internally are not offered as buttons; they remain
+commands of the CLI.
 
 The same interface can also run in a browser or on a phone through `lz-web`.
 Each owner hosts it on their own server with their own configuration and CLI
@@ -104,48 +104,40 @@ and embeds it. The release binary is `lz-gui`.
 
 | Area | Behaviour |
 |---|---|
-| **Inicio** | Assigned GitHub issues and Azure work items from saved repositories, with search/platform/repository filters; recent Plan/Code history and direct preparation actions |
-| **Plan / Code** | Work → options → review. Azure HU and Task dropdowns, assistant/model/effort selectors and optional advanced settings. GitHub Code explicitly processes the complete eligible queue |
-| **Carpetas** | Native directory search on desktop; searchable registered server repositories in the browser. Paths always belong to the machine running lz |
-| **Móvil** | Compact header, fixed bottom navigation, touch controls of at least 44 px, single-column work lists and a short execution footer; safe areas and keyboard resizing keep controls reachable |
-| **Herramientas avanzadas** | Full catalog, searchable by command or description; confirmation before writes and sessions |
-| **Runs** | One tab per run, live output, **Interrumpir** sends SIGINT to the run's process group (Ctrl-C), a second click kills it; the planning interview URL opens in the browser or inside the window |
+| **Trabajo** | One section per saved repository's tracker: Azure HU with the tasks assigned to you under them, GitHub issues (epics marked). Search and platform filter. Selecting an item opens its panel |
+| **HU panel** | The HU's tasks from `hu-children-info` with their state and progress, **Planificar** / **Implementar** (all pending tasks or one), per-task **Code**, and the runs that touched that HU |
+| **GitHub panel** | **Planificar desde esta issue** (the session reads it with `gh issue view`), **Nuevo plan**, **Implementar la cola**, and the queue `code` would drain (`github-issue-list`) with why each issue is skipped |
+| **Plan / Code form** | One screen: the task (Code on an HU), instructions, agent, model and effort, the planning interview; under **Más opciones** extra repositories, base branch, question budget, SAG norms, fallback agents, idle timeout and verbose output, and saving them as defaults |
+| **Models** | `lz agent-models` lists each installed CLI's models and efforts (OpenCode's providers, Codex's listed models, Claude Code's cached catalog); the defaults and a free entry remain |
+| **Ejecuciones** | The window's runs with their latest line; a run opens as a page with its status, **Interrumpir** or **Repetir**, the planning interview, its progress feed (the CLI's operator lines with their time) and its result. Below, the CLI's run log grouped by run (Plan, Code and setup; internal reads on request), searchable, with each run's warnings and errors. Starting a run opens its page; a plan waiting for answers is announced on every screen |
+| **Configuration notice** | Shown only when something is missing: an agent CLI, `gh`/`az` for the trackers in use, the Azure organization, lz's stored configuration, or a repository whose work cannot be read. **Reparar con agente** runs `lz setup` with those problems |
+| **Ajustes** | Read-only machine status, default agent/model/effort, confirmation, repositories (desktop) and theme. No credential or token fields |
+| **Interrupting** | **Interrumpir** sends SIGINT to the run's process group (Ctrl-C), a second click kills it |
 | **Tray de escritorio** | Persistent active indicator and running count; open, hide and quit from the native menu. Closing the window keeps runs alive |
-| **Historial** | The CLI's run log, grouped by run, terminal runs included |
-| **Configuracion** | The settings file below |
+| **Móvil** | Checked as an iPhone 15 upright and on its side: compact top bar, bottom navigation clear of the home indicator (in the top bar when the phone is on its side), safe-area insets, 44 pt touch targets, 16 px fields so Safari does not zoom, and list or panel one at a time. The account control moves from the sidebar to **Ajustes** |
 
 Assigned work uses the read-only `lz work-assigned --working-directory /repo`.
 GitHub lists open issues assigned to `@me` in that repository, including issues
 outside the managed queue; Azure queries `@Me` in the repository's project and
-verifies each Task/Bug's User Story parent. Results are capped at 200 per query,
-with a visible notice. Failed sources remain visible alongside successful ones.
-Background reads do not add operator runs to the history. GitHub's delivery
-eligibility is unchanged: assigned issues can be inspected, while Code drains
-the eligible unassigned `ready-for-agent` queue.
+verifies each Task/Bug's User Story parent. Results are capped at 200 per query.
+Background reads do not add runs to the history. GitHub's delivery eligibility
+is unchanged: Code drains the eligible unassigned `ready-for-agent` queue, which
+the panel shows before it runs. Any other HU of a project opens by number.
 
-Existing web installations must add `work-assigned`, `hu-info`, and
-`hu-children-info` to their local `web.json` `allowedCommands` when enabling
-these reads, and update both the CLI and backend/frontend. New installations
-include these commands. The browser keeps the configured repository boundary;
-register more server folders locally to make them available in the picker.
-
-Secrets never reach a command line: `credentials-set` takes its value in a
-password field and sends it on stdin, `credentials-get` output is masked, and
-`--off` takes its password from `LAZY_WORKFLOW_OFF_PASSWORD`, which the GUI can
-resolve from the credential store at run time.
+Web installations need `work-assigned`, `agent-models`, `hu-info`,
+`hu-children-info` and `github-issue-list` in `allowedCommands`; `setup` is
+opt-in (see [WEB.md](WEB.md)).
 
 ## Settings
 
 `~/.config/lazy-workflow/gui.json` (or `LAZY_WORKFLOW_GUI_SETTINGS`): the `lz`
 launcher, PATH additions, environment variables, secrets resolved through
-`lz credentials-get`, saved repositories, per-flag and per-command form defaults,
-confirmation and theme. The full schema, and a helper that edits it safely, are in
-the [`lz` skill's GUI reference](../../../utility/lz/GUI.md).
-
-The browser shows server connections with a lock and no editable fields.
-Public values are visible; tokens and passwords show configured/missing status
-without reaching the browser. Configure them on the server with the
-[`credentials` skill](../../../utility/credentials/SKILL.md) and `lz credentials-set`.
+`lz credentials-get`, saved repositories, per-flag and per-command defaults,
+confirmation and theme. **Ajustes** edits only the preferences; the launcher,
+environment and secrets are configured with the helper in the
+[`lz` skill's GUI reference](../../../utility/lz/GUI.md), the
+[`credentials` skill](../../../utility/credentials/SKILL.md), or by
+**Reparar con agente**. Secret values never reach the window or the browser.
 `lz` loads its stored catalog variables automatically; the process and GUI
 profile environment take precedence.
 
@@ -159,7 +151,8 @@ profile environment take precedence.
 | `src-tauri/src/environment.rs` | The login-shell environment, PATH composition, how `lzCommand` resolves |
 | `src-tauri/src/settings.rs` | `gui.json`: defaults, atomic save, unknown keys kept |
 | `src-tauri/src/run_log.rs` | Reading the CLI's run log for the history view |
-| `src/lib/command-line.ts` | Form values → argument vector, validation, the masked preview |
+| `src/lib/work.ts`, `run-request.ts`, `models.ts`, `setup-check.ts` | Assigned work grouping, Plan/Code argument vectors, model menus, missing configuration |
+| `src/lib/command-line.ts` | Flag values → argument vector against the catalog, validation, the masked command line |
 | `src/lib/runs.ts` | The runs reducer, including output that arrives before its run is registered |
 | `src/components/` | The views |
 | `../src/cli/command-catalog.ts` | The catalog the CLI prints, pinned to the parser by `test/command-catalog.test.ts` |
@@ -170,6 +163,18 @@ profile environment take precedence.
 bun run typecheck                 # the frontend
 (cd src-tauri && cargo test)      # settings, environment, run log, runner
 (cd .. && bun test)               # the CLI suite, which includes the catalog and the GUI's pure logic
+```
+
+The browser scenarios run the built frontend against a synthetic `lz-web` on
+loopback HTTPS: desktop, two phone widths, and an iPhone 15 upright and on its
+side in WebKit, Safari's engine. `e2e/mobile.pw.ts` walks every screen on the
+iPhone and fails on horizontal overflow, controls under 44 pt, fields Safari
+would zoom into, or content under the bottom navigation.
+
+```bash
+bunx playwright install --with-deps chromium webkit   # once
+(cd src-tauri && cargo build --bin lz-web --no-default-features --features web)
+bun run build:web && bun run test:web
 ```
 
 On macOS, quit other lz desktop instances, build the release app, and run

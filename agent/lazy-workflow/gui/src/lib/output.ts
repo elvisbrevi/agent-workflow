@@ -71,3 +71,39 @@ export function finalMarker(lines: readonly string[]): string | null {
   }
   return null;
 }
+
+export interface FeedEntry {
+  /** `HH:MM:SS` of a stamped line; null for a line the reporter did not stamp. */
+  readonly time: string | null;
+  readonly level: "info" | "warn" | "error" | "detail";
+  readonly text: string;
+}
+
+const STAMPED = /^\d\d\/\d\d\/\d\d (\d\d:\d\d:\d\d) │ (\S) ?(.*)$/;
+/** The reporter hangs a message's further lines from the gutter: 18 spaces, the gutter, 3 spaces. */
+const HANGING = /^ {18}│ {3}(.*)$/;
+const LEVELS: Record<string, FeedEntry["level"]> = { "●": "info", "▲": "warn", "✖": "error", "·": "detail", "⋮": "detail" };
+
+/**
+ * What a run told its operator, as entries a person reads: the time, the level
+ * and the message, with the run's heading panel and the gutters left out. A line
+ * the reporter did not stamp (a coding agent's own output) is kept as is.
+ */
+export function operatorFeed(lines: readonly string[]): FeedEntry[] {
+  const entries: Array<{ time: string | null; level: FeedEntry["level"]; text: string }> = [];
+  for (const line of lines) {
+    if (/^\s*[╭╰]/.test(line) || /^│.*│\s*$/.test(line)) continue;
+    const stamped = STAMPED.exec(line);
+    if (stamped) {
+      entries.push({ time: stamped[1]!, level: LEVELS[stamped[2]!] ?? "info", text: stamped[3]! });
+      continue;
+    }
+    const hanging = HANGING.exec(line);
+    if (hanging && entries.length > 0) {
+      entries[entries.length - 1]!.text += `\n${hanging[1]}`;
+      continue;
+    }
+    if (line.trim()) entries.push({ time: null, level: "info", text: line.trim() });
+  }
+  return entries;
+}

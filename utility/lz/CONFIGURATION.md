@@ -117,7 +117,8 @@ scripts/preflight.sh --working-directory /repo        # tracker access for a wor
 bun scripts/gui-settings.ts validate                  # gui.json is readable by the GUI
 ```
 
-In the GUI, **Inicio → Diagnostico** shows the launcher, every tool on the run's
-PATH and which variables a run will see, with names only for secrets.
-Web **Ajustes → Conexiones del servidor** shows the same effective state with a
-lock: public values are visible and secret values never reach the browser.
+In the GUI, **Ajustes → Estado del equipo** shows, read-only, whether lz, git,
+`gh`, `az` and each coding agent CLI are found and whether the Azure
+organization is configured; secret values never reach the window or the
+browser. Whatever a run would miss raises a notice whose **Reparar con agente**
+runs `lz setup` with the detected problems.

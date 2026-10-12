@@ -249,6 +249,7 @@ describe("herramientas deterministas como comandos", () => {
       "credentials-set": "deterministic-completion-failure",
       "credentials-migrate": "deterministic-completion-failure",
       "credentials-update": "deterministic-completion-failure",
+      "agent-models": "deterministic-completion-failure",
     };
 
     for (const command of DETERMINISTIC_TOOL_COMMANDS) {

@@ -18,12 +18,12 @@ Route each request by the effect it needs:
 - **Configuration:** environment variables, credentials, installation modes and
   defaults, for the CLI and the GUI alike. Use [CONFIGURATION.md](CONFIGURATION.md).
 - **GUI/web:** building or launching the desktop window, publishing an owner's
-  web installation, its settings, or what a form will run. Use [GUI.md](GUI.md),
+  web installation, its settings, or what a GUI run will execute. Use [GUI.md](GUI.md),
   including [web access](GUI.md#web-access).
 
 `lz catalog` prints, as JSON, every command the installed binary accepts with its
 flags, value kinds, defaults, requirements and effect; it is the authority when a
-reference and the binary disagree, and it is what the GUI renders. `lz --help`
+reference and the binary disagree, and the GUI builds its command lines from it. `lz --help`
 prints the same surface as text. From `agent/lazy-workflow/`,
 `bun run main.ts <command> [flags]` is equivalent to the installed launcher.
 

@@ -35,6 +35,7 @@ Contents: [Choosing one](#choosing-one) · [Preflight chains](#preflight-chains)
 | Publish tracker work without planning it | `ticket-create`, `ticket-link-parent`, `ticket-link-predecessor` |
 | Attach the completion evidence a gate is waiting for | `ticket-pr-link`, `ticket-commit-link`, `ticket-completion-apply` |
 | Which commands and flags does the installed `lz` have? | `catalog` |
+| Which models and efforts can each installed coding agent run? | `agent-models` |
 
 Reads are free to run. Writes change a real backlog: run them when the user asked
 for that effect, and prefer rerunning the workflow command, which performs the

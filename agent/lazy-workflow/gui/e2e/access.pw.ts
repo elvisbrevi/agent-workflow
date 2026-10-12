@@ -27,10 +27,11 @@ test("Access UI exchanges the edge identity without a password form and navigate
   });
   await page.route("**/cdn-cgi/access/logout", (route) => route.fulfill({ contentType: "text/html", body: "<p>Synthetic Access session closed</p>" }));
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Cerrar sesion", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cerrar sesión", exact: true })).toBeVisible();
   expect(await page.locator("input[type=password]").count()).toBe(0); expect(exchanges).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("button", { name: "Cerrar sesion", exact: true }).click();
+  await page.getByRole("button", { name: "Cerrar sesión", exact: true }).click();
   await expect(page).toHaveURL("https://localhost/cdn-cgi/access/logout");
   expect(csrf).toBe("synthetic-csrf"); expect(failures).toEqual([]);
 });

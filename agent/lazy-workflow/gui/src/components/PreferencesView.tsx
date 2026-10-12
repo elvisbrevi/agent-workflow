@@ -1,0 +1,121 @@
+import { useEffect, useState } from "react";
+import type { CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
+import type { Diagnostics, FlagDefault, GuiSettings, SettingsDocument } from "../lib/backend.ts";
+import { cliLabel, type AgentModels } from "../lib/models.ts";
+import { isDesktop } from "../lib/platform.ts";
+import { repositoryName } from "../lib/work.ts";
+import { AgentPicker } from "./AgentPicker.tsx";
+import { DirectoryPicker } from "./DirectoryPicker.tsx";
+import { AccountControl } from "./WebAccess.tsx";
+import { SetupBanner, type SetupState } from "./SetupBanner.tsx";
+
+interface PreferencesViewProps {
+  readonly catalog: CommandCatalog;
+  readonly document: SettingsDocument;
+  readonly diagnostics: Diagnostics | null;
+  readonly models: readonly AgentModels[] | null;
+  readonly setup: SetupState;
+  readonly onSave: (settings: GuiSettings) => Promise<void>;
+}
+
+const text = (value: FlagDefault | undefined): string => (typeof value === "string" ? value : "");
+
+/** What the machine has, read-only: configuring it is the repair session's job, never a form here. */
+function MachineStatus({ catalog, diagnostics, models }: { catalog: CommandCatalog; diagnostics: Diagnostics | null; models: readonly AgentModels[] | null }) {
+  if (!diagnostics) return <p className="muted small" role="status">Revisando el equipo…</p>;
+  const binary = (name: string) => diagnostics.binaries.find((entry) => entry.name === name);
+  const organization = diagnostics.variables.find((variable) => variable.name === "LAZY_WORKFLOW_AZURE_ORGANIZATION");
+  const rows: Array<{ label: string; ok: boolean; detail: string }> = [
+    { label: "lz", ok: !diagnostics.lzError, detail: diagnostics.lzError ?? "Disponible" },
+    { label: "git", ok: !!binary("git")?.path, detail: binary("git")?.path ? "Instalado" : "No encontrado" },
+    { label: "GitHub CLI (gh)", ok: !!binary("gh")?.path, detail: binary("gh")?.path ? "Instalado" : "No encontrado" },
+    { label: "Azure CLI (az)", ok: !!binary("az")?.path, detail: binary("az")?.path ? "Instalado" : "No encontrado" },
+    { label: "Organización de Azure DevOps", ok: organization?.present === true, detail: organization?.present ? organization.value ?? "Configurada" : "Sin configurar" },
+    ...catalog.agents.map((agent) => {
+      const listed = models?.find((entry) => entry.cli === agent.cli);
+      const installed = listed ? listed.installed : !!binary(agent.binary)?.path;
+      return { label: cliLabel(agent.cli), ok: installed, detail: installed ? listed ? `${listed.models.length} modelos disponibles` : "Instalado" : "No instalado" };
+    }),
+  ];
+  return (
+    <ul className="status-list">
+      {rows.map((row) => <li key={row.label} className={row.ok ? "ok" : "missing"}><span className="check" aria-hidden="true">{row.ok ? "✓" : "–"}</span><span className="grow">{row.label}</span><span className="muted small ellipsis">{row.detail}</span></li>)}
+    </ul>
+  );
+}
+
+export function PreferencesView({ catalog, document, diagnostics, models, setup, onSave }: PreferencesViewProps) {
+  const [draft, setDraft] = useState<GuiSettings>(document.settings);
+  const [saving, setSaving] = useState(false);
+  // A file changed from outside replaces the form only while it has no unsaved edits.
+  const [base, setBase] = useState<GuiSettings>(document.settings);
+  useEffect(() => {
+    setDraft((current) => (JSON.stringify(current) === JSON.stringify(base) ? document.settings : current));
+    setBase(document.settings);
+  }, [document.settings]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(document.settings);
+  const update = (patch: Partial<GuiSettings>) => setDraft({ ...draft, ...patch });
+  const setAgent = (choice: { cli: string; model: string; variant: string }) => {
+    const flagDefaults = { ...draft.flagDefaults };
+    for (const [flag, value] of [["--cli", choice.cli], ["--model", choice.model], ["--variant", choice.variant]] as const) {
+      if (value) flagDefaults[flag] = value;
+      else delete flagDefaults[flag];
+    }
+    update({ flagDefaults });
+  };
+
+  return (
+    <div className="page preferences-page">
+      <header className="work-toolbar"><h1 className="grow">Ajustes</h1></header>
+      {document.error && <div className="callout error">{document.error} — se muestran los valores por defecto; guardar reemplaza el archivo.</div>}
+
+      <section className="panel-card">
+        <h2>Estado del equipo</h2>
+        <SetupBanner setup={setup} expanded />
+        <MachineStatus catalog={catalog} diagnostics={diagnostics} models={models} />
+        {!isDesktop && <p className="muted small">Lz se ejecuta en el servidor, con su configuración y sus cuentas.</p>}
+      </section>
+
+      <section className="panel-card">
+        <h2>Agente predeterminado</h2>
+        <AgentPicker catalog={catalog} models={models} id="default" value={{ cli: text(draft.flagDefaults["--cli"]), model: text(draft.flagDefaults["--model"]), variant: text(draft.flagDefaults["--variant"]) }} onChange={setAgent} />
+        <label className="toggle"><input type="checkbox" checked={draft.confirmWrites} onChange={(event) => update({ confirmWrites: event.target.checked })} /><span>Pedir confirmación antes de ejecutar Plan o Code</span></label>
+      </section>
+
+      <section className="panel-card">
+        <h2>Repositorios</h2>
+        {draft.repositories.length === 0 && <p className="muted small">Ninguno todavía.</p>}
+        {draft.repositories.map((repository) => (
+          <div className="repo-chip" key={repository}>
+            <span className="grow ellipsis" title={repository}><strong>{repositoryName(repository)}</strong> <span className="muted small">{repository}</span></span>
+            {isDesktop && <button type="button" className="icon-button" aria-label={`Quitar ${repositoryName(repository)}`} onClick={() => {
+              const repositories = draft.repositories.filter((entry) => entry !== repository);
+              update({ repositories, activeRepository: repositories.includes(draft.activeRepository ?? "") ? draft.activeRepository : repositories[0] ?? null });
+            }}>✕</button>}
+          </div>
+        ))}
+        {isDesktop
+          ? <DirectoryPicker repositories={draft.repositories} label="Agregar repositorio…" onPick={(path) => { if (!draft.repositories.includes(path)) update({ repositories: [...draft.repositories, path], activeRepository: draft.activeRepository ?? path }); }} />
+          : <p className="muted small">Los repositorios del servidor se registran en el propio servidor.</p>}
+      </section>
+
+      {!isDesktop && <section className="panel-card account-card"><h2>Sesión</h2><AccountControl className="row" /></section>}
+
+      <section className="panel-card">
+        <h2>Apariencia</h2>
+        <select className="input" aria-label="Tema" value={draft.theme} onChange={(event) => update({ theme: event.target.value as GuiSettings["theme"] })}>
+          <option value="system">Seguir al sistema</option>
+          <option value="light">Claro</option>
+          <option value="dark">Oscuro</option>
+        </select>
+      </section>
+
+      <div className="settings-actions">
+        <button type="button" className="button ghost" disabled={!dirty} onClick={() => setDraft(document.settings)}>Descartar</button>
+        <button type="button" className="button primary" disabled={!dirty || saving} onClick={async () => { setSaving(true); try { await onSave(draft); } finally { setSaving(false); } }}>
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+      </div>
+    </div>
+  );
+}

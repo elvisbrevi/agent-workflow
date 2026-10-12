@@ -11,8 +11,8 @@ const settings = join(root, "gui.json");
 const launcher = join(root, "fake-lz.ts");
 const catalog = fileURLToPath(new URL("../../src/cli/command-catalog.ts", import.meta.url));
 const factory = fileURLToPath(new URL("../../src/interaction/create-question-channel.ts", import.meta.url));
-const github = join(root, "github-project"); const azure = join(root, "azure-project");
-await mkdir(github); await mkdir(azure);
+const github = join(root, "github-project"); const azure = join(root, "azure-project"); const broken = join(root, "broken-project");
+await mkdir(github); await mkdir(azure); await mkdir(broken);
 await writeFile(launcher, `import { commandCatalog } from ${JSON.stringify(catalog)};
 import { createQuestionChannel } from ${JSON.stringify(factory)};
 const command = process.argv[2];
@@ -21,13 +21,28 @@ else if (command === "credentials-status") console.log(JSON.stringify([
   { name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", present: true, value: "https://dev.azure.com/synthetic", source: "credentials" },
   { name: "AZURE_DEVOPS_EXT_PAT", present: true, value: null, source: "credentials" }
 ]));
+else if (command === "agent-models") console.log(JSON.stringify([
+  { cli: "opencode", installed: true, defaultModel: "opencode-go/synthetic-pro", error: null, models: [{ id: "opencode-go/synthetic-pro", name: "synthetic-pro", provider: "opencode-go", efforts: null, defaultEffort: null }] },
+  { cli: "claudecode", installed: true, defaultModel: "claude-synthetic", error: null, models: [{ id: "claude-synthetic-max", name: "Synthetic Max", provider: "anthropic", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null }] },
+  { cli: "codex", installed: true, defaultModel: "gpt-synthetic", error: null, models: [{ id: "gpt-synthetic-sol", name: "GPT Synthetic Sol", provider: "openai", efforts: ["low", "medium", "high"], defaultEffort: "medium" }] }
+]));
+else if (command === "work-assigned" && process.argv.includes(${JSON.stringify(broken)})) { console.error("lazy-workflow: no se pudo ejecutar work-assigned (gh: not logged in)"); process.exit(1); }
 else if (command === "work-assigned") {
   const azure = process.argv.includes(${JSON.stringify(azure)});
   console.log(JSON.stringify({ tracker: azure ? "azure" : "github", scope: azure ? "Synthetic Azure" : "synthetic/github", truncated: false, items: azure ? [
     { id: 50, title: "Mejorar el portal de clientes", type: "User Story", state: "Active", url: "https://example.com/hu/50", hu: null },
     { id: 51, title: "Simplificar el formulario de ingreso", type: "Task", state: "New", url: "https://example.com/task/51", hu: 50 }
-  ] : [{ id: 7, title: "Mejorar la navegación principal", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/7", hu: null }] }));
-} else if (command === "hu-children-info") console.log(JSON.stringify([{ id: 51, type: "Task", title: "Simplificar el formulario de ingreso", state: "New" }]));
+  ] : [
+    { id: 7, title: "Mejorar la navegación principal", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/7", hu: null },
+    { id: 9, title: "[Epic] Portal de autoservicio", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/9", hu: null }
+  ] }));
+} else if (command === "hu-children-info") console.log(JSON.stringify({ hu: 50, children: [
+  { id: 51, type: "Task", title: "Simplificar el formulario de ingreso", state: "New" },
+  { id: 52, type: "Task", title: "Publicar el portal", state: "Done" }
+] }));
+else if (command === "github-issue-list") console.log(JSON.stringify({ managed: 2, eligible: [{ number: 8, title: "Agregar el menú lateral", createdAt: "2026-10-01T00:00:00Z" }], blocked: [{ number: 7, title: "Mejorar la navegación principal", reasons: ["assigned"] }], issues: [] }));
+else if (command === "setup") console.log("✓ synthetic setup report");
+else if (command === "plan" && !process.argv.includes("--interview")) console.log(JSON.stringify({ syntheticPlan: true }));
 else if (command === "plan") {
   const channel = createQuestionChannel({ channel: "http", host: "127.0.0.1", port: 0, timeoutSeconds: 60, rounds: 1 });
   const answers = await channel!.ask({ round: 1, questions: [{ id: "scope", question: "Synthetic: one service or two?", recommended: "one", options: ["one", "two"], rationale: "Synthetic browser verification" }] });
@@ -41,14 +56,14 @@ const history = [
   { run_id: "synthetic-history", ts: "2026-10-10T12:05:00Z", event: "run.finished", severity: "info", command: "code", workflow: "azure", cli: "codex", model: "synthetic", variant: "high", outcome: "success", exit_code: 0, duration_ms: 300000, context: { hu: 45, ticket: 46, repository: azure }, message: "Synthetic finish" }
 ];
 await writeFile(runLog, history.map((record) => JSON.stringify(record)).join("\n") + "\n");
-await writeFile(settings, JSON.stringify({ lzCommand: launcher, inheritShellEnvironment: false, repositories: [github, azure], activeRepository: github, environment: { LAZY_WORKFLOW_LOG_FILE: runLog }, flagDefaults: { "--interview": "http" } }), { mode: 0o600 });
+await writeFile(settings, JSON.stringify({ lzCommand: launcher, inheritShellEnvironment: false, repositories: [github, azure, broken], activeRepository: github, environment: { LAZY_WORKFLOW_LOG_FILE: runLog }, flagDefaults: { "--interview": "http" } }), { mode: 0o600 });
 const certificate = Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", join(root, "key.pem"), "-out", join(root, "cert.pem"), "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], { stderr: "ignore" });
 if (certificate.exitCode !== 0) throw new Error("could not prepare synthetic TLS certificate");
 const initialized = Bun.spawn([binary, "init", "--data-dir", root, "--public-url", "https://localhost", "--settings", settings, "--frontend", join(gui, "dist"), "--owner", "owner", "--password-stdin"], { stdin: "pipe", stdout: Bun.file(join(root, "init.log")), stderr: Bun.file(join(root, "init-error.log")) });
 initialized.stdin.write("synthetic-passphrase\n"); initialized.stdin.end();
 if (await initialized.exited !== 0) throw new Error(`synthetic initialization failed: ${await readFile(join(root, "init-error.log"), "utf8")}`);
 const config = JSON.parse(await readFile(join(root, "web.json"), "utf8"));
-config.allowedCommands = ["plan", "code", "work-assigned", "hu-info", "hu-children-info", "github-issue-info", "git-branch-list", "pr-create"];
+config.allowedCommands = ["plan", "code", "setup", "work-assigned", "agent-models", "hu-info", "hu-children-info", "github-issue-list"];
 config.listen = "127.0.0.1:18234";
 await writeFile(join(root, "web.json"), JSON.stringify(config), { mode: 0o600 });
 let backend: ReturnType<typeof Bun.spawn>;

@@ -93,9 +93,10 @@ lz update
 |---|---|
 | `plan` | Create a plan and publish its issues or Azure work items. |
 | `code` | Deliver eligible work, one unit at a time. |
+| `setup` | Open one coding-agent session that fixes what `plan` and `code` need on this machine: binaries, logins and lz's stored environment. It edits no repository or tracker item and never prints a secret. |
 | `update` | Run the Bun installer; defaults to `--all-global`. |
 | `gui` | Open the installed desktop GUI and return the terminal immediately. |
-| `catalog` | Print every command, its options, and its effect as JSON — what the [desktop GUI](#desktop-gui) renders. |
+| `catalog` | Print every command, its options, and its effect as JSON — what the [desktop GUI](#desktop-gui) builds its command lines from. |
 
 Without `--hu`, workflows use GitHub. `code` selects open, unassigned,
 non-epic issues labelled `ready-for-agent` with no open blockers. Each delivery
@@ -271,6 +272,7 @@ write it and hand it over.
 |---|---|
 | `pr-list` | List the open pull requests. |
 | `work-assigned` | Read issues or work items assigned to the authenticated user in the repository's tracker. |
+| `agent-models` | List the models and efforts each installed coding agent CLI offers, read from the CLI itself. |
 | `pr-info` | Show one pull request with its description, status, and reviewers. |
 | `pr-thread-list` | List its discussion threads and code comments, with file and line. |
 | `pr-thread-reply` | Reply to one thread. |
@@ -328,20 +330,21 @@ and the [deterministic tools design](docs/adr/0026-run-deterministic-tools-as-st
 
 ## Desktop GUI
 
-`agent/lazy-workflow/gui/` is a desktop app (Tauri) for everything above: each
-`lz` command is a form, the exact command line is shown before it runs, and the
-output streams into the window — operator lines beside the JSON result. It
-renders what `lz catalog` describes, so it always matches the installed CLI, and
-it runs that same `lz`, so validation, checkpoints and the run log are unchanged.
-It also shows the run history, answers planning interviews in the window, sends
-secrets on stdin rather than the command line, and checks which tools and
-variables a run will find.
+`agent/lazy-workflow/gui/` is a desktop app (Tauri), also served to a browser or
+phone by `lz-web`, focused on the work: the Azure DevOps HU and GitHub issues
+assigned to you, with each HU's tasks and their state, the queue GitHub `code`
+would drain, and the Plan or Code runs that touched them. From an HU or an issue
+it runs Plan or Code with their options — the task, instructions, agent, the
+models and efforts each installed CLI actually offers (`agent-models`), the
+planning interview, fallback agents — and follows runs live and in the CLI's
+run log. It builds those command lines from `lz catalog` and runs that same
+`lz`, so validation, checkpoints and the run log are unchanged.
 
-The home screen shows your assigned GitHub/Azure work and recent Plan/Code
-history. A three-step assistant prepares Plan and Code, with native folder
-selection, dropdowns and a review before execution; the full catalog is under
-advanced tools. `work-assigned --working-directory <path>` reads assignments
-from the authenticated user in the repository's tracker.
+The internal deterministic tools are not offered as buttons, and the window has
+no credential fields: when something a run needs is missing (an agent CLI,
+`gh`/`az`, the Azure organization, a repository whose work cannot be read) it
+says so, and **Reparar con agente** runs `lz setup`, one coding-agent session
+that fixes and verifies the machine's configuration.
 
 The desktop tray icon shows that lz is active and reports running commands.
 Closing the window keeps runs alive; the tray menu restores the window or quits

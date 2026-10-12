@@ -209,7 +209,25 @@ lz credentials-update
 
 # Describe every command, flag, default and effect as JSON
 lz catalog
+
+# The models and efforts each installed coding agent offers right now
+lz agent-models
+
+# Let a coding agent fix what plan and code are missing on this machine
+lz setup --cli claudecode --prompt "Falta LAZY_WORKFLOW_AZURE_ORGANIZATION; gh no esta autenticado"
 ```
+
+`lz agent-models` asks each CLI rather than a list kept here: `opencode models`,
+`codex debug models` (its listed models only), and the catalog Claude Code last
+cached under `~/.claude/cache/model-catalog` — its aliases (`fable`, `opus`,
+`sonnet`, `haiku`) when there is none. Efforts are narrowed to the ones `--variant`
+accepts. A missing or failing CLI is reported with its error and default model.
+
+`lz setup` opens one session under the `lazy-setup` authority profile: no file
+edits, no git or tracker mutation, no `lz plan`, `lz code` or `lz credentials-get`.
+It uses the `lz` and `credentials` skills, verifies each fix, and ends with a
+report; whatever only the operator can supply (a token, a browser login, a sudo
+password) stays in that report as the exact step to take.
 
 ### Choosing the CLI, the model and the effort
 
@@ -419,8 +437,7 @@ rather than inside any one repository.
 `lz work-assigned --working-directory /path/to/repository` lists work assigned
 to the authenticated user: open issues in that GitHub repository, or Azure
 work items in its project. It opens no coding session and changes no claim or
-delivery eligibility. The GUI's home screen uses this read alongside the run
-log, and prepares Plan/Code through work, options and review steps.
+delivery eligibility. The GUI's work view uses this read alongside the run log.
 
 Every operation the workflow performs against Azure Boards, GitHub or git
 without opening a session is reachable as its own command. They share the exact
@@ -731,14 +748,15 @@ and [verification evidence](gui/WEB-VERIFICATION.md) cover deployment and recove
 `lz update` updates CLI/skills/desktop; frontend/backend web updates use the
 web service installer and retain the existing profile and owner binding.
 
-`gui/` is a Tauri app that renders this CLI as forms. It reads `lz catalog` —
-every command with its flags, their value kinds, defaults, requirements and the
-command's effect — so the window always matches the installed binary, shows the
-exact command line before it runs, and runs `lz` itself as a child process: the
-validation, checkpoints and run log are the ones described in this file. A form
-offers the flags of its command plus the shared groups it accepts (agent,
-interview, reporter, shutdown); an interrupt sends SIGINT to the run's process
-group, exactly as Ctrl-C does.
+`gui/` is a Tauri app for this CLI's workflows. It lists the work assigned in
+each saved repository's tracker (`work-assigned`), an HU's tasks and their state
+(`hu-children-info`) and GitHub's managed queue (`github-issue-list`), and runs
+`plan`, `code` and `setup` with the options an operator chooses; model menus
+come from `agent-models`. It reads `lz catalog` — every command with its flags,
+their value kinds, defaults, requirements and the command's effect — to validate
+and build those command lines, and runs `lz` itself as a child process: the
+validation, checkpoints and run log are the ones described in this file. An
+interrupt sends SIGINT to the run's process group, exactly as Ctrl-C does.
 
 `lz catalog` takes no options, opens no session and writes no run log;
 `src/cli/command-catalog.ts` builds it and `test/command-catalog.test.ts` pins it

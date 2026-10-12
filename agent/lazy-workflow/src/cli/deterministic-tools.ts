@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { githubAssignedWork } from "../github/assigned-work.ts";
 import { azureAssignedWork } from "../azure/assigned-work.ts";
 import type { AssignedWork } from "../workspace/assigned-work.ts";
+import { listAgentModels, type AgentModels } from "../coding-agent/agent-models.ts";
 import { checkoutGitBranchByName, type GitBranchCheckout } from "../git/git-branch-checkout.ts";
 import { listGitBranches, type GitBranchList } from "../git/git-branch-list.ts";
 import { GitTicketBranchCleaner, runGit } from "../git/git-ticket-branch-cleaner.ts";
@@ -167,6 +168,8 @@ async function resolvePullRequestTools(workingDirectory: string): Promise<PullRe
 
 export interface DeterministicToolServices {
   assignedWork?: (directory: string) => Promise<AssignedWork>;
+  /** The models each installed CLI offers; optional for the same reason, only `agent-models` reaches it. */
+  agentModels?: () => Promise<AgentModels[]>;
   azure: AzureToolBoundary;
   queue: GitHubQueueTools;
   delivery: GitHubDeliveryTools;
@@ -195,6 +198,7 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
     credentials: productionCredentialTools,
     pullRequests: resolvePullRequestTools,
     assignedWork: readAssignedWork,
+    agentModels: () => listAgentModels(),
   };
 }
 
@@ -560,6 +564,8 @@ export async function runDeterministicTool(
     }
     const result = command === "work-assigned"
       ? await (services.assignedWork ?? readAssignedWork)(options.workingDirectory)
+      : command === "agent-models"
+      ? await (services.agentModels ?? (() => listAgentModels()))()
       : command.startsWith("pr-")
       ? await runPullRequestTool(command, options, services.pullRequests ?? resolvePullRequestTools)
       : command.startsWith("github-")

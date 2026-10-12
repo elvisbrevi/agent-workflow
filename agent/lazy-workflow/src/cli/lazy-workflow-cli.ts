@@ -84,6 +84,7 @@ import {
   buildInterviewAnswersPrompt,
   buildResumePrompt,
   buildRoundRepairPrompt,
+  buildSetupPrompt,
   buildWorkflowPrompt,
   resolveWorkflowRun,
   type HandoffProgress,
@@ -967,6 +968,8 @@ export class LazyWorkflowCli {
     if (options.normasSag && command !== "plan" && command !== "code") {
       return argumentError(options, "--normas-sag solo se permite con plan o code");
     }
+
+    if (command === "setup") return this.runSetup(options);
 
     // A deterministic tool is the workflow's own step run on its own, so it is
     // dispatched before any rule that only governs a session-opening command
@@ -3604,6 +3607,28 @@ export class LazyWorkflowCli {
         return { result, failed };
       }
     }
+  }
+
+  /**
+   * `setup`: one session whose whole job is the machine lz runs on — the
+   * binaries, logins and stored environment `plan` and `code` need. It names no
+   * tracker unit and writes no checkpoint; its authority profile denies every
+   * repository, branch and tracker effect, and its last text is the report the
+   * operator reads, printed on stdout like a planning result.
+   */
+  private async runSetup(options: CliOptions): Promise<number> {
+    const profile = "lazy-setup";
+    const execution = await this.codingAgent.run({
+      ...options,
+      prompt: await buildSetupPrompt(options.hasPrompt ? options.prompt : "", options.workingDirectory),
+      session: null,
+      agent: { profile, configPath: authorityConfigPath(options.cli, profile) },
+    }, false);
+    const report = execution.result.text.trim();
+    if (report) console.log(report);
+    if (!execution.failed) return 0;
+    reportFailure("session-failure", "executing", { repository: options.workingDirectory, sessionId: execution.result.sessionId }, `lazy-workflow: la sesion de configuracion de ${options.cli} fallo; revisa su reporte.`);
+    return 1;
   }
 
   /** The authority of a run: its profile, in the format the run's own CLI enforces. */

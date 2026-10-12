@@ -18,6 +18,7 @@ either is the authority whenever this file and the binary disagree.
 | `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
 | `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |
+| `setup [--prompt <problemas>]` | — | yes, one | Fixes what `plan` and `code` need on this machine (binaries, logins, lz's stored environment) under the `lazy-setup` authority: no file edits, git or tracker mutation, workflow run or `credentials-get`; ends with a report of what still needs the operator |
 | `update [installer options]` | — | no | Runs the Bun installer directly with the options after it; `--all-global` when none |
 | `gui` | — | no | Opens the installed GUI detached; `LAZY_WORKFLOW_GUI` overrides the binary; takes no options or run log |
 | `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |

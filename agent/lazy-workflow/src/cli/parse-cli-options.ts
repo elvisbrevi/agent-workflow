@@ -136,6 +136,7 @@ export const OFF_PASSWORD_ENV = "LAZY_WORKFLOW_OFF_PASSWORD";
 export const SUPPORTED_COMMANDS = new Set([
   "plan",
   "code",
+  "setup",
   "update",
   "catalog",
   "gui",
@@ -729,6 +730,7 @@ const COMMAND_FORMS = [
   "  lz update [opciones del instalador]",
   "  lz catalog",
   "  lz gui",
+  "  lz setup [--working-directory <path>] [--prompt <problemas>] [options]",
   "  lz plan [options]",
   "  lz plan --hu <id> [options]",
   "  lz code [options]",
