@@ -49,6 +49,25 @@ test("Claude Code: el catalogo mas reciente, los principales primero; uno roto s
   expect(parseClaudeCatalogs(["{roto"])).toEqual([]);
 });
 
+test("un servicio de OpenCode en frio tiene tiempo de cargar antes de darse por vacio", async () => {
+  const waits: number[] = [];
+  let calls = 0;
+  const sources: AgentModelSources = {
+    which: (binary) => (binary === "opencode" ? "/bin/opencode" : null),
+    run: async () => (++calls < 3 ? "" : "opencode-go/kimi\n"),
+    claudeCatalogs: async () => [],
+    wait: async (milliseconds) => { waits.push(milliseconds); },
+  };
+  const opencode = (await listAgentModels(sources)).find((entry) => entry.cli === "opencode")!;
+  expect(opencode.models.map((model) => model.id)).toEqual(["opencode-go/kimi"]);
+  expect(waits).toEqual([1000, 2000]);
+  // Still empty after the last wait: an empty list is the answer, not an error.
+  calls = -10;
+  waits.length = 0;
+  expect((await listAgentModels(sources)).find((entry) => entry.cli === "opencode")).toMatchObject({ models: [], error: null });
+  expect(waits).toEqual([1000, 2000]);
+});
+
 test("un CLI ausente o que falla se informa sin tumbar a los demas", async () => {
   const commands: string[][] = [];
   const sources: AgentModelSources = {
@@ -60,6 +79,7 @@ test("un CLI ausente o que falla se informa sin tumbar a los demas", async () =>
       return commands.filter((entry) => entry[0] === "opencode").length === 1 ? "" : "opencode-go/kimi\n";
     },
     claudeCatalogs: async () => [],
+    wait: async () => undefined,
   };
   const listed = await listAgentModels(sources);
   expect(listed.map(({ cli, installed, error, models }) => ({ cli, installed, error, models: models.map((model) => model.id) }))).toEqual([
@@ -71,7 +91,7 @@ test("un CLI ausente o que falla se informa sin tumbar a los demas", async () =>
 });
 
 test("Claude Code sin catalogo en cache ofrece sus alias", async () => {
-  const listed = await listAgentModels({ which: () => "/bin/x", run: async () => "", claudeCatalogs: async () => [] });
+  const listed = await listAgentModels({ which: () => "/bin/x", run: async () => "", claudeCatalogs: async () => [], wait: async () => undefined });
   expect(listed.find((entry) => entry.cli === "claudecode")!.models.map((model) => model.id)).toEqual(["fable", "opus", "sonnet", "haiku"]);
 });
 

@@ -27,7 +27,12 @@ export interface AgentModelSources {
   run(command: readonly string[]): Promise<string>;
   /** The Claude Code catalog documents cached on this machine, as raw JSON text. */
   claudeCatalogs(): Promise<string[]>;
+  /** Waits between attempts; injectable so a test does not sleep. */
+  wait?(milliseconds: number): Promise<void>;
 }
+
+/** How long OpenCode's background service gets to load its providers, attempt by attempt. */
+const OPENCODE_RETRY_DELAYS_MS = [1000, 2000];
 
 /** Claude Code resolves these aliases to the newest model of each family. */
 const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku"] as const;
@@ -114,10 +119,16 @@ const errorText = (error: unknown): string => (error instanceof Error ? error.me
 async function readModels(cli: AgentCli, sources: AgentModelSources): Promise<AgentModel[]> {
   const binary = AGENT_CLI_PROFILES[cli].binary;
   if (cli === "opencode") {
-    // The first call after boot can answer before OpenCode's background service
-    // has loaded its providers; one retry is enough for it to settle.
-    const first = parseOpenCodeModels(await sources.run([binary, "models"]));
-    return first.length > 0 ? first : parseOpenCodeModels(await sources.run([binary, "models"]));
+    // A cold OpenCode background service answers an empty list until it has
+    // loaded its providers, and an immediate retry is still too early: wait a
+    // little longer each time before taking empty for an answer.
+    let models = parseOpenCodeModels(await sources.run([binary, "models"]));
+    for (const delay of OPENCODE_RETRY_DELAYS_MS) {
+      if (models.length > 0) break;
+      await (sources.wait ?? Bun.sleep)(delay);
+      models = parseOpenCodeModels(await sources.run([binary, "models"]));
+    }
+    return models;
   }
   if (cli === "codex") return parseCodexModels(await sources.run([binary, "debug", "models"]));
   const cached = parseClaudeCatalogs(await sources.claudeCatalogs());

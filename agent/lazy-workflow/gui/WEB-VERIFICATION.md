@@ -5,6 +5,34 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Work-focused GUI update (2026-10-12)
+
+`main` at `df60613` (PR #7) was deployed to the Linux installation. No workflow
+runs were active: the backend unit held only its own `lz-web` process. The
+previous backend, frontend, `service.json` and `web.json` were backed up under
+`deployment-backups/before-gui-work-focus-df60613-2026-10-12T08-09-01Z`.
+
+With both units stopped, `agent-models` and `setup` were appended to
+`allowedCommands`, so the browser lists each agent's real models and offers
+**Reparar con agente**. The frozen frontend install, typecheck, frontend build
+and optimized `lz-web` build ran from the owner checkout, and the service helper
+reinstalled and started both units.
+
+Readback: both units active, local `/health` returning `ok`, the backend started
+with the extended allowlist (it refuses to start when an allowed command is
+missing from the catalog), the installed backend hash
+`6856753181c37965590e13387f321704b545f570afcf7f97e74ca6dcb24f535c` equal to the
+build, the three frontend files identical to `dist/`, and the connector
+registered its tunnel connections again. The public origin and an anonymous RPC
+both answer the Cloudflare Access redirect (302). `lz update` installed the CLI
+and skills at `df60613` and rebuilt `~/.local/bin/lz-gui`, whose tree stamp
+`46375332ce3e8b2aa9c4a7b9cf5d1eaf4909e6d8` matches the merged GUI tree.
+
+The browser scenarios ran against the synthetic backend, including an iPhone 15
+upright and sideways in WebKit; these are emulated devices. No authenticated
+operation over the public origin, physical-phone check or live Plan/Code run was
+performed during this update.
+
 ## Linux deployment update (2026-10-12)
 
 The active installation at `https://agent-workflow.elvisbrevi.cl` was located

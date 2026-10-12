@@ -24,6 +24,10 @@ The active installation now runs on the Linux host under
 recorded in [verification evidence](WEB-VERIFICATION.md#linux-deployment-update-2026-10-12).
 The Mac snapshots and LaunchAgent commands below describe the earlier runtime.
 
+The work-focused GUI from PR #7 (`main` at `df60613`) is deployed there, with
+`agent-models` and `setup` added to the web allowlist; the backup and readback
+are in [verification evidence](WEB-VERIFICATION.md#work-focused-gui-update-2026-10-12).
+
 ### Responsive GUI update, 2026-10-10
 
 PR #5 was merged and pushed to `main` at
