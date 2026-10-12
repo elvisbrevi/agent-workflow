@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyQueueIssues,
+  ghFailure,
   GitHubManagedQueueService,
   isEligibleManagedIssue,
   orderEligibleManagedIssues,
@@ -75,6 +76,15 @@ describe("classifyQueueIssues", () => {
     expect(blockers.get(11)).toContain("assigned");
     expect(blockers.get(12)).toContain("wrong-label");
     expect(blockers.get(13)).toContain("has-blocker");
+  });
+});
+
+describe("ghFailure", () => {
+  test("a field this gh does not know asks to update gh instead of listing every field it knows", () => {
+    const stderr = 'Unknown JSON field: "blockedBy"\nAvailable fields:\n  assignees\n  url\n';
+    expect(ghFailure("issue", stderr, 1)).toBe("gh issue fallo: esta version de gh no conoce el campo blockedBy; actualiza GitHub CLI (gh)");
+    expect(ghFailure("api", "HTTP 404: Not Found\n", 1)).toBe("gh api fallo (HTTP 404: Not Found)");
+    expect(ghFailure("api", "", 2)).toBe("gh api fallo (exit 2)");
   });
 });
 

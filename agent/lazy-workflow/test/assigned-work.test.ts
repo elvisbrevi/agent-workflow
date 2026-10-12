@@ -91,6 +91,16 @@ test("a failed read shows its reason, not the panel, the stamps or the run-log p
   expect(lastLine(stderr)).toBe("no se pudo ejecutar work-assigned (gh: not logged in)");
 });
 
+test("a reason that wraps shows its first line, not the last line of its detail", () => {
+  const stderr = [
+    "12/10/26 09:47:25 │ ✖ lazy-workflow: no se pudo ejecutar github-issue-list (gh issue fallo (Unknown JSON field: \"blockedBy\"",
+    "                  │   Available fields:",
+    "                  │     title",
+    "                  │     url))",
+  ].join("\n");
+  expect(lastLine(stderr)).toBe("no se pudo ejecutar github-issue-list (gh issue fallo (Unknown JSON field: \"blockedBy\"");
+});
+
 test("a run is titled by the work it names, or by its repository", () => {
   expect(runTitle("code", ["code", "--working-directory", "/r/azure", "--hu", "50", "--ticket", "51"])).toBe("Code · HU #50 · Task #51");
   expect(runTitle("code", ["code", "--working-directory", "/r/github,/r/other"])).toBe("Code · github");
