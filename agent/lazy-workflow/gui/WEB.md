@@ -12,11 +12,13 @@ local administration without opening a profile. `lz update` updates CLI,
 skills and desktop; web artifacts/services are updated separately as below.
 
 The first owner's dedicated hostname, `agent-workflow.elvisbrevi.cl`, has its
-Cloudflare DNS, Access and services active on the owner's Mac. Its login is
+Cloudflare DNS, Access and services active on the owner's Linux server. Its login is
 Cloudflare Access with
 GitHub; [ACCESS.md](ACCESS.md) describes configuration and local identity binding.
 Its Mac installation and activation steps are
-in [the deployment handoff](DEPLOYMENT-elvisbrevi.cl.md).
+in [the deployment handoff](DEPLOYMENT-elvisbrevi.cl.md); the current Linux
+installation and update checks are recorded in
+[verification evidence](WEB-VERIFICATION.md#linux-deployment-update-2026-10-12).
 See [verification evidence](WEB-VERIFICATION.md) for actual HTTPS results and
 remaining physical-phone/reboot acceptance.
 
@@ -54,7 +56,7 @@ environment, starts/cancels child processes and reads the log. `core.rs` and
 |---|---|---|
 | `get_settings`, `save_settings` | Full local settings | Redacted settings; only theme, confirmation, active registered repository and form defaults are writable |
 | `load_catalog`, `start_run`, `cancel_run` | CLI catalog and runs through `invoke` | Server allowlist narrows that catalog and validates arguments before the same runner |
-| `read_run_log`, `diagnose`, `reload_environment` | Local log and environment | Same installation's fixed log; diagnostics report variable presence, never values |
+| `read_run_log`, `diagnose`, `reload_environment` | Local log and environment | Same installation's fixed log; diagnostics show public values and secret presence only |
 | `capture_lz` | Local helper for credentials and other CLI probes | Not exposed over HTTP |
 | `lz://run-output`, `lz://run-exit` | Tauri event bus | Authenticated polling, plus run-start receipts for reconnection |
 | Files and directories | Native dialog on the desktop device | Registered **server** repositories; text uploaded from the **browser device** is stored under generated server filenames |

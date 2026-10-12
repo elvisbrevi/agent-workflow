@@ -48,8 +48,8 @@ Description=agent-workflow lz web ${kind}
 ${kind === "connector" ? `After=lz-web-${id}-backend.service\nWants=lz-web-${id}-backend.service\n` : ""}
 [Service]
 Type=simple
-WorkingDirectory=${systemdQuote(options.dataDir)}
-ExecStart=${args.map((arg) => systemdQuote(arg, true)).join(" ")}
+WorkingDirectory=${options.dataDir.replaceAll("%", "%%")}
+ExecStart=${args.map((arg, index) => systemdQuote(arg, index > 0)).join(" ")}
 Environment=${systemdQuote(`PATH=${pathValue}`)}
 Restart=on-failure
 RestartSec=5
@@ -119,7 +119,13 @@ async function main() {
   await atomicFile(join(dataDir, "web.json"), JSON.stringify({ ...config, frontendDir: frontendTarget }, null, 2));
   await atomicFile(join(dataDir, "service.json"), JSON.stringify({ managedBy: marker, units: units.map(({ path, label, text }) => ({ path, label, sha256: createHash("sha256").update(text).digest("hex") })) }, null, 2));
   if (start) {
-    if (process.platform === "linux") { await run(["systemctl", "--user", "daemon-reload"]); for (const unit of units) await run(["systemctl", "--user", "enable", "--now", unit.label]); }
+    if (process.platform === "linux") {
+      await run(["systemctl", "--user", "daemon-reload"]);
+      for (const unit of units) {
+        await run(["systemctl", "--user", "enable", "--now", unit.label]);
+        await run(["systemctl", "--user", "is-active", "--quiet", unit.label]);
+      }
+    }
     else for (const unit of units) { await run(["plutil", "-lint", unit.path]); await run(["launchctl", "bootstrap", `gui/${process.getuid!()}`, unit.path]); }
   }
   console.log(`Service files installed${start ? " and service manager start succeeded" : "; services have not been started"}. Public HTTPS still needs verification.`);

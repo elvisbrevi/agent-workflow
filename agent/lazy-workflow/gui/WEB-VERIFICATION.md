@@ -5,6 +5,34 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Linux deployment update (2026-10-12)
+
+The active installation at `https://agent-workflow.elvisbrevi.cl` was located
+on the Linux host under `/home/administrator/.local/share/lz-web`. Its units are
+`lz-web-e8032b38f114-backend.service` and
+`lz-web-e8032b38f114-connector.service`; the older Mac snapshots below remain
+historical records.
+
+The frontend and optimized `lz-web` backend from `main` commit `2012c81` were
+installed with the existing service helper. There were no active workflow runs.
+The previous backend, frontend and deployment manifests were backed up under
+`deployment-backups/before-credentials-2012c81-2026-10-12T01-57-32-679Z`.
+
+The first service restart exposed an invalid quoted `WorkingDirectory` in the
+Linux installer template. Both services were recovered with literal absolute
+paths, and the helper now checks `is-active` after enabling a service instead
+of treating a successful enable command as proof of a running service. Regression
+checks cover systemd's actual parser and an inactive service after a successful
+enable command.
+
+Readback verified both units active, local `/health` returning `ok`, four ready
+connector connections, and exact backend/frontend hashes matching the build.
+The public HTTPS origin returns the Cloudflare Access redirect (302), and an
+anonymous diagnostic request is rejected (401). Settings, Access configuration
+and binding, connector credentials, sessions, revocations and run receipts were
+unchanged. No live workflow or authenticated browser operation was performed;
+the public redirect and local readback do not claim an authenticated phone test.
+
 ## Mac deployment continuation (2026-10-10)
 
 Executed on the owner's macOS arm64 account from

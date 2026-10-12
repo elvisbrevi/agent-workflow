@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createHttpTransport, HttpError } from "../gui/src/lib/http-transport.ts";
 import { planTunnel, applyTunnel, type CloudflareApi } from "../gui/scripts/provision-tunnel.ts";
 import { serviceFiles } from "../gui/scripts/install-web-services.ts";
@@ -84,11 +87,58 @@ test("service templates keep connector secrets in files, scope names to the inst
   expect(linux[1]!.text).toContain('"--token-file"'); expect(linux[1]!.text).not.toContain("CLOUDFLARE_API_TOKEN");
   expect(linux[0]!.path).not.toBe(serviceFiles({ ...options, dataDir: "/tmp/another-install", platform: "linux" })[0]!.path);
   const literal = serviceFiles({ ...options, dataDir: "/tmp/$owner%install", platform: "linux" })[0]!.text;
-  expect(literal).toContain('WorkingDirectory="/tmp/$owner%%install"');
-  expect(literal).toContain('ExecStart="/tmp/$$owner%%install/bin/lz-web"');
+  expect(literal).toContain('WorkingDirectory=/tmp/$owner%%install');
+  expect(literal).toContain('ExecStart="/tmp/$owner%%install/bin/lz-web"');
   const mac = serviceFiles({ ...options, dataDir: "/tmp/owner & install", platform: "darwin" });
   expect(mac[0]!.text).toContain("owner &amp; install"); expect(mac[1]!.text).toContain("<string>--token-file</string>");
   expect(() => serviceFiles({ ...options, dataDir: "/tmp/bad\npath", platform: "linux" })).toThrow();
+});
+
+test.skipIf(process.platform !== "linux" || !Bun.which("systemd-analyze"))("systemd accepts generated services with literal spaces, dollars and percent signs", () => {
+  const root = mkdtempSync(join(tmpdir(), "lz-service-verify-"));
+  try {
+    const dataDir = join(root, "owner $identity% area");
+    mkdirSync(join(dataDir, "bin"), { recursive: true });
+    writeFileSync(join(dataDir, "bin/lz-web"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const units = serviceFiles({ dataDir, backend: join(dataDir, "bin/lz-web"), cloudflared: "/usr/bin/true", userHome: root, platform: "linux" });
+    const files = units.map((unit) => {
+      const path = join(root, unit.label);
+      writeFileSync(path, unit.text);
+      return path;
+    });
+    const result = Bun.spawnSync(["systemd-analyze", "--user", "verify", ...files]);
+    expect(result.stderr.toString()).not.toContain("WorkingDirectory= path is not absolute");
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    expect(result.exitCode).toBe(0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test.skipIf(process.platform !== "linux")("service installer rejects an inactive service even when enable reports success", async () => {
+  const root = mkdtempSync(join(tmpdir(), "lz-service-start-"));
+  try {
+    const dataDir = join(root, "data");
+    const frontend = join(root, "frontend");
+    const bin = join(root, "bin");
+    for (const directory of [dataDir, frontend, bin]) mkdirSync(directory);
+    writeFileSync(join(frontend, "index.html"), "<h1>Synthetic</h1>");
+    writeFileSync(join(dataDir, "web.json"), JSON.stringify({ frontendDir: frontend }));
+    writeFileSync(join(dataDir, "connector.token"), "synthetic-connector-token", { mode: 0o600 });
+    const backend = join(bin, "lz-web");
+    const cloudflared = join(bin, "cloudflared");
+    for (const path of [backend, cloudflared]) writeFileSync(path, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const systemctl = join(bin, "systemctl");
+    writeFileSync(systemctl, '#!/bin/sh\nif [ "$2" = "is-active" ]; then exit 3; fi\nexit 0\n');
+    chmodSync(systemctl, 0o700);
+    const child = Bun.spawn([process.execPath, Bun.fileURLToPath(new URL("../gui/scripts/install-web-services.ts", import.meta.url)),
+      "--data-dir", dataDir, "--backend", backend, "--frontend", frontend, "--cloudflared", cloudflared, "--install", "--start"], {
+      env: { HOME: join(root, "home"), PATH: `${bin}:${process.env.PATH ?? ""}` },
+      stdout: "pipe", stderr: "pipe", stdin: "ignore",
+    });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("systemctl failed with exit code 3");
+    expect(stdout).not.toContain("service manager start succeeded");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("the run panel recognizes only the authorized public interview path in web mode", () => {

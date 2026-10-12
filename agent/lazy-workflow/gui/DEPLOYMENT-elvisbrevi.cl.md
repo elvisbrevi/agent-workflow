@@ -13,6 +13,17 @@ tunnel and installation. Separate profile directories are not an OS sandbox.
 
 ## Recorded deployment status
 
+### Current Linux runtime, 2026-10-12
+
+The active installation now runs on the Linux host under
+`/home/administrator/.local/share/lz-web`, with the owner checkout at
+`/home/administrator/src/agent-workflow`. The backend and connector use the
+`lz-web-e8032b38f114-backend.service` and
+`lz-web-e8032b38f114-connector.service` user units. Follow the platform-aware
+`install-web-services.ts` helper for this host. The update and readback are
+recorded in [verification evidence](WEB-VERIFICATION.md#linux-deployment-update-2026-10-12).
+The Mac snapshots and LaunchAgent commands below describe the earlier runtime.
+
 ### Responsive GUI update, 2026-10-10
 
 PR #5 was merged and pushed to `main` at
