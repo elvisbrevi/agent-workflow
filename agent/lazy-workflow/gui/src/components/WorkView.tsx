@@ -22,7 +22,7 @@ interface WorkViewProps {
   readonly setup: SetupState;
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
   readonly onSaveSettings: (settings: GuiSettings) => void;
-  readonly onAddRepository: (path: string) => void;
+  readonly onAddRepository: (path: string) => Promise<void>;
   readonly onOpenActivity: (runId: string | null) => void;
   readonly onFocusRun: (id: number) => void;
 }
@@ -102,7 +102,7 @@ export function WorkView({ catalog, settings, work, history, runs, models, setup
         <section className="panel-card onboarding">
           <h2>Agrega un repositorio</h2>
           <p className="muted">Lee las HU de Azure DevOps o las issues de GitHub asignadas a ti en ese repositorio.</p>
-          <DirectoryPicker repositories={settings.repositories} onPick={onAddRepository} label={isDesktop ? "Elegir repositorio…" : "Elegir repositorio del servidor…"} />
+          <DirectoryPicker onPick={onAddRepository} label={isDesktop ? "Elegir repositorio…" : "Elegir repositorio del servidor…"} />
         </section>
       )}
 

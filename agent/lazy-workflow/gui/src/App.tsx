@@ -119,10 +119,13 @@ export function App() {
     if (settings && repository && repository !== settings.activeRepository) void saveSettings({ ...settings, activeRepository: repository }, false);
   };
 
-  const addRepository = (repository: string) => {
+  /** Rejects when the server refuses a folder, so the picker shows why in its own dialog. */
+  const addRepository = async (repository: string) => {
     if (!settings) return;
-    if (!isDesktop || settings.repositories.includes(repository)) { selectRepository(repository); return; }
-    void saveSettings({ ...settings, repositories: [...settings.repositories, repository], activeRepository: repository }, false);
+    // The server registers a folder within its configured roots; the page never writes the list.
+    if (!isDesktop) { setSettingsDocument(await backend.addRepository(repository)); return; }
+    if (settings.repositories.includes(repository)) { selectRepository(repository); return; }
+    await saveSettings({ ...settings, repositories: [...settings.repositories, repository], activeRepository: repository }, false);
   };
 
   /** Starts a run; resolves true once it is running, so a form can close. */
@@ -201,7 +204,7 @@ export function App() {
         onOpenHistory={(runId) => setView({ kind: "activity", runId, liveId: null })} />
     );
   } else if (catalog && settings && view.kind === "preferences") {
-    main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} />;
+    main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} onAddRepository={addRepository} />;
   } else if (catalog && settings) {
     main = (
       <WorkView

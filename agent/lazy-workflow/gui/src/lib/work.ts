@@ -42,6 +42,10 @@ export function lastLine(text: string): string {
 
 export const repositoryName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
+/** A server path as a phone shows it: `~` for the home of the account lz runs under. */
+export const homePath = (path: string, home: string | null): string =>
+  !home ? path : path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+
 export const isEpic = (item: Pick<WorkItem, "tracker" | "title">): boolean =>
   item.tracker === "github" && EPIC_PREFIXES.some((prefix) => item.title.startsWith(prefix));
 

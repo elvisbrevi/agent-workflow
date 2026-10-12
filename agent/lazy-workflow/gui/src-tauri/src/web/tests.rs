@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 struct Fixture {
     root: tempfile::TempDir,
+    projects: tempfile::TempDir,
     config: WebConfig,
     state: Arc<WebState>,
 }
@@ -11,6 +12,7 @@ impl Fixture {
     fn new(username: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
+        let projects = tempfile::tempdir().unwrap();
         let directory = root.path();
         std::fs::create_dir(directory.join("frontend")).unwrap();
         std::fs::write(directory.join("frontend/index.html"), "<h1>synthetic</h1>").unwrap();
@@ -52,6 +54,7 @@ impl Fixture {
             max_runs: 1,
             allowed_commands: vec!["code".into(), "git-branch-list".into()],
             authentication: Authentication::Password,
+            repository_roots: Some(vec![projects.path().into()]),
         };
         initialize(
             directory,
@@ -62,6 +65,7 @@ impl Fixture {
         let state = WebState::open(config.clone(), directory.into()).unwrap();
         Self {
             root,
+            projects,
             config,
             state,
         }
@@ -426,6 +430,7 @@ async fn sessions_are_isolated_and_settings_runs_and_idempotency_survive_restart
         root,
         config,
         state,
+        ..
     } = a;
     drop(app);
     drop(state);
@@ -451,6 +456,47 @@ async fn sessions_are_isolated_and_settings_runs_and_idempotency_survive_restart
         std::fs::read_to_string(root.path().join("spawned")).unwrap(),
         "run\n"
     );
+}
+
+#[tokio::test]
+async fn the_owner_walks_server_folders_and_registers_one_only_below_the_configured_roots() {
+    let fixture = Fixture::new("alice");
+    let app = router(fixture.state.clone());
+    let (cookie, csrf) = login_cookie(&app, "alice").await;
+    let projects = fixture.projects.path().canonicalize().unwrap();
+    std::fs::create_dir_all(projects.join("synthetic-app/.git")).unwrap();
+    let rpc = |operation: &str, body: Value| {
+        app.clone().oneshot(request(
+            "POST",
+            &format!("/api/rpc/{operation}"),
+            &cookie,
+            &csrf,
+            body,
+        ))
+    };
+    let listing = value(rpc("list_folders", json!({})).await.unwrap()).await;
+    assert_eq!(listing["path"], json!(projects));
+    assert_eq!(listing["entries"][0]["name"], "synthetic-app");
+    assert_eq!(listing["entries"][0]["repository"], true);
+    let outside = fixture.root.path().to_string_lossy().to_string();
+    for (operation, path) in [("list_folders", &outside), ("add_repository", &outside)] {
+        assert_eq!(
+            rpc(operation, json!({"path":path})).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let app_path = projects.join("synthetic-app").to_string_lossy().to_string();
+    let document = value(
+        rpc("add_repository", json!({"path":app_path}))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(document["settings"]["activeRepository"], json!(app_path));
+    assert_eq!(document["settings"]["environment"], json!({}));
+    let saved = fixture.state.core.settings().unwrap();
+    assert_eq!(saved.repositories, vec![outside, app_path]);
+    assert!(saved.environment.contains_key("SYNTHETIC_SECRET"));
 }
 
 #[tokio::test]

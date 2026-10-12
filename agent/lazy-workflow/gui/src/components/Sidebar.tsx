@@ -18,7 +18,7 @@ interface SidebarProps {
   readonly activeRepository: string | null;
   readonly onNavigate: (view: View) => void;
   readonly onSelectRepository: (repository: string) => void;
-  readonly onAddRepository: (repository: string) => void;
+  readonly onAddRepository: (repository: string) => Promise<void>;
 }
 
 export function Sidebar({ view, running, attention, repositories, activeRepository, onNavigate, onSelectRepository, onAddRepository }: SidebarProps) {
@@ -36,7 +36,7 @@ export function Sidebar({ view, running, attention, repositories, activeReposito
           {repositories.length === 0 && <option value="">Sin repositorios</option>}
           {repositories.map((repository) => <option key={repository} value={repository}>{repositoryName(repository)}</option>)}
         </select>
-        <DirectoryPicker repositories={repositories} onPick={onAddRepository} label="Agregar repositorio…" />
+        <DirectoryPicker onPick={onAddRepository} label="Agregar repositorio…" />
       </div>
       <div className="nav-items">
         {item({ kind: "work" }, "☰", "Trabajo")}

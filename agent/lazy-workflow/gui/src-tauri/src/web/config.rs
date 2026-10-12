@@ -28,6 +28,9 @@ pub struct WebConfig {
     pub allowed_commands: Vec<String>,
     #[serde(default)]
     pub authentication: Authentication,
+    /// Folders the browser may browse and register as repositories; absent is the home directory, empty is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_roots: Option<Vec<PathBuf>>,
 }
 
 impl WebConfig {
@@ -54,8 +57,18 @@ impl WebConfig {
         {
             return Err("listen must be 127.0.0.1 with a fixed port".into());
         }
-        if !self.settings_path.is_absolute() || !self.frontend_dir.is_absolute() {
-            return Err("settingsPath and frontendDir must be absolute server paths".into());
+        if !self.settings_path.is_absolute()
+            || !self.frontend_dir.is_absolute()
+            || self
+                .repository_roots
+                .iter()
+                .flatten()
+                .any(|root| !root.is_absolute())
+        {
+            return Err(
+                "settingsPath, frontendDir and repositoryRoots must be absolute server paths"
+                    .into(),
+            );
         }
         if !(60..=2_592_000).contains(&self.session_seconds) || !(1..=16).contains(&self.max_runs) {
             return Err("sessionSeconds must be 60..2592000 and maxRuns 1..16".into());
@@ -66,6 +79,11 @@ impl WebConfig {
             return Err("allowedCommands must explicitly name workflows/tools; credentials, catalog, gui and update are local-only".into());
         }
         Ok(())
+    }
+    pub fn repository_roots(&self) -> Vec<PathBuf> {
+        self.repository_roots
+            .clone()
+            .unwrap_or_else(|| vec![crate::settings::home_dir()])
     }
     pub fn origin(&self) -> String {
         Url::parse(&self.public_url)

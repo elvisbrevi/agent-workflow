@@ -81,3 +81,46 @@ test("assigned work, HU task tracking and a Code run with a listed model", async
   await expect(page.locator(".history-list")).toContainText("Code · HU #45 · Task #46");
   expect(failures).toEqual([]);
 });
+
+test("the owner walks the server's folders to pick a repository instead of typing its path", async ({ page }, testInfo) => {
+  // Registering a folder changes the shared fixture, so one phone run adds it.
+  test.skip(testInfo.project.name !== "phone", "registers a folder once per fixture");
+  const failures: string[] = [];
+  page.on("pageerror", (error) => failures.push(error.message));
+  await page.goto("/");
+  await page.getByLabel("Usuario", { exact: true }).fill("owner");
+  await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
+  await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Trabajo", exact: true })).toBeVisible();
+  await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
+  const folders = page.getByRole("dialog");
+  // It opens on the browsable root, listing its visible folders: no keyboard, nothing to type.
+  await expect(folders.locator(".folder-entry").first()).toHaveText("archive");
+  await expect(folders.getByRole("button", { name: "github-project agregado" })).toBeVisible();
+  await expect(folders.getByLabel("Ruta en el servidor")).not.toBeFocused();
+  await expect(folders.getByRole("button", { name: "Carpeta superior" })).toHaveCount(0);
+  await folders.getByRole("button", { name: "archive", exact: true }).click();
+  await expect(folders.getByLabel("Ruta en el servidor")).toHaveValue(/\/archive$/);
+  await expect(folders.getByText("Sin subcarpetas.")).toBeVisible();
+  await folders.getByRole("button", { name: "Agregar repositorio", exact: true }).click();
+  await expect(folders).toBeHidden();
+  await expect(page.getByLabel("Repositorio activo")).toHaveValue(/\/archive$/);
+  // `..` walks back up; a folder already registered is selected, not added twice.
+  await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
+  await expect(folders.getByRole("button", { name: "archive agregado" })).toBeVisible();
+  await folders.getByRole("button", { name: "archive agregado" }).click();
+  await folders.getByRole("button", { name: "Carpeta superior" }).click();
+  await folders.getByRole("button", { name: "azure-project agregado" }).click();
+  await folders.getByRole("button", { name: "Agregar repositorio", exact: true }).click();
+  await expect(page.getByLabel("Repositorio activo")).toHaveValue(/\/azure-project$/);
+  await expect(page.getByLabel("Repositorio activo").locator("option")).toHaveCount(4);
+  // A path outside the root the server allows is refused inside the dialog.
+  await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
+  await folders.getByLabel("Ruta en el servidor").fill("/");
+  await folders.getByLabel("Ruta en el servidor").press("Enter");
+  await expect(folders.getByRole("alert")).toContainText("cannot be browsed");
+  await folders.getByRole("button", { name: "Cerrar selector de carpetas" }).click();
+  await page.getByLabel("Repositorio activo").selectOption({ label: "github-project" });
+  await expect(page.getByLabel("Repositorio activo")).toHaveValue(/\/github-project$/);
+  expect(failures).toEqual([]);
+});

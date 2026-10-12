@@ -207,6 +207,7 @@ async fn run() -> Result<(), String> {
             .into_iter()
             .map(String::from)
             .collect(),
+            repository_roots: None,
         };
         config.validate()?;
         if data_dir.join("web.json").exists() || data_dir.join("owner.json").exists() {
