@@ -95,6 +95,11 @@ test("every screen fits and is usable on an iPhone 15", async ({ page }, testInf
   await page.getByRole("button", { name: "Guardar", exact: true }).scrollIntoViewIfNeeded();
   await shoot(page, testInfo, "10-settings-end", problems);
 
+  await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
+  await expect(page.getByRole("dialog").locator(".folder-entry")).toHaveCount(4);
+  await shoot(page, testInfo, "11-server-folders", problems);
+  await page.getByRole("button", { name: "Cerrar selector de carpetas" }).click();
+
   expect(problems).toEqual([]);
   expect(failures).toEqual([]);
 });

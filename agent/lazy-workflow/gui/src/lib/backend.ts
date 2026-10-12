@@ -73,6 +73,15 @@ export interface RunLogDocument {
   records: unknown[];
 }
 
+/** One level of server folders below the roots the server's owner allows (web only). */
+export interface FolderListing {
+  path: string;
+  parent: string | null;
+  home: string | null;
+  truncated: boolean;
+  entries: Array<{ name: string; path: string; repository: boolean; registered: boolean }>;
+}
+
 export interface Captured {
   code: number | null;
   stdout: string;
@@ -96,6 +105,8 @@ export const backend = {
   diagnose: (variables: Array<{ name: string; secret: boolean }>) => command<Diagnostics>("diagnose", { variables }),
   reloadEnvironment: () => command<void>("reload_environment"),
   captureLz: (args: string[]) => command<Captured>("capture_lz", { args }),
+  listFolders: (path?: string) => command<FolderListing>("list_folders", { path: path ?? null }),
+  addRepository: (path: string) => command<SettingsDocument>("add_repository", { path }),
 };
 
 type FeedEvent = { sequence: number; event: string; payload: unknown };

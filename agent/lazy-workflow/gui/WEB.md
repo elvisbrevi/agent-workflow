@@ -54,12 +54,12 @@ environment, starts/cancels child processes and reads the log. `core.rs` and
 
 | Existing surface | Desktop | Browser |
 |---|---|---|
-| `get_settings`, `save_settings` | Full local settings | Redacted settings; only theme, confirmation, active registered repository and form defaults are writable |
+| `get_settings`, `save_settings` | Full local settings | Redacted settings; only theme, confirmation, active registered repository and form defaults are writable; `add_repository` registers a folder below `repositoryRoots` |
 | `load_catalog`, `start_run`, `cancel_run` | CLI catalog and runs through `invoke` | Server allowlist narrows that catalog and validates arguments before the same runner |
 | `read_run_log`, `diagnose`, `reload_environment` | Local log and environment | Same installation's fixed log; diagnostics show public values and secret presence only |
 | `capture_lz` | Local helper for credentials and other CLI probes | Not exposed over HTTP |
 | `lz://run-output`, `lz://run-exit` | Tauri event bus | Authenticated polling, plus run-start receipts for reconnection |
-| Files and directories | Native dialog on the desktop device | Registered **server** repositories; text uploaded from the **browser device** is stored under generated server filenames |
+| Files and directories | Native dialog on the desktop device | `list_folders` walks the **server**'s folders below `repositoryRoots`, one level at a time, to register a repository; text uploaded from the **browser device** is stored under generated server filenames |
 | Dialogs, windows and links | Tauri dialog/opener plugins, existing window | Browser confirmation, responsive page and HTTP(S) links |
 | Reveal a file | Native opener | Hidden: a phone cannot reveal a server file in its own file manager |
 | Notifications | No notification plugin in the existing app | Status and output remain in the page |
@@ -146,6 +146,13 @@ while the service is stopped. Credential commands, `gui`, `update`, raw stdin,
 forwarded flags, shutdown, custom log paths and interview bind options are
 always excluded from web execution. The API requires long flags as separate
 arguments; it rejects aliases, unknown flags and unregistered paths.
+
+`repositoryRoots` (absolute paths, optional) bounds the folders the owner can
+walk and register as repositories from the browser. Without it, the root is the
+server account's home directory; `[]` turns browsing off, leaving registration
+to the local helper below. Hidden folders and the installation's private data
+directory are never listed or registered, and symlinks are resolved before the
+check. A registered folder then constrains run arguments like any other.
 
 The interface needs these reads in `allowedCommands`: `work-assigned`,
 `agent-models`, `hu-info`, `hu-children-info` and `github-issue-list` (new

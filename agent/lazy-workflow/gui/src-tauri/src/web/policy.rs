@@ -1,7 +1,10 @@
 //! Authorization narrows the catalog; the CLI still performs its domain validation.
 use super::config::{safe_command, WebConfig};
-use crate::{runner::RunRequest, settings::GuiSettings};
-use serde_json::Value;
+use crate::{
+    runner::RunRequest,
+    settings::{home_dir, GuiSettings},
+};
+use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -170,6 +173,129 @@ fn registered(path: &str, settings: &GuiSettings) -> Result<PathBuf, String> {
         return Err("repository is not registered in this server profile".into());
     }
     Ok(path)
+}
+
+const NO_BROWSING: &str =
+    "this server registers repositories locally; its owner can set repositoryRoots in web.json";
+const MAX_FOLDERS: usize = 500;
+
+fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .filter(|root| root.is_absolute())
+        .filter_map(|root| root.canonicalize().ok())
+        .collect()
+}
+
+/// Below a configured root, outside hidden folders and the server's private state.
+fn browsable(path: &Path, roots: &[PathBuf], private: &Path) -> bool {
+    path.is_dir()
+        && !path.starts_with(private)
+        && roots.iter().any(|root| {
+            path.strip_prefix(root).is_ok_and(|inside| {
+                inside
+                    .components()
+                    .all(|part| !part.as_os_str().to_string_lossy().starts_with('.'))
+            })
+        })
+}
+
+fn browsable_path(path: &str, roots: &[PathBuf], private: &Path) -> Result<PathBuf, String> {
+    if path.len() > 4096 || path.contains('\0') {
+        return Err("invalid server path".into());
+    }
+    let expanded = match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            home_dir().join(rest.trim_start_matches('/'))
+        }
+        _ => PathBuf::from(path),
+    };
+    if !expanded.is_absolute() {
+        return Err("write an absolute server path or one starting with ~".into());
+    }
+    let path = expanded
+        .canonicalize()
+        .map_err(|_| "server folder does not exist")?;
+    if !browsable(&path, roots, private) {
+        return Err("this server folder cannot be browsed from the browser".into());
+    }
+    Ok(path)
+}
+
+/// One level of server folders, so a phone can walk to a repository instead of typing its path.
+pub fn folders(
+    path: Option<&str>,
+    roots: &[PathBuf],
+    private: &Path,
+    settings: &GuiSettings,
+) -> Result<Value, String> {
+    let roots = canonical_roots(roots);
+    let first = roots
+        .first()
+        .ok_or(NO_BROWSING)?
+        .to_string_lossy()
+        .into_owned();
+    let path = browsable_path(path.unwrap_or(&first), &roots, private)?;
+    let registered: Vec<PathBuf> = settings
+        .repositories
+        .iter()
+        .filter_map(|repo| Path::new(repo).canonicalize().ok())
+        .collect();
+    let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let target = entry.path().canonicalize().ok()?;
+            target.to_str()?;
+            browsable(&target, &roots, private)
+                .then_some((entry.file_name().into_string().ok()?, target))
+        })
+        .collect();
+    entries.sort_by_key(|(name, _)| name.to_lowercase());
+    let truncated = entries.len() > MAX_FOLDERS;
+    entries.truncate(MAX_FOLDERS);
+    let home = home_dir();
+    Ok(json!({
+        "path": path.to_str().ok_or("server path is not UTF-8")?,
+        "parent": path.parent().filter(|parent| browsable(parent, &roots, private)).and_then(Path::to_str),
+        "home": home.canonicalize().unwrap_or(home).to_str(),
+        "truncated": truncated,
+        "entries": entries.iter().map(|(name, target)| json!({
+            "name": name,
+            "path": target.to_str(),
+            "repository": target.join(".git").exists(),
+            "registered": registered.contains(target),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// Registers a browsable folder, or selects it when it is already registered.
+pub fn register(
+    path: &str,
+    roots: &[PathBuf],
+    private: &Path,
+    mut settings: GuiSettings,
+) -> Result<GuiSettings, String> {
+    let roots = canonical_roots(roots);
+    if roots.is_empty() {
+        return Err(NO_BROWSING.into());
+    }
+    let path = browsable_path(path, &roots, private)?;
+    let existing = settings
+        .repositories
+        .iter()
+        .find(|repo| Path::new(repo).canonicalize().ok().as_ref() == Some(&path))
+        .cloned();
+    let repository = match existing {
+        Some(repository) => repository,
+        None => {
+            let added = path.to_str().ok_or("server path is not UTF-8")?.to_string();
+            settings.repositories.push(added.clone());
+            added
+        }
+    };
+    settings.active_repository = Some(repository);
+    Ok(settings)
 }
 
 fn validate_value(
@@ -349,5 +475,91 @@ mod tests {
             request.cwd = Some(root.path().join("escape").to_string_lossy().into_owned());
             assert!(validate(&mut request, &catalog, &settings, root.path()).is_err());
         }
+    }
+
+    #[test]
+    fn the_browser_walks_and_registers_only_visible_folders_below_its_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        for folder in ["Beta/.git", "alpha", ".config", "private/uploads"] {
+            std::fs::create_dir_all(base.join(folder)).unwrap();
+        }
+        std::fs::write(base.join("notes.txt"), "not a folder").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), base.join("escape")).unwrap();
+        let roots = [root.path().to_path_buf()];
+        let private = base.join("private");
+        let settings = GuiSettings {
+            repositories: vec![format!("{}/alpha/", base.display())],
+            ..GuiSettings::default()
+        };
+
+        let listing = folders(None, &roots, &private, &settings).unwrap();
+        assert_eq!(listing["path"], json!(base));
+        assert!(listing["parent"].is_null());
+        assert_eq!(
+            listing["entries"],
+            json!([
+                {"name":"alpha","path":base.join("alpha"),"repository":false,"registered":true},
+                {"name":"Beta","path":base.join("Beta"),"repository":true,"registered":false},
+            ])
+        );
+        let inner = folders(
+            Some(base.join("Beta").to_str().unwrap()),
+            &roots,
+            &private,
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(inner["parent"], json!(base));
+        assert_eq!(inner["entries"], json!([]));
+
+        let escapes = [
+            base.join("Beta/../..").display().to_string(),
+            outside.path().display().to_string(),
+            base.join("escape").display().to_string(),
+            base.join(".config").display().to_string(),
+            private.display().to_string(),
+            base.join("notes.txt").display().to_string(),
+            "relative/path".into(),
+        ];
+        for path in &escapes {
+            assert!(
+                folders(Some(path), &roots, &private, &settings).is_err(),
+                "{path}"
+            );
+            assert!(
+                register(path, &roots, &private, settings.clone()).is_err(),
+                "{path}"
+            );
+        }
+        assert!(folders(None, &[], &private, &settings).is_err());
+        assert!(register(base.to_str().unwrap(), &[], &private, settings.clone()).is_err());
+
+        let added = register(
+            base.join("Beta").to_str().unwrap(),
+            &roots,
+            &private,
+            settings.clone(),
+        )
+        .unwrap();
+        assert_eq!(added.repositories[1], base.join("Beta").to_str().unwrap());
+        assert_eq!(
+            added.active_repository.as_deref(),
+            Some(added.repositories[1].as_str())
+        );
+        let again = register(
+            base.join("alpha").to_str().unwrap(),
+            &roots,
+            &private,
+            added,
+        )
+        .unwrap();
+        assert_eq!(again.repositories.len(), 2);
+        assert_eq!(
+            again.active_repository,
+            Some(settings.repositories[0].clone())
+        );
     }
 }

@@ -17,8 +17,11 @@ plugins, settings schema and event contracts; a separate `web` feature builds
 Tauri invoke/events or authenticated HTTP and polling at runtime.
 
 The web adapter authorizes an explicit subset of the installed catalog rather
-than forwarding arbitrary invocation or local IPC. Launcher, repositories,
-environment and provider credentials are configured locally. Web requests
+than forwarding arbitrary invocation or local IPC. Launcher, environment and
+provider credentials are configured locally. Repositories are too, except that
+the owner may walk and register folders below the `repositoryRoots` configured
+locally (the server account's home by default, none when empty), never hidden
+folders or the installation's private state. Web requests
 cannot select a profile, inject an environment, choose a log/output path or
 proxy an arbitrary endpoint. Canonical registered paths constrain HTTP
 arguments; they do not sandbox a workflow's OS permissions.

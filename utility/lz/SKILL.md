@@ -109,8 +109,8 @@ prints the same surface as text. From `agent/lazy-workflow/`,
   variables; `secretEnvironment` resolves additional names for GUI runs. The
   credentials skill also configures public values such as the Azure organization.
 - Web deployment uses the separate `lz-web` executable; `lz gui` opens the
-  desktop app. Configure launcher, registered repositories and credentials
-  locally. Each owner uses an independent server/OS identity; the browser
+  desktop app. Configure launcher and credentials locally; the browser registers
+  repositories only below `repositoryRoots` in `web.json`. Each owner uses an independent server/OS identity; the browser
   cannot manage credentials or select a different installation/profile.
 
 For complete sequences, including Azure branch selection, fallback chains and

@@ -31,16 +31,24 @@ export async function readTool<T>(catalog: CommandCatalog, name: string, values:
   return JSON.parse(result.stdout) as T;
 }
 
-/** The CLI ends a failure on its reason; the panel and stamps before it are noise in a card. */
+/**
+ * The CLI ends a failure on its reason; the panel and stamps before it are noise in a card.
+ * A reason that wraps continues on gutter lines: its marked first line names it, the rest is detail.
+ */
 export function lastLine(text: string): string {
   const lines = stripAnsi(text).split("\n")
-    .filter((line) => !/^\s*[╭╰]/.test(line) && !line.includes("revisa el run log"))
+    .filter((line) => !/^\s*[╭╰]/.test(line) && !line.includes("revisa el run log"));
+  const reason = lines.findLast((line) => /│\s*[✖✗⚠]/.test(line));
+  return (reason ? [reason] : lines)
     .map((line) => line.replace(/^.*[│✖✗⚠]\s*/, "").replace(/^lazy-workflow:\s*/, "").trim())
-    .filter(Boolean);
-  return lines.at(-1) ?? "";
+    .filter(Boolean).at(-1) ?? "";
 }
 
 export const repositoryName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+
+/** A server path as a phone shows it: `~` for the home of the account lz runs under. */
+export const homePath = (path: string, home: string | null): string =>
+  !home ? path : path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 
 export const isEpic = (item: Pick<WorkItem, "tracker" | "title">): boolean =>
   item.tracker === "github" && EPIC_PREFIXES.some((prefix) => item.title.startsWith(prefix));

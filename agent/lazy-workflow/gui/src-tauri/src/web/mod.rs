@@ -221,6 +221,11 @@ impl WebState {
                 _ => false,
             })
     }
+    fn private_directory(&self) -> PathBuf {
+        self.data_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.data_dir.clone())
+    }
     fn push(&self, event: &str, payload: Value) {
         self.feed.lock().unwrap().push(event, payload);
     }
@@ -538,6 +543,14 @@ async fn rpc(
                 let _gate = state.starts.lock().unwrap();
                 let next: GuiSettings = serde_json::from_value(body["settings"].clone()).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
                 let settings = policy::preferences(&state.core.settings()?, next)?;
+                let mut document = state.core.save_settings(settings)?; document.settings = policy::public_settings(document.settings);
+                Ok(serde_json::to_value(document).unwrap())
+            }
+            "list_folders" => Ok(policy::folders(body["path"].as_str(), &state.config.repository_roots(), &state.private_directory(), &state.core.settings()?)?),
+            "add_repository" => {
+                let _gate = state.starts.lock().unwrap();
+                let path = body["path"].as_str().ok_or_else(|| denied("add_repository needs a server path"))?;
+                let settings = policy::register(path, &state.config.repository_roots(), &state.private_directory(), state.core.settings()?)?;
                 let mut document = state.core.save_settings(settings)?; document.settings = policy::public_settings(document.settings);
                 Ok(serde_json::to_value(document).unwrap())
             }

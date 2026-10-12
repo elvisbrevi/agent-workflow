@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { githubAssignedWork } from "../src/github/assigned-work.ts";
 import { azureAssignedWork } from "../src/azure/assigned-work.ts";
-import { deliveryChildren, groupWork, historyLabel, lastLine, matchesQuery, runTitle, type RepositoryWork, type WorkItem } from "../gui/src/lib/work.ts";
+import { deliveryChildren, groupWork, historyLabel, homePath, lastLine, matchesQuery, runTitle, type RepositoryWork, type WorkItem } from "../gui/src/lib/work.ts";
 import { foldRuns } from "../gui/src/lib/history.ts";
 
 const previousOrganization = process.env.LAZY_WORKFLOW_AZURE_ORGANIZATION;
@@ -91,11 +91,28 @@ test("a failed read shows its reason, not the panel, the stamps or the run-log p
   expect(lastLine(stderr)).toBe("no se pudo ejecutar work-assigned (gh: not logged in)");
 });
 
+test("a reason that wraps shows its first line, not the last line of its detail", () => {
+  const stderr = [
+    "12/10/26 09:47:25 │ ✖ lazy-workflow: no se pudo ejecutar github-issue-list (gh issue fallo (Unknown JSON field: \"blockedBy\"",
+    "                  │   Available fields:",
+    "                  │     title",
+    "                  │     url))",
+  ].join("\n");
+  expect(lastLine(stderr)).toBe("no se pudo ejecutar github-issue-list (gh issue fallo (Unknown JSON field: \"blockedBy\"");
+});
+
 test("a run is titled by the work it names, or by its repository", () => {
   expect(runTitle("code", ["code", "--working-directory", "/r/azure", "--hu", "50", "--ticket", "51"])).toBe("Code · HU #50 · Task #51");
   expect(runTitle("code", ["code", "--working-directory", "/r/github,/r/other"])).toBe("Code · github");
   expect(runTitle("plan", ["plan", "--working-directory", "/r/github", "--prompt", "Planifica a partir de la issue #9 «Epic» (url).\n\nmás"])).toBe("Plan · Issue #9");
   expect(runTitle("setup", ["setup", "--working-directory", "/r/github"])).toBe("Configuración");
+});
+
+test("a server path shows the lz account's home as ~, and only a whole folder of it", () => {
+  expect(homePath("/home/owner", "/home/owner")).toBe("~");
+  expect(homePath("/home/owner/src/app", "/home/owner")).toBe("~/src/app");
+  expect(homePath("/home/owner2/src", "/home/owner")).toBe("/home/owner2/src");
+  expect(homePath("/srv/repos", null)).toBe("/srv/repos");
 });
 
 test("recent activity keeps incomplete runs distinct from completed work", () => {

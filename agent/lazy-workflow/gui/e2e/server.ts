@@ -11,8 +11,10 @@ const settings = join(root, "gui.json");
 const launcher = join(root, "fake-lz.ts");
 const catalog = fileURLToPath(new URL("../../src/cli/command-catalog.ts", import.meta.url));
 const factory = fileURLToPath(new URL("../../src/interaction/create-question-channel.ts", import.meta.url));
-const github = join(root, "github-project"); const azure = join(root, "azure-project"); const broken = join(root, "broken-project");
-await mkdir(github); await mkdir(azure); await mkdir(broken);
+// Repositories live outside the private installation, below the root the browser may walk.
+const projects = await mkdtemp(join(tmpdir(), "lz-web-projects-"));
+const github = join(projects, "github-project"); const azure = join(projects, "azure-project"); const broken = join(projects, "broken-project");
+await mkdir(github); await mkdir(azure); await mkdir(broken); await mkdir(join(projects, "archive"));
 await writeFile(launcher, `import { commandCatalog } from ${JSON.stringify(catalog)};
 import { createQuestionChannel } from ${JSON.stringify(factory)};
 const command = process.argv[2];
@@ -29,10 +31,11 @@ else if (command === "agent-models") console.log(JSON.stringify([
 else if (command === "work-assigned" && process.argv.includes(${JSON.stringify(broken)})) { console.error("lazy-workflow: no se pudo ejecutar work-assigned (gh: not logged in)"); process.exit(1); }
 else if (command === "work-assigned") {
   const azure = process.argv.includes(${JSON.stringify(azure)});
-  console.log(JSON.stringify({ tracker: azure ? "azure" : "github", scope: azure ? "Synthetic Azure" : "synthetic/github", truncated: false, items: azure ? [
+  const github = process.argv.includes(${JSON.stringify(github)});
+  console.log(JSON.stringify({ tracker: azure ? "azure" : "github", scope: azure ? "Synthetic Azure" : github ? "synthetic/github" : "synthetic/other", truncated: false, items: azure ? [
     { id: 50, title: "Mejorar el portal de clientes", type: "User Story", state: "Active", url: "https://example.com/hu/50", hu: null },
     { id: 51, title: "Simplificar el formulario de ingreso", type: "Task", state: "New", url: "https://example.com/task/51", hu: 50 }
-  ] : [
+  ] : !github ? [] : [
     { id: 7, title: "Mejorar la navegación principal", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/7", hu: null },
     { id: 9, title: "[Epic] Portal de autoservicio", type: "Issue", state: "OPEN", url: "https://github.com/synthetic/github/issues/9", hu: null }
   ] }));
@@ -65,6 +68,7 @@ if (await initialized.exited !== 0) throw new Error(`synthetic initialization fa
 const config = JSON.parse(await readFile(join(root, "web.json"), "utf8"));
 config.allowedCommands = ["plan", "code", "setup", "work-assigned", "agent-models", "hu-info", "hu-children-info", "github-issue-list"];
 config.listen = "127.0.0.1:18234";
+config.repositoryRoots = [projects];
 await writeFile(join(root, "web.json"), JSON.stringify(config), { mode: 0o600 });
 let backend: ReturnType<typeof Bun.spawn>;
 async function startBackend() {
@@ -99,7 +103,7 @@ let closing = false;
 async function close() {
   if (closing) return; closing = true;
   proxy.stop(true); backend.kill("SIGTERM"); await backend.exited;
-  await rm(root, { recursive: true, force: true }); process.exit(0);
+  await rm(root, { recursive: true, force: true }); await rm(projects, { recursive: true, force: true }); process.exit(0);
 }
 process.on("SIGTERM", () => { void close(); }); process.on("SIGINT", () => { void close(); });
 console.log("Synthetic HTTPS browser fixture ready on loopback:18443. No public DNS or tunnel is used.");

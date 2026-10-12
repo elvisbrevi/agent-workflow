@@ -67,9 +67,16 @@ export const runGh: GhRunner = async (args, workingDirectory) => {
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  if (exitCode !== 0) throw new Error(`gh ${args[0] ?? "command"} fallo (${stderr.trim() || `exit ${exitCode}`})`);
+  if (exitCode !== 0) throw new Error(ghFailure(args[0] ?? "command", stderr, exitCode));
   return stdout;
 };
+
+/** Tras un campo desconocido gh lista todos los que conoce; la causa es un gh mas viejo que el que lz necesita. */
+export function ghFailure(command: string, stderr: string, exitCode: number): string {
+  const unknownField = /Unknown JSON field: "([^"]+)"/.exec(stderr)?.[1];
+  if (unknownField) return `gh ${command} fallo: esta version de gh no conoce el campo ${unknownField}; actualiza GitHub CLI (gh)`;
+  return `gh ${command} fallo (${stderr.trim() || `exit ${exitCode}`})`;
+}
 
 function labelNames(issue: Pick<ManagedIssue, "labels">): string[] {
   return issue.labels.map(({ name }) => (typeof name === "string" ? name : "")).filter(Boolean);

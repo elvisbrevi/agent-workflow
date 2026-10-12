@@ -16,6 +16,7 @@ interface PreferencesViewProps {
   readonly models: readonly AgentModels[] | null;
   readonly setup: SetupState;
   readonly onSave: (settings: GuiSettings) => Promise<void>;
+  readonly onAddRepository: (path: string) => Promise<void>;
 }
 
 const text = (value: FlagDefault | undefined): string => (typeof value === "string" ? value : "");
@@ -44,13 +45,14 @@ function MachineStatus({ catalog, diagnostics, models }: { catalog: CommandCatal
   );
 }
 
-export function PreferencesView({ catalog, document, diagnostics, models, setup, onSave }: PreferencesViewProps) {
+export function PreferencesView({ catalog, document, diagnostics, models, setup, onSave, onAddRepository }: PreferencesViewProps) {
   const [draft, setDraft] = useState<GuiSettings>(document.settings);
   const [saving, setSaving] = useState(false);
   // A file changed from outside replaces the form only while it has no unsaved edits.
   const [base, setBase] = useState<GuiSettings>(document.settings);
   useEffect(() => {
-    setDraft((current) => (JSON.stringify(current) === JSON.stringify(base) ? document.settings : current));
+    // In the browser the server alone registers repositories, so its list always wins.
+    setDraft((current) => (JSON.stringify(current) === JSON.stringify(base) ? document.settings : isDesktop ? current : { ...current, repositories: document.settings.repositories }));
     setBase(document.settings);
   }, [document.settings]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(document.settings);
@@ -94,9 +96,7 @@ export function PreferencesView({ catalog, document, diagnostics, models, setup,
             }}>✕</button>}
           </div>
         ))}
-        {isDesktop
-          ? <DirectoryPicker repositories={draft.repositories} label="Agregar repositorio…" onPick={(path) => { if (!draft.repositories.includes(path)) update({ repositories: [...draft.repositories, path], activeRepository: draft.activeRepository ?? path }); }} />
-          : <p className="muted small">Los repositorios del servidor se registran en el propio servidor.</p>}
+        <DirectoryPicker label="Agregar repositorio…" onPick={isDesktop ? (path) => { if (!draft.repositories.includes(path)) update({ repositories: [...draft.repositories, path], activeRepository: draft.activeRepository ?? path }); } : onAddRepository} />
       </section>
 
       {!isDesktop && <section className="panel-card account-card"><h2>Sesión</h2><AccountControl className="row" /></section>}

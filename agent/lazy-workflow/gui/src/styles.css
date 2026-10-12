@@ -270,9 +270,16 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
 .login .card { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; }
 .folder-dialog { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; width: min(560px, calc(100vw - 28px)); max-height: 80dvh; }
 .folder-dialog::backdrop { background: rgb(15 25 30 / 40%); }
-.folder-results { display: flex; flex-direction: column; max-height: 48dvh; overflow: auto; margin-top: 12px; }
-.folder-result { text-align: left; color: var(--text); background: none; border: 0; border-bottom: 1px solid var(--border); padding: 14px 8px; font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
-.folder-result:hover { background: var(--accent-soft); }
+.folder-path { margin-top: 14px; }
+.folder-path .input { font-family: var(--mono); }
+.folder-add { width: 100%; margin-top: 10px; padding: 10px 14px; }
+.folder-heading { margin: 16px 0 6px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
+.folder-results { display: flex; flex-direction: column; max-height: 48dvh; overflow: auto; background: var(--panel-2); border-radius: var(--radius); padding: 4px; }
+.folder-entry { display: flex; align-items: center; gap: 12px; text-align: left; color: var(--text); background: none; border: 0; border-radius: 8px; padding: 11px 10px; font: inherit; cursor: pointer; min-width: 0; }
+.folder-entry:hover { background: var(--accent-soft); }
+.folder-icon { width: 20px; height: 20px; flex: none; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linejoin: round; }
+.folder-up { width: 20px; flex: none; text-align: center; color: var(--muted); }
+.folder-results > p { margin: 10px; }
 
 @media (max-width: 1050px) {
   .work-layout { grid-template-columns: minmax(0, 1fr); }
@@ -329,7 +336,7 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
 
   .feed { max-height: none; }
   .folder-dialog { padding: 18px; }
-  .folder-result { min-height: 60px; }
+  .folder-entry { min-height: 52px; }
 }
 
 /* Phones on their side: the navigation joins the top bar, so the content keeps the little height there is. */
