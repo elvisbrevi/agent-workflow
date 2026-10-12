@@ -518,9 +518,13 @@ declared base, an implicit base in `hu-branch-set`
   which is also what removes a failed ticket from the frontier. When the session's
   process exits, the coordinator runs its session verification, and only then
   pushes, opens the canonical Azure PR, completes it (whose completion options
-  delete the source ticket branch), verifies the completion gates, and selects the
-  next ticket. Later cleanup remains idempotent when Azure already removed that
-  remote ref.
+  delete the source ticket branch), verifies the completion gates, and moves the
+  ticket to `Done`. Once a ticket is `Done` and no direct delivery child is left
+  open, the coordinator moves the HU to its developed state — `Desarrollo
+  Terminado`, or `En revisión` for a **Bug HU** — exactly as a multi-repository
+  run does (ADR-0048); a failure there is reported and never undoes the ticket.
+  Then it selects the next ticket. Later cleanup remains idempotent when Azure
+  already removed that remote ref.
 
 **Azure multi-repository ticket delivery run**:
   A lazy-workflow invocation with `code --hu <ID> [--ticket <ID>]
@@ -534,8 +538,8 @@ declared base, an implicit base in `hu-branch-set`
   a **Bug HU** to `En revisión` instead.
   The single primary ticket Branch ArtifactLink points to the first changed
   repository and is written only once that repository is known, while
-  participant repositories keep their workspace branches without native links. Single-repository Azure ticket delivery remains
-  unchanged when `--working-directory` is a single path.
+  participant repositories keep their workspace branches without native links. Single-repository Azure ticket delivery keeps
+  its own branch and link handling when `--working-directory` is a single path, and moves the HU the same way.
 _Avoid_: Azure HU planning run
 
 **Azure workspace delivery checkpoint**:

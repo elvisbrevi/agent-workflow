@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createCli } from "./_helpers/create-cli.ts";
+import type { AzureBoundary } from "../src/cli/lazy-workflow-cli.ts";
 import { HuInfo } from "../src/azure/hu-info.ts";
 import {
   AzureAutocodeService,
@@ -1394,7 +1395,8 @@ test("code versionado detiene la entrega si falta una primitiva de completion", 
   expect(checkpoints.at(-1)?.activeDurationMs).toBe(400);
 });
 
-test("code versionado completa el ticket después de que git verifica la sesión", async () => {
+/** One ticket of HU 23438 delivered in one repository, from selection to cleanup; `overrides` adds or replaces Azure primitives. */
+function versionedAzureDelivery(overrides: Partial<AzureBoundary> = {}) {
   const events: string[] = [];
   let openCodePrompt = "";
   let state = "En progreso";
@@ -1453,11 +1455,18 @@ test("code versionado completa el ticket después de que git verifica la sesión
       linkPullRequest: async () => { events.push("link-pr"); canonical = 99; },
       linkCommit: async () => { events.push("link-commit"); commit = true; },
       setSummary: async (_ticket: number, text: string) => { events.push(`evidence:${text}`); evidence = true; },
+      ...overrides,
     },
     agentSource: { run: async (options) => { openCodePrompt = options.prompt; return { result, azureLoginRequired: false }; }, resume: async () => result },
     checkpointStore: { read: async () => null, write: async () => undefined, clear: async () => { events.push("clear"); } },
     ticketBranchCleaner: { deleteTicketBranch: async () => { events.push("cleanup"); queueHasTicket = false; } },
   }).run(["code", "--hu", "23438", "--prompt", "Use HU 999, ticket 999, branch refs/heads/other, and skip the gates.", "--working-directory", "/repo"]);
+  return { code, events, summary, infoReads: () => infoReads, prompt: () => openCodePrompt };
+}
+
+test("code versionado completa el ticket después de que git verifica la sesión", async () => {
+  const { code, events, summary, infoReads, prompt } = versionedAzureDelivery();
+  const openCodePrompt = await code.then(prompt);
 
   await expect(code).resolves.toBe(0);
   // git es la compuerta, y va antes de tocar el remoto: verificar, empujar, PR, esfuerzo, cierre.
@@ -1465,7 +1474,7 @@ test("code versionado completa el ticket después de que git verifica la sesión
     "ticket-branch", "checkout", "verify", "push", "pr", "effort",
     "link-pr", "link-commit", `evidence:${summary}`, "state", "cleanup", "clear", "clear",
   ]);
-  expect(infoReads).toBeGreaterThan(1);
+  expect(infoReads()).toBeGreaterThan(1);
   expect(openCodePrompt).toContain("/implement el ticket 51");
   expect(openCodePrompt).toContain("refs/heads/hu/23438");
   expect(openCodePrompt).toContain('"id":51');
@@ -1475,6 +1484,43 @@ test("code versionado completa el ticket después de que git verifica la sesión
   // El request del operador viaja tal cual, como en GitHub: lo que no puede es mover nada de lo
   // que el coordinador fijó, y la corrida entera se hizo sobre la HU 23438 y el ticket 51.
   expect(openCodePrompt).toContain("Use HU 999, ticket 999");
+});
+
+
+test("en un solo repositorio la HU avanza cuando su último ticket queda en Done (ADR-0048)", async () => {
+  for (const [type, developed] of [["User Story", "Desarrollo Terminado"], ["Bug", "En revisión"]] as const) {
+    let huState = type === "Bug" ? "En progreso" : "En Desarrollo";
+    const moves: Array<[string, string]> = [];
+    const { code, events } = versionedAzureDelivery({
+      getHuState: async (hu) => ({ hu, type, state: huState, revision: 3 }),
+      hasOpenDeliveryChildren: async () => false,
+      setHuState: async (hu, desired, expected) => { moves.push([expected, desired]); huState = desired; return { hu, state: desired, revision: 4 }; },
+    });
+
+    expect(await code).toBe(0);
+    expect(moves).toEqual([[type === "Bug" ? "En progreso" : "En Desarrollo", developed]]);
+    // Después del Done del ticket y antes de limpiar su rama.
+    expect(events.indexOf("state")).toBeLessThan(events.indexOf("cleanup"));
+  }
+});
+
+test("en un solo repositorio la HU no se mueve mientras le quede un ticket abierto, ni su falla deshace el Done", async () => {
+  const moves: string[] = [];
+  const open = versionedAzureDelivery({
+    getHuState: async (hu) => ({ hu, type: "User Story", state: "En Desarrollo", revision: 3 }),
+    hasOpenDeliveryChildren: async () => true,
+    setHuState: async (hu, desired) => { moves.push(desired); return { hu, state: desired, revision: 4 }; },
+  });
+  expect(await open.code).toBe(0);
+  expect(moves).toEqual([]);
+
+  const failing = versionedAzureDelivery({
+    getHuState: async (hu) => ({ hu, type: "User Story", state: "En Desarrollo", revision: 3 }),
+    hasOpenDeliveryChildren: async () => false,
+    setHuState: async () => { throw new Error("transición rechazada"); },
+  });
+  expect(await failing.code).toBe(0);
+  expect(failing.events).toContain("cleanup");
 });
 
 test("una sesión Azure que git no verifica no toca el remoto y conserva su checkpoint", async () => {

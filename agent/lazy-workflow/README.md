@@ -404,8 +404,7 @@ items instead of duplicating them.
 A Bug that no User Story or Product Backlog Item owns is an HU of its own
 (ADR-0047): `plan --hu <bug>` hangs Tasks under it and `code --hu <bug>` drains
 them. A Bug under a story is that story's delivery ticket, and `plan` refuses it
-before opening a session. Where a delivery moves the HU once no child is open, a
-Bug moves to `En revisión` rather than `Desarrollo Terminado`.
+before opening a session.
 
 `code --hu` drains the HU's direct Task and Bug tickets. It ensures the
 `hu/<HU>` integration branch exists — `--base-branch` names what to create it
@@ -415,6 +414,9 @@ GitHub: process exited, ticket branch ahead of the integration branch, clean
 tree. The session's last text becomes the ticket's completion-evidence field.
 The delivery then pushes, creates or reuses the pull request, associates it,
 sets the effort, and moves the ticket to `Done` behind the completion gates.
+When that leaves no delivery child of the HU open, the HU moves to `Desarrollo
+Terminado` — a Bug HU to `En revisión` — in one repository or in a workspace
+(ADR-0048). A failure to move it is reported and never undoes the ticket.
 
 The Azure delivery prompt is the same four lines as GitHub's, preceded by the
 whole ticket. That is the one asymmetry between the two, and the reason for it:
