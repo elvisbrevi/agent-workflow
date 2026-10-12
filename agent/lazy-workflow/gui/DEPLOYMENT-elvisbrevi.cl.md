@@ -27,6 +27,9 @@ The Mac snapshots and LaunchAgent commands below describe the earlier runtime.
 The work-focused GUI from PR #7 (`main` at `df60613`) is deployed there, with
 `agent-models` and `setup` added to the web allowlist; the backup and readback
 are in [verification evidence](WEB-VERIFICATION.md#work-focused-gui-update-2026-10-12).
+Planning from an epic, an HU or a Bug (PRs #11 and #12, `main` at `4cf10c3`) is
+deployed there too, with no allowlist change; the backup and readback are in
+[verification evidence](WEB-VERIFICATION.md#plan-from-the-work-update-2026-10-12).
 
 ### Responsive GUI update, 2026-10-10
 
