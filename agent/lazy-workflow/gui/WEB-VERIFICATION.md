@@ -5,6 +5,39 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Plan from the work update (2026-10-12)
+
+`main` at `4cf10c3` (PRs #11 and #12) was deployed to the Linux installation:
+the **Planificar** view, `plan --issue` for GitHub epics, Bugs planned as HUs,
+and the HU transition after a single-repository delivery. No workflow runs were
+active: the backend unit held only its own `lz-web` process. The previous
+backend, frontend, `service.json` and `web.json` were backed up under
+`deployment-backups/before-plan-from-work-4cf10c3-2026-10-12T22-14-47Z`.
+`web.json` was not changed: `--issue` is a flag of the already allowed `plan`.
+
+`lz update` ran first, so the catalog the backend reads at start already
+offered `plan --issue`: it installed the CLI and skills at `4cf10c3` and rebuilt
+`~/.local/bin/lz-gui`, whose tree stamp
+`1dce4d2b4051ff5767dc975425607e2913afd645` matches the merged GUI tree. The web
+backend runs the CLI from the owner checkout (`gui.json` `lzCommand`), which was
+on `main` at `4cf10c3`. The frozen installs, typecheck, frontend build and
+optimized `lz-web` build ran from the owner checkout; no Rust source changed
+since PR #9, so the build reproduced the deployed backend. The service helper
+reinstalled and started both units.
+
+Readback: both units active, local `/health` returning `ok`, the installed
+backend hash `d9f6759d5d793f1a6edb19a29f62a2313eb358cb7697ab4a0163649dbff79932`
+equal to the build, the three frontend files identical to `dist/`, and the
+connector registered four tunnel connections again. The public origin and an
+anonymous RPC both answer the Cloudflare Access redirect (302).
+
+Before the merge, the browser scenarios ran against the synthetic backend,
+including the new Planificar scenario on an iPhone 15 upright and sideways in
+WebKit; these are emulated devices. No authenticated operation over the public
+origin, physical-phone check or live Plan/Code run was performed: publishing an
+epic's sub-issues and moving a Bug HU to `En revisión` have not yet run against
+GitHub or Azure.
+
 ## Server folder browser update (2026-10-12)
 
 `main` at `3786add` (PR #9) was deployed to the Linux installation. Before it,
