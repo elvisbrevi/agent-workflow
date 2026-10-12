@@ -5,6 +5,38 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Server folder browser update (2026-10-12)
+
+`main` at `3786add` (PR #9) was deployed to the Linux installation. Before it,
+the host's Ubuntu `gh` 2.45.0 did not know the `blockedBy` JSON field, so
+`github-issue-list` failed and the Code queue showed only `url))`, the end of
+the field list gh prints after an unknown field. `gh` 2.102.0 was installed
+from GitHub CLI's signed apt repository, and the queue read of the owner
+repository succeeded with the deployed CLI (no managed issues at the time).
+
+No workflow runs were active: the backend unit held only its own `lz-web`
+process. The previous backend, frontend, `service.json` and `web.json` were
+backed up under
+`deployment-backups/before-server-folders-3786add-2026-10-12T15-28-34Z`.
+`web.json` was not changed: without `repositoryRoots`, the browser walks the
+server account's home directory. The frozen installs, typecheck, frontend build
+and optimized `lz-web` build ran from the owner checkout, and the service helper
+reinstalled and started both units.
+
+Readback: both units active, local `/health` returning `ok`, the installed
+backend hash `d9f6759d5d793f1a6edb19a29f62a2313eb358cb7697ab4a0163649dbff79932`
+equal to the build, the three frontend files identical to `dist/`, and the
+connector registered four tunnel connections again. The public origin and an
+anonymous `list_folders` request both answer the Cloudflare Access redirect
+(302). `lz update` installed the CLI and skills at `3786add` and rebuilt
+`~/.local/bin/lz-gui`, whose tree stamp
+`9294f7b44f5d2f3efe75dfdfae69ac41e949d721` matches the merged GUI tree.
+
+The browser scenarios ran against the synthetic backend, including an iPhone 15
+upright and sideways in WebKit; these are emulated devices. No authenticated
+operation over the public origin or physical-phone check was performed during
+this update.
+
 ## Work-focused GUI update (2026-10-12)
 
 `main` at `df60613` (PR #7) was deployed to the Linux installation. No workflow
