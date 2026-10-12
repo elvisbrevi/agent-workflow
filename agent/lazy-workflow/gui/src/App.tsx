@@ -208,6 +208,9 @@ export function App() {
   } else if (catalog && settings) {
     main = (
       <WorkView
+        // Each view keeps its own selection and form; switching views starts the other one fresh.
+        key={view.kind}
+        mode={view.kind === "plan" ? "plan" : "work"}
         catalog={catalog}
         settings={settings}
         work={work}

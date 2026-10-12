@@ -82,6 +82,65 @@ test("assigned work, HU task tracking and a Code run with a listed model", async
   expect(failures).toEqual([]);
 });
 
+test("Planificar lists my epics, HUs and lone Bugs, and plans each where the operator chooses", async ({ page }, testInfo) => {
+  const failures: string[] = [];
+  const starts: unknown[] = [];
+  page.on("pageerror", (error) => failures.push(error.message));
+  page.on("request", (request) => { if (request.url().endsWith("/api/rpc/start_run")) starts.push(request.postDataJSON()); });
+  page.on("dialog", (dialog) => { void dialog.accept(); });
+  await page.goto("/");
+  await page.getByLabel("Usuario", { exact: true }).fill("owner");
+  await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
+  await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
+  await page.getByRole("button", { name: "Planificar", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Planificar", exact: true })).toBeVisible();
+  const list = page.locator(".work-list");
+  await expect(list.getByText("[Epic] Portal de autoservicio", { exact: true })).toBeVisible();
+  await expect(list.getByText("Mejorar el portal de clientes", { exact: true })).toBeVisible();
+  await expect(list.getByText("Bug #70", { exact: true })).toBeVisible();
+  // A plain issue is delivered, not sliced.
+  await expect(list.getByText("Mejorar la navegación principal", { exact: true })).toHaveCount(0);
+  const listing = testInfo.outputPath(`${testInfo.project.name}-plan-list.png`);
+  await page.screenshot({ path: listing, fullPage: true });
+  await testInfo.attach("plan-list", { path: listing, contentType: "image/png" });
+
+  // Choosing a lone Bug opens its plan form, with the one Azure repository already chosen.
+  await list.getByText("Falla el cierre de sesión", { exact: true }).click();
+  const panel = page.locator(".work-panel");
+  await expect(panel.getByRole("heading", { name: "Planificar Bug #70" })).toBeVisible();
+  await expect(panel.getByRole("checkbox", { name: "azure-project" })).toBeChecked();
+  await panel.getByText("Responder las preguntas del agente antes de planificar").click();
+  const bugForm = testInfo.outputPath(`${testInfo.project.name}-plan-bug.png`);
+  await page.screenshot({ path: bugForm, fullPage: true });
+  await testInfo.attach("plan-bug", { path: bugForm, contentType: "image/png" });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
+  await expect(page.locator(".run-detail h2")).toHaveText("Plan · HU #70");
+  const bugArgs = (starts[0] as { request: { args: string[] } }).request.args;
+  expect(bugArgs[0]).toBe("plan");
+  expect(bugArgs[bugArgs.indexOf("--hu") + 1]).toBe("70");
+  expect(bugArgs[bugArgs.indexOf("--working-directory") + 1]).toMatch(/\/azure-project$/);
+
+  // An epic keeps its own repository first: its sub-issues are published there.
+  await page.getByRole("button", { name: "Planificar", exact: true }).click();
+  await list.getByText("[Epic] Portal de autoservicio", { exact: true }).click();
+  await expect(panel.getByRole("heading", { name: "Planificar la épica #9" })).toBeVisible();
+  const own = panel.getByRole("checkbox", { name: "github-project" });
+  await expect(own).toBeChecked();
+  await expect(own).toBeDisabled();
+  await panel.getByText("Responder las preguntas del agente antes de planificar").click();
+  const epicForm = testInfo.outputPath(`${testInfo.project.name}-plan-epic.png`);
+  await page.screenshot({ path: epicForm, fullPage: true });
+  await testInfo.attach("plan-epic", { path: epicForm, contentType: "image/png" });
+  await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
+  await expect(page.locator(".run-detail h2")).toHaveText("Plan · Issue #9");
+  const epicArgs = (starts[1] as { request: { args: string[] } }).request.args;
+  expect(epicArgs[epicArgs.indexOf("--issue") + 1]).toBe("9");
+  expect(epicArgs[epicArgs.indexOf("--working-directory") + 1]).toMatch(/\/github-project$/);
+  expect(epicArgs).not.toContain("--hu");
+  expect(failures).toEqual([]);
+});
+
 test("the owner walks the server's folders to pick a repository instead of typing its path", async ({ page }, testInfo) => {
   // Registering a folder changes the shared fixture, so one phone run adds it.
   test.skip(testInfo.project.name !== "phone", "registers a folder once per fixture");

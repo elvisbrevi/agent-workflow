@@ -176,6 +176,23 @@ test("un plan de GitHub exige que se describa; desde una issue la sesion la lee 
   expect(prompt.endsWith("Solo el backend")).toBe(true);
 });
 
+test("planificar una épica la nombra con --issue y conserva su repositorio primero", () => {
+  const epic: RunTarget = { kind: "github-epic", repository: "/r/github", issue: 9, title: "[Epic] Portal", url: "https://github.com/o/r/issues/9" };
+  const prepared = prepareRun(catalog, "plan", epic, { ...emptyRunOptions("/r/github"), repositories: ["/r/github", "/r/web"] })!;
+  expect(prepared.issues).toEqual([]);
+  expect(prepared.args).toEqual(["plan", "--working-directory", "/r/github,/r/web", "--issue", "9"]);
+  // Code no rebana: drena la cola del repositorio, nunca nombra la épica.
+  expect(prepareRun(catalog, "code", epic, emptyRunOptions("/r/github"))!.args).toEqual(["code", "--working-directory", "/r/github"]);
+});
+
+test("planificar una HU o un Bug pide elegir el repositorio, en palabras del operador", () => {
+  const bug: RunTarget = { kind: "azure-hu", repository: "/r/azure", hu: 70, title: "Falla el login", bug: true };
+  const blocked = prepareRun(catalog, "plan", bug, { ...emptyRunOptions("/r/azure"), repositories: [] })!;
+  expect(blocked.issues.filter((issue) => issue.flag === "--working-directory").map((issue) => issue.message)).toEqual(["Elige el repositorio donde trabajar."]);
+  expect(prepareRun(catalog, "plan", bug, { ...emptyRunOptions("/r/azure"), repositories: ["/r/api", "/r/web"] })!.args)
+    .toEqual(["plan", "--working-directory", "/r/api,/r/web", "--hu", "70"]);
+});
+
 const models: AgentModels[] = [
   { cli: "opencode", installed: true, defaultModel: "opencode-go/pro", error: null, models: [{ id: "deepseek/flash", name: "flash", provider: "deepseek", efforts: null, defaultEffort: null }] },
   { cli: "claudecode", installed: false, defaultModel: "claude-x", error: "claude no esta en el PATH", models: [] },

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, unlink } from "node:fs/promises";
 import { HuInfoService } from "../azure/hu-info-service.ts";
-import type { HuInfo } from "../azure/hu-info.ts";
+import { developedState, HU_WORK_ITEM_TYPES, STORY_WORK_ITEM_TYPES, type HuInfo } from "../azure/hu-info.ts";
 import {
   AzureAutocodeService,
   COMPLETION_GATE,
@@ -42,6 +42,7 @@ import { SagNormsService } from "../sag/sag-norms-service.ts";
 import {
   GitHubManagedQueueService,
   assigneeLogins,
+  isEpicIssue,
   type GitHubManagedQueueAdapter,
   type GitHubRepositoryContext,
   type SelectedManagedIssue,
@@ -146,7 +147,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
   getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
   getState?(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
-  getHuState?(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }>;
+  getHuState?(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }>;
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   setDescription?(ticket: number, filePath: string): Promise<unknown>;
   setState?(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
@@ -952,6 +953,11 @@ export class LazyWorkflowCli {
       }
     }
 
+    // A plan slices one unit of one tracker: a GitHub epic or an Azure HU, never both.
+    if (command === "plan" && options.hu !== null && options.issue !== null) {
+      return argumentError(options, "--issue y --hu son excluyentes en plan: --issue rebana una épica GitHub, --hu una HU Azure");
+    }
+
     this.reportRunHeading(options);
     this.reportFallbackChain(options);
 
@@ -1261,6 +1267,7 @@ export class LazyWorkflowCli {
       reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
       return 1;
     }
+    if (!await this.plannableHu(huInfo, options)) return 1;
     const norms = await this.loadSagNorms(options, "planning");
     if (options.normasSag && norms === null) return 1;
 
@@ -1275,6 +1282,36 @@ export class LazyWorkflowCli {
     if (failed) return 1;
     if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
     return this.publishAzurePlan(options.hu, result.text, options);
+  }
+
+  /**
+   * Whether this HU can be sliced, decided before any session opens: a story,
+   * or a Bug that is not the delivery ticket of one (ADR-0047). A Bug under a
+   * story is that story's unit of work, and hanging Tasks from it would leave
+   * `code --hu` delivering a parent as if it were a ticket. An HU read without
+   * its type, as an older fake answers, is left to publication to judge.
+   */
+  private async plannableHu(huInfo: HuInfo, options: CliOptions): Promise<boolean> {
+    const refuse = (message: string): false => {
+      reportAzureFailure("argument-error", "planning", options, `lazy-workflow: ${message}`);
+      return false;
+    };
+    if (huInfo.type === undefined) return true;
+    if (!HU_WORK_ITEM_TYPES.has(huInfo.type)) {
+      return refuse(`el work item ${huInfo.id} es un ${huInfo.type}; plan corta User Stories, Product Backlog Items o Bugs`);
+    }
+    if (huInfo.type !== "Bug" || !huInfo.parent) return true;
+    let parent: HuInfo;
+    try {
+      parent = await this.huInfoService.getHuInfo(huInfo.parent);
+    } catch (error) {
+      reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer el padre ${huInfo.parent} del Bug ${huInfo.id} (${errorMessage(error)})`);
+      return false;
+    }
+    if (parent.type !== undefined && STORY_WORK_ITEM_TYPES.has(parent.type)) {
+      return refuse(`el Bug ${huInfo.id} es una entrega de la HU ${huInfo.parent}: planifica la HU, o desvincúlalo para planificarlo solo`);
+    }
+    return true;
   }
 
   /**
@@ -1529,10 +1566,12 @@ export class LazyWorkflowCli {
 
   private async runDefaultWorkflow(command: "plan" | "code", options: CliOptions): Promise<number> {
     if (command === "plan") {
+      const epic = await this.readPlanEpic(options, options.workingDirectory);
+      if (epic === false) return 1;
       const norms = await this.loadSagNorms(options, "planning");
       if (options.normasSag && norms === null) return 1;
       const { result, failed } = await this.runPlanningSession(
-        { kind: "github-plan" },
+        { kind: "github-plan", epic },
         // A GitHub planning run has never resumed a session of its own; the
         // interview resumes the one it just opened, not one named on the CLI.
         { ...options, session: null },
@@ -1543,7 +1582,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       if (failed) return 1;
       if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
-      return this.publishGitHubPlan(result.text, options.workingDirectory, options);
+      return this.publishGitHubPlan(result.text, options.workingDirectory, options, epic?.number ?? null);
     }
 
     return this.runDefaultCodeWorkflow(options);
@@ -2195,16 +2234,18 @@ export class LazyWorkflowCli {
     }
 
     const huState = await boundary.getHuState!(hu);
+    // A story ends in `Desarrollo Terminado`, a Bug HU in `En revisión` (ADR-0047).
+    const developed = developedState(huState.type);
     let huTransitionApplied = false;
-    if (huState.state === "Desarrollo Terminado") {
+    if (huState.state === developed) {
       huTransitionApplied = true;
     } else if (await boundary.hasOpenDeliveryChildren!(hu)) {
       reportOperator(`lazy-workflow: la HU ${hu} todavía tiene hijos de entrega abiertos; transición de HU omitida`);
     } else {
       try {
-        await boundary.setHuState!(hu, "Desarrollo Terminado", huState.state ?? "En Desarrollo", huState.revision ?? 0);
+        await boundary.setHuState!(hu, developed, huState.state ?? "En Desarrollo", huState.revision ?? 0);
         const verified = await boundary.getHuState!(hu);
-        if (verified.state !== "Desarrollo Terminado") {
+        if (verified.state !== developed) {
           reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`, { ticket }, "preserved");
         } else {
           huTransitionApplied = true;
@@ -2245,7 +2286,7 @@ export class LazyWorkflowCli {
       cleaned,
       uncleaned,
       ticketState: "Done",
-      huState: huTransitionApplied ? "Desarrollo Terminado" : (huState.state ?? "En Desarrollo"),
+      huState: huTransitionApplied ? developed : (huState.state ?? "En Desarrollo"),
       clean: uncleaned.length === 0,
     };
     console.log(JSON.stringify(summary, null, 2));
@@ -2311,9 +2352,13 @@ export class LazyWorkflowCli {
           reportAzureFailure("tracker-read-failure", "planning", options, `lazy-workflow: no se pudo leer la HU en Azure DevOps (${errorMessage(error)})`);
           return 1;
         }
+        if (!await this.plannableHu(huInfo, options)) return 1;
       }
+      // A GitHub epic lives in the anchor repository, where the plan is published.
+      const epic = provider.kind === "github-repository-run" ? await this.readPlanEpic(options, scope.repositories[0]!.path) : null;
+      if (epic === false) return 1;
       const { result, failed } = await this.runPlanningSession(
-        { kind: "workspace-plan", scope, run: provider, huInfo },
+        { kind: "workspace-plan", scope, run: provider, huInfo, epic },
         { ...options, session: null },
         norms,
         provider,
@@ -2331,7 +2376,7 @@ export class LazyWorkflowCli {
       if (provider.kind === "azure-hu-run") return this.publishAzurePlan(provider.hu, result.text, options);
       // Un plan workspace GitHub publica en el repositorio ancla, que es el unico
       // donde `code` busca la cola gestionada.
-      return this.publishGitHubPlan(result.text, scope.repositories[0]!.path, options);
+      return this.publishGitHubPlan(result.text, scope.repositories[0]!.path, options, epic?.number ?? null);
     } catch (error) {
       reportFailure(
         resolveWorkflowRun(options.hu).kind === "azure-hu-run" ? "workspace-scope-failure" : "delivery-failure",
@@ -3393,6 +3438,35 @@ export class LazyWorkflowCli {
   }
 
   /**
+   * The epic a GitHub plan slices (`plan --issue`, ADR-0047), read before any
+   * session opens. It has to be open and read as an epic by the queue's own
+   * predicate: the plan's issues become its sub-issues, and an issue the queue
+   * could still deliver must not become their parent. Null without `--issue`;
+   * false once the failure is reported.
+   */
+  private async readPlanEpic(options: CliOptions, workingDirectory: string): Promise<SelectedManagedIssue | null | false> {
+    if (options.issue === null) return null;
+    const context = { issue: options.issue, repository: workingDirectory };
+    let epic: SelectedManagedIssue;
+    try {
+      if (!this.githubManagedQueue.readIssueDetail) throw new Error("la frontera de cola GitHub no lee issues");
+      epic = await this.githubManagedQueue.readIssueDetail(options.issue, workingDirectory);
+    } catch (error) {
+      reportFailure("tracker-read-failure", "planning", context, `lazy-workflow: no se pudo leer la épica #${options.issue} (${errorMessage(error)})`);
+      return false;
+    }
+    if (epic.state !== "OPEN") {
+      reportFailure("argument-error", "planning", context, `lazy-workflow: la épica #${options.issue} está cerrada`);
+      return false;
+    }
+    if (!isEpicIssue(epic)) {
+      reportFailure("argument-error", "planning", context, `lazy-workflow: la issue #${options.issue} no es una épica: ponle la etiqueta epic o el prefijo [Epic] en el título`);
+      return false;
+    }
+    return epic;
+  }
+
+  /**
    * Publica el plan que la sesion devolvio: un Issue por rebanada, con su rol de
    * triage puesto en la misma llamada que lo crea, y despues las aristas de
    * bloqueo declaradas.
@@ -3402,24 +3476,26 @@ export class LazyWorkflowCli {
    * la numeracion mas alta previa a la sesion, y esa deduccion etiquetaba como
    * del plan cualquier Issue que alguien abriera a mano mientras corria.
    */
-  private async publishGitHubPlan(text: string, workingDirectory: string, options: CliOptions): Promise<number> {
+  private async publishGitHubPlan(text: string, workingDirectory: string, options: CliOptions, epic: number | null = null): Promise<number> {
     try {
       const tickets = parsePlan(text);
       if (tickets.length === 0) {
         reportOperator("lazy-workflow: el plan no requiere Issues de entrega.");
         return 0;
       }
-      const { createReadyIssue, linkBlockedBy } = this.githubManagedQueue;
-      if (!createReadyIssue || !linkBlockedBy) {
+      const { createReadyIssue, linkBlockedBy, addSubIssue } = this.githubManagedQueue;
+      if (!createReadyIssue || !linkBlockedBy || (epic !== null && !addSubIssue)) {
         throw new Error("la frontera de cola GitHub no expone las primitivas de publicacion");
       }
       const publication = await publishPlanIssues(
         {
           createReadyIssue: createReadyIssue.bind(this.githubManagedQueue),
           linkBlockedBy: linkBlockedBy.bind(this.githubManagedQueue),
+          ...(addSubIssue ? { addSubIssue: addSubIssue.bind(this.githubManagedQueue) } : {}),
         },
         tickets,
         workingDirectory,
+        epic,
       );
       console.log(JSON.stringify(publication, null, 2));
       return 0;

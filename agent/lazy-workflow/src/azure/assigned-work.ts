@@ -1,7 +1,10 @@
 import { azureOrganization } from "./azure-organization.ts";
 import { azureOrganizationName, azureRepositoryFromRemote } from "./azure-pull-requests.ts";
+import { HU_WORK_ITEM_TYPES } from "./hu-info.ts";
 import type { AzRunner } from "./ticket-info-service.ts";
 import type { AssignedWork } from "../workspace/assigned-work.ts";
+
+const HU_PARENT_TYPES = new Set([...HU_WORK_ITEM_TYPES, "Requirement"]);
 
 interface Item {
   id: number;
@@ -32,7 +35,8 @@ export async function azureAssignedWork(az: AzRunner, origin: string): Promise<A
   };
   const parentIds = [...new Set(value.map(parentId).filter((id): id is number => id !== null))];
   const parents = parentIds.length ? (await post<{ value: Item[] }>("workitemsbatch?api-version=7.1", { ids: parentIds, fields: ["System.WorkItemType"], errorPolicy: "Omit" })).value : [];
-  const stories = new Set(parents.filter((item) => ["User Story", "Product Backlog Item", "Requirement"].includes(String(item.fields["System.WorkItemType"]))).map((item) => item.id));
+  // A Task under a Bug planned on its own (ADR-0047) belongs to that Bug the way it would to a story.
+  const stories = new Set(parents.filter((item) => HU_PARENT_TYPES.has(String(item.fields["System.WorkItemType"]))).map((item) => item.id));
   return {
     tracker: "azure", scope: repo.project, truncated: query.workItems.length > 200,
     items: value.map((item) => ({

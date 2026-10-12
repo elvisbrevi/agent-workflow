@@ -41,18 +41,19 @@ test("owner plans from the browser, answers a private interview, repairs setup a
   await expect(page.locator(".run-detail")).toContainText("syntheticAnswers");
   await expect(page.locator(".run-detail")).not.toContainText("http://127.0.0.1");
 
-  // An epic plans through the issue itself: the session reads it with gh.
+  // An epic is sliced by the coordinator: `plan --issue` publishes its sub-issues.
   // A started run opens in Ejecuciones; the work is one tap away.
   await page.getByRole("button", { name: "Trabajo", exact: true }).click();
   // Narrow screens show the list or the panel; wide ones show both.
   const back = page.getByRole("button", { name: "Volver a la lista" });
   if (await back.isVisible()) await back.click();
   await page.locator(".work-list").getByText("[Epic] Portal de autoservicio", { exact: true }).click();
-  await panel.getByRole("button", { name: "Planificar desde esta issue", exact: true }).click();
+  await panel.getByRole("button", { name: "Planificar esta épica", exact: true }).click();
   await panel.getByLabel("Responder las preguntas del agente antes de planificar").uncheck();
   await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
   const epicArgs = starts.at(-1)!.request.args;
-  expect(epicArgs[epicArgs.indexOf("--prompt") + 1]).toContain("gh issue view 9 --comments");
+  expect(epicArgs[epicArgs.indexOf("--issue") + 1]).toBe("9");
+  expect(epicArgs).not.toContain("--prompt");
   expect(epicArgs).not.toContain("--interview");
   await expect(page.locator(".run-detail")).toContainText("syntheticPlan");
 

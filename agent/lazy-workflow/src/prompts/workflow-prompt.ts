@@ -25,6 +25,8 @@ import {
 
 type PromptAsset =
   | "github-plan"
+  /** What a GitHub plan cut from an epic is told about that epic. */
+  | "github-epic-plan"
   /** Las tres líneas que toda entrega dice, sea GitHub o Azure (ADR-0036). */
   | "delivery"
   /** La línea que nombra la unidad de trabajo GitHub (issue). */
@@ -59,9 +61,10 @@ export function resolveWorkflowRun(hu: number | null): WorkflowRun {
 }
 
 export type WorkflowPromptSpec =
-  | { kind: "github-plan" }
+  /** `epic`: the issue the plan slices, read by the coordinator; absent for a plan of the operator's request. */
+  | { kind: "github-plan"; epic?: SelectedManagedIssue | null }
   | { kind: "azure-plan"; huInfo: HuInfo }
-  | { kind: "workspace-plan"; scope: WorkspaceScope; run: WorkflowRun; huInfo: HuInfo | null }
+  | { kind: "workspace-plan"; scope: WorkspaceScope; run: WorkflowRun; huInfo: HuInfo | null; epic?: SelectedManagedIssue | null }
   | {
       kind: "github-delivery";
       issue: SelectedManagedIssue;
@@ -239,6 +242,19 @@ async function azureHuPlanningSections(
 }
 
 /**
+ * The epic a GitHub plan slices, as the coordinator read it: the session plans
+ * from this snapshot rather than choosing what to read, the way an Azure plan
+ * receives its User Story.
+ */
+async function githubEpicSections(epic: SelectedManagedIssue | null | undefined): Promise<string[]> {
+  if (!epic) return [];
+  return [
+    await readPromptAsset("github-epic-plan", { EPIC_ID: `#${epic.number}` }),
+    JSON.stringify({ number: epic.number, title: epic.title, body: epic.body, comments: epic.comments }),
+  ];
+}
+
+/**
  * The ready-made manifest invocations, when the coordinator has fixed enough to
  * write them. A run that has not fixed the ticket branch or the manifest path
  * yet gets the tool's instruction alone rather than a command line with a hole
@@ -272,6 +288,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
     case "github-plan":
       return [
         await readPromptAsset("github-plan"),
+        ...(await githubEpicSections(spec.epic)),
         await readPromptAsset("plan-tickets"),
         ...sag,
         `The number of questions must be ${questions}`,
@@ -298,6 +315,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
           ? await azureHuPlanningSections(spec.huInfo!, questions, interview)
           : [
             await readPromptAsset("github-plan"),
+            ...(await githubEpicSections(spec.epic)),
             await readPromptAsset("plan-tickets"),
             await planInterviewSection(interview),
           ]),

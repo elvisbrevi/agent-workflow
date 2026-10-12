@@ -17,6 +17,8 @@ export interface PublishedIssue {
 
 export interface GitHubPlanPublication {
   issues: PublishedIssue[];
+  /** The epic the plan sliced, when it had one, and which issues now hang from it. */
+  epic?: { issue: number; subIssues: Array<{ issue: number; linked: boolean }> };
   blockingLinks: Array<{ blocker: number; blocked: number; linked: boolean }>;
 }
 
@@ -29,17 +31,22 @@ export interface GitHubPlanPublicationBoundary {
   ): Promise<{ number: number; id: number }>;
   /** Records `blocked` as blocked by the issue whose id is `blockerId`. */
   linkBlockedBy(blocked: number, blockerId: number, workingDirectory: string): Promise<{ linked: boolean }>;
+  /** Hangs the issue whose id is `childId` from `parent` as a native sub-issue. */
+  addSubIssue?(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }>;
 }
 
 /**
- * Publish an approved plan: every issue first, in dependency order, then the
- * blocking edges, so each edge can name real issues. GitHub's dependency
- * relation addresses the blocker by id, which is why creation answers both.
+ * Publish an approved plan: every issue first, in dependency order, then — for
+ * a plan cut from an epic — each one as the epic's sub-issue in that same
+ * order, then the blocking edges, so each edge can name real issues. GitHub's
+ * dependency and sub-issue relations address the issue by id, which is why
+ * creation answers both.
  */
 export async function publishPlanIssues(
   boundary: GitHubPlanPublicationBoundary,
   tickets: PlannedTicket[],
   workingDirectory: string,
+  epic: number | null = null,
 ): Promise<GitHubPlanPublication> {
   const ordered = publicationOrder(tickets);
   const published = new Map<string, { issue: number; id: number }>();
@@ -50,6 +57,17 @@ export async function publishPlanIssues(
       workingDirectory,
     );
     published.set(ticket.title.trim(), { issue: created.number, id: created.id });
+  }
+
+  let subIssues: Array<{ issue: number; linked: boolean }> | null = null;
+  if (epic !== null) {
+    if (!boundary.addSubIssue) throw new Error("la frontera GitHub no expone la relacion de sub-issues");
+    subIssues = [];
+    for (const ticket of ordered) {
+      const child = published.get(ticket.title.trim())!;
+      const { linked } = await boundary.addSubIssue(epic, child.id, workingDirectory);
+      subIssues.push({ issue: child.issue, linked });
+    }
   }
 
   const blockingLinks: GitHubPlanPublication["blockingLinks"] = [];
@@ -64,6 +82,7 @@ export async function publishPlanIssues(
 
   return {
     issues: ordered.map((ticket) => ({ title: ticket.title, issue: published.get(ticket.title.trim())!.issue })),
+    ...(epic !== null ? { epic: { issue: epic, subIssues: subIssues! } } : {}),
     blockingLinks,
   };
 }

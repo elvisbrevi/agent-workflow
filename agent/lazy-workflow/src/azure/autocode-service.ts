@@ -153,7 +153,7 @@ export interface AutocodeAzureService {
   getTicket(ticket: number): Promise<DeliveryTicket>;
   getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
   getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
-  getHuState(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }>;
+  getHuState(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }>;
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
   setDescription(ticket: number, filePath: string): Promise<unknown>;
   setState(ticket: number, desiredState: string, expectedState: string, allowCompletion?: boolean, expectedRevision?: number): Promise<unknown>;
@@ -328,9 +328,13 @@ export class AzureAutocodeService implements AutocodeAzureService {
   }
 
   async getHuInfo(hu: number): Promise<HuInfo> {
-    const item = await show(hu, false, this.az);
+    // Relations carry the parent, which decides whether a Bug can be planned on its own.
+    const item = await show(hu, true, this.az);
+    const parents = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
     return new HuInfo({
       id: item.id,
+      type: field(item, "System.WorkItemType"),
+      parent: relationId(parents[0]?.url) ?? null,
       title: field(item, "System.Title"),
       description: field(item, "System.Description"),
       criterioDeAceptacion: field(item, "Microsoft.VSTS.Common.AcceptanceCriteria"),
@@ -411,7 +415,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.getState(ticket);
   }
 
-  getHuState(hu: number): Promise<{ hu: number; state: string | null; revision: number | null }> {
+  getHuState(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }> {
     return this.ticketInfoService.getHuState(hu);
   }
 

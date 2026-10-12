@@ -500,6 +500,37 @@ test("plan obtiene la HU y ejecuta el autoplan en ingles", async () => {
   expect(output).toEqual([JSON.stringify(result, null, 2)]);
 });
 
+test("plan corta un Bug suelto como una HU y rechaza el que es entrega de una HU (ADR-0047)", async () => {
+  const items: Record<number, HuInfo> = {
+    600: new HuInfo({ id: 600, type: "User Story", parent: null, title: "HU" }),
+    700: new HuInfo({ id: 700, type: "Bug", parent: null, title: "Bug suelto" }),
+    701: new HuInfo({ id: 701, type: "Bug", parent: 600, title: "Bug de la HU" }),
+    702: new HuInfo({ id: 702, type: "Task", parent: 600, title: "Tarea" }),
+  };
+  const prompts: string[] = [];
+  const result = AgentResult.fromJsonLines(JSON.stringify({ type: "text", sessionID: "ses_plan", part: { type: "text", text: PLAN_TEXT } }));
+  const plan = (hu: number) => createCli({
+    huInfoService: { getHuInfo: async (id: number) => items[id]!, waitForAccess: async () => undefined },
+    agentSource: {
+      run: async (options: AgentRunOptions) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; },
+      resume: async () => { throw new Error("must not resume"); },
+    },
+    git: async () => "",
+  }).run(["plan", "--hu", `${hu}`, "--working-directory", "/repo"]);
+  const originalLog = console.log;
+  console.log = () => undefined;
+  try {
+    expect(await plan(701)).toBe(1);
+    expect(await plan(702)).toBe(1);
+    expect(prompts).toHaveLength(0);
+    expect(await plan(700)).toBe(0);
+  } finally {
+    console.log = originalLog;
+  }
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain('"type":"Bug"');
+});
+
 test("plan sin HU usa el prompt GitHub una vez sin tocar Azure", async () => {
   let azureCalls = 0;
   let checkpointCalls = 0;
