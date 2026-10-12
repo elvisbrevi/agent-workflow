@@ -2233,27 +2233,7 @@ export class LazyWorkflowCli {
       return 1;
     }
 
-    const huState = await boundary.getHuState!(hu);
-    // A story ends in `Desarrollo Terminado`, a Bug HU in `En revisión` (ADR-0047).
-    const developed = developedState(huState.type);
-    let huTransitionApplied = false;
-    if (huState.state === developed) {
-      huTransitionApplied = true;
-    } else if (await boundary.hasOpenDeliveryChildren!(hu)) {
-      reportOperator(`lazy-workflow: la HU ${hu} todavía tiene hijos de entrega abiertos; transición de HU omitida`);
-    } else {
-      try {
-        await boundary.setHuState!(hu, developed, huState.state ?? "En Desarrollo", huState.revision ?? 0);
-        const verified = await boundary.getHuState!(hu);
-        if (verified.state !== developed) {
-          reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`, { ticket }, "preserved");
-        } else {
-          huTransitionApplied = true;
-        }
-      } catch (error) {
-        reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo transicionar la HU ${hu} (${errorMessage(error)}); el ticket ${ticket} se conservó en Done`, {}, "preserved");
-      }
-    }
+    const huState = await this.transitionDevelopedHu(hu, ticket, options, "preserved");
 
     checkpoint = { ...checkpoint, phase: "cleaning" };
     await save();
@@ -2286,7 +2266,7 @@ export class LazyWorkflowCli {
       cleaned,
       uncleaned,
       ticketState: "Done",
-      huState: huTransitionApplied ? developed : (huState.state ?? "En Desarrollo"),
+      huState: huState ?? "En Desarrollo",
       clean: uncleaned.length === 0,
     };
     console.log(JSON.stringify(summary, null, 2));
@@ -4125,6 +4105,8 @@ export class LazyWorkflowCli {
           checkpoint = { ...checkpoint, phase: "cleaning", receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
         }
+        // Outside the receipt: a run stopped between Done and the HU's move still makes it.
+        await this.transitionDevelopedHu(hu, checkpoint.ticket!, options);
         await this.cleanupCompletedTicketBranch(context, options.workingDirectory, checkpoint.ticketBranch!);
         await this.checkpointStore.clear(options.workingDirectory);
         return this.runVersionedAzureCode({ ...options, session: null }, null);
@@ -4385,6 +4367,8 @@ export class LazyWorkflowCli {
           );
           checkpoint = { ...checkpoint, receipts: { ...checkpoint.receipts, "ticket-completion": { verifiedAt: new Date(now()).toISOString() } } };
           await save();
+          // As in a workspace: the HU moves once its last ticket is Done (ADR-0048).
+          await this.transitionDevelopedHu(hu, ticket, options);
           await markPhase("cleaning", { pullRequest: pullRequest.pullRequest });
           await this.cleanupCompletedTicketBranch(context, options.workingDirectory, ticketBranch!);
           await this.checkpointStore.clear(options.workingDirectory);
@@ -4406,6 +4390,36 @@ export class LazyWorkflowCli {
         return 1;
       }
     }
+  }
+
+  /**
+   * Moves the HU to its developed state once a delivery leaves no delivery
+   * child of it open: a story to `Desarrollo Terminado`, a Bug HU to `En
+   * revisión` (ADR-0047). It runs after a ticket reached `Done`, in one
+   * repository or in a workspace (ADR-0048), and nothing here undoes that
+   * ticket: a failure is reported and the run goes on. Answers the state the
+   * HU was left in, or null when it could not be read.
+   */
+  private async transitionDevelopedHu(hu: number, ticket: number, options: CliOptions, checkpoint?: "preserved"): Promise<string | null> {
+    const boundary = this.huInfoService;
+    if (!boundary.getHuState || !boundary.setHuState || !boundary.hasOpenDeliveryChildren) return null;
+    let current: string | null = null;
+    try {
+      const huState = await boundary.getHuState(hu);
+      const developed = developedState(huState.type);
+      current = huState.state ?? "En Desarrollo";
+      if (huState.state === developed) return developed;
+      if (await boundary.hasOpenDeliveryChildren(hu)) {
+        reportOperator(`lazy-workflow: la HU ${hu} todavía tiene hijos de entrega abiertos; transición de HU omitida`);
+        return current;
+      }
+      await boundary.setHuState(hu, developed, current, huState.revision ?? 0);
+      if ((await boundary.getHuState(hu)).state === developed) return developed;
+      reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo verificar la transición de la HU ${hu}; el ticket ${ticket} se conservó en Done`, { ticket }, checkpoint);
+    } catch (error) {
+      reportAzureFailure("hu-transition-failure", "completing", options, `lazy-workflow: no se pudo transicionar la HU ${hu} (${errorMessage(error)}); el ticket ${ticket} se conservó en Done`, { ticket }, checkpoint);
+    }
+    return current;
   }
 
   private async ensureAzureTicketInProgress(
