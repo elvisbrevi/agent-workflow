@@ -110,6 +110,16 @@ with a lock and keeps connection management on the server.
 _Avoid_: a second credential store, assuming a saved name means a present value,
 browser forms for server credentials
 
+**Self-update**:
+The installer-owned refresh of the remote managed cache, CLI, skills, desktop
+app and an existing owner-hosted web installation. Web update refuses active
+executions, keeps a backup, verifies the restarted backend and restores the
+previous cache/web on failure. Ajustes invokes the catalog's update locally or
+the authenticated, parameter-free web operation, which runs outside the
+backend's service group (ADR-0051).
+_Avoid_: pulling a development checkout, browser-supplied installer flags,
+restarting an active workflow
+
 **Owner-hosted web GUI**:
 The same catalog-driven interface served by `lz-web` on an owner's server,
 with a shared Rust machine adapter and an authenticated HTTP transport. Each

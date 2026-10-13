@@ -8,8 +8,8 @@ per installation; this is not a multi-tenant service.
 
 `lz gui` opens the desktop app. The separately built `lz-web` executable hosts
 the web interface; `lz-web --help` (also `<command> --help` or `-h`) lists its
-local administration without opening a profile. `lz update` updates CLI,
-skills and desktop; web artifacts/services are updated separately as below.
+local administration without opening a profile. `lz update` updates the remote
+cache, CLI, skills, desktop and an installed web; see [updates](#updates).
 
 The first owner's dedicated hostname, `agent-workflow.elvisbrevi.cl`, has its
 Cloudflare DNS, Access and services active on the owner's Linux server. Its login is
@@ -121,7 +121,7 @@ Configure the CLI launcher and repositories locally using the existing helper:
 ```bash
 cd "$LZ_PROJECT_DIR/utility/lz"
 LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json" \
-  bun scripts/gui-settings.ts set lzCommand "$LZ_PROJECT_DIR/agent/lazy-workflow/main.ts"
+  bun scripts/gui-settings.ts set lzCommand "$HOME/.cache/agent-workflow/agent/lazy-workflow/main.ts"
 LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json" \
   bun scripts/gui-settings.ts add repositories "$LZ_SERVER_REPOSITORY"
 LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json" \
@@ -134,18 +134,22 @@ Install/authenticate the coding-agent and tracker tools for this OS account.
 Store provider secrets with `lz credentials-set` and list their names in
 `secretEnvironment`, following [the settings reference](../../../utility/lz/GUI.md).
 Credentials remain in the CLI's existing account-specific store. Keep secrets
-out of `gui.json` and out of the repository. The launcher above uses the checked
-out CLI; keep that checkout available and update CLI and GUI together.
+out of `gui.json` and out of the repository. The launcher above uses the managed cache;
+removing `lzCommand` uses the installed `lz` on the service's PATH. A development
+checkout launcher remains supported for development, but web self-update
+requires local migration to the installed CLI and never pulls that checkout.
 
 `web.json` selects the public HTTPS origin, `127.0.0.1:8234`, absolute settings
 and frontend paths, a 12-hour absolute session expiry, `maxRuns: 1`, and an
 explicit initial list of workflow, Git and GitHub/PR operations. The actual
 installed CLI catalog must contain every listed operation. An owner can edit
 `allowedCommands`, `sessionSeconds` (60–2592000) and `maxRuns` (1–16) locally
-while the service is stopped. Credential commands, `gui`, `update`, raw stdin,
+while the service is stopped. Credential commands, `gui`, ordinary `update`, raw stdin,
 forwarded flags, shutdown, custom log paths and interview bind options are
 always excluded from web execution. The API requires long flags as separate
 arguments; it rejects aliases, unknown flags and unregistered paths.
+The owner can update through a dedicated operation accepting only an empty
+JSON object, never through `allowedCommands` (ADR-0051).
 
 `repositoryRoots` (absolute paths, optional) bounds the folders the owner can
 walk and register as repositories from the browser. Without it, the root is the
@@ -256,6 +260,50 @@ directory layout OS isolation: workflow subprocesses and coding agents have
 that account's permissions. Use separate servers, containers or OS accounts
 for that boundary. Path checks here restrict HTTP arguments, not the operating
 system authority of an authorized workflow.
+
+## Updates
+
+`lz update` detects `web.json` plus `service.json` under `LZ_WEB_DATA_DIR`, or
+`~/.local/share/lz-web`, in global launcher modes. Without an installation it
+behaves as before; `--no-web` skips deployment. An external `lzCommand` warns
+and skips the web step without touching that checkout. Initial provisioning
+and [the first self-update deployment](DEPLOYMENT-elvisbrevi.cl.md#first-self-update-deployment-manual-once)
+remain local operations.
+
+The installer builds from the downloaded cache: frozen Bun dependencies and
+`build:web` for the frontend, a locked optimized web-only Cargo build for the
+backend. `.lz-web-frontend-tree` records the GUI tree; `.lz-web-backend-tree`
+records its `src-tauri` tree. Matching stamps and existing artifacts skip
+compilation; a CLI-only change restarts the backend to load its new catalog.
+Rust artifacts persist in `~/.cache/agent-workflow-build/web`. The installer
+does not edit authentication, credentials, settings, runs or service definitions.
+
+Active runs, unavailable/incompatible health, another update or modified/foreign
+services cause refusal before artifact replacement. A gate blocks new runs and
+CLI captures. Before swapping the cache, `deployment-backups/before-update-<sha>-<UTC>`
+retains frontend, binary, public config and stamps; the previous cache is kept
+until verification and then placed in that backup. Complete replacements use
+staging and rename with restoration on failure. Only the units in the checked
+manifest are restarted. Local `/health` must report `ok`, no active runs and
+the SHA256 of the running backend matching the installed binary. Failed
+verification restores the previous cache/web and verifies the old backend.
+
+In **Ajustes → Actualización**, confirm **Actualizar**. The owner/session and
+CSRF checks apply; the browser sends no installer arguments. The copied worker
+runs as a separate systemd user service or one-shot launchd job, so restarting
+the backend does not kill it. `logs/update-<id>.log` and `update.json` retain
+progress/result. The page reconnects and reloads assets after success; an
+expired session still requires sign-in. Desktop uses the normal run feed and
+asks for a full quit/reopen after success.
+
+After a crash or machine shutdown, inspect `update.json`, its private log,
+backup and worker service locally. Confirm the worker has stopped before
+recovering artifacts or removing stale `update.lock` / `installer-update.lock`
+directories. Do not remove the persistent OS lease files. Check local health
+and the installed/running hashes before allowing new work. Finished macOS jobs
+can be unloaded by their recorded `com.elvisbrevi.lz-web.update.<id>` label;
+their plist and copied worker remain in the private log directory. Prune
+backups/log artifacts locally when no update uses them.
 
 ## Sessions, files and recovery
 

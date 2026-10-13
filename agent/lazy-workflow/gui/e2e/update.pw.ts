@@ -1,0 +1,66 @@
+import { test, expect } from "./fixture.ts";
+
+test("Actualizar confirms, follows an external worker through restart and reloads the new interface", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("iphone"), "The injected service executor is exercised in Chromium layouts.");
+  const failures: string[] = [];
+  const updates: unknown[] = [];
+  let confirmations = 0;
+  page.on("pageerror", (error) => failures.push(error.message));
+  page.on("request", (request) => { if (request.url().endsWith("/api/rpc/start_update")) updates.push(request.postDataJSON()); });
+  page.on("dialog", (dialog) => { confirmations++; void dialog.accept(); });
+  await page.goto("/");
+  await page.getByLabel("Usuario", { exact: true }).fill("owner");
+  await page.getByLabel("Contraseña", { exact: true }).fill("synthetic-passphrase");
+  await page.getByRole("button", { name: "Iniciar sesion", exact: true }).click();
+  // While a real synthetic planning interview is alive, update remains disabled.
+  await page.getByRole("button", { name: "Planificar", exact: true }).click();
+  await page.getByRole("radio", { name: "GitHub", exact: true }).click();
+  await page.locator(".work-list").getByText("[Epic] Portal de autoservicio", { exact: true }).click();
+  const panel = page.locator(".work-panel");
+  await panel.getByRole("radio", { name: "Proyecto existente" }).click();
+  await panel.getByRole("checkbox", { name: "github-project" }).check();
+  const interview = panel.getByRole("checkbox", { name: "Responder las preguntas del agente antes de planificar" });
+  await interview.check();
+  await page.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
+  await expect(page.getByText("Synthetic: one service or two?", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Actualizar", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Responder", exact: true }).click();
+  await page.locator(".web-interview textarea").fill("one");
+  await page.getByRole("button", { name: "Enviar respuestas", exact: true }).click();
+  await expect(page.locator(".run-detail")).toContainText("syntheticAnswers");
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  const button = page.getByRole("button", { name: "Actualizar", exact: true });
+  await expect(button).toBeEnabled();
+  const previousConfirmations = confirmations;
+  const reloaded = page.waitForEvent("framenavigated", (frame) => frame === page.mainFrame());
+  await button.click();
+  await expect(page.getByRole("button", { name: "Actualizando…", exact: true })).toBeDisabled();
+  await expect(page.locator(".update-progress")).toContainText("Compilando frontend sintetico");
+  await reloaded;
+  await expect(page.getByRole("heading", { name: "Actualización", exact: true })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Actualizacion terminada" })).toBeVisible();
+  await expect(button).toBeEnabled();
+  expect(confirmations).toBe(previousConfirmations + 1);
+  expect(updates).toEqual([{}]);
+  const evidence = await page.request.get("https://127.0.0.1:18443/__test/update-evidence", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
+  const result = await evidence.json();
+  expect(result.args).toEqual(["update", "--all-global", "--ref", "main"]);
+  expect(result.scheduler).toContain("--property=Type=exec");
+  expect(result.scheduler).not.toContain("--scope");
+  expect(failures).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const screenshot = testInfo.outputPath("update-result.png");
+  await page.screenshot({ path: screenshot, fullPage: true });
+  await testInfo.attach("update-result", { path: screenshot, contentType: "image/png" });
+  // A terminal updater has a maintenance gate but no new web job. Its clients
+  // still reload after restart, without treating the older result as a new job.
+  const terminalReload = page.waitForEvent("framenavigated", (frame) => frame === page.mainFrame());
+  const terminalUpdate = page.request.post("https://127.0.0.1:18443/__test/local-update", { headers: { "x-synthetic-test": "synthetic-loopback-fixture" } });
+  await expect(page.getByRole("button", { name: "Actualizando…", exact: true })).toBeDisabled();
+  expect((await terminalUpdate).ok()).toBe(true);
+  await terminalReload;
+  await expect(page.getByRole("heading", { name: "Actualización", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Actualizar", exact: true })).toBeEnabled();
+  expect(updates).toEqual([{}]);
+});

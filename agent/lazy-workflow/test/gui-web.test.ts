@@ -7,6 +7,54 @@ import { planTunnel, applyTunnel, type CloudflareApi } from "../gui/scripts/prov
 import { serviceFiles } from "../gui/scripts/install-web-services.ts";
 import { interviewUrl } from "../gui/src/lib/output.ts";
 
+test("navigation cancels pending requests without revoking the Access session", async () => {
+  let unauthorized = 0; let signal: AbortSignal | null = null;
+  const transport = createHttpTransport(async (path, options) => {
+    if (path === "/api/auth") return Response.json({ mode: "cloudflareAccess" });
+    if (path === "/api/session") return Response.json({ username: "owner", csrf: "synthetic", expiresAt: 9999999999 });
+    signal = options!.signal!;
+    return await new Promise<Response>((_, reject) => signal!.addEventListener("abort", () => reject(new DOMException("navigation", "AbortError"))));
+  }, () => { unauthorized++; });
+  await transport.authentication(); await transport.session();
+  const request = transport.rpc("get_update_status");
+  transport.cancelPendingRequests();
+  await expect(request).rejects.toThrow("navigation");
+  expect(signal!.aborted).toBe(true);
+  expect(unauthorized).toBe(0);
+});
+
+test("update polling keeps Access sessions during downtime and still rejects expired sessions", async () => {
+  let offline = false;
+  let expired = false;
+  let unauthorized = 0;
+  const transport = createHttpTransport(async (path) => {
+    if (path === "/api/auth") return Response.json({ mode: "cloudflareAccess", loginUrl: "https://synthetic.test", logoutUrl: "/logout" });
+    if (offline) throw new TypeError("backend restarting");
+    if (expired) return Response.json({ error: "expired" }, { status: 401 });
+    return Response.json({ username: "owner", csrf: "synthetic-csrf", expiresAt: 9999999999 });
+  }, () => { unauthorized++; });
+  await transport.authentication(); await transport.session();
+  transport.setUpdating(true); offline = true;
+  await expect(transport.rpc("get_update_status")).rejects.toThrow("backend restarting");
+  expect(unauthorized).toBe(0);
+  offline = false; expired = true;
+  await expect(transport.rpc("get_update_status")).rejects.toBeInstanceOf(HttpError);
+  expect(unauthorized).toBe(1);
+});
+
+test("Access expiration still opens sign-in during update downtime", async () => {
+  let offline = false; let unauthorized = false;
+  const transport = createHttpTransport(async (path) => {
+    if (path === "/api/auth") return Response.json({ mode: "cloudflareAccess" });
+    if (offline) throw new TypeError("edge redirect or offline backend");
+    return Response.json({ username: "owner", csrf: "synthetic", expiresAt: 1 });
+  }, () => { unauthorized = true; });
+  await transport.authentication(); await transport.session();
+  transport.setUpdating(true); offline = true;
+  await expect(transport.rpc("get_update_status")).rejects.toThrow();
+  expect(unauthorized).toBe(true);
+});
+
 test("web transport uses same-origin cookies, CSRF, unique start IDs and coherent backend errors", async () => {
   const calls: Array<{ path: string; options: RequestInit }> = [];
   let expired = false;

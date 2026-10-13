@@ -30,6 +30,12 @@ test("update sin argumentos reinstala el modo global completo", async () => {
   expect({ code, calls }).toEqual({ code: 0, calls: [["--all-global"]] });
 });
 
+for (const flags of [["--no-web"], ["--no-gui", "--dry-run"], ["--ref", "main", "--no-web"]]) test(`update ${flags.join(" ")} usa el modo global sin pedir una seleccion interactiva`, async () => {
+  const calls: string[][] = [];
+  const code = await createCli({ runInstaller: async (args) => { calls.push(args); return 0; } }).run(["update", ...flags]);
+  expect({ code, calls }).toEqual({ code: 0, calls: [["--all-global", ...flags]] });
+});
+
 test("update propaga el codigo de salida del instalador", async () => {
   const code = await createCli({ runInstaller: async () => 3 }).run(["update"]);
 

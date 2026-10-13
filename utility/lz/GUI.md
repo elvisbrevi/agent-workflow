@@ -23,6 +23,7 @@ the CLI installation and preserve the previous GUI.
 lz update
 lz gui
 lz update --all-global --no-gui    # skip GUI compilation and installation
+lz update --no-web                 # skip an installed web deployment
 ```
 
 | Platform | Build prerequisites | Installation |
@@ -77,7 +78,9 @@ Set `LAZY_WORKFLOW_GUI_SETTINGS` to the existing web profile's path before
 using `scripts/gui-settings.ts`. Launcher, repository registration, environment
 and credentials are configured on the server; the browser can change permitted
 preferences and execute only the configured catalog subset. Local credential
-commands, installer maintenance and shutdown are excluded. The web adapter
+commands, arbitrary installer maintenance and shutdown are excluded. A dedicated
+owner-only update operation takes no parameters and always updates global main.
+The web adapter
 bridges `plan --interview http` back to the authenticated page.
 **Ajustes → Estado del equipo** shows, read-only, which tools the server's runs
 find and whether the Azure organization is configured; secret values never
@@ -90,9 +93,15 @@ and `github-issue-list` in `allowedCommands`, and **Planificar** needs
 `repo-clone` and `repo-create`.
 
 Keep desktop and web on separate profiles or stop one before opening the other.
-Updates rebuild frontend/backend and repeat the web service installer while
-preserving the existing data and Access binding; do not repeat `init` or migrate
-an already bound Access installation.
+**Ajustes → Actualización** shows the installed commit, confirms the update and
+follows progress. Desktop uses the catalog's `update` and requests a full quit
+and reopen; web schedules it outside the backend and reconnects/reloads after
+restart. `lz update` also rebuilds changed web trees and verifies a backed-up,
+idle restart, preserving data and Access binding. The web must use installed
+`lz` on PATH or the cache's `main.ts`; an external checkout is reported and
+preserved. First deployment and migration are
+[manual once](../../agent/lazy-workflow/gui/DEPLOYMENT-elvisbrevi.cl.md#first-self-update-deployment-manual-once).
+Do not repeat `init` or migrate an already bound Access installation.
 
 ## How it maps to the CLI
 

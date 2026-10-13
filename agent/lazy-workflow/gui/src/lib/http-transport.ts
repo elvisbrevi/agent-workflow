@@ -8,16 +8,20 @@ export class HttpError extends Error {
 export function createHttpTransport(fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, onUnauthorized: () => void) {
   let session: WebSession | null = null;
   let authentication: WebAuthentication | null = null;
+  let updating = false;
+  let pendingRequests = new AbortController();
   async function request<T>(path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<T> {
     if (!path.startsWith("/api/") || path.startsWith("//") || path.includes("..")) throw new Error("Invalid API path");
     let response: Response;
+    const signal = pendingRequests.signal;
     try { response = await fetcher(path, {
-      method: body === undefined ? "GET" : "POST", credentials: "same-origin", redirect: "error",
+      method: body === undefined ? "GET" : "POST", credentials: "same-origin", redirect: "error", signal,
       headers: { ...(body === undefined ? {} : { "Content-Type": "application/json", "X-LZ-Web": "1", "X-CSRF-Token": session?.csrf ?? "" }), ...extraHeaders },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }); } catch (error) {
       // Access can redirect an expired fetch to its login page. Re-enter through a full navigation.
-      if (authentication?.mode === "cloudflareAccess") { session = null; onUnauthorized(); }
+      const expired = session !== null && session.expiresAt <= Math.floor(Date.now() / 1000);
+      if (!signal.aborted && (!updating || expired) && authentication?.mode === "cloudflareAccess") { session = null; onUnauthorized(); }
       throw error;
     }
     const result: unknown = response.headers.get("content-type")?.includes("application/json") ? await response.json() : await response.text();
@@ -29,6 +33,9 @@ export function createHttpTransport(fetcher: (input: RequestInfo | URL, init?: R
     return result as T;
   }
   return {
+    cancelPendingRequests: () => { pendingRequests.abort(); pendingRequests = new AbortController(); },
+    setUpdating: (active: boolean) => { updating = active; },
+    isUpdating: () => updating,
     request,
     async authentication(): Promise<WebAuthentication> { authentication = await request<WebAuthentication>("/api/auth"); return authentication; },
     rpc: <T>(operation: string, body: unknown = {}) => request<T>(`/api/rpc/${operation}`, body, operation === "start_run" ? { "X-Request-ID": crypto.randomUUID() } : {}),

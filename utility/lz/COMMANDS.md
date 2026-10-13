@@ -20,7 +20,7 @@ either is the authority whenever this file and the binary disagree.
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
 | `code --session <id> --prompt continue` | `--session` | resumes one | Identities come from the checkpoint |
 | `setup [--prompt <problemas>]` | — | yes, one | Fixes what `plan` and `code` need on this machine (binaries, logins, lz's stored environment) under the `lazy-setup` authority: no file edits, git or tracker mutation, workflow run or `credentials-get`; ends with a report of what still needs the operator |
-| `update [installer options]` | — | no | Runs the Bun installer directly with the options after it; `--all-global` when none |
+| `update [installer options]` | — | no | Runs the Bun installer with the declared options; adds `--all-global` when no mode is named |
 | `gui` | — | no | Opens the installed GUI detached; `LAZY_WORKFLOW_GUI` overrides the binary; takes no options or run log |
 | `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |
 | `work-plannable --tracker azure\|github [--project <name>]` | `--tracker` | no | What a plan can slice without a repository here: your HUs `En Desarrollo` and Bugs `En progreso`, or the open epics of your repositories and organizations |
@@ -31,7 +31,7 @@ either is the authority whenever this file and the binary disagree.
 `lz-web`; use `lz-web --help` and [GUI.md#web-access](GUI.md#web-access) for its
 local administration, GitHub Access login and service setup.
 
-`update` forwards installer flags, including `--no-gui`, unchanged. Global
+`update` forwards installer flags, including `--no-gui` and `--no-web`, unchanged. Global
 launcher modes include the GUI; Rust is required to build it. See
 [CONFIGURATION.md](CONFIGURATION.md#installation-and-updates) for modes.
 

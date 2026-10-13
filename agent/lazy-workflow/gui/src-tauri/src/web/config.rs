@@ -76,7 +76,7 @@ impl WebConfig {
         if self.allowed_commands.is_empty()
             || self.allowed_commands.iter().any(|name| !safe_command(name))
         {
-            return Err("allowedCommands must explicitly name workflows/tools; credentials, catalog, gui and update are local-only".into());
+            return Err("allowedCommands must explicitly name workflows/tools; credentials, catalog and gui are local-only; update uses its dedicated operation".into());
         }
         Ok(())
     }

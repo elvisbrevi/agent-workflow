@@ -8,19 +8,30 @@ const gui = fileURLToPath(new URL("..", import.meta.url));
 const binary = process.env.LZ_WEB_TEST_BINARY ?? join(gui, "src-tauri/target/debug/lz-web");
 const root = await mkdtemp(join(tmpdir(), "lz-web-browser-"));
 const settings = join(root, "gui.json");
-const launcher = join(root, "fake-lz.ts");
+const launcher = join(root, ".cache/agent-workflow/agent/lazy-workflow/main.ts");
+await mkdir(join(root, ".cache/agent-workflow/agent/lazy-workflow"), { recursive: true });
 const catalog = fileURLToPath(new URL("../../src/cli/command-catalog.ts", import.meta.url));
 const factory = fileURLToPath(new URL("../../src/interaction/create-question-channel.ts", import.meta.url));
 // Repositories live outside the private installation, below the root the browser may walk.
 const projects = await mkdtemp(join(tmpdir(), "lz-web-projects-"));
+const fixtureBin = join(projects, "bin"); await mkdir(fixtureBin);
+const fixtureEnv = { HOME: root, PATH: `${fixtureBin}:${process.env.PATH ?? ""}`, NO_COLOR: "1" };
 const github = join(projects, "github-project"); const azure = join(projects, "azure-project"); const broken = join(projects, "broken-project");
 await mkdir(github); await mkdir(azure); await mkdir(broken); await mkdir(join(projects, "archive"));
 await writeFile(launcher, `import { commandCatalog } from ${JSON.stringify(catalog)};
 import { createQuestionChannel } from ${JSON.stringify(factory)};
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 const command = process.argv[2];
 const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
 if (command === "catalog") console.log(JSON.stringify(commandCatalog()));
+else if (command === "update") {
+  writeFileSync(${JSON.stringify(join(root, "update-arguments.json"))}, JSON.stringify(process.argv.slice(2)));
+  console.log("Compilando frontend sintetico...");
+  await Bun.sleep(3000);
+  const restarted = await fetch("https://127.0.0.1:18443/__test/update-restart", { method: "POST", headers: { "x-synthetic-test": "synthetic-loopback-fixture" }, tls: { rejectUnauthorized: false } });
+  if (!restarted.ok) process.exit(1);
+  console.log("Frontend y backend sinteticos actualizados; /health verificado.");
+}
 else if (command === "work-plannable" && value("--tracker") === "azure") console.log(JSON.stringify({ tracker: "azure", truncated: false, items: [
   { id: 50, title: "Mejorar el portal de clientes", type: "User Story", state: "En Desarrollo", url: "https://example.com/hu/50", scope: "Synthetic Azure" },
   { id: 70, title: "Falla el cierre de sesión", type: "Bug", state: "En progreso", url: "https://example.com/bug/70", scope: "Synthetic Azure" }
@@ -79,7 +90,7 @@ await writeFile(runLog, history.map((record) => JSON.stringify(record)).join("\n
 await writeFile(settings, JSON.stringify({ lzCommand: launcher, inheritShellEnvironment: false, repositories: [github, azure, broken], activeRepository: github, environment: { LAZY_WORKFLOW_LOG_FILE: runLog }, flagDefaults: { "--interview": "http" } }), { mode: 0o600 });
 const certificate = Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", join(root, "key.pem"), "-out", join(root, "cert.pem"), "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], { stderr: "ignore" });
 if (certificate.exitCode !== 0) throw new Error("could not prepare synthetic TLS certificate");
-const initialized = Bun.spawn([binary, "init", "--data-dir", root, "--public-url", "https://localhost", "--settings", settings, "--frontend", join(gui, "dist"), "--owner", "owner", "--password-stdin"], { stdin: "pipe", stdout: Bun.file(join(root, "init.log")), stderr: Bun.file(join(root, "init-error.log")) });
+const initialized = Bun.spawn([binary, "init", "--data-dir", root, "--public-url", "https://localhost", "--settings", settings, "--frontend", join(gui, "dist"), "--owner", "owner", "--password-stdin"], { env: fixtureEnv, stdin: "pipe", stdout: Bun.file(join(root, "init.log")), stderr: Bun.file(join(root, "init-error.log")) });
 initialized.stdin.write("synthetic-passphrase\n"); initialized.stdin.end();
 if (await initialized.exited !== 0) throw new Error(`synthetic initialization failed: ${await readFile(join(root, "init-error.log"), "utf8")}`);
 const config = JSON.parse(await readFile(join(root, "web.json"), "utf8"));
@@ -87,9 +98,19 @@ config.allowedCommands = ["plan", "code", "setup", "work-assigned", "work-planna
 config.listen = "127.0.0.1:18234";
 config.repositoryRoots = [projects];
 await writeFile(join(root, "web.json"), JSON.stringify(config), { mode: 0o600 });
+await writeFile(join(root, "service.json"), JSON.stringify({ synthetic: true }), { mode: 0o600 });
+// Inject the executor. It starts the real copied worker in a separate process session.
+await writeFile(join(fixtureBin, "systemd-run"), `#!${process.execPath}
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(join(root, "update-scheduler.json"))}, JSON.stringify(args));
+const child = spawn(args[args.indexOf("--") + 1], args.slice(args.indexOf("--") + 2), { detached: true, stdio: "ignore" });
+child.unref();
+`, { mode: 0o700 });
 let backend: ReturnType<typeof Bun.spawn>;
 async function startBackend() {
-  backend = Bun.spawn([binary, "serve", "--data-dir", root], { stdout: Bun.file(join(root, "backend.log")), stderr: Bun.file(join(root, "backend-error.log")) });
+  backend = Bun.spawn([binary, "serve", "--data-dir", root], { env: fixtureEnv, stdout: Bun.file(join(root, "backend.log")), stderr: Bun.file(join(root, "backend-error.log")) });
   for (let attempt = 0; attempt < 150; attempt++) {
     try { if ((await fetch("http://127.0.0.1:18234/health")).ok) return; } catch {}
     if (backend.exitCode !== null) throw new Error(`synthetic backend failed: ${await readFile(join(root, "backend-error.log"), "utf8")}`);
@@ -98,23 +119,37 @@ async function startBackend() {
   throw new Error("synthetic backend did not become ready");
 }
 await startBackend();
-const proxy = Bun.serve({ hostname: "127.0.0.1", port: 18443, tls: { key: Bun.file(join(root, "key.pem")), cert: Bun.file(join(root, "cert.pem")) }, async fetch(request) {
+const proxy = Bun.serve({ hostname: "127.0.0.1", port: 18443, idleTimeout: 60, tls: { key: Bun.file(join(root, "key.pem")), cert: Bun.file(join(root, "cert.pem")) }, async fetch(request) {
   const url = new URL(request.url);
   if (url.pathname === "/__test/health") return Response.json({ synthetic: true });
-  if (url.pathname === "/__test/restart" || url.pathname === "/__test/expire") {
+  if (url.pathname === "/__test/update-evidence") {
+    if (request.headers.get("x-synthetic-test") !== "synthetic-loopback-fixture") return new Response("Forbidden", { status: 403 });
+    return Response.json({ args: JSON.parse(await readFile(join(root, "update-arguments.json"), "utf8")), scheduler: JSON.parse(await readFile(join(root, "update-scheduler.json"), "utf8")) });
+  }
+  if (url.pathname === "/__test/restart" || url.pathname === "/__test/expire" || url.pathname === "/__test/update-restart" || url.pathname === "/__test/local-update") {
     if (request.method !== "POST" || request.headers.get("x-synthetic-test") !== "synthetic-loopback-fixture") return new Response("Forbidden", { status: 403 });
+    if (url.pathname === "/__test/local-update") {
+      await mkdir(join(root, "update.lock"));
+      await writeFile(join(root, "update.lock/id"), "synthetic-terminal-update");
+      await Bun.sleep(2500);
+    }
     backend.kill("SIGTERM"); await backend.exited;
+    if (url.pathname === "/__test/update-restart") await Bun.sleep(1500);
     if (url.pathname === "/__test/expire") {
       const sessions = JSON.parse(await readFile(join(root, "sessions.json"), "utf8")) as Record<string, { expiresAt: number }>;
       for (const session of Object.values(sessions)) session.expiresAt = Math.floor(Date.now() / 1000) - 1;
       await writeFile(join(root, "sessions.json"), JSON.stringify(sessions), { mode: 0o600 });
     }
-    await startBackend(); return Response.json({ synthetic: true });
+    await startBackend();
+    if (url.pathname === "/__test/local-update") await rm(join(root, "update.lock"), { recursive: true });
+    return Response.json({ synthetic: true });
   }
   if (url.hostname !== "localhost") return new Response("Unexpected synthetic Host", { status: 403 });
   const headers = new Headers(request.headers); headers.set("host", "localhost");
-  const response = await fetch(`http://127.0.0.1:18234${url.pathname}${url.search}`, { method: request.method, headers, redirect: "manual", body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer() });
-  return new Response(response.body, { status: response.status, headers: response.headers });
+  try {
+    const response = await fetch(`http://127.0.0.1:18234${url.pathname}${url.search}`, { method: request.method, headers, redirect: "manual", body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer() });
+    return new Response(response.body, { status: response.status, headers: response.headers });
+  } catch { return Response.json({ error: "Synthetic backend restarting" }, { status: 503 }); }
 } });
 let closing = false;
 async function close() {

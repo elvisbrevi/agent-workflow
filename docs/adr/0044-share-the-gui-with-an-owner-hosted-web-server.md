@@ -68,3 +68,7 @@ The deployment runbook is in
 [gui/WEB.md](../../agent/lazy-workflow/gui/WEB.md); its verification record
 distinguishes prepared code, configured DNS, a connected tunnel and a real
 HTTPS application check.
+
+[ADR-0051](0051-update-the-installed-web-through-the-installer.md) narrows the
+local maintenance rule with a fixed, authenticated owner update operation.
+Generic `update` and installer flags remain excluded from the web allowlist.

@@ -8,6 +8,9 @@ import { AgentPicker } from "./AgentPicker.tsx";
 import { DirectoryPicker } from "./DirectoryPicker.tsx";
 import { AccountControl } from "./WebAccess.tsx";
 import { SetupBanner, type SetupState } from "./SetupBanner.tsx";
+import { prepareUpdate, updateBusy, type UpdateStatus } from "../lib/update.ts";
+import type { RunState } from "../lib/runs.ts";
+import { stripAnsi } from "../lib/output.ts";
 
 interface PreferencesViewProps {
   readonly catalog: CommandCatalog;
@@ -17,6 +20,11 @@ interface PreferencesViewProps {
   readonly setup: SetupState;
   readonly onSave: (settings: GuiSettings) => Promise<void>;
   readonly onAddRepository: (path: string) => Promise<void>;
+  readonly updateStatus: UpdateStatus | null;
+  readonly updateError: string | null;
+  readonly updating: boolean;
+  readonly runs: readonly RunState[];
+  readonly onUpdate: () => Promise<void>;
 }
 
 const text = (value: FlagDefault | undefined): string => (typeof value === "string" ? value : "");
@@ -52,7 +60,7 @@ function MachineStatus({ catalog, diagnostics, models }: { catalog: CommandCatal
   );
 }
 
-export function PreferencesView({ catalog, document, diagnostics, models, setup, onSave, onAddRepository }: PreferencesViewProps) {
+export function PreferencesView({ catalog, document, diagnostics, models, setup, onSave, onAddRepository, updateStatus, updateError, updating, runs, onUpdate }: PreferencesViewProps) {
   const [draft, setDraft] = useState<GuiSettings>(document.settings);
   const [saving, setSaving] = useState(false);
   // A file changed from outside replaces the form only while it has no unsaved edits.
@@ -63,6 +71,9 @@ export function PreferencesView({ catalog, document, diagnostics, models, setup,
     setBase(document.settings);
   }, [document.settings]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(document.settings);
+  const updateRun = runs.findLast((run) => run.command === "update");
+  const active = runs.some((run) => run.status === "running" || run.status === "cancelling") || (updateStatus?.activeRuns ?? 0) > 0;
+  const busy = updating || updateBusy(updateStatus);
   const update = (patch: Partial<GuiSettings>) => setDraft({ ...draft, ...patch });
   const setAgent = (choice: { cli: string; model: string; variant: string }) => {
     const flagDefaults = { ...draft.flagDefaults };
@@ -103,6 +114,18 @@ export function PreferencesView({ catalog, document, diagnostics, models, setup,
         <SetupBanner setup={setup} expanded />
         <MachineStatus catalog={catalog} diagnostics={diagnostics} models={models} />
         {!isDesktop && <p className="muted small">Lz se ejecuta en el servidor, con su configuración y sus cuentas.</p>}
+      </section>
+
+      <section className="panel-card">
+        <h2>Actualización</h2>
+        <p className="muted small">Commit instalado: <code>{updateStatus?.installedCommit?.slice(0, 12) ?? "No disponible"}</code></p>
+        <button type="button" className="button primary" disabled={!updateStatus || busy || active || (isDesktop && !prepareUpdate(catalog))} onClick={() => { void onUpdate(); }}>{busy || updateRun?.status === "running" ? "Actualizando…" : "Actualizar"}</button>
+        {active && <p className="muted small">Espera a que terminen las ejecuciones para actualizar.</p>}
+        {updateError && <p className="callout error" role="alert">{updateError}</p>}
+        {!isDesktop && updateStatus?.job && <p role="status">{updateStatus.job.message}</p>}
+        {!isDesktop && busy && updateStatus?.job?.status !== "failed" && <p className="muted small">Si el servicio se reinicia, esta página se reconectará y cargará la versión nueva.</p>}
+        {isDesktop && updateRun?.exit && <p role="status">{updateRun.status === "success" ? "Actualización terminada. Cierra lz desde el menú de la app y vuelve a abrirla con lz gui para usar la versión nueva." : "La actualización no terminó correctamente. Revisa el progreso antes de reintentar."}</p>}
+        {(updateStatus?.log || (isDesktop && updateRun)) && <details open={busy || updateRun?.status === "running"}><summary>Progreso de la actualización</summary><pre className="update-progress">{isDesktop && updateRun ? [...updateRun.stdout, ...updateRun.stderr].join("\n") : stripAnsi(updateStatus?.log ?? "")}</pre></details>}
       </section>
 
       <section className="panel-card">

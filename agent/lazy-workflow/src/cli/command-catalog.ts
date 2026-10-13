@@ -131,7 +131,7 @@ const GROUPS: readonly CatalogFlagGroup[] = [
 
 /** The installer's own options, which `update` forwards untouched. */
 const INSTALLER_FLAGS: readonly CatalogFlag[] = [
-  { flag: "--all-global", kind: "boolean", label: "Todo global", description: "Skills, agentes y CLI globales (default de update).", forwarded: true },
+  { flag: "--all-global", kind: "boolean", label: "Todo global", description: "Skills, agentes, CLI, escritorio y web instalada (default de update).", forwarded: true },
   { flag: "--claude-global", kind: "boolean", label: "Claude global", description: "Skills, agentes y CLI globales de Claude Code.", forwarded: true },
   { flag: "--claude-local", kind: "boolean", label: "Claude local", description: "Skills, agentes y CLI del proyecto para Claude Code.", forwarded: true },
   { flag: "--global", kind: "boolean", label: "Compartido global", description: "Skills y agentes compartidos globales.", forwarded: true },
@@ -143,6 +143,7 @@ const INSTALLER_FLAGS: readonly CatalogFlag[] = [
   { flag: "--ref", kind: "string", label: "Ref", description: "Rama o tag del repositorio a instalar.", forwarded: true },
   { flag: "--dry-run", kind: "boolean", label: "Simulacion", description: "Muestra lo que haria sin cambiar nada.", forwarded: true },
   { flag: "--no-gui", kind: "boolean", label: "Omitir GUI", description: "No compila ni instala la GUI.", forwarded: true },
+  { flag: "--no-web", kind: "boolean", label: "Omitir web", description: "No actualiza la web instalada en este equipo.", forwarded: true },
   { flag: "--force", kind: "boolean", label: "Forzar", description: "Reemplaza entradas existentes.", forwarded: true },
   { flag: "--uninstall", kind: "boolean", label: "Desinstalar", description: "Retira lo instalado por el modo elegido.", forwarded: true },
 ];
@@ -369,12 +370,12 @@ const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
   {
     name: "update",
     family: "maintenance",
-    summary: "Ejecuta el instalador de Bun; sin opciones usa --all-global.",
+    summary: "Actualiza desde el remoto el cache, CLI, skills, escritorio y web instalada; sin opciones usa --all-global.",
     effect: "maintenance",
     output: "stream",
     groups: [],
     flags: INSTALLER_FLAGS,
-    notes: ["Todo lo declarado despues de update se reenvia al instalador."],
+    notes: ["Todo lo declarado despues de update se reenvia al instalador; si no hay modo se agrega --all-global."],
   },
   tool({ name: "agent-models", family: "maintenance", summary: "Lista los modelos y esfuerzos que ofrece cada agente CLI instalado, leidos del propio CLI.", effect: "read", flags: [] }),
   {

@@ -120,6 +120,64 @@ async fn login_cookie(app: &Router, username: &str) -> (String, String) {
     (cookie.split(';').next().unwrap().to_string(), csrf)
 }
 
+#[tokio::test]
+async fn update_operations_require_owner_session_csrf_empty_body_and_an_idle_server() {
+    let fixture = Fixture::new("updater");
+    let app = router(fixture.state.clone());
+    let (cookie, csrf) = login_cookie(&app, "updater").await;
+    for (session, token, body) in [
+        ("", "", json!({})),
+        (cookie.as_str(), "wrong", json!({})),
+        (cookie.as_str(), csrf.as_str(), json!({"args":["--ref", "foreign"]})),
+        (cookie.as_str(), csrf.as_str(), json!({"target":"/tmp"})),
+        (cookie.as_str(), csrf.as_str(), json!({"repoUrl":"https://foreign.test"})),
+    ] {
+        let response = app.clone().oneshot(request("POST", "/api/rpc/start_update", session, token, body)).await.unwrap();
+        assert!(!response.status().is_success());
+    }
+    assert!(!fixture.root.path().join("update.lock").exists());
+    // An externally configured development checkout must be migrated locally.
+    let rejected = app.clone().oneshot(request("POST", "/api/rpc/start_update", &cookie, &csrf, json!({}))).await.unwrap();
+    assert!(!rejected.status().is_success());
+    // Existing runs prevent scheduling before any executable is selected.
+    use std::os::unix::fs::PermissionsExt;
+    let launcher = fixture.root.path().join("fake-lz");
+    std::fs::write(&launcher, "#!/bin/sh\nsleep 10\n").unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let started = app.clone().oneshot(request("POST", "/api/rpc/start_run", &cookie, &csrf, json!({"request":{"args":["code"],"stdin":null,"cwd":null}}))).await.unwrap();
+    assert_eq!(started.status(), StatusCode::OK);
+    let rejected = app.clone().oneshot(request("POST", "/api/rpc/start_update", &cookie, &csrf, json!({}))).await.unwrap();
+    assert!(value(rejected).await["error"].as_str().unwrap().contains("ejecuciones activas"));
+    fixture.state.core.runs.shutdown();
+}
+
+#[tokio::test]
+async fn maintenance_gate_blocks_new_runs_and_status_survives_a_backend_restart() {
+    let fixture = Fixture::new("progress");
+    let app = router(fixture.state.clone());
+    let (cookie, csrf) = login_cookie(&app, "progress").await;
+    let data = fixture.root.path();
+    std::fs::create_dir(data.join("update.lock")).unwrap();
+    private_write(&data.join("update.json"), &json!({"id":"synthetic-update", "status":"running", "message":"Preparando frontend"})).unwrap();
+    std::fs::create_dir(data.join("logs")).unwrap();
+    std::fs::write(data.join("logs/update-synthetic-update.log"), "Progreso sintetico\n").unwrap();
+    let blocked = app.clone().oneshot(request("POST", "/api/rpc/start_run", &cookie, &csrf, json!({"request":{"args":["code"],"stdin":null,"cwd":null}}))).await.unwrap();
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let status = app.clone().oneshot(request("POST", "/api/rpc/get_update_status", &cookie, &csrf, json!({}))).await.unwrap();
+    let before = value(status).await;
+    assert_eq!(before["job"]["status"], "running");
+    assert_eq!(before["log"], "Progreso sintetico\n");
+    assert_eq!(before["updating"], true);
+    let blocked_update = app.clone().oneshot(request("POST", "/api/rpc/start_update", &cookie, &csrf, json!({}))).await.unwrap();
+    assert!(value(blocked_update).await["error"].as_str().unwrap().contains("recuperacion pendiente"));
+    let config = fixture.config.clone();
+    let directory = data.to_path_buf();
+    drop(app); drop(fixture.state);
+    let restarted = router(WebState::open(config, directory).unwrap());
+    let status = restarted.oneshot(request("POST", "/api/rpc/get_update_status", &cookie, &csrf, json!({}))).await.unwrap();
+    assert_eq!(value(status).await["job"], before["job"]);
+}
+
 #[test]
 fn an_installation_cannot_start_twice_even_with_a_different_settings_path() {
     let fixture = Fixture::new("alice");

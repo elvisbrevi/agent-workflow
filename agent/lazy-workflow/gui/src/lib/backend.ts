@@ -7,6 +7,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { isDesktop } from "./platform.ts";
 import { createHttpTransport } from "./http-transport.ts";
 import type { CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
+import type { UpdateStatus } from "./update.ts";
 
 export type FlagDefault = string | number | boolean | string[];
 
@@ -95,6 +96,8 @@ async function command<T>(name: string, body: Record<string, unknown> = {}): Pro
 }
 
 export const backend = {
+  getUpdateStatus: () => command<UpdateStatus>("get_update_status"),
+  startUpdate: () => command<UpdateStatus>("start_update"),
   getSettings: () => command<SettingsDocument>("get_settings"),
   saveSettings: (settings: GuiSettings) => command<SettingsDocument>("save_settings", { settings }),
   loadCatalog: () => command<CommandCatalog>("load_catalog"),
@@ -117,12 +120,17 @@ function startFeed() {
   const activeGeneration = ++generation;
   let cursor = 0;
   let instance: string | null = null;
+  let reloadAfterUpdate = false;
   const poll = async () => {
     if (activeGeneration !== generation) return;
     try {
       const feed = await webTransport.request<{ events: FeedEvent[]; cursor: number; instance: string }>(`/api/events?after=${cursor}`);
       if (activeGeneration !== generation) return;
-      if (instance !== null && instance !== feed.instance) { window.location.reload(); return; }
+      if (instance !== null && instance !== feed.instance) {
+        if (!webTransport.isUpdating()) { window.location.reload(); return; }
+        reloadAfterUpdate = true;
+        cursor = 0;
+      }
       if (instance === null) {
         const runs = await webTransport.request<Array<{ started: RunStarted; args: string[]; exit: RunExit | null }>>("/api/runs");
         if (activeGeneration !== generation) return;
@@ -134,6 +142,7 @@ function startFeed() {
       instance = feed.instance;
       for (const event of feed.events) for (const handler of handlers.get(event.event) ?? []) handler(event.payload);
       cursor = feed.cursor;
+      if (reloadAfterUpdate && !webTransport.isUpdating()) { window.location.reload(); return; }
     } catch { /* Network errors retry; session expiry unmounts the app through the auth gate. */ }
     if (activeGeneration === generation) timer = setTimeout(() => { void poll(); }, 1000);
   };
