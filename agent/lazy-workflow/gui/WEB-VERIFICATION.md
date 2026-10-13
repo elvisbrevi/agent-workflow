@@ -5,6 +5,48 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Plan from the tracker update (2026-10-13)
+
+`main` at `76f0445` (PR #14) was deployed to the Linux installation: Planificar
+reading `work-plannable` at the tracker, downloading or creating the repository
+a plan is worked in, cross-repository epic sub-issues, and each command's own
+agent in Ajustes. No workflow runs were active: the backend unit held only its
+own `lz-web` process. The previous backend, frontend, `service.json` and
+`web.json` were backed up under
+`deployment-backups/before-plan-from-tracker-76f0445-2026-10-13T01-19-46Z`.
+
+`lz update` installed the CLI and skills at `76f0445`, with the six new commands
+in its catalog, and rebuilt `~/.local/bin/lz-gui`, whose tree stamp
+`19734d00c1d134829a404bd6cdde6ab94a810ab3` matches the merged GUI tree. The owner
+checkout the web backend runs the CLI from was fast-forwarded to the same
+commit. With both units stopped, `work-plannable`, `azure-project-list`,
+`azure-repo-list`, `github-owner-list`, `repo-clone` and `repo-create` were
+appended to `allowedCommands`; `repositoryRoots` stays unset, so a download or
+creation writes only below the server account's home. The frozen installs,
+typecheck, frontend build and optimized `lz-web` build ran from the owner
+checkout, and the service helper reinstalled and started both units.
+
+Readback: both units active, the backend started with the extended allowlist
+(it refuses to start when an allowed command is missing from the catalog),
+local `/health` returning `ok`, the installed backend hash
+`b8b4b191577e0323d9c2caa501ea63387c004bddb82c8530f144c2ae6a8c9509` equal to the
+build, the three frontend files identical to `dist/`, and the connector
+registered four tunnel connections again. The public origin and an anonymous
+RPC both answer the Cloudflare Access redirect (302).
+
+Read-only checks with the deployed CLI against the real trackers succeeded:
+`work-plannable --tracker azure` and `--tracker github` each answered one item,
+`azure-project-list` the organization's projects and `github-owner-list` the
+operator's account. No repository was downloaded or created, and no Plan or Code
+ran against the live backlog; cross-repository sub-issues and reconciliation
+are covered by synthetic tests only. The browser scenarios, including the new
+Planificar download flow on an emulated iPhone 15, ran against the synthetic
+backend before the merge.
+
+During development the owner checkout briefly carried uncommitted changes,
+which the web backend would have run; the run log shows no Plan or Code in that
+window, and development moved to a separate worktree before deployment.
+
 ## Plan from the work update (2026-10-12)
 
 `main` at `4cf10c3` (PRs #11 and #12) was deployed to the Linux installation:
