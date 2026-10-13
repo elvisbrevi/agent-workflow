@@ -30,6 +30,12 @@ are in [verification evidence](WEB-VERIFICATION.md#work-focused-gui-update-2026-
 Planning from an epic, an HU or a Bug (PRs #11 and #12, `main` at `4cf10c3`) is
 deployed there too, with no allowlist change; the backup and readback are in
 [verification evidence](WEB-VERIFICATION.md#plan-from-the-work-update-2026-10-12).
+Planning from the tracker and provisioning the repository (PR #14, `main` at
+`76f0445`) is deployed there, with six commands added to the allowlist; the
+backup and readback are in
+[verification evidence](WEB-VERIFICATION.md#plan-from-the-tracker-update-2026-10-13).
+The web backend runs the CLI from the owner checkout, so develop in a separate
+worktree and keep that checkout on `main`.
 
 ### Responsive GUI update, 2026-10-10
 
