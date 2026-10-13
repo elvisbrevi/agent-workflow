@@ -38,8 +38,101 @@ Keeping each agent's model and effort when switching tabs (PR #16, `main` at
 `588709f`) is deployed there, a frontend-only change with no allowlist change;
 the backup and readback are in
 [verification evidence](WEB-VERIFICATION.md#agent-picker-update-2026-10-13).
-The web backend runs the CLI from the owner checkout, so develop in a separate
-worktree and keep that checkout on `main`.
+The current web backend runs the CLI from the owner checkout. Until the
+one-time migration below, develop in a separate worktree and preserve that
+checkout. This implementation was based on remote `main` at `6126522`, after
+`e463dbe`; neither it nor the production installation was deployed by this PR.
+
+## First self-update deployment (manual once)
+
+Execute this only after the owner explicitly authorizes production deployment
+and the self-update PR is merged. The currently deployed backend cannot start
+its own update or report the new health contract. PR #18's frontend is still
+pending: building and installing **current merged main** in this procedure
+deploys that readable Plan result together with the new update controls. The
+existing backup
+`deployment-backups/before-plan-whole-work-item-e463dbe-2026-10-13T03-31-53Z`
+must be preserved; it is not evidence that PR #18's frontend was installed.
+
+1. Confirm no Plan/Code or other execution is active, including child processes
+   in the recorded backend unit. Close/quit an active desktop app before its
+   replacement. Read only the two labels/paths from `service.json`; do not
+   change unrelated services. Make a new private backup of `bin/lz-web`, the
+   current `frontendDir`, `web.json`, `service.json`, `gui.json`, stamps and the
+   managed CLI cache under `deployment-backups/before-self-update-bootstrap-<UTC>`.
+   Keep configuration private; do not print it or include credentials in logs.
+2. Stop those two recorded services with the appropriate user service manager.
+   On this Linux installation they are
+   `lz-web-e8032b38f114-backend.service` and
+   `lz-web-e8032b38f114-connector.service`. Confirm the backend and its children
+   are stopped. Do not edit the owner's checkout or use it as a build target.
+3. Use a **separate checkout of the merged main** as `LZ_UPDATE_CHECKOUT` to run
+   the new installer. The older installed updater does not know `--no-web`.
+   Keep the real Rust toolchain selectors and execute as the service's owner:
+
+   ```bash
+   umask 077
+   export LZ_WEB_DATA_DIR="$HOME/.local/share/lz-web"
+   export LZ_CACHE="$HOME/.cache/agent-workflow"
+   bun "$LZ_UPDATE_CHECKOUT/installer/main.ts" --all-global --no-web
+   ```
+
+4. Migrate the server's launcher explicitly to that cache. Removing `lzCommand`
+   is also supported when the service's PATH resolves the managed `lz`; the
+   explicit path avoids ambiguity during this first deployment:
+
+   ```bash
+   LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json" \
+     bun "$LZ_CACHE/utility/lz/scripts/gui-settings.ts" \
+     set lzCommand "$LZ_CACHE/agent/lazy-workflow/main.ts"
+   ```
+
+5. Build the latest frontend, including the pending PR #18 result view, and
+   backend, with artifacts outside the replaced cache; install/start through
+   the existing service helper. Do not repeat `init`, `use-access` or owner
+   binding and do not add `update` to `allowedCommands`:
+
+   ```bash
+   cd "$LZ_CACHE/agent/lazy-workflow/gui"
+   bun install --frozen-lockfile
+   bun run typecheck
+   bun run build:web
+   CARGO_TARGET_DIR="$HOME/.cache/agent-workflow-build/web" \
+     cargo build --locked --release --no-default-features --features web \
+     --bin lz-web --manifest-path src-tauri/Cargo.toml
+   bun scripts/install-web-services.ts --data-dir "$LZ_WEB_DATA_DIR" \
+     --backend "$HOME/.cache/agent-workflow-build/web/release/lz-web" \
+     --frontend "$PWD/dist" --cloudflared "$(command -v cloudflared)" \
+     --install --start
+   curl --fail http://127.0.0.1:8234/health
+   ```
+
+6. Compare the health `backendHash` with SHA256 of both the built and installed
+   `lz-web`, verify `activeRuns: 0`, both recorded services active, deployed
+   frontend hashes equal to `dist`, the launcher resolving to the cache, and
+   unchanged owner binding/settings/run data. Only then record the build stamps:
+
+   ```bash
+   git -C "$LZ_CACHE" rev-parse HEAD:agent/lazy-workflow/gui \
+     > "$LZ_WEB_DATA_DIR/.lz-web-frontend-tree"
+   git -C "$LZ_CACHE" rev-parse HEAD:agent/lazy-workflow/gui/src-tauri \
+     > "$LZ_WEB_DATA_DIR/.lz-web-backend-tree"
+   git -C "$LZ_CACHE" rev-parse HEAD > "$LZ_WEB_DATA_DIR/.lz-web-commit"
+   ```
+
+7. Reload the public page after GitHub/Access sign-in. Verify the readable Plan
+   result from PR #18 and **Ajustes → Actualización**. A subsequent update is a
+   separate authorized production action: confirm the external worker, progress,
+   successful reconnect/reload and no unnecessary builds. Validate desktop with
+   a separate profile and restart it fully. Record what actually happened in
+   WEB-VERIFICATION.md; physical-phone and real macOS job acceptance remain
+   separate checks.
+
+If installation/readback fails, keep work stopped, restore the bootstrap backup
+including the old launcher/cache and web artifacts, then restart only the
+recorded services and check health. Retain both backups for diagnosis. Future
+updates use `lz update` or the confirmed button; no owner-checkout pull or manual
+frontend rebuild is part of that normal path.
 
 ### Responsive GUI update, 2026-10-10
 
@@ -297,7 +390,7 @@ existing absolute Mac path if the installation should operate on that project.
 ```bash
 cd "$LZ_PROJECT_DIR/utility/lz"
 export LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json"
-bun scripts/gui-settings.ts set lzCommand "$LZ_PROJECT_DIR/agent/lazy-workflow/main.ts"
+bun scripts/gui-settings.ts set lzCommand "$HOME/.cache/agent-workflow/agent/lazy-workflow/main.ts"
 bun scripts/gui-settings.ts add repositories "$LZ_SERVER_REPOSITORY"
 bun scripts/gui-settings.ts set activeRepository "$LZ_SERVER_REPOSITORY"
 bun scripts/gui-settings.ts set commandDefaults.plan.--interview http

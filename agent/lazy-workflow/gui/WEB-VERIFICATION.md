@@ -5,6 +5,77 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Self-update preparation (2026-10-13, not deployed)
+
+Implemented in the separate `/tmp/agent-workflow-update` worktree, branch
+`feat/update-all-settings`, from remote `main` at `6126522` (after `e463dbe`).
+No production cache, launchers, web artifacts, services or owner checkout were
+changed. PR #18's production frontend remains pending; the
+[one-time manual deployment](DEPLOYMENT-elvisbrevi.cl.md#first-self-update-deployment-manual-once)
+includes it and migrates `lzCommand` to the installed cache. ADR-0051 records
+the dedicated owner update operation and its limits.
+
+| Check | Result |
+|---|---|
+| `agent/lazy-workflow` Bun suite | 1014 passed, 2 Windows-specific skipped, 0 failed |
+| Installer suite | 38 passed, 1 PowerShell-specific skipped, 0 failed |
+| Bash / zsh bootstrap suites | Both passed, including `--no-web` delegation |
+| GUI Bun install / typecheck / `build:web` | Passed |
+| Installer TypeScript check | Passed |
+| Desktop Rust / Clippy with `-D warnings` | 17 tests passed; Clippy passed |
+| Web Rust / local administration / Clippy with `-D warnings` | 46 library and 3 administration tests passed; Clippy passed |
+| Headless web debug build | Passed |
+| Linux native debug build / temporary installation / launch / skip / uninstall | Passed under Xvfb with a synthetic CLI/profile |
+| Complete synthetic HTTPS browser suite | 31 passed, 9 conditional/device skips, 0 failed |
+| Safari restart/navigation follow-up | 3 repeated iPhone 15 WebKit scenarios passed |
+| `git diff --check` | Passed |
+
+Installer checks use a temporary HOME, real toolchain selectors, injected fake
+build/service executables and injected health. A local real Git repository
+adds a new commit; the real CLI coordinator's `update` calls the installer and
+checks the cache SHA, changed CLI/skills, desktop stamp, frontend/backend,
+backup, health and unchanged-tree build skip. Other checks cover custom data
+directories, external development launchers, checkout frontend protection,
+active-run refusal, edited/foreign services, simultaneous updates, rollback
+and gates retained when restoration cannot be verified. A runnable synthetic
+GUI artifact launches through the real `lz gui` command in that temporary HOME,
+then an unchanged install skips its build and uninstall removes it. These are
+synthetic GUI/backend artifacts, not a native application-window acceptance.
+
+A separate native check built the actual Linux `lz-gui` debug executable,
+installed it in a temporary HOME through the installer (the injected build
+executor copied that compiled artifact), and launched it through the cached
+real CLI's `gui` command under Xvfb and a private D-Bus session. Its React
+window loaded the synthetic catalog and diagnostics; a second installation
+skipped its GUI build, and uninstall removed the GUI and build directory.
+The debug executable uses the temporary loopback frontend dev server; WebKit
+sandboxing was disabled only for this credential-free test process. The test
+window, dev server and temporary HOME were removed. No native update button
+was clicked against an installed real updater or a production profile.
+
+The new browser scenario confirms the button, disables it during a synthetic
+planning interview, submits only `{}`, launches the real copied worker through
+an injected service-manager executor and verifies fixed global/main CLI args,
+progress, backend downtime, persistence and reload. It also verifies reload
+after a terminal-style maintenance gate with no new web job. The scenario
+runs in Chromium at desktop, 390px and 320px; the other complete-suite scenarios
+also exercise WebKit upright/landscape iPhone emulation. Actual OS service
+managers are never invoked by these tests. Access gateway tests remain
+synthetic; Rust tests cover session/owner/CSRF and forbidden update parameters.
+
+A fixture HTTPS idle timeout initially interrupted its restart control request;
+it now permits that bounded test operation. Debug SHA256 is optimized so hashing
+large debug executables does not exhaust restart readiness checks. A WebKit
+navigation exposed an in-flight event request; pagehide explicitly aborts
+pending requests without revoking the Access session, with a transport test and
+three repeated Safari checks before the complete suite passed.
+
+Not performed: production deployment/update, real systemd/launchd scheduling or
+restart, native macOS/Windows application acceptance, optimized production web
+build/deployment, physical-phone tests or real provider/backlog operations.
+The deployment guide keeps these owner-authorized steps separate from this
+preparation and preserves the existing production backup.
+
 ## Agent picker update (2026-10-13)
 
 `main` at `588709f` (PR #16) was deployed to the Linux installation: the agent

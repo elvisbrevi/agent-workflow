@@ -372,3 +372,5 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
   .work-toolbar .search { flex: 1 1 200px; order: 0; }
   .settings-actions { position: static; background: none; }
 }
+/* Installer output wraps on phones while keeping a bounded progress area. */
+.update-progress { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font-size: .8rem; }

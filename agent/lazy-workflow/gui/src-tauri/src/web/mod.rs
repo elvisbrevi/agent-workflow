@@ -3,6 +3,7 @@ pub mod access;
 pub mod auth;
 pub mod config;
 mod policy;
+pub mod update;
 
 use crate::{
     core::{Core, EnvironmentProbe},
@@ -121,9 +122,12 @@ pub struct WebState {
     pub stopping: AtomicBool,
     instance: String,
     _instance_lease: std::fs::File,
+    backend_hash: String,
 }
 impl WebState {
     pub fn open(config: WebConfig, data_dir: PathBuf) -> Result<Arc<Self>, String> {
+        use sha2::{Digest, Sha256};
+        let backend_hash = format!("{:x}", Sha256::digest(std::fs::read(std::env::current_exe().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?));
         config.validate()?;
         if !config.frontend_dir.join("index.html").is_file() {
             return Err("frontendDir needs a built index.html; run bun run build:web".into());
@@ -199,6 +203,7 @@ impl WebState {
             stopping: AtomicBool::new(false),
             instance: auth::random_token(),
             _instance_lease: instance_lease,
+            backend_hash,
         }))
     }
     fn token(headers: &HeaderMap) -> Option<String> {
@@ -233,7 +238,7 @@ impl WebState {
 
 pub fn router(state: Arc<WebState>) -> Router {
     Router::new()
-        .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
+        .route("/health", get(health))
         .route("/api/login", post(login))
         .route("/api/auth", get(authentication_info))
         .route("/api/access-session", post(access_session))
@@ -249,6 +254,12 @@ pub fn router(state: Arc<WebState>) -> Router {
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), secure))
         .with_state(state)
+}
+
+async fn health(State(state): State<Arc<WebState>>) -> Json<Value> {
+    // Synchronize with admission: an updater creates the gate before checking idle.
+    let _gate = state.starts.lock().unwrap();
+    Json(json!({"status":"ok", "activeRuns":state.core.runs.active_count(), "backendHash":state.backend_hash}))
 }
 
 async fn secure(
@@ -538,6 +549,8 @@ async fn rpc(
     }
     let value = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         match operation.as_str() {
+            "start_update" => Ok(update::start(&state, &body)?),
+            "get_update_status" => { policy::update_request(&body)?; Ok(update::status(&state)?) },
             "get_settings" => { let mut document = state.core.get_settings(); document.settings = policy::public_settings(document.settings); Ok(serde_json::to_value(document).unwrap()) }
             "save_settings" => {
                 let _gate = state.starts.lock().unwrap();
@@ -558,6 +571,7 @@ async fn rpc(
             "start_run" => {
                 let request_id = headers.get("x-request-id").and_then(|h| h.to_str().ok()).filter(|id| id.len() >= 16 && id.len() <= 80 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).ok_or_else(|| denied("start_run needs X-Request-ID"))?;
                 let mut starts = state.starts.lock().unwrap();
+                if update::blocked(&state.data_dir) { return Err(ApiError(StatusCode::CONFLICT, "Actualizacion en curso; espera antes de iniciar una ejecucion.".into())); }
                 if let Some(receipt) = starts.get(request_id) { return receipt.started.as_ref().map(|started| serde_json::to_value(started).unwrap()).ok_or(ApiError(StatusCode::CONFLICT, "previous start has no acknowledgement; inspect the server history before retrying".into())); }
                 starts.retain(|_, receipt| receipt.created_at + 7 * 86400 > auth::now() || receipt.exit.is_none());
                 if starts.len() >= 1024 { return Err(ApiError(StatusCode::CONFLICT, "idempotency history is full; inspect the server history".into())); }
@@ -608,6 +622,8 @@ async fn rpc(
                 Ok(serde_json::to_value(state.core.read_run_log(limit)?).unwrap())
             }
             "capture_lz" => {
+                let _gate = state.starts.lock().unwrap();
+                if update::blocked(&state.data_dir) { return Err(ApiError(StatusCode::CONFLICT, "Actualizacion en curso; las lecturas se reanudaran al terminar.".into())); }
                 let args: Vec<String> = serde_json::from_value(body["args"].clone()).map_err(|_| denied("read needs CLI arguments"))?;
                 let command = state.catalog["commands"].as_array().unwrap().iter().find(|command| command["name"].as_str() == args.first().map(String::as_str)).ok_or_else(|| denied("read command is not allowed"))?;
                 if command["effect"] != "read" { return Err(denied("only read commands can be captured")); }

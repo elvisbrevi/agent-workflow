@@ -26,7 +26,8 @@ The [Mac runbook](DEPLOYMENT-elvisbrevi.cl.md) records the active Access/OAuth,
 backend and connector installation. [Verification evidence](WEB-VERIFICATION.md)
 records actual HTTPS/incognito checks and the remaining physical-phone and
 full-Mac-reboot acceptance. `lz-web --help` lists the local administration
-commands; web provisioning/service updates are separate from `lz update`.
+commands. First web provisioning remains local; `lz update` also updates an
+installed web using the managed CLI cache, backup and verified idle restart.
 
 ## Requirements
 
@@ -65,6 +66,14 @@ exists, the installer skips the build. Uninstalling either global launcher mode
 removes the app/binary, Linux entry, stamp and build directory, including with
 `--no-gui`. It retains the shared source cache for other installation modes.
 The window excludes `gui` from its command forms.
+
+**Ajustes → Actualización** shows the installed commit and asks before updating.
+Desktop executes the catalog's `update` entry, streams progress, and requests
+that you quit from the app menu and reopen with `lz gui`. Web invokes a dedicated
+operation with no installer parameters, follows its external service-manager
+job through restart and reloads the new interface. The button is disabled
+while executions or an update are active. `--no-web` skips web deployment;
+[WEB.md](WEB.md#updates) documents its checks and recovery.
 
 The desktop tray icon (menu bar on macOS) shows that lz is active and reports
 the number of runs in progress. Its menu offers **Abrir lz**, **Ocultar ventana**

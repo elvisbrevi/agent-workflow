@@ -85,6 +85,11 @@ fn reload_environment() {
 }
 
 #[tauri::command]
+fn get_update_status(core: State<'_, Core>) -> Value {
+    serde_json::json!({"installedCommit":crate::core::installed_commit(), "activeRuns":core.runs.active_count(), "updating":false, "job":null, "log":""})
+}
+
+#[tauri::command]
 async fn capture_lz(core: State<'_, Core>, args: Vec<String>) -> Result<Captured, String> {
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || core.capture(&args, Duration::from_secs(120)))
@@ -129,6 +134,7 @@ pub fn run() {
             read_run_log,
             diagnose,
             reload_environment,
+            get_update_status,
             capture_lz
         ])
         .build(tauri::generate_context!())

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { ask, isDesktop } from "./lib/platform.ts";
 import type { CatalogCommand, CommandCatalog } from "../../src/cli/command-catalog-schema.ts";
-import { backend, errorText, onRunExit, onRunOutput, onRunStarted, type Diagnostics, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
+import { backend, errorText, onRunExit, onRunOutput, onRunStarted, webTransport, type Diagnostics, type GuiSettings, type RunOutput, type SettingsDocument } from "./lib/backend.ts";
+import { matchesPendingUpdate, prepareUpdate, updateBusy, type UpdateStatus } from "./lib/update.ts";
+import { HttpError } from "./lib/http-transport.ts";
 import { renderCommandLine } from "./lib/command-line.ts";
 import { initialRunsState, isFinished, runsReducer, type RunState } from "./lib/runs.ts";
 import { interviewUrl } from "./lib/output.ts";
@@ -41,13 +43,17 @@ const CONFIRMATION: Record<string, string> = {
   setup: "Una sesión del agente revisará y reparará la configuración de este equipo. No edita repositorios ni el tracker.",
   "repo-clone": "Descarga el repositorio en una carpeta nueva, con las credenciales de lz.",
   "repo-create": "Crea un repositorio privado en el tracker, con un primer commit en main, y lo descarga en una carpeta nueva.",
+  update: "Actualiza desde main el CLI, las skills, el escritorio y la web instalada. La web se reiniciará; al terminar tendrás que reiniciar la app de escritorio.",
 };
 
 export function App() {
   const [settingsDocument, setSettingsDocument] = useState<SettingsDocument | null>(null);
   const [catalogState, setCatalogState] = useState<CatalogState>({ kind: "loading" });
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
-  const [view, setView] = useState<View>({ kind: "work" });
+  const [view, setView] = useState<View>({ kind: sessionStorage.getItem("lz:update-result") || sessionStorage.getItem("lz:update-pending") ? "preferences" : "work" });
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [startingUpdate, setStartingUpdate] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [state, dispatch] = useReducer(runsReducer, initialRunsState);
   const pendingStart = useRef(false);
@@ -71,7 +77,41 @@ export function App() {
   useEffect(() => {
     void backend.getSettings().then(setSettingsDocument, (error) => setNotice(errorText(error)));
     void loadCatalog();
+    const cancel = () => webTransport.cancelPendingRequests();
+    if (!isDesktop) window.addEventListener("pagehide", cancel);
+    return () => { window.removeEventListener("pagehide", cancel); };
   }, [loadCatalog]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let seenJob: string | null = null;
+    const poll = async () => {
+      try {
+        const status = await backend.getUpdateStatus();
+        if (stopped) return;
+        setUpdateStatus(status);
+        if (!isDesktop) {
+          const pending = sessionStorage.getItem("lz:update-pending");
+          webTransport.setUpdating(updateBusy(status) || pending !== null);
+          if (status.job?.status === "queued" || status.job?.status === "running") seenJob = status.job.id;
+          if (status.job?.status === "succeeded" && (matchesPendingUpdate(status.job.id, pending) || seenJob === status.job.id)) {
+            sessionStorage.removeItem("lz:update-pending");
+            sessionStorage.setItem("lz:update-result", status.job.id);
+            window.location.reload(); return;
+          }
+          if (status.job?.status === "failed" && (pending === null || matchesPendingUpdate(status.job.id, pending))) {
+            if (pending !== null || seenJob === status.job.id) sessionStorage.setItem("lz:update-result", status.job.id);
+            sessionStorage.removeItem("lz:update-pending"); webTransport.setUpdating(status.updating);
+          }
+        }
+      } catch { /* The update replaces and restarts the backend; keep the last progress. */ }
+      if (!stopped) timer = setTimeout(() => { void poll(); }, 2000);
+    };
+    if (!isDesktop && sessionStorage.getItem("lz:update-pending")) webTransport.setUpdating(true);
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, []);
 
   useEffect(() => {
     if (!catalog) return;
@@ -136,7 +176,7 @@ export function App() {
     if (!catalog || !settings || pendingStart.current) return null;
     pendingStart.current = true;
     try {
-      if (command.effect !== "read" && settings.confirmWrites) {
+      if (command.name === "update" || (command.effect !== "read" && settings.confirmWrites)) {
         const confirmed = await ask(`${runTitle(command.name, args)}\n\n${CONFIRMATION[command.name] ?? "Este comando modifica el repositorio o el tracker."}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
         if (!confirmed) return null;
       }
@@ -156,6 +196,29 @@ export function App() {
   const run = async (command: CatalogCommand, args: string[]): Promise<boolean> => (await start(command, args, true)) !== null;
   /** A download or a creation stays in the form that started it, which follows it there. */
   const provision = (command: CatalogCommand, args: string[]): Promise<number | null> => start(command, args, false);
+
+  const update = async () => {
+    if (!catalog || startingUpdate) return;
+    setStartingUpdate(true); setUpdateError(null);
+    try {
+      if (isDesktop) {
+        const prepared = prepareUpdate(catalog);
+        if (prepared) await start(prepared.command, prepared.args, false);
+      } else {
+        if (!await ask(CONFIRMATION.update!, { title: "¿Actualizar?", kind: "warning", okLabel: "Actualizar", cancelLabel: "Cancelar" })) return;
+        // Persist before scheduling: the response itself may be interrupted by restart.
+        sessionStorage.setItem("lz:update-pending", `scheduling:${updateStatus?.job?.id ?? "none"}`);
+        webTransport.setUpdating(true);
+        const status = await backend.startUpdate();
+        if (status.job) sessionStorage.setItem("lz:update-pending", status.job.id);
+        setUpdateStatus(status);
+      }
+    } catch (error) {
+      if (error instanceof HttpError) { sessionStorage.removeItem("lz:update-pending"); webTransport.setUpdating(false); }
+      setUpdateError(errorText(error));
+    }
+    finally { setStartingUpdate(false); }
+  };
 
   const rerun = (previous: RunState) => {
     const command = catalog?.commands.find((candidate) => candidate.name === previous.command);
@@ -216,7 +279,8 @@ export function App() {
         onRun={run} onProvision={provision} onSaveSettings={saveSettings} onAddRepository={addRepository} />
     );
   } else if (catalog && settings && view.kind === "preferences") {
-    main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} onAddRepository={addRepository} />;
+    main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} onAddRepository={addRepository}
+      updateStatus={updateStatus} updateError={updateError} updating={startingUpdate} runs={state.runs} onUpdate={update} />;
   } else if (catalog && settings) {
     main = (
       <WorkView

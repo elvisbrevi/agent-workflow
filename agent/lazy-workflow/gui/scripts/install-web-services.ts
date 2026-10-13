@@ -7,7 +7,8 @@ import { outsideCheckout } from "./web-paths.ts";
 
 export interface ServiceOptions { dataDir: string; backend: string; cloudflared: string; userHome: string; platform: "linux" | "darwin" }
 interface Unit { path: string; text: string; label: string }
-const marker = "Managed by agent-workflow lz-web";
+export const marker = "Managed by agent-workflow lz-web";
+export interface ServiceManifest { managedBy: string; units: Array<{ path: string; label: string; sha256: string }> }
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const systemdQuote = (value: string, commandArgument = false) => `"${(commandArgument ? value.replaceAll("$", () => "$$") : value).replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
 
@@ -65,6 +66,23 @@ StandardError=journal
 WantedBy=default.target
 ` };
   });
+}
+
+/** Update only the recorded, unmodified services belonging to this installation. */
+export function registeredServices(manifest: ServiceManifest, options: ServiceOptions, read: (path: string) => string): ServiceManifest["units"] {
+  const expected = serviceFiles(options);
+  if (manifest.managedBy !== marker || !Array.isArray(manifest.units) || manifest.units.length !== expected.length) throw new Error("invalid web service manifest");
+  for (const unit of expected) {
+    const recorded = manifest.units.filter((item) => item.path === unit.path && item.label === unit.label);
+    if (recorded.length !== 1 || createHash("sha256").update(read(unit.path)).digest("hex") !== recorded[0]!.sha256) throw new Error("web services are foreign or manually edited; preserved");
+  }
+  return manifest.units;
+}
+
+export function restartServiceCommands(units: ServiceManifest["units"], platform: "linux" | "darwin", uid: number): string[][] {
+  return units.flatMap((unit) => platform === "linux"
+    ? [["systemctl", "--user", "restart", unit.label], ["systemctl", "--user", "is-active", "--quiet", unit.label]]
+    : [["launchctl", "kickstart", "-k", `gui/${uid}/${unit.label}`]]);
 }
 
 async function exists(path: string) { try { await readFile(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } }

@@ -19,9 +19,25 @@ import { effortChoices, installedClis, modelGroups, switchCli } from "../gui/src
 import { repairCli, repairPrompt, setupProblems } from "../gui/src/lib/setup-check.ts";
 import type { AgentModels } from "../src/coding-agent/agent-models-schema.ts";
 import type { Diagnostics } from "../gui/src/lib/backend.ts";
+import { matchesPendingUpdate, prepareUpdate, updateBusy } from "../gui/src/lib/update.ts";
 
 const catalog = commandCatalog();
 const command = (name: string): CatalogCommand => catalog.commands.find((candidate) => candidate.name === name)!;
+
+test("Actualizar usa el catalogo y bloquea otra actualizacion mientras el servicio trabaja", () => {
+  expect(prepareUpdate(catalog)?.args).toEqual(["update"]);
+  expect(prepareUpdate({ ...catalog, commands: catalog.commands.filter((entry) => entry.name !== "update") })).toBeNull();
+  const base = { installedCommit: null, activeRuns: 0, updating: false, job: null, log: "" };
+  expect(updateBusy(base)).toBe(false);
+  expect(updateBusy({ ...base, updating: true })).toBe(true);
+  expect(updateBusy({ ...base, job: { id: "synthetic", status: "running", message: "Compilando" } })).toBe(true);
+  expect(updateBusy({ ...base, job: { id: "synthetic", status: "succeeded", message: "Terminado" } })).toBe(false);
+  expect(matchesPendingUpdate("old", "scheduling:old")).toBe(false);
+  expect(matchesPendingUpdate("new", "scheduling:old")).toBe(true);
+  expect(matchesPendingUpdate("new", "new")).toBe(true);
+  expect(matchesPendingUpdate("old", "new")).toBe(false);
+  expect(matchesPendingUpdate("old", null)).toBe(false);
+});
 
 test("un valor igual al default del catalogo no se envia: la linea es la mas corta con el mismo efecto", () => {
   const args = buildArgs(catalog, command("plan"), {

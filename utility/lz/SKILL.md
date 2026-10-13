@@ -20,6 +20,10 @@ Route each request by the effect it needs:
 - **GUI/web:** building or launching the desktop window, publishing an owner's
   web installation, its settings, or what a GUI run will execute. Use [GUI.md](GUI.md),
   including [web access](GUI.md#web-access).
+- **Update:** `lz update` refreshes the installed CLI, skills, desktop and an
+  existing managed web from the remote. Check active runs first; production
+  deployment requires authorization. Never pull a development checkout to
+  update the web's CLI. See [GUI.md](GUI.md) for launcher migration and recovery.
 
 `lz catalog` prints, as JSON, every command the installed binary accepts with its
 flags, value kinds, defaults, requirements and effect; it is the authority when a
@@ -104,6 +108,8 @@ prints the same surface as text. From `agent/lazy-workflow/`,
   secrets files. Run it when the request authorizes that effect. Read tools,
   preflight and `lz catalog` are available for diagnosis. The GUI asks before
   every such command unless `confirmWrites` is off.
+  **Actualizar** always asks for confirmation, including when `confirmWrites`
+  is off; it waits for active executions to finish before it can be started.
 - Secrets never go on a command line, in a prompt, or in `gui.json`: store them
   with `lz credentials-set`. lz automatically loads its catalog-declared stored
   variables; `secretEnvironment` resolves additional names for GUI runs. The

@@ -9,6 +9,14 @@ use std::{fs::File, path::PathBuf, sync::Arc, time::Duration};
 
 const CATALOG_SCHEMA_VERSION: u64 = 1;
 
+pub fn installed_commit() -> Option<String> {
+    let result = std::process::Command::new("git").args(["rev-parse", "HEAD"])
+        .current_dir(settings::home_dir().join(".cache/agent-workflow"))
+        .stderr(std::process::Stdio::null()).output().ok()?;
+    let sha = String::from_utf8(result.stdout).ok()?.trim().to_string();
+    (result.status.success() && sha.len() == 40 && sha.bytes().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDocument {

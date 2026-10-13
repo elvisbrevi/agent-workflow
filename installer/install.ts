@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { MODES, parseOptions, USAGE, type Destination, type Options } from "./options.ts";
 import { installGui } from "./gui.ts";
+import { WebUpdate, type WebRuntime } from "./web.ts";
 
 const CATEGORIES = ["utility", "discovery", "design", "planning", "implementation", "diagnosis", "review"];
 export type Entry = { name: string; source: string };
@@ -73,8 +74,9 @@ export class Installer {
   readonly env: NodeJS.ProcessEnv;
   readonly options: Options;
   readonly copies: Record<string, string> = {};
+  private web: WebUpdate | null = null;
 
-  constructor(options: Options, env = process.env, platform = process.platform) {
+  constructor(options: Options, env = process.env, platform = process.platform, private webRuntime: Partial<WebRuntime> = {}) {
     this.options = options;
     this.env = env;
     this.platform = platform;
@@ -199,10 +201,11 @@ export class Installer {
           }
         }
       }
+      this.web?.snapshot(refresh);
       if (exists(this.cache)) renameSync(this.cache, previous);
       try { renameSync(refresh, this.cache); }
       catch (error) { if (exists(previous)) renameSync(previous, this.cache); throw error; }
-      rmSync(previous, { recursive: true, force: true });
+      if (!this.web) rmSync(previous, { recursive: true, force: true });
       return this.cache;
     } catch (error) {
       rmSync(preview || refresh, { recursive: true, force: true });
@@ -210,10 +213,15 @@ export class Installer {
     }
   }
 
-  run(): void {
+  async run(): Promise<void> {
     if (this.platform === "win32" && existsSync(this.manifestPath)) Object.assign(this.copies, JSON.parse(readFileSync(this.manifestPath, "utf8").replace(/^\uFEFF/, "")));
-    const source = this.syncCache();
+    const web = new WebUpdate(this, this.webRuntime);
+    if (await web.preflight()) this.web = web;
+    let source = this.cache;
+    let recoveryRequired = false;
+    const previous = `${this.cache}.previous.${process.pid}`;
     try {
+      source = this.syncCache();
       const skills = discover(source, CATEGORIES, "SKILL.md");
       const agents = discover(source, ["agent"], "AGENT.md");
       this.log(`Skills encontradas: ${skills.length}; agentes encontrados: ${agents.length}`);
@@ -229,15 +237,38 @@ export class Installer {
         }
       }
       if (["all-global", "claude-global"].includes(this.options.mode!)) installGui(this, source);
+      await this.web?.deploy(source);
+      if (this.web?.backup && existsSync(previous)) {
+        const saved = join(this.web.backup, "cache");
+        try { renameSync(previous, saved); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+          cpSync(previous, saved, { recursive: true });
+          rmSync(previous, { recursive: true, force: true });
+        }
+      }
       this.log(this.options.dryRun ? "Dry-run: no se cambiaron archivos instalados ni el cache." : "¡Listo!");
+    } catch (error) {
+      try {
+        if (existsSync(previous)) {
+          rmSync(this.cache, { recursive: true, force: true });
+          renameSync(previous, this.cache);
+        }
+        await this.web?.rollback();
+      } catch (rollback) {
+        recoveryRequired = true;
+        throw new Error(`${error instanceof Error ? error.message : error}. No se pudo verificar la restauracion: ${rollback instanceof Error ? rollback.message : rollback}. Respaldo: ${this.web?.backup}. Requiere recuperacion local antes de reanudar ejecuciones.`);
+      }
+      throw error;
     } finally {
+      this.web?.release(recoveryRequired);
       this.saveManifest();
       if (source !== this.cache) rmSync(dirname(source), { recursive: true, force: true });
     }
   }
 }
 
-export async function install(args: string[], env = process.env, platform = process.platform): Promise<void> {
+export async function install(args: string[], env = process.env, platform = process.platform, webRuntime: Partial<WebRuntime> = {}): Promise<void> {
   const options = parseOptions(args, process.cwd());
   if (options.help) { console.log(USAGE); return; }
   if (!options.mode) {
@@ -252,5 +283,5 @@ export async function install(args: string[], env = process.env, platform = proc
   }
   if (!existsSync(options.target) || !statSync(options.target).isDirectory()) throw new Error(`No existe el directorio destino: ${options.target}`);
   options.target = realpathSync(options.target);
-  new Installer(options, env, platform).run();
+  await new Installer(options, env, platform, webRuntime).run();
 }

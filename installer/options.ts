@@ -8,13 +8,14 @@ export interface Options {
   force: boolean;
   uninstall: boolean;
   noGui: boolean;
+  noWeb: boolean;
   help: boolean;
 }
 
 export const USAGE = `Uso: install.sh / install.ps1 [OPCIONES]
 
 Instala las skills, agentes, CLI y GUI de agent-workflow.
-  --all-global       Todas las integraciones globales, CLI y GUI
+  --all-global       Todas las integraciones globales, CLI, GUI y web instalada
   --claude-global    Skills, agentes Claude, CLI y GUI globales
   --claude-local     Skills, agentes Claude y CLI en el proyecto
   --global           ~/.agents/skills y ~/.agents/agents
@@ -28,10 +29,11 @@ Instala las skills, agentes, CLI y GUI de agent-workflow.
   --force            Reemplaza rutas existentes sin preguntar
   --uninstall        Retira las entradas gestionadas del modo elegido
   --no-gui           Omite la GUI
+  --no-web           Omite la actualizacion de una web instalada
   -h, --help         Muestra esta ayuda`;
 
 export function parseOptions(args: string[], cwd: string): Options {
-  const options: Options = { target: cwd, ref: "main", dryRun: false, force: false, uninstall: false, noGui: false, help: false };
+  const options: Options = { target: cwd, ref: "main", dryRun: false, force: false, uninstall: false, noGui: false, noWeb: false, help: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (MODES.includes(arg.slice(2) as Mode) && arg.startsWith("--")) options.mode = arg.slice(2) as Mode;
@@ -43,6 +45,7 @@ export function parseOptions(args: string[], cwd: string): Options {
     else if (arg === "--force") options.force = true;
     else if (arg === "--uninstall") options.uninstall = true;
     else if (arg === "--no-gui") options.noGui = true;
+    else if (arg === "--no-web") options.noWeb = true;
     else if (arg === "--help" || arg === "-h") { options.help = true; break; }
     else throw new Error(`Opcion desconocida: ${arg}. Usa --help para ver la ayuda.`);
   }

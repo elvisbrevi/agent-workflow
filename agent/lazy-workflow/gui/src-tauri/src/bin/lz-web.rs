@@ -36,8 +36,8 @@ revoke-sessions and set-password require the backend stopped. After binding or
 local revocation, log out of Access and authenticate again. Keep one process per
 profile; each owner runs an independent installation on their own server.
 
-lz gui opens the desktop app. Web setup and service updates are separate from
-lz update. Build and install lz-web using the guides:
+lz gui opens the desktop app. lz update also updates installed web services.
+The first web deployment and CLI migration remain local; see:
 https://github.com/elvisbrevi/agent-workflow/blob/main/agent/lazy-workflow/gui/WEB.md
 https://github.com/elvisbrevi/agent-workflow/blob/main/agent/lazy-workflow/gui/ACCESS.md
 ";
@@ -55,6 +55,7 @@ fn arguments() -> Result<(String, BTreeMap<String, String>), String> {
         "unbind-access",
         "set-password",
         "revoke-sessions",
+        "update-worker",
     ]
     .contains(&action.as_str())
     {
@@ -161,6 +162,7 @@ async fn run() -> Result<(), String> {
     if !data_dir.is_absolute() {
         return Err("--data-dir must be an absolute server path".into());
     }
+    if action == "update-worker" { return web::update::worker(data_dir); }
     if action == "init" {
         let public_url = required(&options, "--public-url")?;
         let authentication = if options.contains_key("--access-config") {

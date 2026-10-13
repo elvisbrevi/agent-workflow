@@ -170,9 +170,9 @@ test("todo comando armado con cada bandera que admite pasa el parser", () => {
 test("update reenvia al instalador las banderas que el catalogo le describe", async () => {
   const update = catalog.commands.find((command) => command.name === "update")!;
   const calls: string[][] = [];
-  const args = buildArgs(catalog, update, { "--codex": true, "--ref": "v1" });
+  const args = buildArgs(catalog, update, { "--codex": true, "--ref": "v1", "--no-web": true });
   const code = await createCli({ runInstaller: async (forwarded) => { calls.push(forwarded); return 0; } }).run(args);
-  expect({ code, calls }).toEqual({ code: 0, calls: [["--codex", "--ref", "v1"]] });
+  expect({ code, calls }).toEqual({ code: 0, calls: [["--codex", "--ref", "v1", "--no-web"]] });
 });
 
 test("catalog imprime el documento y rechaza opciones", async () => {

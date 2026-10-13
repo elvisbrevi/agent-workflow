@@ -64,7 +64,7 @@ the browser displays locked connections and cannot change them.
 
 | Mode | Installs |
 |---|---|
-| `--all-global` | skills, agent entries and the `lz` launcher and GUI globally (what `lz update` uses by default) |
+| `--all-global` | skills, agent entries, CLI, desktop and an existing managed web (what `lz update` uses by default) |
 | `--claude-global` / `--claude-local` | Claude Code skills, agents and the CLI, globally or into a project |
 | `--global` / `--local` | shared skills and agents |
 | `--opencode` / `--both` | OpenCode project entries, alone or with the shared ones |
@@ -90,8 +90,8 @@ Cargo build artifacts persist in `~/.cache/agent-workflow-build/gui`.
 Locations, prerequisites and uninstall behavior: [GUI.md](GUI.md#install-and-launch).
 
 Web deployment is configured separately with `lz-web` and the dedicated
-provisioning/service scripts; `lz update` updates the CLI, skills and desktop
-installation. Use the web installation's existing absolute settings path with
+provisioning/service scripts for first setup; `lz update` updates the CLI,
+skills, desktop and an installed web. Use the web installation's existing absolute settings path with
 `LAZY_WORKFLOW_GUI_SETTINGS`, preserve its private state and Access binding,
 and follow [GUI.md#web-access](GUI.md#web-access) for deployment and updates.
 

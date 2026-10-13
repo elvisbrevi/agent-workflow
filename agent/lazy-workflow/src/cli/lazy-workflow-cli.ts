@@ -73,7 +73,7 @@ import {
 import { normalizeWorkspaceScope, type WorkspaceScope } from "../workspace/repository-scope.ts";
 import { SudoSystemShutdown, type SystemShutdown } from "../system/shutdown-service.ts";
 import { launchGui, type GuiLauncher } from "../system/gui-launcher.ts";
-import { runSelfUpdate, type InstallerRunner } from "../system/self-update.ts";
+import { runSelfUpdate, selfUpdateArgs, type InstallerRunner } from "../system/self-update.ts";
 import {
   QUEUE_BLOCKED_MARKER,
   QUEUE_EMPTY_MARKER,
@@ -720,10 +720,10 @@ export class LazyWorkflowCli {
   async run(args: string[]): Promise<number> {
     // `update` maintains the tool, not the work: the installer owns its own
     // flags and destinations, so everything after the command is forwarded to it
-    // instead of parsed here, and no session or run log is opened. With nothing
-    // declared, the shared install this CLI is normally reached through.
+    // instead of parsed here, and no session or run log is opened. Without a
+    // mode, use the shared install this CLI is normally reached through.
     if (args[0] === "update") {
-      return this.runInstaller(args.length > 1 ? args.slice(1) : ["--all-global"]);
+      return this.runInstaller(selfUpdateArgs(args.slice(1)));
     }
 
     if (args[0] === "gui") {

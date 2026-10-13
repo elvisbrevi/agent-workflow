@@ -30,11 +30,15 @@ The previous `lazy-workflow` command remains an alias for existing scripts.
 Codex resolves them from; without it a run that falls back to Codex has no
 skills. Its other modes are `--global`, `--local`, `--opencode`, `--both`,
 `--claude-local`, `--target D`, `--ref REF`, `--uninstall`, `--dry-run` and
-`--force` and `--no-gui`.
+`--force`, `--no-gui` and `--no-web`.
 
 Once installed, `lz update` reinstalls it: it runs the repository's
-Bun installer directly with the arguments declared after it, and with `--all-global` when
-none is declared.
+Bun installer directly with the arguments declared after it, adding
+`--all-global` when no installation mode is declared.
+Global launcher modes also update an installed web from that cache, refusing
+active executions and verifying restart with backup/rollback. A web launcher
+outside the cache is reported for local migration and preserved. Ajustes has a
+confirmed update button; desktop success requests a full quit and reopen.
 
 Every command has a runnable example in [Practical examples](#practical-examples);
 the sections after it explain what each one does.
@@ -810,8 +814,10 @@ Cloudflare publishing and persistent services on the owner's machine.
 web interface (`lz-web --help` lists its local administration commands).
 [GitHub Access setup](gui/ACCESS.md), the [Mac runbook](gui/DEPLOYMENT-elvisbrevi.cl.md)
 and [verification evidence](gui/WEB-VERIFICATION.md) cover deployment and recovery.
-`lz update` updates CLI/skills/desktop; frontend/backend web updates use the
-web service installer and retain the existing profile and owner binding.
+`lz update` updates CLI, skills, desktop and an installed web, retaining its
+profile and owner binding. First installation/migration still uses the web
+service helper; [the runbook](gui/DEPLOYMENT-elvisbrevi.cl.md#first-self-update-deployment-manual-once)
+lists the one-time manual deployment.
 
 `gui/` is a Tauri app for this CLI's workflows. It lists the work assigned in
 each saved repository's tracker (`work-assigned`) — under **Planificar**, only

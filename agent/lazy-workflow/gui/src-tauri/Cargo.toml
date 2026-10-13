@@ -63,3 +63,7 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Health hashes the running executable; keep debug binaries fast enough for restart checks.
+[profile.dev.package.sha2]
+opt-level = 3

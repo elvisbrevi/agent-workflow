@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { install, Installer, destinations, readTtyLine } from "./install.ts";
 import { guiPaths } from "./gui.ts";
+import { createHash } from "node:crypto";
+import { marker, serviceFiles } from "../agent/lazy-workflow/gui/scripts/install-web-services.ts";
+import type { WebRuntime } from "./web.ts";
+import { createCli } from "../agent/lazy-workflow/test/_helpers/create-cli.ts";
 import { MODES, parseOptions } from "./options.ts";
 
 let root: string;
@@ -31,34 +35,46 @@ beforeEach(() => {
   file(join(fixture, "agent/lazy-workflow/AGENT.md"), "agent");
   for (const script of ["run.sh", "run.cmd", "run.ps1", "main.ts", "package.json"]) file(join(fixture, "agent/lazy-workflow", script), script === "package.json" ? "{}" : "fixture");
   file(join(fixture, "agent/lazy-workflow/gui/package.json"), "{}");
+  file(join(fixture, "agent/lazy-workflow/gui/src-tauri/Cargo.toml"), "# synthetic");
   const bin = join(root, "bin");
   mkdirSync(bin);
-  for (const name of ["git", "bun", "cargo", "rustc"]) {
+  for (const name of ["git", "bun", "cargo", "rustc", "systemctl", "launchctl"]) {
     file(join(bin, name), `#!${process.execPath}\n` + `
 import { appendFileSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 const args = process.argv.slice(2);
 appendFileSync(process.env.COMMAND_LOG, JSON.stringify({tool: ${JSON.stringify(name)}, args, cwd: process.cwd(), target: process.env.CARGO_TARGET_DIR}) + "\\n");
 if (${JSON.stringify(name)} === "git") {
+  if (process.env.REAL_GIT) {
+    const result = Bun.spawnSync([process.env.REAL_GIT, ...args], { stdout: "inherit", stderr: "inherit" }); process.exit(result.exitCode);
+  }
   if (args[0] === "clone") {
     if (process.env.CLONE_FAIL) process.exit(2);
     cpSync(process.env.FIXTURE, args.at(-2), {recursive: true});
-  } else if (args[0] === "rev-parse") console.log(process.env.GUI_TREE);
+  } else if (args[0] === "rev-parse") console.log(args[1].endsWith("src-tauri") ? process.env.BACKEND_TREE || "backend-one" : args[1] === "HEAD" ? process.env.WEB_SHA || "sha-one" : process.env.GUI_TREE);
+}
+if (${JSON.stringify(name)} === "cargo" && args[0] === "build") {
+  if (process.env.WEB_BUILD_FAIL) process.exit(7);
+  const artifact = join(process.env.CARGO_TARGET_DIR, "release/lz-web");
+  mkdirSync(dirname(artifact), {recursive: true}); writeFileSync(artifact, "built backend");
 }
 if (${JSON.stringify(name)} === "bun") {
   if (args[0] === "install" && process.env.DEPENDENCIES_FAIL && !process.cwd().endsWith("gui")) process.exit(3);
   if (args[0] === "run") {
+    if (args[1] === "build:web") {
+      mkdirSync("dist", {recursive: true}); writeFileSync("dist/index.html", "built frontend"); process.exit(0);
+    }
     if (process.env.BUILD_FAIL) process.exit(4);
     const target = process.env.CARGO_TARGET_DIR;
     const artifact = args.includes("app") ? join(target, "release/bundle/macos/lz.app/Contents/MacOS/lz-gui") : join(target, "release", process.env.GUI_PLATFORM === "win32" ? "lz-gui.exe" : "lz-gui");
     mkdirSync(dirname(artifact), {recursive: true});
-    writeFileSync(artifact, "built GUI");
+    writeFileSync(artifact, process.env.GUI_EXECUTABLE ? '#!/bin/sh\\nprintf launched > "' + process.env.GUI_LAUNCH_MARKER + '"\\n' : "built GUI");
   }
 }
 `);
     chmodSync(join(bin, name), 0o755);
   }
-  env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: bin, FIXTURE: fixture, COMMAND_LOG: join(root, "commands.jsonl"), GUI_TREE: "tree-one", AGENT_WORKFLOW_REPO_URL: fixture };
+  env = { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), CARGO_HOME: process.env.CARGO_HOME || join(process.env.HOME!, ".cargo"), RUSTUP_HOME: process.env.RUSTUP_HOME || join(process.env.HOME!, ".rustup"), PATH: bin, FIXTURE: fixture, COMMAND_LOG: join(root, "commands.jsonl"), GUI_TREE: "tree-one", AGENT_WORKFLOW_REPO_URL: fixture };
   output = [];
   errors = [];
   console.log = (...values) => output.push(values.join(" "));
@@ -73,6 +89,159 @@ afterEach(() => {
 
 const commands = (): Array<{ tool: string; args: string[]; target?: string; cwd: string }> => existsSync(env.COMMAND_LOG!) ? readFileSync(env.COMMAND_LOG!, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
 const run = (args: string[], platform: NodeJS.Platform = "linux") => install(args, env, platform);
+
+async function syntheticWeb(platform: "linux" | "darwin" = "linux", data = join(home, ".local/share/lz-web")) {
+  await run(["--all-global", "--no-web"], platform);
+  const backend = join(data, "bin/lz-web");
+  const frontend = join(data, "frontend");
+  file(backend, "old backend"); file(join(frontend, "index.html"), "old frontend");
+  const settings = join(data, "gui.json");
+  file(settings, JSON.stringify({ lzCommand: join(home, ".cache/agent-workflow/agent/lazy-workflow/main.ts") }));
+  file(join(data, "web.json"), JSON.stringify({ listen: "127.0.0.1:8234", settingsPath: settings, frontendDir: frontend }));
+  const units = serviceFiles({ dataDir: data, backend, cloudflared: join(root, "cloudflared"), userHome: home, platform });
+  for (const unit of units) file(unit.path, unit.text);
+  file(join(data, "service.json"), JSON.stringify({ managedBy: marker, units: units.map(({ path, label, text }) => ({ path, label, sha256: createHash("sha256").update(text).digest("hex") })) }));
+  const io: WebRuntime = { health: async () => ({ status: "ok", activeRuns: 0, backendHash: createHash("sha256").update(readFileSync(backend)).digest("hex") }), wait: async () => {} };
+  return { data, backend, frontend, settings, units, io };
+}
+
+for (const platform of ["linux", "darwin"] as const) test(`global update deploys synthetic web, backs up, checks health and skips unchanged builds on ${platform}`, async () => {
+  const web = await syntheticWeb(platform);
+  let healthChecks = 0;
+  const io = { ...web.io, health: async (url: string) => { expect(url).toBe("http://127.0.0.1:8234/health"); healthChecks++; return web.io.health(url); } };
+  env.GUI_TREE = "tree-two";
+  await install(["--all-global"], env, platform, io);
+  expect(readFileSync(join(web.frontend, "index.html"), "utf8")).toBe("built frontend");
+  expect(readFileSync(web.backend, "utf8")).toBe("built backend");
+  expect(readFileSync(guiPaths(home, platform).stamp, "utf8")).toBe("tree-two\n");
+  const backups = readdirSync(join(web.data, "deployment-backups"));
+  expect(backups).toHaveLength(1);
+  expect(backups[0]).toStartWith("before-update-sha-one-");
+  expect(readFileSync(join(web.data, "deployment-backups", backups[0]!, "lz-web"), "utf8")).toBe("old backend");
+  expect(existsSync(join(web.data, "deployment-backups", backups[0]!, "cache/utility/alpha/SKILL.md"))).toBe(true);
+  expect(healthChecks).toBe(3);
+  const serviceCalls = commands().filter((command) => ["systemctl", "launchctl"].includes(command.tool));
+  expect(serviceCalls.filter((command) => command.args.includes(platform === "linux" ? "restart" : "kickstart"))).toHaveLength(2);
+  expect(serviceCalls.every((command) => web.units.some((unit) => command.args.some((arg) => arg.endsWith(unit.label))))).toBe(true);
+  const builds = () => commands().filter((command) => (command.tool === "cargo" && command.args[0] === "build") || (command.tool === "bun" && command.args[0] === "run"));
+  const buildCount = builds().length;
+  await install(["--all-global"], env, platform, io);
+  expect(builds()).toHaveLength(buildCount);
+  expect(commands().filter((command) => ["systemctl", "launchctl"].includes(command.tool))).toHaveLength(serviceCalls.length);
+  env.GUI_TREE = "tree-three";
+  await install(["--all-global"], env, platform, io);
+  expect(commands().filter((command) => command.tool === "cargo" && command.args[0] === "build")).toHaveLength(1);
+  env.BACKEND_TREE = "backend-two";
+  await install(["--all-global"], env, platform, io);
+  expect(commands().filter((command) => command.tool === "cargo" && command.args[0] === "build")).toHaveLength(2);
+});
+
+test("custom web data directory is updated and checkout frontend paths are refused", async () => {
+  const web = await syntheticWeb("linux", join(root, "custom-web"));
+  env.LZ_WEB_DATA_DIR = web.data;
+  await install(["--all-global"], env, "linux", web.io);
+  expect(readFileSync(join(web.data, ".lz-web-commit"), "utf8")).toBe("sha-one\n");
+  file(join(fixture, ".git/HEAD"), "ref: refs/heads/main\n");
+  const config = JSON.parse(readFileSync(join(web.data, "web.json"), "utf8"));
+  config.frontendDir = join(fixture, "agent/lazy-workflow/gui");
+  file(join(web.data, "web.json"), JSON.stringify(config));
+  const count = commands().length;
+  await expect(install(["--all-global"], env, "linux", web.io)).rejects.toThrow("outside every Git checkout");
+  expect(commands()).toHaveLength(count);
+});
+
+test("lz update downloads a new real git commit and updates CLI, skills, GUI and synthetic web together", async () => {
+  const git = Bun.which("git")!;
+  const gitCommand = (args: string[], cwd = fixture) => {
+    const result = Bun.spawnSync([git, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  gitCommand(["init", "-b", "main"]);
+  const commit = () => {
+    gitCommand(["add", "."]);
+    gitCommand(["-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.test", "-c", "core.hooksPath=/dev/null", "commit", "--no-gpg-sign", "-m", "synthetic version"]);
+    return gitCommand(["rev-parse", "HEAD"]);
+  };
+  const old = commit(); env.REAL_GIT = git;
+  const web = await syntheticWeb();
+  file(join(fixture, "agent/lazy-workflow/main.ts"), "new CLI");
+  file(join(fixture, "utility/alpha/SKILL.md"), "new skill");
+  file(join(fixture, "agent/lazy-workflow/gui/new-frontend.ts"), "// new frontend");
+  const next = commit(); expect(next).not.toBe(old);
+  const cli = createCli({ runInstaller: async (args) => { await install(args, env, "linux", web.io); return 0; } });
+  expect(await cli.run(["update"])).toBe(0);
+  expect(gitCommand(["rev-parse", "HEAD"], join(home, ".cache/agent-workflow"))).toBe(next);
+  expect(readFileSync(join(home, ".cache/agent-workflow/agent/lazy-workflow/main.ts"), "utf8")).toBe("new CLI");
+  expect(readFileSync(join(home, ".codex/skills/alpha/SKILL.md"), "utf8")).toBe("new skill");
+  expect(readFileSync(guiPaths(home, "linux").stamp, "utf8").trim()).toBe(gitCommand(["rev-parse", "HEAD:agent/lazy-workflow/gui"]));
+  expect(readFileSync(join(web.frontend, "index.html"), "utf8")).toBe("built frontend");
+  expect(readFileSync(web.backend, "utf8")).toBe("built backend");
+  const builds = () => commands().filter((command) => (command.tool === "cargo" && command.args[0] === "build") || (command.tool === "bun" && command.args[0] === "run"));
+  const count = builds().length;
+  expect(await cli.run(["update"])).toBe(0);
+  expect(builds()).toHaveLength(count);
+  expect(await cli.run(["update", "--no-web"])).toBe(0);
+  expect(builds()).toHaveLength(count);
+});
+
+test("active runs and missing health refuse before the cache or installed artifacts change", async () => {
+  const web = await syntheticWeb();
+  file(join(home, ".cache/agent-workflow/sentinel"), "old cache");
+  const count = commands().length;
+  for (const health of [async () => ({ ...await web.io.health(""), activeRuns: 1 }), async () => { throw new Error("offline"); }, async () => ({ status: "ok" } as any)]) {
+    await expect(install(["--all-global"], env, "linux", { ...web.io, health })).rejects.toThrow();
+    expect(commands()).toHaveLength(count);
+    expect(readFileSync(join(home, ".cache/agent-workflow/sentinel"), "utf8")).toBe("old cache");
+    expect(readFileSync(web.backend, "utf8")).toBe("old backend");
+    expect(existsSync(join(web.data, "update.lock"))).toBe(false);
+  }
+});
+
+test("health failure after restart restores web artifacts, stamps and previous CLI cache", async () => {
+  const web = await syntheticWeb();
+  file(join(home, ".cache/agent-workflow/sentinel"), "old cache");
+  const health = async () => readFileSync(web.backend, "utf8") === "old backend" ? web.io.health("") : { status: "failed", activeRuns: 0, backendHash: "wrong" };
+  await expect(install(["--all-global"], env, "linux", { ...web.io, health })).rejects.toThrow("/health");
+  expect(readFileSync(web.backend, "utf8")).toBe("old backend");
+  expect(readFileSync(join(web.frontend, "index.html"), "utf8")).toBe("old frontend");
+  expect(readFileSync(join(home, ".cache/agent-workflow/sentinel"), "utf8")).toBe("old cache");
+  expect(existsSync(join(web.data, ".lz-web-backend-tree"))).toBe(false);
+  expect(commands().filter((command) => command.tool === "systemctl" && command.args.includes("restart"))).toHaveLength(4);
+  expect(errors.join("\n")).toContain("Se restauro el respaldo web");
+});
+
+test("unverified rollback leaves the maintenance gates closed for local recovery", async () => {
+  const web = await syntheticWeb(); let calls = 0;
+  const health = async () => ++calls <= 2 ? web.io.health("") : { status: "unavailable", activeRuns: 0, backendHash: "wrong" };
+  await expect(install(["--all-global"], env, "linux", { ...web.io, health })).rejects.toThrow("Requiere recuperacion local");
+  expect(existsSync(join(web.data, "installer-update.lock"))).toBe(true);
+  expect(existsSync(join(web.data, "update.lock"))).toBe(true);
+  expect(readFileSync(web.backend, "utf8")).toBe("old backend");
+});
+
+test("no-web, external development launcher, dry-run and uninstall leave the web untouched", async () => {
+  const web = await syntheticWeb();
+  for (const args of [["--all-global", "--no-web"], ["--all-global", "--dry-run"], ["--all-global", "--uninstall"]]) {
+    await install(args, env, "linux", { health: async () => { throw new Error("must not check health"); } });
+    expect(readFileSync(web.backend, "utf8")).toBe("old backend");
+  }
+  file(web.settings, JSON.stringify({ lzCommand: join(fixture, "agent/lazy-workflow/main.ts") }));
+  await install(["--all-global"], env, "linux", { health: async () => { throw new Error("must not check health"); } });
+  expect(errors.join("\n")).toContain("fuera del cache");
+  expect(readFileSync(web.settings, "utf8")).toContain(fixture);
+  expect(commands().some((command) => command.tool === "systemctl")).toBe(false);
+});
+
+test("foreign services and simultaneous updates fail without using a real service manager", async () => {
+  const web = await syntheticWeb();
+  file(web.units[0]!.path, "edited service");
+  await expect(install(["--all-global"], env, "linux", web.io)).rejects.toThrow("manually edited");
+  file(web.units[0]!.path, web.units[0]!.text);
+  mkdirSync(join(web.data, "update.lock")); file(join(web.data, "update.lock/id"), "other-update");
+  await expect(install(["--all-global"], env, "linux", web.io)).rejects.toThrow("Ya hay una actualizacion");
+  expect(existsSync(join(web.data, "update.lock"))).toBe(true);
+});
 
 for (const mode of MODES) test(`${mode} installs and uninstalls all its destinations`, async () => {
   const args = [`--${mode}`, "--target", home, "--no-gui"];
@@ -168,6 +337,24 @@ test("missing cargo or rustc warns and still installs CLI", async () => {
   expect(errors.join("\n")).toContain("cargo y rustc");
   expect(errors.join("\n")).toContain("sudo apt-get install libwebkit2gtk-4.1-dev");
   expect(commands().some((command) => command.args[0] === "run")).toBe(false);
+});
+
+test.skipIf(process.platform !== "linux")("installed GUI launches through the real CLI in a temporary HOME, skips unchanged builds and uninstalls", async () => {
+  env.GUI_EXECUTABLE = "1";
+  env.GUI_LAUNCH_MARKER = join(root, "gui-launched");
+  env.CARGO_HOME = process.env.CARGO_HOME || join(process.env.HOME!, ".cargo");
+  env.RUSTUP_HOME = process.env.RUSTUP_HOME || join(process.env.HOME!, ".rustup");
+  await run(["--all-global"]);
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../agent/lazy-workflow/main.ts"), "gui"], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(stderr).toBe(""); expect(code).toBe(0);
+  for (let attempt = 0; attempt < 100 && !existsSync(env.GUI_LAUNCH_MARKER); attempt++) await Bun.sleep(10);
+  expect(readFileSync(env.GUI_LAUNCH_MARKER, "utf8")).toBe("launched");
+  const builds = () => commands().filter((command) => command.tool === "bun" && command.args[0] === "run");
+  await run(["--all-global"]);
+  expect(builds()).toHaveLength(1);
+  await run(["--all-global", "--uninstall"]);
+  expect(existsSync(guiPaths(home, "linux").executable)).toBe(false);
 });
 
 test("failed GUI build leaves the previous GUI and stamp intact, CLI update succeeds", async () => {

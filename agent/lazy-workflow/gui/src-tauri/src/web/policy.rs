@@ -38,6 +38,13 @@ fn forbidden_name(name: &str) -> bool {
     .contains(&name)
 }
 
+pub fn update_request(body: &Value) -> Result<(), String> {
+    if !body.as_object().is_some_and(|object| object.is_empty()) {
+        return Err("La operacion de actualizacion no acepta parametros.".into());
+    }
+    Ok(())
+}
+
 pub fn catalog(mut catalog: Value, config: &WebConfig) -> Result<Value, String> {
     let commands = catalog["commands"]
         .as_array_mut()
@@ -492,6 +499,14 @@ pub fn validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_has_no_browser_parameters_and_is_never_a_run_command() {
+        assert!(update_request(&json!({})).is_ok());
+        for body in [json!(null), json!([]), json!({"args":[]}), json!({"ref":"main"}), json!({"target":"/tmp"}), json!({"url":"https://foreign.test"}), json!({"environment":{}})] {
+            assert!(update_request(&body).is_err());
+        }
+        assert!(!safe_command("update"));
+    }
     #[test]
     fn paths_alias_flags_and_unlisted_operations_cannot_escape_the_profile() {
         let root = tempfile::tempdir().unwrap();

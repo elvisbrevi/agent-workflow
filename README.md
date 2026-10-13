@@ -94,7 +94,7 @@ lz update
 | `plan` | Create a plan and publish its issues or Azure work items. |
 | `code` | Deliver eligible work, one unit at a time. |
 | `setup` | Open one coding-agent session that fixes what `plan` and `code` need on this machine: binaries, logins and lz's stored environment. It edits no repository or tracker item and never prints a secret. |
-| `update` | Run the Bun installer; defaults to `--all-global`. |
+| `update` | Update the remote cache, CLI, skills, desktop and installed web; defaults to `--all-global`. |
 | `gui` | Open the installed desktop GUI and return the terminal immediately. |
 | `catalog` | Print every command, its options, and its effect as JSON — what the [desktop GUI](#desktop-gui) builds its command lines from. |
 
@@ -369,8 +369,9 @@ the app. Explicit Quit interrupts remaining runs.
 
 ```bash
 lz gui
-lz update                     # build/install GUI when its source changed
+lz update                     # update CLI, skills, desktop and installed web
 lz update --all-global --no-gui
+lz update --no-web
 ```
 
 The installer builds the GUI locally: `~/Applications/lz.app` on macOS,
@@ -392,8 +393,11 @@ installation uses [GitHub through Cloudflare Access](agent/lazy-workflow/gui/ACC
 Each additional owner runs their own server/OS identity, installation and
 credentials. See the [Mac runbook](agent/lazy-workflow/gui/DEPLOYMENT-elvisbrevi.cl.md)
 and [actual verification evidence](agent/lazy-workflow/gui/WEB-VERIFICATION.md).
-Web provisioning and service updates are separate from `lz update`; preserve
-the existing web data and binding. The desktop application remains available.
+Initial web provisioning remains local. Later `lz update` also updates an
+installed web whose CLI resolves to the managed cache, with backup, idle-run
+checks and verified restart; `--no-web` skips it. **Ajustes → Actualización**
+asks for confirmation and shows progress in desktop and web. After desktop
+success, quit and reopen the app. See [the first deployment and migration](agent/lazy-workflow/gui/DEPLOYMENT-elvisbrevi.cl.md#first-self-update-deployment-manual-once).
 
 Its settings live in `~/.config/lazy-workflow/gui.json`; the `lz` skill
 documents them and edits them safely. See the [GUI guide](agent/lazy-workflow/gui/README.md)

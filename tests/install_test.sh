@@ -33,8 +33,8 @@ export HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp" AGENT_WORKFLOW_REPO_URL="$
 export ARG_LOG="$TEST_ROOT/args" VERSION_LOG="$TEST_ROOT/version"
 export PATH="$TEST_ROOT/bin:$PATH"
 
-cat "$ROOT_DIR/install.sh" | "$SHELL_BIN" -s -- --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --force --uninstall > "$TEST_ROOT/output" 2>&1 || fail 'piped bootstrap failed'
-printf '%s\n' --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --force --uninstall > "$TEST_ROOT/expected"
+cat "$ROOT_DIR/install.sh" | "$SHELL_BIN" -s -- --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --no-web --force --uninstall > "$TEST_ROOT/output" 2>&1 || fail 'piped bootstrap failed'
+printf '%s\n' --all-global --target "$TEST_ROOT/proyecto con espacios" --ref requested-ref --dry-run --no-gui --no-web --force --uninstall > "$TEST_ROOT/expected"
 cmp -s "$ARG_LOG" "$TEST_ROOT/expected" || fail 'arguments changed during delegation'
 [ "$(cat "$VERSION_LOG")" = version-requested ] || fail '--ref did not select bootstrap installer version'
 [ -z "$(ls -A "$TEST_ROOT/tmp")" ] || fail 'bootstrap left temporary checkout'

@@ -75,6 +75,7 @@ pub struct Captured {
 struct Running {
     pid: u32,
     cancels: u32,
+    updating: bool,
 }
 
 /// Cheap to clone: every clone shares the same registry, so a blocking task can own one.
@@ -83,6 +84,7 @@ pub struct Runs {
     next: Arc<AtomicU64>,
     running: Arc<Mutex<HashMap<u64, Running>>>,
     profile_lease: Option<Arc<std::fs::File>>,
+    start_gate: Arc<Mutex<()>>,
 }
 
 /// Keep the profile locked in an active Unix CLI even if its GUI/server crashes.
@@ -366,9 +368,17 @@ impl Runs {
         if request.args.is_empty() {
             return Err("falta el comando de lz".into());
         }
+        let _gate = self.start_gate.lock().unwrap();
+        let updating = request.args[0] == "update";
+        {
+            let running = self.running.lock().unwrap();
+            if (updating && !running.is_empty()) || running.values().any(|run| run.updating) {
+                return Err("Espera a que terminen las ejecuciones y la actualizacion antes de iniciar otra.".into());
+            }
+        }
         let mut environment = run_environment(settings);
         let launcher = resolve_launcher(settings, &environment)?;
-        if !request.args[0].starts_with("credentials-") {
+        if !updating && !request.args[0].starts_with("credentials-") {
             resolve_secrets(settings, &launcher, &mut environment)?;
         }
         for name in remove {
@@ -409,6 +419,7 @@ impl Runs {
             Running {
                 pid: child.id(),
                 cancels: 0,
+                updating,
             },
         );
         write_stdin(&mut child, request.stdin);
@@ -518,6 +529,26 @@ fn kill_group(pid: u32, _force: bool) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_and_workflow_runs_exclude_each_other_on_desktop() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fake-lz");
+        std::fs::write(&path, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let settings = GuiSettings { lz_command: path.display().to_string(), inherit_shell_environment: false, secret_environment: vec!["MUST_NOT_RESOLVE_FOR_UPDATE".into()], ..GuiSettings::default() };
+        let runs = Runs::default();
+        let request = |name: &str| RunRequest { args: vec![name.into()], cwd: None, stdin: None };
+        runs.start(Arc::new(|_, _| {}), &settings, request("update")).unwrap();
+        assert!(runs.start(Arc::new(|_, _| {}), &settings, request("code")).is_err());
+        assert!(runs.start(Arc::new(|_, _| {}), &settings, request("update")).is_err());
+        runs.shutdown();
+        let settings = GuiSettings { secret_environment: vec![], ..settings };
+        runs.start(Arc::new(|_, _| {}), &settings, request("code")).unwrap();
+        assert!(runs.start(Arc::new(|_, _| {}), &settings, request("update")).is_err());
+        runs.shutdown();
+    }
 
     fn shell(script: &str) -> (Launcher, BTreeMap<String, String>, Vec<String>) {
         let launcher = Launcher {
