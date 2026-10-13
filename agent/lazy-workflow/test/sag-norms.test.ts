@@ -23,6 +23,8 @@ test("plan returns normative file paths for the component tipo", async () => {
       "/estandares/comunes.md",
       "/estandares/api.md",
       "/estandares/api-adonis-patrones.md",
+      "/estandares/normativa-ltd.md",
+      "/estandares/revision.md",
       "/estandares/seguimiento.md",
       "/estandares/documentacion.md",
       "/estandares/integraciones.md",
@@ -45,6 +47,8 @@ test("coding returns normative file paths including pull-requests", async () => 
       "/estandares/comunes.md",
       "/estandares/bff.md",
       "/estandares/bff-patrones.md",
+      "/estandares/normativa-ltd.md",
+      "/estandares/revision.md",
       "/estandares/seguimiento.md",
       "/estandares/documentacion.md",
       "/estandares/integraciones.md",
@@ -57,6 +61,38 @@ test("coding returns normative file paths including pull-requests", async () => 
   }
 });
 
+for (const component of ["nextjs", "mcp"] as const) {
+  test(`${component} returns the ordered norms for both phases`, async () => {
+    const directory = await config(component);
+    try {
+      const service = new SagNormsService();
+      for (const phase of ["planning", "coding"] as const) {
+        const context = phase === "planning" ? await service.loadPlanning(directory) : await service.loadCoding(directory);
+        expect(context.component).toBe(component);
+        expect(context.phase).toBe(phase);
+        expect(context.paths).toEqual([
+          "/estandares/comunes.md",
+          ...(component === "nextjs" ? [
+            "/estandares/nextjs.md",
+            "/estandares/nextjs-patrones.md",
+            "/estandares/ui-patrones.md",
+          ] : []),
+          "/estandares/normativa-ltd.md",
+          "/estandares/revision.md",
+          "/estandares/seguimiento.md",
+          "/estandares/documentacion.md",
+          "/estandares/integraciones.md",
+          "/estandares/extraccion-documentos.md",
+          ...(phase === "coding" ? ["/estandares/pull-requests.md"] : []),
+          "/estandares/sonarqube.md",
+        ]);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("rejects missing .sag/config.json", async () => {
   const service = new SagNormsService();
   await expect(service.loadPlanning(root)).rejects.toThrow(".sag/config.json");
@@ -65,7 +101,7 @@ test("rejects missing .sag/config.json", async () => {
 test("rejects invalid component type", async () => {
   const directory = await config("invalid");
   try {
-    await expect(new SagNormsService().loadPlanning(directory)).rejects.toThrow("tipo explicito");
+    await expect(new SagNormsService().loadPlanning(directory)).rejects.toThrow("api, bff, nextjs o mcp");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

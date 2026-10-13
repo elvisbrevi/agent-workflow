@@ -662,8 +662,18 @@ _Avoid_: automatic credential capture
 **SAG norms context**:
 What `--normas-sag` puts in a prompt: the paths of the normative files that apply
 to this repository's `tipo`, read from `.sag/config.json`. The session reads the
-files itself with `az`. The coordinator selects paths; it does not extract rule
-identifiers, decide applicability, or inline normative text.
+files itself with `az` from `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY`. Accepted types
+are `api`, `bff`, `nextjs` and `mcp`. Both phases use this order under `/estandares/`:
+`comunes.md`, the type's documents, `normativa-ltd.md`, `revision.md`,
+`seguimiento.md`, `documentacion.md`, `integraciones.md`,
+`extraccion-documentos.md`, then `sonarqube.md`. Coding inserts
+`pull-requests.md` before `sonarqube.md`; planning omits it because the RAG
+operates PR norms in `/finalizar`.
+Type documents are `api.md` + `api-adonis-patrones.md`, `bff.md` +
+`bff-patrones.md`, or `nextjs.md` + `nextjs-patrones.md` + `ui-patrones.md`.
+MCP receives only shared norms until the RAG publishes `mcp.md`.
+The coordinator selects paths; it does not extract rule identifiers, decide
+applicability, resolve a source commit, or inline normative text.
 _Avoid_: rule-identifier metadata, applicability decisions, inlined norms
 
 **SAG-scoped workflow**:
@@ -674,5 +684,7 @@ _Avoid_: a workflow that exists only to consult norms
 **SAG source scope**:
 The complete Azure HU selected by `--hu`, or the GitHub repository the run is
 scoped to, whose `.sag/config.json` names the `tipo` that selects which normative
-paths a SAG-scoped workflow is given.
+paths a SAG-scoped workflow is given (`api`, `bff`, `nextjs` or `mcp`, using
+the canonical list in **SAG norms context**). This configuration is required
+only when a run opts in with `--normas-sag`; lz does not create or infer it.
 _Avoid_: Azure child ticket, a SAG-only command

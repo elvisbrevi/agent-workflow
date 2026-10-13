@@ -60,6 +60,36 @@ program's shell or list the name in a GUI profile's `secretEnvironment`.
 Configure the account and `LAZY_WORKFLOW_SECRETS_DIR` used by the web server;
 the browser displays locked connections and cannot change them.
 
+## SAG norms
+
+SAG is opt-in for each `plan` or `code` run through `--normas-sag` or the
+form's **Cargar las normas SAG del componente** toggle. Configure the norms
+repository once in the credential store of the account running lz:
+
+```bash
+printf '%s\n' 'https://dev.azure.com/<organization>/<project>/_git/<norms-repository>' | lz credentials-set --name LAZY_WORKFLOW_SAG_NORMS_REPOSITORY --service sag --stdin
+lz credentials-status --name LAZY_WORKFLOW_SAG_NORMS_REPOSITORY
+```
+
+Expect `present: true` and `source: "credentials"` unless an explicit process
+or profile value overrides it. An interactive `.bashrc` export does not reach
+a systemd web service. Keep the web's `inheritShellEnvironment: false`; its
+runs load the store automatically. Reload the page after configuring the server
+to refresh its diagnosis. The enabled toggle shows presence and source without
+displaying the stored value, and reminds the operator about `.sag/config.json`.
+
+Each target repository must already have `.sag/config.json` with `tipo` set to
+`api`, `bff`, `nextjs` or `mcp` when the flag is used. lz selects paths and the
+session reads the files with `az`; it does not create configuration or infer types.
+API uses `api.md` + `api-adonis-patrones.md`; BFF uses `bff.md` +
+`bff-patrones.md`; Next.js uses `nextjs.md` + `nextjs-patrones.md` +
+`ui-patrones.md`. MCP has no type document until the RAG publishes `mcp.md`.
+Under `/estandares/`, both phases receive `comunes.md`, the type documents,
+`normativa-ltd.md`, `revision.md`, `seguimiento.md`, `documentacion.md`,
+`integraciones.md`, `extraccion-documentos.md`, then `sonarqube.md`.
+Coding inserts `pull-requests.md` before `sonarqube.md`; planning omits it
+because PR norms are operated in the RAG's `/finalizar`.
+
 ## Installation and updates
 
 | Mode | Installs |

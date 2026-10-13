@@ -235,6 +235,17 @@ test("Code sobre una HU nombra la tarea elegida y omite lo que el CLI ya tiene p
     .toEqual(["plan", "--working-directory", "/r/azure", "--hu", "50", "--interview", "http"]);
 });
 
+test("SAG es opt-in para cada Plan y Code y pasa el flag al CLI", () => {
+  for (const action of ["plan", "code"] as const) {
+    const options = emptyRunOptions("/r/azure");
+    expect(prepareRun(catalog, action, hu, options)!.args).not.toContain("--normas-sag");
+    const prepared = prepareRun(catalog, action, hu, { ...options, normasSag: true })!;
+    expect(prepared.issues).toEqual([]);
+    expect(prepared.args).toContain("--normas-sag");
+    expect(prepared.args.filter((arg) => arg === "--normas-sag")).toHaveLength(1);
+  }
+});
+
 test("un plan de GitHub exige que se describa; desde una issue la sesion la lee con gh", () => {
   const repository: RunTarget = { kind: "github-repository", repository: "/r/github", scope: "owner/repo" };
   expect(prepareRun(catalog, "plan", repository, emptyRunOptions("/r/github"))!.issues.map((issue) => issue.flag)).toEqual(["--prompt"]);

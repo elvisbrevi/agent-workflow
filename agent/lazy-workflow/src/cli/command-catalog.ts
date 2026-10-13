@@ -173,7 +173,7 @@ const WORKFLOW_COMMANDS: readonly CatalogCommand[] = [
       { flag: "--issue-repository", kind: "string", label: "Repositorio de la épica", description: "owner/nombre de la épica, cuando no es el primer repositorio.", placeholder: "owner/repo", requires: ["--issue"] },
       { flag: "--prompt", kind: "text", label: "Prompt", description: "Lo que hay que planificar; complementa el workflow, no lo reemplaza.", default: DEFAULT_PROMPT },
       { flag: "--number-of-questions", kind: "integer", label: "Preguntas", description: "Presupuesto de preguntas aclaratorias de toda la entrevista.", default: DEFAULT_NUMBER_OF_QUESTIONS },
-      { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga las normas del componente de .sag/config.json; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },
+      { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga rutas de normas para el tipo api, bff, nextjs o mcp de .sag/config.json; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },
     ],
     notes: ["Un plan y una entrega son runs distintos: revisa lo publicado antes de ejecutar code."],
   },
@@ -191,7 +191,7 @@ const WORKFLOW_COMMANDS: readonly CatalogCommand[] = [
       { ...BASE_BRANCH, description: "Solo al crear hu/<HU> por primera vez; sin ella master o main.", requires: ["--hu"] },
       { flag: "--session", kind: "string", label: "Sesion", description: "Reanuda esa sesion preservada; las identidades vienen del checkpoint.", placeholder: "SESSION_ID" },
       { flag: "--prompt", kind: "text", label: "Prompt", description: "Instrucciones adicionales; con --session usa continue.", default: DEFAULT_PROMPT },
-      { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga las normas de codificacion; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },
+      { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga rutas de normas para el tipo api, bff, nextjs o mcp de .sag/config.json, incluyendo pull-requests; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },
     ],
     notes: [
       "Una entrega detenida despues de verificar la sesion se reanuda repitiendo el comando original.",

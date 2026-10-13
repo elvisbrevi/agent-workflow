@@ -99,7 +99,14 @@ prints the same surface as text. From `agent/lazy-workflow/`,
   coordinator's push, PR, or tracker updates. Capture external reference data
   with a tool before the run and point the prompt at the saved file. See
   [the authority profiles](CODING-AGENTS.md#authority-what-a-session-may-execute).
-- SAG norms load through `--normas-sag`, not prompt text.
+- SAG norms load through `--normas-sag`, separately for each run. Configure
+  `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY` with `lz credentials-set` in the account
+  executing lz, including web servers; do not enable shell inheritance on web.
+  The repository's existing `.sag/config.json` must name `api`, `bff`, `nextjs`
+  or `mcp`. Do not create or infer that file while configuring the connection.
+  The session reads the selected normative paths itself; MCP uses shared norms,
+  Next.js includes UI patterns, and both phases include legislation and review.
+  PR norms are coding-only. See [the canonical list](CONFIGURATION.md#sag-norms).
 - To continue an interrupted coding-agent session, use
   `lz code --session <id> --prompt continue`. Once git has verified the
   session's commits, rerun the original `code` command to resume coordinator

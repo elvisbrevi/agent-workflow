@@ -275,7 +275,7 @@ export function App() {
     );
   } else if (catalog && settings && view.kind === "plan") {
     main = (
-      <PlanView catalog={catalog} settings={settings} work={work} runs={state.runs} models={models} setup={setup}
+      <PlanView catalog={catalog} settings={settings} work={work} runs={state.runs} models={models} diagnostics={diagnostics} setup={setup}
         onRun={run} onProvision={provision} onSaveSettings={saveSettings} onAddRepository={addRepository} />
     );
   } else if (catalog && settings && view.kind === "preferences") {
@@ -290,6 +290,7 @@ export function App() {
         history={history.runs}
         runs={state.runs}
         models={models}
+        diagnostics={diagnostics}
         setup={setup}
         onRun={run}
         onProvision={provision}

@@ -59,8 +59,8 @@ frontend.
 
 `lz gui` opens the native desktop app. Browser access uses the separately built
 `lz-web` executable and frontend, a dedicated Cloudflare tunnel, HTTPS and the
-owner's service manager. The global CLI/desktop installer does not provision
-or update this web installation. `lz-web --help` lists its local administration
+owner's service manager. The global CLI/desktop installer updates an existing
+managed web installation; first provisioning stays separate. `lz-web --help` lists its local administration
 commands; it does not open a profile or change data.
 
 For the deployed owner installation, open
@@ -91,6 +91,25 @@ profile needs `work-assigned`, `agent-models`, `hu-info`, `hu-children-info`
 and `github-issue-list` in `allowedCommands`, and **Planificar** needs
 `work-plannable`, `azure-project-list`, `azure-repo-list`, `github-owner-list`,
 `repo-clone` and `repo-create`.
+
+New installations seed `allowedCommands` with every safe command in the CLI
+catalog. Existing installations keep their explicit list; to adopt full parity,
+set it locally to all catalog names except `credentials-*`, `gui`, `update` and
+`catalog`, then restart the backend while idle. Names must contain only lowercase
+letters and hyphens. The current catalog has 73 commands, of which 63 are safe
+for this list. This enables the API without adding views or command buttons.
+The web policy still rejects secret/forwarded flags and `--off`, `--off-delay`,
+`--log-file`, `--no-log-file`, `--interview-host`, `--interview-port` and
+`--verbose-output`; `update` remains a separate owner operation.
+
+The SAG toggle in Plan and Code passes `--normas-sag` unchanged. When enabled,
+it shows the presence and source of `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY` from
+the existing machine diagnosis, without displaying its value, and reminds the
+operator that each repository needs `.sag/config.json`. Configure the source
+in the server account's credential store ([SAG norms](CONFIGURATION.md#sag-norms));
+keep `inheritShellEnvironment: false`. A shell export alone does not configure
+systemd runs. Backend configuration and stored variables take effect on restart;
+code changes reach the running app only after updating its managed installation.
 
 Keep desktop and web on separate profiles or stop one before opening the other.
 **Ajustes → Actualización** shows the installed commit, confirms the update and

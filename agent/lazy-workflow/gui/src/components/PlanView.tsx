@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
 import { can, useRead } from "../hooks.ts";
-import type { GuiSettings } from "../lib/backend.ts";
+import type { Diagnostics, GuiSettings } from "../lib/backend.ts";
 import type { AgentModels } from "../lib/models.ts";
 import { itemLabel, matchesPlannable, plannableTarget, scopesOf, TRACKER_LABELS, type PlannableItem, type PlannableWork, type PlanTracker } from "../lib/plannable.ts";
 import type { RunState } from "../lib/runs.ts";
@@ -16,6 +16,7 @@ interface PlanViewProps {
   readonly work: { results: RepositoryWork[] };
   readonly runs: readonly RunState[];
   readonly models: readonly AgentModels[] | null;
+  readonly diagnostics: Diagnostics | null;
   readonly setup: SetupState;
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
   readonly onProvision: (command: CatalogCommand, args: string[]) => Promise<number | null>;
@@ -41,7 +42,7 @@ const EMPTY: Record<PlanTracker, string> = {
  * whose first field is where it is worked: a saved folder, a repository
  * downloaded from the tracker, or a new one created there.
  */
-export function PlanView({ catalog, settings, work, runs, models, setup, onRun, onProvision, onSaveSettings, onAddRepository }: PlanViewProps) {
+export function PlanView({ catalog, settings, work, runs, models, diagnostics, setup, onRun, onProvision, onSaveSettings, onAddRepository }: PlanViewProps) {
   const [tracker, setTracker] = useState<PlanTracker>(storedTracker);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("");
@@ -112,7 +113,7 @@ export function PlanView({ catalog, settings, work, runs, models, setup, onRun, 
 
         <aside className="work-panel" aria-label="Plan">
           {target ? (
-            <RunForm key={`plan:${selected!.url}`} catalog={catalog} settings={settings} models={models} action="plan" target={target}
+            <RunForm key={`plan:${selected!.url}`} catalog={catalog} settings={settings} models={models} diagnostics={diagnostics} action="plan" target={target}
               candidates={candidatesFor(target, work.results)} runs={runs}
               onRun={onRun} onProvision={onProvision} onAddRepository={onAddRepository} onSaveDefaults={onSaveSettings} onClose={() => setSelected(null)} />
           ) : (

@@ -36,14 +36,16 @@ launcher modes include the GUI; Rust is required to build it. See
 [CONFIGURATION.md](CONFIGURATION.md#installation-and-updates) for modes.
 
 `plan` and `code` accept `--normas-sag` to load phase-appropriate norms opt-in,
-per run. The norms require `.sag/config.json` with an explicit `tipo` of `api`,
-`bff` or `nextjs`; the component is never inferred from source layout.
+per run. The norms require an existing `.sag/config.json` with an explicit `tipo`
+of `api`, `bff`, `nextjs` or `mcp`; the component is never inferred from source layout.
 `plan --normas-sag` does not imply `code --normas-sag`. Plain `plan` and
-`code` never read SAG sources at all. Norm loading resolves a commit, stable rule
-ids, source URLs and selection reasons; an unavailable source or an invalid
-configuration stops the run before a session opens. If the canonical source needs
-authentication, provide `AZURE_DEVOPS_EXT_PAT` — it is used only in the request
-Authorization header, never persisted and never sent to the agent.
+`code` never read SAG sources at all. lz puts the selected file paths and the
+configured repository URL in the prompt; the session reads them with `az`.
+A missing source URL or invalid local configuration stops the run before a
+session opens. Configure `LAZY_WORKFLOW_SAG_NORMS_REPOSITORY` in the credential
+store and, for authenticated Azure sources, provide `AZURE_DEVOPS_EXT_PAT` through
+that store or the run environment. Normative text and credentials are never
+inlined in the prompt. Paths and phase differences: [SAG norms](CONFIGURATION.md#sag-norms).
 
 ## Scope and context
 

@@ -131,8 +131,9 @@ LAZY_WORKFLOW_GUI_SETTINGS="$LZ_WEB_DATA_DIR/gui.json" \
 ```
 
 Install/authenticate the coding-agent and tracker tools for this OS account.
-Store provider secrets with `lz credentials-set` and list their names in
-`secretEnvironment`, following [the settings reference](../../../utility/lz/GUI.md).
+Store provider secrets and the SAG norms repository URL with `lz credentials-set`;
+lz loads catalog-declared stored variables automatically. Use `secretEnvironment`
+for additional names, following [the settings reference](../../../utility/lz/GUI.md).
 Credentials remain in the CLI's existing account-specific store. Keep secrets
 out of `gui.json` and out of the repository. The launcher above uses the managed cache;
 removing `lzCommand` uses the installed `lz` on the service's PATH. A development
@@ -141,8 +142,11 @@ requires local migration to the installed CLI and never pulls that checkout.
 
 `web.json` selects the public HTTPS origin, `127.0.0.1:8234`, absolute settings
 and frontend paths, a 12-hour absolute session expiry, `maxRuns: 1`, and an
-explicit initial list of workflow, Git and GitHub/PR operations. The actual
-installed CLI catalog must contain every listed operation. An owner can edit
+explicit initial list of every safe command in the CLI catalog, excluding
+`credentials-*`, `gui`, `update` and `catalog`. A contract test pins this list
+to the catalog. Existing installations keep their explicit list until the
+owner edits it locally; expanding it changes API authorization without adding
+UI views or buttons. The installed CLI catalog must contain every listed operation. An owner can edit
 `allowedCommands`, `sessionSeconds` (60–2592000) and `maxRuns` (1–16) locally
 while the service is stopped. Credential commands, `gui`, ordinary `update`, raw stdin,
 forwarded flags, shutdown, custom log paths and interview bind options are
@@ -167,7 +171,7 @@ repository a plan works in; their `--destination` must be a new, visible folder
 directly under a folder the browser may walk, so `repositoryRoots` bounds where
 they write, and the folder is registered once they succeed. Commands that take
 no working directory run below those roots while no repository is registered.
-`setup` is opt-in: with it, the configuration notice offers **Reparar con
+`setup` is included in new installations; with it, the configuration notice offers **Reparar con
 agente**, which opens one coding-agent session on the server under the
 `lazy-setup` authority (no repository, git or tracker mutation, no secret read).
 Without it, the notice tells the owner to configure the server locally.

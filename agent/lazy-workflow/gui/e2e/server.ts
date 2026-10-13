@@ -48,6 +48,7 @@ else if (command === "repo-clone" || command === "repo-create") {
 }
 else if (command === "credentials-status") console.log(JSON.stringify([
   { name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", present: true, value: "https://dev.azure.com/synthetic", source: "credentials" },
+  { name: "LAZY_WORKFLOW_SAG_NORMS_REPOSITORY", present: true, value: "https://dev.azure.com/synthetic/Team/_git/norms", source: "credentials" },
   { name: "AZURE_DEVOPS_EXT_PAT", present: true, value: null, source: "credentials" }
 ]));
 else if (command === "agent-models") console.log(JSON.stringify([

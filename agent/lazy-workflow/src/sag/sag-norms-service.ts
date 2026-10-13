@@ -20,14 +20,18 @@ export function sagNormsRepository(env: NodeJS.ProcessEnv = process.env): string
   return repository.replace(/\/+$/, "");
 }
 
-const COMPONENTS = ["api", "bff", "nextjs"] as const;
-const COMPONENT_PATHS: Record<SagComponent, readonly [string, string]> = {
+const COMPONENTS = ["api", "bff", "nextjs", "mcp"] as const;
+const COMPONENT_PATHS: Record<SagComponent, readonly string[]> = {
   api: ["/estandares/api.md", "/estandares/api-adonis-patrones.md"],
   bff: ["/estandares/bff.md", "/estandares/bff-patrones.md"],
-  nextjs: ["/estandares/nextjs.md", "/estandares/nextjs-patrones.md"],
+  nextjs: ["/estandares/nextjs.md", "/estandares/nextjs-patrones.md", "/estandares/ui-patrones.md"],
+  // MCP usa las normas compartidas; agregar /estandares/mcp.md cuando el RAG lo publique.
+  mcp: [],
 };
 const NORMATIVE_PATHS = {
   common: "/estandares/comunes.md",
+  legislation: "/estandares/normativa-ltd.md",
+  review: "/estandares/revision.md",
   tracker: "/estandares/seguimiento.md",
   documentation: "/estandares/documentacion.md",
   integrations: "/estandares/integraciones.md",
@@ -49,7 +53,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readComponent(config: Record<string, unknown>): SagComponent {
   const component = config.tipo;
   if (!COMPONENTS.includes(component as SagComponent)) {
-    throw new Error(".sag/config.json requiere un tipo explicito: api, bff o nextjs");
+    throw new Error(".sag/config.json requiere un tipo explicito: api, bff, nextjs o mcp");
   }
   return component as SagComponent;
 }
@@ -84,6 +88,8 @@ export class SagNormsService {
       paths: [
         NORMATIVE_PATHS.common,
         ...componentPaths,
+        NORMATIVE_PATHS.legislation,
+        NORMATIVE_PATHS.review,
         NORMATIVE_PATHS.tracker,
         NORMATIVE_PATHS.documentation,
         NORMATIVE_PATHS.integrations,
@@ -103,10 +109,13 @@ export class SagNormsService {
       paths: [
         NORMATIVE_PATHS.common,
         ...componentPaths,
+        NORMATIVE_PATHS.legislation,
+        NORMATIVE_PATHS.review,
         NORMATIVE_PATHS.tracker,
         NORMATIVE_PATHS.documentation,
         NORMATIVE_PATHS.integrations,
         NORMATIVE_PATHS.extraction,
+        // El RAG opera esta norma en /finalizar: aplica a la entrega, no al plan.
         NORMATIVE_PATHS.pullRequests,
         NORMATIVE_PATHS.sonar,
       ],
