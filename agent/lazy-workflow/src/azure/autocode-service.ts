@@ -1,4 +1,4 @@
-import { HuInfo, type HuInfoData } from "./hu-info.ts";
+import { HuInfo, type HuComment, type HuInfoData } from "./hu-info.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { verifySessionWithGit } from "../git/session-verification.ts";
@@ -18,6 +18,8 @@ interface InfrastructurePublication {
 
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const WORK_ITEM_API_VERSION = "7.1";
+/** Work item comments are still a preview resource in 7.1. */
+const COMMENTS_API_VERSION = "7.1-preview.4";
 /**
  * Los estados que sacan una task de la frontera del drenaje.
  *
@@ -236,6 +238,30 @@ async function show(id: number, expandRelations: boolean, az: AzRunner): Promise
   return payload;
 }
 
+/** A work item's discussion, oldest first, read to its last page. Deleted comments stay out. */
+async function readComments(id: number, project: string, az: AzRunner): Promise<HuComment[]> {
+  const comments: HuComment[] = [];
+  let token: string | undefined;
+  do {
+    const page = `order=asc&$top=200${token ? `&continuationToken=${encodeURIComponent(token)}` : ""}`;
+    const payload = JSON.parse(await az([
+      "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get",
+      "--uri", `${azureOrganization()}/${encodeURIComponent(project)}/_apis/wit/workItems/${id}/comments?${page}&api-version=${COMMENTS_API_VERSION}`,
+      "--output", "json",
+    ])) as {
+      comments?: Array<{ text?: unknown; createdDate?: string; createdBy?: { displayName?: string } }>;
+      continuationToken?: string | null;
+    };
+    for (const comment of payload.comments ?? []) {
+      if (typeof comment.text !== "string" || !comment.text.trim()) continue;
+      comments.push({ author: comment.createdBy?.displayName, date: comment.createdDate, text: comment.text });
+    }
+    // A token Azure answers twice would page forever.
+    token = payload.continuationToken && payload.continuationToken !== token ? payload.continuationToken : undefined;
+  } while (token);
+  return comments;
+}
+
 function relationId(url: string | undefined): number | undefined {
   const id = url?.match(/workItems\/(\d+)$/)?.[1];
   return id ? Number(id) : undefined;
@@ -331,6 +357,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     // Relations carry the parent, which decides whether a Bug can be planned on its own.
     const item = await show(hu, true, this.az);
     const parents = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
+    const project = field(item, "System.TeamProject");
     return new HuInfo({
       id: item.id,
       type: field(item, "System.WorkItemType"),
@@ -338,13 +365,18 @@ export class AzureAutocodeService implements AutocodeAzureService {
       title: field(item, "System.Title"),
       description: field(item, "System.Description"),
       criterioDeAceptacion: field(item, "Microsoft.VSTS.Common.AcceptanceCriteria"),
+      reproSteps: field(item, "Microsoft.VSTS.TCM.ReproSteps"),
+      systemInfo: field(item, "Microsoft.VSTS.TCM.SystemInfo"),
       state: field(item, "System.State"),
-      project: field(item, "System.TeamProject"),
+      project,
       assignedTo: item.fields?.["System.AssignedTo"],
       // Both are identities: Azure answers them as objects, and reading them as
       // text drops the developer the delivery tickets are assigned to.
       desarrollador: item.fields?.["Custom.Desarrollador1"],
       iteration: field(item, "System.IterationPath"),
+      // The session plans from this snapshot and cannot read Azure itself, so a
+      // correction asked for in a comment must travel here or it is lost.
+      ...(project ? { comments: await readComments(item.id, project, this.az) } : {}),
     } satisfies HuInfoData);
   }
 

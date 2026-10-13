@@ -262,6 +262,20 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
 .feed-detail { color: var(--muted); font-size: 12.5px; }
 .result-text { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 8px; background: var(--ok-soft); }
 .result-text pre, .result-json pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font); }
+.result-summary { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 8px; background: var(--ok-soft); }
+.task-list li.result-ticket { flex-direction: column; align-items: stretch; gap: 4px; }
+.ticket-body > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.ticket-body .markdown { margin-top: 6px; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); }
+.markdown { display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
+.markdown p, .markdown ol, .markdown ul, .markdown h4 { margin: 0; }
+.markdown p { white-space: pre-line; }
+.markdown ol, .markdown ul { padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+.markdown h4 { font-size: 14px; font-weight: 650; }
+.markdown li { display: list-item; padding: 0; border: 0; }
+.markdown code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.markdown pre { margin: 0; padding: 10px; border-radius: 8px; background: var(--code-bg); color: var(--code-text); overflow: auto; }
+.markdown pre code { background: none; padding: 0; }
+.result-summary .markdown code, .result-text .markdown code { background: var(--panel); }
 .result-json > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .result-json pre { font-family: var(--mono); font-size: 12px; max-height: 40vh; overflow: auto; margin-top: 8px; padding: 10px; border-radius: 8px; background: var(--panel-2); }
 .history-outcome { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }

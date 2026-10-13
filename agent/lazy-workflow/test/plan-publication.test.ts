@@ -8,7 +8,6 @@ import {
 } from "../src/prompts/plan-contract.ts";
 
 const ticket = (title: string, blockedBy: string[] = []): PlannedTicket => ({
-  type: "Task",
   title,
   body: `body of ${title}`,
   blockedBy,
@@ -64,9 +63,13 @@ test("parsePlan falla cerrado sin marcador, sin JSON o con JSON invalido", () =>
 });
 
 test("parsePlan rechaza tickets con forma incorrecta", () => {
-  expect(() => parsePlan(plan([{ type: "Epic", title: "A", body: "b", blockedBy: [] }]))).toThrow(PlanParseError);
-  expect(() => parsePlan(plan([{ type: "Task", title: "", body: "b", blockedBy: [] }]))).toThrow(PlanParseError);
-  expect(() => parsePlan(plan([{ type: "Task", title: "A", body: "b" }]))).toThrow(PlanParseError);
+  expect(() => parsePlan(plan([{ title: "", body: "b", blockedBy: [] }]))).toThrow(PlanParseError);
+  expect(() => parsePlan(plan([{ title: "A", body: "b" }]))).toThrow(PlanParseError);
+});
+
+test("parsePlan descarta el tipo que la sesión escriba: un plan no elige crear un Bug", () => {
+  expect(parsePlan(plan([{ type: "Bug", title: "A", body: "b", blockedBy: [], estimate: 1 }])))
+    .toEqual([{ title: "A", body: "b", blockedBy: [], estimate: 1 }]);
 });
 
 test("parsePlan rechaza titulos repetidos y bloqueantes desconocidos", () => {
@@ -90,7 +93,7 @@ test("publish crea en orden de dependencia y luego enlaza los bloqueos", async (
 
   const publication = await service.publish(23438, [ticket("B", ["A"]), ticket("A")]);
 
-  expect(azure.created.map(({ title }) => title)).toEqual(["A", "B"]);
+  expect(azure.created).toEqual([{ title: "A", type: "Task", estimate: undefined }, { title: "B", type: "Task", estimate: undefined }]);
   expect(publication.tickets.map(({ title }) => title)).toEqual(["A", "B"]);
   expect(azure.links).toEqual([{ blocker: azure.ids.get("A")!, blocked: azure.ids.get("B")! }]);
   expect(publication.blockingLinks.every(({ linked }) => linked)).toBeTrue();

@@ -14,7 +14,7 @@ import { publishPlanIssues, type GitHubPlanPublicationBoundary } from "../src/gi
 import type { PlannedTicket } from "../src/prompts/plan-contract.ts";
 
 function ticket(title: string, blockedBy: string[] = []): PlannedTicket {
-  return { type: "Task", title, body: `cuerpo de ${title}`, blockedBy };
+  return { title, body: `cuerpo de ${title}`, blockedBy };
 }
 
 function recordingBoundary(): { boundary: GitHubPlanPublicationBoundary; created: string[]; links: Array<[number, number]> } {

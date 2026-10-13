@@ -230,7 +230,7 @@ invoke them as `lz <command> [options]`.
 
 | Command | Purpose |
 |---|---|
-| `hu-info` | Read the User Story's details. |
+| `hu-info` | Read the User Story's details, a Bug's repro steps, and its comments. |
 | `hu-children-info` | List the HU's direct child work items. |
 | `hu-branch-info` | Read the HU's linked integration branch. |
 | `ticket-info` | Read the ticket with its HU, branches, and delivery context. |

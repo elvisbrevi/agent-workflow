@@ -6,7 +6,6 @@ and no further text:
 
 Each ticket is an object with:
 
-- `type`: exactly `Task` or `Bug`.
 - `title`: the exact title to publish; unique within the plan.
 - `body`: the ticket description, stating the end-to-end behaviour the ticket
   delivers and its acceptance criteria.

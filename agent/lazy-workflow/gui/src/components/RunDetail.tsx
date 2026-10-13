@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl, isDesktop } from "../lib/platform.ts";
 import { WebInterview } from "./WebInterview.tsx";
-import { finalMarker, interviewUrl, operatorFeed, parseStdout, runLogPointer } from "../lib/output.ts";
+import { RunResult } from "./RunResult.tsx";
+import { finalMarker, interviewUrl, operatorFeed, runLogPointer } from "../lib/output.ts";
 import { formatDuration } from "../lib/history.ts";
 import { isFinished, type RunState, type RunStatus } from "../lib/runs.ts";
 import { runTitle } from "../lib/work.ts";
@@ -67,21 +68,6 @@ function Feed({ run }: { run: RunState }) {
   );
 }
 
-/** What the run answered on stdout: a setup report is read as is; a plan's JSON stays out of the way. */
-function Result({ run }: { run: RunState }) {
-  const parsed = useMemo(() => parseStdout(run.stdout), [run.stdout]);
-  if (parsed.kind === "empty") return null;
-  if (parsed.kind === "json") {
-    return (
-      <details className="result-json">
-        <summary>Resultado técnico</summary>
-        <pre>{JSON.stringify(parsed.value, null, 2)}</pre>
-      </details>
-    );
-  }
-  return <section className="result-text" aria-label="Resultado"><h3>Resultado</h3><pre>{parsed.text}</pre></section>;
-}
-
 interface RunDetailProps {
   readonly run: RunState;
   readonly onBack: () => void;
@@ -115,7 +101,7 @@ export function RunDetail({ run, onBack, onCancel, onRerun, onOpenHistory }: Run
       {run.exit?.error && <div className="callout error">{run.exit.error}</div>}
       {pointer && <div className="callout error">La ejecución falló. <button type="button" className="link-button" onClick={() => onOpenHistory(pointer.runId)}>Ver qué pasó</button></div>}
       {interview && <InterviewPanel url={interview} />}
-      <Result run={run} />
+      <RunResult run={run} />
       <section className="panel-section">
         <h3>Progreso</h3>
         {run.dropped > 0 && <p className="muted small">Se omitieron {run.dropped} líneas antiguas.</p>}

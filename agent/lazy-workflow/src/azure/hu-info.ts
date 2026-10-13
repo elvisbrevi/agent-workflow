@@ -19,6 +19,14 @@ export function developedState(type: string | null | undefined): string {
   return type === "Bug" ? "En revisión" : "Desarrollo Terminado";
 }
 
+/** One comment of the work item's discussion, as a person wrote it. */
+export interface HuComment {
+  author?: string;
+  date?: string;
+  /** Azure stores it as HTML or Markdown, like the description. */
+  text: string;
+}
+
 export interface HuInfoData {
   id: number;
   /** `System.WorkItemType`: a User Story, a Product Backlog Item or a Bug. */
@@ -28,11 +36,20 @@ export interface HuInfoData {
   title?: string;
   description?: string;
   criterioDeAceptacion?: string;
+  /** A Bug's own description fields: where a Bug says what is wrong, often instead of its description. */
+  reproSteps?: string;
+  systemInfo?: string;
   state?: string;
   project?: string;
   assignedTo?: unknown;
   desarrollador?: unknown;
   iteration?: string;
+  /**
+   * The discussion, oldest first. A plan session cannot read Azure, so what it
+   * is not handed here — a correction asked for in a later comment — it never
+   * learns.
+   */
+  comments?: HuComment[];
 }
 
 export class HuInfo {
@@ -42,11 +59,14 @@ export class HuInfo {
   readonly title?: string;
   readonly description?: string;
   readonly criterioDeAceptacion?: string;
+  readonly reproSteps?: string;
+  readonly systemInfo?: string;
   readonly state?: string;
   readonly project?: string;
   readonly assignedTo?: unknown;
   readonly desarrollador?: unknown;
   readonly iteration?: string;
+  readonly comments?: HuComment[];
 
   constructor(data: HuInfoData) {
     Object.assign(this, data);

@@ -200,7 +200,7 @@ const WORKFLOW_COMMANDS: readonly CatalogCommand[] = [
 ];
 
 const AZURE_READ_COMMANDS: readonly CatalogCommand[] = [
-  tool({ name: "hu-info", family: "azure-read", summary: "Lee los detalles de la User Story.", effect: "read", flags: [required(HU)] }),
+  tool({ name: "hu-info", family: "azure-read", summary: "Lee los detalles de la User Story, los pasos de un Bug y sus comentarios.", effect: "read", flags: [required(HU)] }),
   tool({ name: "hu-children-info", family: "azure-read", summary: "Lista los work items hijos directos de la HU.", effect: "read", flags: [required(HU)] }),
   tool({ name: "hu-branch-info", family: "azure-read", summary: "Lee la rama de integracion vinculada; null significa que el primer code la crea.", effect: "read", flags: [required(HU)] }),
   tool({ name: "ticket-info", family: "azure-read", summary: "Todo lo conocido del ticket: HU, ramas, PR, evidencia y gates.", effect: "read", flags: [required(HU), required(TICKET)] }),
