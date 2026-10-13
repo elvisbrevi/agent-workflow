@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
-import { cliLabel, cliOf, defaultModelOf, effortChoices, freeEffort, installedClis, modelGroups, providerLabel, type AgentModels } from "../lib/models.ts";
+import { cliLabel, cliOf, defaultModelOf, effortChoices, freeEffort, installedClis, modelGroups, providerLabel, switchCli, type AgentMemory, type AgentModels } from "../lib/models.ts";
 
 export interface AgentChoice {
   /** Empty means the default: the catalog's CLI, that CLI's model, `--variant`'s default. */
@@ -26,6 +26,7 @@ export const defaultVariant = (catalog: CommandCatalog): string =>
 export function AgentPicker({ catalog, models, value, onChange, id = "agent" }: AgentPickerProps) {
   const [customModel, setCustomModel] = useState(false);
   const [customEffort, setCustomEffort] = useState(false);
+  const memory = useRef<AgentMemory>({});
   const cli = cliOf(catalog, value.cli);
   const installed = installedClis(catalog, models);
   const defaultModel = defaultModelOf(catalog, models, cli);
@@ -56,7 +57,13 @@ export function AgentPicker({ catalog, models, value, onChange, id = "agent" }: 
             return (
               <button key={agent.cli} type="button" role="radio" aria-checked={cli === agent.cli} disabled={!available} title={available ? undefined : "No está instalado"}
                 className={cli === agent.cli ? "selected" : ""}
-                onClick={() => { setCustomModel(false); setCustomEffort(false); onChange({ cli: agent.cli === catalog.defaultCli ? "" : agent.cli, model: "", variant: "" }); }}>
+                onClick={() => {
+                  if (agent.cli === cli) return;
+                  setCustomModel(false); setCustomEffort(false);
+                  const next = switchCli(catalog, memory.current, value, agent.cli);
+                  memory.current = next.memory;
+                  onChange(next.choice);
+                }}>
                 {cliLabel(agent.cli)}
               </button>
             );

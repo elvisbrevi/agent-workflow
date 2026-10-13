@@ -14,7 +14,7 @@ import { foldRuns, formatDuration } from "../gui/src/lib/history.ts";
 import { initialRunsState, runsReducer, statusOf, type RunsAction } from "../gui/src/lib/runs.ts";
 import { defaultParent, emptyRunOptions, folderName, joinPath, prepareProvision, prepareRun, prepareSetup, type RunTarget } from "../gui/src/lib/run-request.ts";
 import { itemLabel, matchesPlannable, plannableTarget, scopesOf } from "../gui/src/lib/plannable.ts";
-import { effortChoices, installedClis, modelGroups } from "../gui/src/lib/models.ts";
+import { effortChoices, installedClis, modelGroups, switchCli } from "../gui/src/lib/models.ts";
 import { repairCli, repairPrompt, setupProblems } from "../gui/src/lib/setup-check.ts";
 import type { AgentModels } from "../src/coding-agent/agent-models-schema.ts";
 import type { Diagnostics } from "../gui/src/lib/backend.ts";
@@ -285,4 +285,13 @@ test("el progreso de un run se lee como hora y mensaje, sin el panel ni los marg
     { time: "00:22:40", level: "error", text: "La verificacion fallo" },
     { time: null, level: "info", text: "salida propia del agente" },
   ]);
+});
+
+test("volver a la pestaña de un agente recupera el modelo y el esfuerzo que tenia", () => {
+  const other = catalog.agents.map((agent) => agent.cli).find((cli) => cli !== catalog.defaultCli)!;
+  const away = switchCli(catalog, {}, { cli: "", model: "modelo-a", variant: "low" }, other);
+  expect(away.choice).toEqual({ cli: other, model: "", variant: "" });
+  const back = switchCli(catalog, away.memory, { cli: other, model: "modelo-b", variant: "max" }, catalog.defaultCli);
+  expect(back.choice).toEqual({ cli: "", model: "modelo-a", variant: "low" });
+  expect(switchCli(catalog, back.memory, back.choice, other).choice).toEqual({ cli: other, model: "modelo-b", variant: "max" });
 });
