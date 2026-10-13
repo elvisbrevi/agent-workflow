@@ -101,7 +101,7 @@ test("Trabajo plans an HU, a lone Bug or an epic it lists, each with its own fla
     { repository: "/synthetic/github", tracker: "github", scope: "o/r", truncated: false, error: null, items: [github(1, "Portal", "Epic"), github(3, "Login")] },
   ]);
   expect(azure!.entries.map((entry) => entry.kind === "hu" && `${huLabel(entry)} #${entry.hu}`)).toEqual(["HU #50", "Bug #70"]);
-  expect(planTarget(azure!.entries[1]!)).toEqual({ kind: "azure-hu", repository: "/synthetic/azure", hu: 70, title: "Falla el login", bug: true });
+  expect(planTarget(azure!.entries[1]!)).toEqual({ kind: "azure-hu", repository: "/synthetic/azure", hu: 70, title: "Falla el login", bug: true, project: "Project" });
   expect(planTarget(gh!.entries[0]!)).toEqual({ kind: "github-epic", repository: "/synthetic/github", nameWithOwner: "o/r", issue: 1, title: "Portal", url: "https://github.com/o/r/issues/1" });
   expect(planTarget(gh!.entries[1]!)).toBeNull();
   expect(runTitle("plan", ["plan", "--working-directory", "/r/github", "--issue", "1"])).toBe("Plan · Issue #1");

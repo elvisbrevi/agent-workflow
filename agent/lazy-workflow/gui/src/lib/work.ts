@@ -126,7 +126,7 @@ export function groupWork(results: readonly RepositoryWork[]): WorkSection[] {
 /** What planning this entry slices: an HU or lone Bug with `--hu`, an epic with `--issue`; null for anything else. */
 export function planTarget(entry: WorkEntry): RunTarget | null {
   if (entry.kind === "hu") {
-    return { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title: entry.story?.title ?? `HU #${entry.hu}`, bug: entry.story?.type === "Bug" };
+    return { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title: entry.story?.title ?? `HU #${entry.hu}`, bug: entry.story?.type === "Bug", project: entry.scope };
   }
   const { item } = entry;
   return isEpic(item) ? { kind: "github-epic", repository: item.repository, nameWithOwner: item.scope, issue: item.id, title: item.title, url: item.url } : null;

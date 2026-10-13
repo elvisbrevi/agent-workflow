@@ -97,7 +97,7 @@ function HuDetail({ catalog, entry, props }: { catalog: CommandCatalog; entry: E
   const label = huLabel(entry);
   const title = entry.story?.title ?? info.value?.title ?? `${label} #${entry.hu}`;
   const url = entry.story?.url ?? entry.tasks[0]?.url.replace(/\/\d+$/, `/${entry.hu}`);
-  const target: RunTarget = { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title, bug: label === "Bug" };
+  const target: RunTarget = { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title, bug: label === "Bug", project: entry.scope };
   const mine = new Set(entry.tasks.map((task) => task.id));
   return (
     <div className="panel-card">

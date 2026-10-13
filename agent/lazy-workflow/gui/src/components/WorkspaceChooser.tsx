@@ -57,11 +57,14 @@ export function WorkspaceChooser({ catalog, target, candidates, saved, chosen, o
   const destination = parent && (folder ?? folderName(remote)) ? joinPath(parent, folder ?? folderName(remote)) : "";
   const provision: Provision | null = provisioning ? { action: mode, tracker, project, repository: remote, destination } : null;
   const prepared = provision ? prepareProvision(catalog, provision) : null;
-  const problems = [
-    ...(provisioning && !remote ? [mode === "repo-clone" ? "Elige el repositorio que vas a descargar." : "Escribe el nombre del repositorio nuevo."] : []),
-    ...(provisioning && !parent ? ["Elige la carpeta donde quedará."] : []),
-    ...(prepared?.issues.filter((issue) => issue.severity === "error" && issue.flag !== "--destination" && issue.flag !== "--repository").map((issue) => issue.message) ?? []),
-  ];
+  // A missing field is said once, in these words; what the command itself rejects follows.
+  const problems = provisioning ? [...new Set([
+    ...(!remote ? [mode === "repo-clone" ? "Elige el repositorio que vas a descargar." : "Escribe el nombre del repositorio nuevo."] : []),
+    ...(!parent ? ["Elige la carpeta donde quedará."] : []),
+    ...(prepared?.issues
+      .filter((issue) => issue.severity === "error" && !(issue.flag === "--repository" && !remote) && !(issue.flag === "--destination" && !destination))
+      .map((issue) => issue.message) ?? []),
+  ])] : [];
 
   // A provisioning run is followed here: success registers and chooses its folder, failure says why.
   useEffect(() => {
