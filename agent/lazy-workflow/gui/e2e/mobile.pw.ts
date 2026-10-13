@@ -96,7 +96,10 @@ test("every screen fits and is usable on an iPhone 15", async ({ page }, testInf
   await shoot(page, testInfo, "10-settings-end", problems);
 
   await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
-  await expect(page.getByRole("dialog").locator(".folder-entry")).toHaveCount(4);
+  // Other scenarios download repositories into the same root, so its known folders are checked by name.
+  for (const folder of ["archive", "azure-project", "broken-project", "github-project"]) {
+    await expect(page.getByRole("dialog").locator(".folder-entry", { hasText: folder })).toBeVisible();
+  }
   await shoot(page, testInfo, "11-server-folders", problems);
   await page.getByRole("button", { name: "Cerrar selector de carpetas" }).click();
 

@@ -36,6 +36,16 @@ export interface CliOptions {
   prompt: string;
   hu: number | null;
   issue: number | null;
+  /** The repository (`owner/name`) of the epic `plan --issue` slices, when it is not the first working directory's. */
+  issueRepository: string | null;
+  /** The tracker a tool reads or provisions in before any repository exists here (ADR-0049). */
+  tracker: "azure" | "github" | null;
+  /** An Azure DevOps project. */
+  project: string | null;
+  /** A repository: its name in Azure, `owner/name` on GitHub. */
+  repository: string | null;
+  /** A folder `repo-clone` or `repo-create` creates; it must not exist yet. */
+  destination: string | null;
   branch: string | null;
   baseBranch: string | null;
   ticket: number | null;
@@ -210,6 +220,13 @@ const stringOption = (flag: string, describe: string) => ({
   coerce: stringCoerce(flag),
 });
 
+/** `owner/name`, the form GitHub names a repository by. */
+const ownerNameCoerce = (flag: string) => (value: unknown): string => {
+  const text = stringCoerce(flag)(value) ?? "";
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)) throw new Error(`${flag} debe ser owner/nombre`);
+  return text;
+};
+
 const positiveIntegerOption = (flag: string, describe: string, defaultValue?: number) => ({
   type: "string" as const,
   requiresArg: true,
@@ -327,7 +344,8 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .fail((message, error) => {
       reportError(error?.message ?? message ?? "argumento invalido");
     })
-    .group(["hu", "issue"], "Alcance:")
+    .group(["hu", "issue", "issue-repository"], "Alcance:")
+    .group(["tracker", "project", "repository", "destination"], "Repositorios:")
     .group(["cli", "session", "model", "variant", "fallback", "fallback-wait", "fallback-wait-max", "idle-timeout", "prompt"], "Agente de codificacion:")
     .group(["branch", "base-branch", "ticket", "pr", "commit", "summary"], "Tickets Azure:")
     .group(["description-file", "state", "expected-state"], "Tickets Azure (mutaciones):")
@@ -343,6 +361,11 @@ function configureParser(parser: YargsInstance, reportError: (message: string) =
     .group(["off", "off-delay"], "Apagado del equipo:")
     .option("hu", positiveIntegerOption("--hu", "Identificador de HU para el flujo Azure; omitir usa GitHub."))
     .option("issue", positiveIntegerOption("--issue", "Issue explicito para workflows SAG."))
+    .option("issue-repository", { type: "string", requiresArg: true, describe: "Repositorio owner/nombre de la epica de plan --issue, cuando no es el primer --working-directory.", coerce: ownerNameCoerce("--issue-repository") })
+    .option("tracker", { type: "string", requiresArg: true, choices: ["azure", "github"], describe: "Tracker que lee o en el que crea la herramienta: azure o github." })
+    .option("project", stringOption("--project", "Proyecto de Azure DevOps."))
+    .option("repository", stringOption("--repository", "Repositorio: su nombre en Azure, owner/nombre en GitHub."))
+    .option("destination", stringOption("--destination", "Carpeta absoluta, que todavia no existe, donde repo-clone o repo-create dejan el repositorio."))
     .option("cli", {
       type: "string",
       requiresArg: true,
@@ -585,6 +608,11 @@ function readOptions(command: string, argv: unknown, rawArgs: string[], binaryPr
     prompt: asString("prompt") ?? DEFAULT_PROMPT,
     hu: asNumber("hu"),
     issue: asNumber("issue"),
+    issueRepository: asString("issue-repository"),
+    tracker: (asString("tracker") as CliOptions["tracker"]) ?? null,
+    project: asString("project"),
+    repository: asString("repository"),
+    destination: asString("destination"),
     branch: asString("branch"),
     baseBranch: asString("base-branch"),
     ticket: asNumber("ticket"),

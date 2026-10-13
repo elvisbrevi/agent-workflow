@@ -6,15 +6,13 @@ import type { AgentModels } from "../lib/models.ts";
 import { isDesktop } from "../lib/platform.ts";
 import type { RunAction, RunTarget } from "../lib/run-request.ts";
 import type { RunState } from "../lib/runs.ts";
-import { groupWork, huLabel, isEpic, matchesQuery, plannableSections, planTarget, type RepositoryWork, type WorkEntry, type WorkSection } from "../lib/work.ts";
+import { candidatesFor, groupWork, huLabel, isEpic, matchesQuery, type RepositoryWork, type WorkEntry, type WorkSection } from "../lib/work.ts";
 import { DirectoryPicker } from "./DirectoryPicker.tsx";
 import { RunForm } from "./RunForm.tsx";
 import { SetupBanner, type SetupState } from "./SetupBanner.tsx";
 import { WorkDetail, type Selection } from "./WorkDetail.tsx";
 
 interface WorkViewProps {
-  /** `plan` lists only what a plan slices — epics, HUs and lone Bugs — and opens its plan form directly. */
-  readonly mode: "work" | "plan";
   readonly catalog: CommandCatalog;
   readonly settings: GuiSettings;
   readonly work: { results: RepositoryWork[]; loading: boolean; refresh: () => void };
@@ -23,6 +21,7 @@ interface WorkViewProps {
   readonly models: readonly AgentModels[] | null;
   readonly setup: SetupState;
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
+  readonly onProvision: (command: CatalogCommand, args: string[]) => Promise<number | null>;
   readonly onSaveSettings: (settings: GuiSettings) => void;
   readonly onAddRepository: (path: string) => Promise<void>;
   readonly onOpenActivity: (runId: string | null) => void;
@@ -35,25 +34,6 @@ export interface FormRequest {
 }
 
 const TRACKERS = { github: "GitHub", azure: "Azure DevOps" } as const;
-
-const TEXTS = {
-  work: {
-    title: "Trabajo", label: "Trabajo asignado", search: "Buscar trabajo", loading: "Buscando tu trabajo…",
-    empty: { github: "No tienes issues asignadas aquí.", azure: "No tienes HU ni tareas asignadas aquí." },
-    panel: "Elige una HU o una issue para ver sus tareas y ejecutar Plan o Code.",
-  },
-  plan: {
-    title: "Planificar", label: "Épicas, HU y Bugs asignados", search: "Buscar qué planificar", loading: "Buscando lo que puedes planificar…",
-    empty: { github: "No tienes épicas asignadas aquí.", azure: "No tienes HU ni Bugs asignados aquí." },
-    panel: "Elige una épica, una HU o un Bug, luego el repositorio donde trabajar, y ejecuta Plan: sus tareas quedan listas para Code.",
-  },
-} as const;
-
-/** The repositories a plan of this target may work in: its own first, then the saved ones of the same tracker. */
-function candidatesFor(target: RunTarget, results: readonly RepositoryWork[]): string[] {
-  const tracker = target.kind === "azure-hu" ? "azure" : "github";
-  return [...new Set([target.repository, ...results.filter((result) => result.tracker === tracker).map((result) => result.repository)])];
-}
 
 function EntryRow({ entry, selected, onSelect }: { entry: WorkEntry; selected: boolean; onSelect: () => void }) {
   if (entry.kind === "hu") {
@@ -82,14 +62,12 @@ function EntryRow({ entry, selected, onSelect }: { entry: WorkEntry; selected: b
   );
 }
 
-export function WorkView({ mode, catalog, settings, work, history, runs, models, setup, onRun, onSaveSettings, onAddRepository, onOpenActivity, onFocusRun }: WorkViewProps) {
+export function WorkView({ catalog, settings, work, history, runs, models, setup, onRun, onProvision, onSaveSettings, onAddRepository, onOpenActivity, onFocusRun }: WorkViewProps) {
   const [query, setQuery] = useState("");
   const [tracker, setTracker] = useState<"all" | "github" | "azure">("all");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [form, setForm] = useState<FormRequest | null>(null);
-  const texts = TEXTS[mode];
-  const grouped = groupWork(work.results);
-  const sections = mode === "plan" ? plannableSections(grouped) : grouped;
+  const sections = groupWork(work.results);
   const visible = (section: WorkSection) => tracker === "all" || section.tracker === tracker;
   const trackers = new Set(sections.map((section) => section.tracker));
 
@@ -100,12 +78,7 @@ export function WorkView({ mode, catalog, settings, work, history, runs, models,
     if (fresh && fresh !== selection.entry) setSelection({ kind: "entry", entry: fresh });
   }, [work.results]);
 
-  // Planificar goes straight to the plan form; Trabajo opens the work first.
-  const select = (next: Selection) => {
-    const target = mode === "plan" && next.kind === "entry" ? planTarget(next.entry) : null;
-    setForm(target ? { action: "plan", target } : null);
-    setSelection(next);
-  };
+  const select = (next: Selection) => { setForm(null); setSelection(next); };
   const panelOpen = form !== null || selection !== null;
   // Where the panel replaces the list, it opens at its own top, not where the list was scrolled.
   useEffect(() => {
@@ -116,8 +89,8 @@ export function WorkView({ mode, catalog, settings, work, history, runs, models,
     <div className={`page work-page${panelOpen ? " panel-open" : ""}`}>
       <SetupBanner setup={setup} />
       <header className="work-toolbar">
-        <h1 className="grow">{texts.title}</h1>
-        <input className="input search" type="search" aria-label={texts.search} placeholder="Buscar por número o título…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <h1 className="grow">Trabajo</h1>
+        <input className="input search" type="search" aria-label="Buscar trabajo" placeholder="Buscar por número o título…" value={query} onChange={(event) => setQuery(event.target.value)} />
         {trackers.size > 1 && (
           <select className="input tracker-filter" aria-label="Filtrar por plataforma" value={tracker} onChange={(event) => setTracker(event.target.value as typeof tracker)}>
             <option value="all">Todo</option><option value="azure">Azure DevOps</option><option value="github">GitHub</option>
@@ -135,8 +108,8 @@ export function WorkView({ mode, catalog, settings, work, history, runs, models,
       )}
 
       <div className={`work-layout${panelOpen ? " has-panel" : ""}`}>
-        <section className="work-list" aria-label={texts.label}>
-          {work.loading && <div className="empty-state" role="status">{texts.loading}</div>}
+        <section className="work-list" aria-label="Trabajo asignado">
+          {work.loading && <div className="empty-state" role="status">Buscando tu trabajo…</div>}
           {!work.loading && sections.filter(visible).map((section) => {
             const entries = section.entries.filter((entry) => matchesQuery(entry, query));
             const sectionSelected = selection?.kind === "section" && selection.section.key === section.key;
@@ -150,7 +123,7 @@ export function WorkView({ mode, catalog, settings, work, history, runs, models,
                 {entries.map((entry) => (
                   <EntryRow key={entry.key} entry={entry} selected={selection?.kind === "entry" && selection.entry.key === entry.key} onSelect={() => select({ kind: "entry", entry })} />
                 ))}
-                {entries.length === 0 && <p className="muted small section-empty">{query ? "Sin coincidencias." : texts.empty[section.tracker]}</p>}
+                {entries.length === 0 && <p className="muted small section-empty">{query ? "Sin coincidencias." : section.tracker === "github" ? "No tienes issues asignadas aquí." : "No tienes HU ni tareas asignadas aquí."}</p>}
               </div>
             );
           })}
@@ -160,14 +133,14 @@ export function WorkView({ mode, catalog, settings, work, history, runs, models,
         <aside className="work-panel" aria-label="Detalle">
           {form ? (
             <RunForm key={`${form.action}:${JSON.stringify(form.target)}`} catalog={catalog} settings={settings} models={models} action={form.action} target={form.target}
-              candidates={candidatesFor(form.target, work.results)}
-              onRun={onRun} onSaveDefaults={onSaveSettings} onClose={() => { setForm(null); if (mode === "plan" && selection?.kind === "entry") setSelection(null); }} />
+              candidates={candidatesFor(form.target, work.results)} runs={runs}
+              onRun={onRun} onProvision={onProvision} onAddRepository={onAddRepository} onSaveDefaults={onSaveSettings} onClose={() => setForm(null)} />
           ) : selection ? (
             <WorkDetail key={selection.kind === "section" ? selection.section.key : selection.entry.key} catalog={catalog} selection={selection} history={history} runs={runs}
               onBack={() => setSelection(null)} onPrepare={setForm} onSelect={select} onOpenActivity={onOpenActivity} onFocusRun={onFocusRun} />
           ) : (
             <div className="panel-card panel-empty">
-              <p className="muted">{texts.panel}</p>
+              <p className="muted">Elige una HU o una issue para ver sus tareas y ejecutar Plan o Code.</p>
             </div>
           )}
         </aside>

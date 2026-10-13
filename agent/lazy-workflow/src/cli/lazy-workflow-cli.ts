@@ -90,6 +90,7 @@ import {
   resolveWorkflowRun,
   type HandoffProgress,
   type SagContext,
+  type PlanEpic,
   type WorkflowPromptSpec,
   type WorkflowRun,
 } from "../prompts/workflow-prompt.ts";
@@ -957,6 +958,9 @@ export class LazyWorkflowCli {
     if (command === "plan" && options.hu !== null && options.issue !== null) {
       return argumentError(options, "--issue y --hu son excluyentes en plan: --issue rebana una épica GitHub, --hu una HU Azure");
     }
+    if (options.issueRepository !== null && (command !== "plan" || options.issue === null)) {
+      return argumentError(options, "--issue-repository solo se permite con plan --issue");
+    }
 
     this.reportRunHeading(options);
     this.reportFallbackChain(options);
@@ -1582,7 +1586,7 @@ export class LazyWorkflowCli {
       console.log(JSON.stringify(result, null, 2));
       if (failed) return 1;
       if (!await this.commitPlanningEdits(options.workingDirectory)) return 1;
-      return this.publishGitHubPlan(result.text, options.workingDirectory, options, epic?.number ?? null);
+      return this.publishGitHubPlan(result.text, options.workingDirectory, options, epic ? { issue: epic.issue.number, repository: epic.repository } : null);
     }
 
     return this.runDefaultCodeWorkflow(options);
@@ -2334,7 +2338,7 @@ export class LazyWorkflowCli {
         }
         if (!await this.plannableHu(huInfo, options)) return 1;
       }
-      // A GitHub epic lives in the anchor repository, where the plan is published.
+      // The plan is published in the anchor repository; the epic lives there or in --issue-repository.
       const epic = provider.kind === "github-repository-run" ? await this.readPlanEpic(options, scope.repositories[0]!.path) : null;
       if (epic === false) return 1;
       const { result, failed } = await this.runPlanningSession(
@@ -2356,7 +2360,7 @@ export class LazyWorkflowCli {
       if (provider.kind === "azure-hu-run") return this.publishAzurePlan(provider.hu, result.text, options);
       // Un plan workspace GitHub publica en el repositorio ancla, que es el unico
       // donde `code` busca la cola gestionada.
-      return this.publishGitHubPlan(result.text, scope.repositories[0]!.path, options, epic?.number ?? null);
+      return this.publishGitHubPlan(result.text, scope.repositories[0]!.path, options, epic ? { issue: epic.issue.number, repository: epic.repository } : null);
     } catch (error) {
       reportFailure(
         resolveWorkflowRun(options.hu).kind === "azure-hu-run" ? "workspace-scope-failure" : "delivery-failure",
@@ -3424,13 +3428,13 @@ export class LazyWorkflowCli {
    * could still deliver must not become their parent. Null without `--issue`;
    * false once the failure is reported.
    */
-  private async readPlanEpic(options: CliOptions, workingDirectory: string): Promise<SelectedManagedIssue | null | false> {
+  private async readPlanEpic(options: CliOptions, workingDirectory: string): Promise<PlanEpic | null | false> {
     if (options.issue === null) return null;
     const context = { issue: options.issue, repository: workingDirectory };
     let epic: SelectedManagedIssue;
     try {
       if (!this.githubManagedQueue.readIssueDetail) throw new Error("la frontera de cola GitHub no lee issues");
-      epic = await this.githubManagedQueue.readIssueDetail(options.issue, workingDirectory);
+      epic = await this.githubManagedQueue.readIssueDetail(options.issue, workingDirectory, options.issueRepository);
     } catch (error) {
       reportFailure("tracker-read-failure", "planning", context, `lazy-workflow: no se pudo leer la épica #${options.issue} (${errorMessage(error)})`);
       return false;
@@ -3443,7 +3447,7 @@ export class LazyWorkflowCli {
       reportFailure("argument-error", "planning", context, `lazy-workflow: la issue #${options.issue} no es una épica: ponle la etiqueta epic o el prefijo [Epic] en el título`);
       return false;
     }
-    return epic;
+    return { issue: epic, repository: options.issueRepository };
   }
 
   /**
@@ -3456,7 +3460,7 @@ export class LazyWorkflowCli {
    * la numeracion mas alta previa a la sesion, y esa deduccion etiquetaba como
    * del plan cualquier Issue que alguien abriera a mano mientras corria.
    */
-  private async publishGitHubPlan(text: string, workingDirectory: string, options: CliOptions, epic: number | null = null): Promise<number> {
+  private async publishGitHubPlan(text: string, workingDirectory: string, options: CliOptions, epic: { issue: number; repository: string | null } | null = null): Promise<number> {
     try {
       const tickets = parsePlan(text);
       if (tickets.length === 0) {

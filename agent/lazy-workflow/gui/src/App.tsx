@@ -13,6 +13,7 @@ import { useAgentModels, useAssignedWork, useRunLog } from "./hooks.ts";
 import { ActivityView } from "./components/ActivityView.tsx";
 import { PreferencesView } from "./components/PreferencesView.tsx";
 import { Sidebar, type View } from "./components/Sidebar.tsx";
+import { PlanView } from "./components/PlanView.tsx";
 import { WorkView } from "./components/WorkView.tsx";
 
 type CatalogState = { kind: "loading" } | { kind: "ready"; catalog: CommandCatalog } | { kind: "error"; message: string };
@@ -38,6 +39,8 @@ const CONFIRMATION: Record<string, string> = {
   plan: "Plan abre una sesión del agente que puede editar la documentación del repositorio y publicará las tareas resultantes.",
   code: "Code abre sesiones del agente que implementan, empujan, mergean y cierran tareas.",
   setup: "Una sesión del agente revisará y reparará la configuración de este equipo. No edita repositorios ni el tracker.",
+  "repo-clone": "Descarga el repositorio en una carpeta nueva, con las credenciales de lz.",
+  "repo-create": "Crea un repositorio privado en el tracker, con un primer commit en main, y lo descarga en una carpeta nueva.",
 };
 
 export function App() {
@@ -128,27 +131,31 @@ export function App() {
     await saveSettings({ ...settings, repositories: [...settings.repositories, repository], activeRepository: repository }, false);
   };
 
-  /** Starts a run; resolves true once it is running, so a form can close. */
-  const run = async (command: CatalogCommand, args: string[]): Promise<boolean> => {
-    if (!catalog || !settings || pendingStart.current) return false;
+  /** Starts a run; its id once it is running, or null when it did not start. */
+  const start = async (command: CatalogCommand, args: string[], follow: boolean): Promise<number | null> => {
+    if (!catalog || !settings || pendingStart.current) return null;
     pendingStart.current = true;
     try {
       if (command.effect !== "read" && settings.confirmWrites) {
         const confirmed = await ask(`${runTitle(command.name, args)}\n\n${CONFIRMATION[command.name] ?? "Este comando modifica el repositorio o el tracker."}`, { title: "¿Ejecutar?", kind: "warning", okLabel: "Ejecutar", cancelLabel: "Cancelar" });
-        if (!confirmed) return false;
+        if (!confirmed) return null;
       }
       const directoryIndex = args.indexOf("--working-directory");
       const cwd = directoryIndex >= 0 ? args[directoryIndex + 1]?.split(",")[0]?.trim() : settings.activeRepository ?? undefined;
       const started = await backend.startRun(args, { cwd });
       dispatch({ type: "started", started, args, command: command.name, line: renderCommandLine(catalog, command, args, catalog.binary), effect: command.effect, output: command.output });
       // A run is followed where it is tracked: its progress opens in Ejecuciones.
-      setView({ kind: "activity", runId: null, liveId: started.id });
-      return true;
+      if (follow) setView({ kind: "activity", runId: null, liveId: started.id });
+      return started.id;
     } catch (error) {
       setNotice(errorText(error));
-      return false;
+      return null;
     } finally { pendingStart.current = false; }
   };
+  /** Plan, Code and setup open where runs are followed; resolves true once running, so a form can close. */
+  const run = async (command: CatalogCommand, args: string[]): Promise<boolean> => (await start(command, args, true)) !== null;
+  /** A download or a creation stays in the form that started it, which follows it there. */
+  const provision = (command: CatalogCommand, args: string[]): Promise<number | null> => start(command, args, false);
 
   const rerun = (previous: RunState) => {
     const command = catalog?.commands.find((candidate) => candidate.name === previous.command);
@@ -203,14 +210,16 @@ export function App() {
         onCancel={cancel} onRerun={rerun} onDismiss={(id) => dispatch({ type: "close", id })}
         onOpenHistory={(runId) => setView({ kind: "activity", runId, liveId: null })} />
     );
+  } else if (catalog && settings && view.kind === "plan") {
+    main = (
+      <PlanView catalog={catalog} settings={settings} work={work} runs={state.runs} models={models} setup={setup}
+        onRun={run} onProvision={provision} onSaveSettings={saveSettings} onAddRepository={addRepository} />
+    );
   } else if (catalog && settings && view.kind === "preferences") {
     main = <PreferencesView catalog={catalog} document={settingsDocument} diagnostics={diagnostics} models={models} setup={setup} onSave={saveSettings} onAddRepository={addRepository} />;
   } else if (catalog && settings) {
     main = (
       <WorkView
-        // Each view keeps its own selection and form; switching views starts the other one fresh.
-        key={view.kind}
-        mode={view.kind === "plan" ? "plan" : "work"}
         catalog={catalog}
         settings={settings}
         work={work}
@@ -219,6 +228,7 @@ export function App() {
         models={models}
         setup={setup}
         onRun={run}
+        onProvision={provision}
         onSaveSettings={saveSettings}
         onAddRepository={addRepository}
         onOpenActivity={(runId) => setView({ kind: "activity", runId, liveId: null })}

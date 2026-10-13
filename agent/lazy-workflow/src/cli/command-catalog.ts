@@ -51,6 +51,7 @@ const FAMILIES: readonly CatalogFamily[] = [
   { id: "github-delivery", title: "GitHub · entrega", description: "Los pasos del coordinador, para reparar una entrega a medias." },
   { id: "git", title: "Git", description: "Listar, cambiar y borrar ramas del repositorio." },
   { id: "pull-request", title: "Pull requests", description: "PR del tracker que nombra origin: GitHub o Azure DevOps." },
+  { id: "repository", title: "Repositorios", description: "Proyectos, cuentas y repositorios de Azure DevOps o GitHub; descargarlos o crearlos aqui." },
   { id: "credentials", title: "Credenciales", description: "Secretos en ~/.config/secrets/*.env, con chezmoi si lo administra." },
   { id: "maintenance", title: "Mantenimiento", description: "Reinstalar la herramienta y describir el propio CLI y los agentes instalados." },
 ];
@@ -74,6 +75,10 @@ const STATE: CatalogFlag = { flag: "--state", kind: "string", label: "Estado des
 const EXPECTED_STATE: CatalogFlag = { flag: "--expected-state", kind: "string", label: "Estado esperado", description: "Estado actual esperado; si cambio por debajo, la escritura falla.", placeholder: "Nuevo" };
 const EXPECTED_REV: CatalogFlag = { flag: "--expected-rev", kind: "integer", label: "Revision esperada", description: "Revision con la que se leyo el work item.", placeholder: "9" };
 const NAME: CatalogFlag = { flag: "--name", kind: "string", label: "Credencial", description: "Nombre de la variable, en mayusculas.", placeholder: "OPENAI_API_KEY" };
+const TRACKER: CatalogFlag = { flag: "--tracker", kind: "choice", label: "Tracker", description: "azure o github.", choices: ["azure", "github"] };
+const PROJECT: CatalogFlag = { flag: "--project", kind: "string", label: "Proyecto", description: "Proyecto de Azure DevOps.", placeholder: "Sección Desarrollo" };
+const REPOSITORY: CatalogFlag = { flag: "--repository", kind: "string", label: "Repositorio", description: "Su nombre en Azure, owner/nombre en GitHub.", placeholder: "owner/repo" };
+const DESTINATION: CatalogFlag = { flag: "--destination", kind: "destination", label: "Carpeta destino", description: "Carpeta absoluta que todavia no existe; ahi queda el repositorio." };
 const SERVICE: CatalogFlag = { flag: "--service", kind: "string", label: "Servicio", description: "Archivo <servicio>.env que la recibe; sin el, el que ya la declara u other.env.", placeholder: "openai" };
 
 /** `plan` and `code` default to the current directory, but a front end has no meaningful one: it always names the repository. */
@@ -163,7 +168,8 @@ const WORKFLOW_COMMANDS: readonly CatalogCommand[] = [
     flags: [
       WORKSPACE,
       { ...HU, description: "Rebana esa HU o Bug de Azure; sin ella el plan publica issues GitHub.", conflicts: ["--issue"] },
-      { ...ISSUE, label: "Épica", description: "Rebana esa épica GitHub del primer repositorio; sus issues se publican como sub-issues de ella.", conflicts: ["--hu"] },
+      { ...ISSUE, label: "Épica", description: "Rebana esa épica GitHub; sus issues se publican en el primer repositorio como sub-issues de ella.", conflicts: ["--hu"] },
+      { flag: "--issue-repository", kind: "string", label: "Repositorio de la épica", description: "owner/nombre de la épica, cuando no es el primer repositorio.", placeholder: "owner/repo", requires: ["--issue"] },
       { flag: "--prompt", kind: "text", label: "Prompt", description: "Lo que hay que planificar; complementa el workflow, no lo reemplaza.", default: DEFAULT_PROMPT },
       { flag: "--number-of-questions", kind: "integer", label: "Preguntas", description: "Presupuesto de preguntas aclaratorias de toda la entrevista.", default: DEFAULT_NUMBER_OF_QUESTIONS },
       { flag: "--normas-sag", kind: "boolean", label: "Normas SAG", description: `Carga las normas del componente de .sag/config.json; requiere ${SAG_NORMS_REPOSITORY_ENV}.` },
@@ -382,9 +388,19 @@ const MAINTENANCE_COMMANDS: readonly CatalogCommand[] = [
   },
 ];
 
+const REPOSITORY_COMMANDS: readonly CatalogCommand[] = [
+  tool({ name: "azure-project-list", family: "repository", summary: "Lista los proyectos de la organizacion Azure DevOps.", effect: "read", flags: [] }),
+  tool({ name: "azure-repo-list", family: "repository", summary: "Lista los repositorios de un proyecto Azure DevOps.", effect: "read", flags: [required(PROJECT)] }),
+  tool({ name: "github-owner-list", family: "repository", summary: "Tu cuenta y tus organizaciones de GitHub: donde puedes crear un repositorio.", effect: "read", flags: [] }),
+  tool({ name: "repo-clone", family: "repository", summary: "Descarga un repositorio de Azure DevOps o GitHub en una carpeta nueva.", effect: "write", flags: [required(TRACKER), required(REPOSITORY), { ...PROJECT, requires: ["--tracker=azure"] }, required(DESTINATION)] }),
+  tool({ name: "repo-create", family: "repository", summary: "Crea un repositorio privado con un primer commit en main y lo descarga en una carpeta nueva.", effect: "write", flags: [required(TRACKER), required(REPOSITORY), { ...PROJECT, requires: ["--tracker=azure"] }, required(DESTINATION)] }),
+];
+
 const COMMANDS: readonly CatalogCommand[] = [
   ...WORKFLOW_COMMANDS,
   tool({ name: "work-assigned", family: "work", summary: "Lista las issues o work items asignados al usuario autenticado en el repositorio GitHub o proyecto Azure.", effect: "read", flags: [required(WORKING_DIRECTORY)] }),
+  tool({ name: "work-plannable", family: "work", summary: "Lista lo que Plan puede rebanar sin un repositorio: tus HU En Desarrollo y Bugs En progreso de Azure, o las épicas abiertas de tus repos GitHub.", effect: "read", flags: [required(TRACKER), { ...PROJECT, description: "Limita Azure a un proyecto.", requires: ["--tracker=azure"] }] }),
+  ...REPOSITORY_COMMANDS,
   ...AZURE_READ_COMMANDS,
   ...AZURE_WRITE_COMMANDS,
   ...GITHUB_QUEUE_COMMANDS,

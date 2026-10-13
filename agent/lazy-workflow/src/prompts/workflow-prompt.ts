@@ -60,11 +60,17 @@ export function resolveWorkflowRun(hu: number | null): WorkflowRun {
   return hu === null ? { kind: "github-repository-run" } : { kind: "azure-hu-run", hu };
 }
 
+/** The epic a GitHub plan slices, as the coordinator read it, and its repository when it is not the plan's. */
+export interface PlanEpic {
+  readonly issue: SelectedManagedIssue;
+  readonly repository: string | null;
+}
+
 export type WorkflowPromptSpec =
   /** `epic`: the issue the plan slices, read by the coordinator; absent for a plan of the operator's request. */
-  | { kind: "github-plan"; epic?: SelectedManagedIssue | null }
+  | { kind: "github-plan"; epic?: PlanEpic | null }
   | { kind: "azure-plan"; huInfo: HuInfo }
-  | { kind: "workspace-plan"; scope: WorkspaceScope; run: WorkflowRun; huInfo: HuInfo | null; epic?: SelectedManagedIssue | null }
+  | { kind: "workspace-plan"; scope: WorkspaceScope; run: WorkflowRun; huInfo: HuInfo | null; epic?: PlanEpic | null }
   | {
       kind: "github-delivery";
       issue: SelectedManagedIssue;
@@ -246,11 +252,12 @@ async function azureHuPlanningSections(
  * from this snapshot rather than choosing what to read, the way an Azure plan
  * receives its User Story.
  */
-async function githubEpicSections(epic: SelectedManagedIssue | null | undefined): Promise<string[]> {
+async function githubEpicSections(epic: PlanEpic | null | undefined): Promise<string[]> {
   if (!epic) return [];
+  const { issue, repository } = epic;
   return [
-    await readPromptAsset("github-epic-plan", { EPIC_ID: `#${epic.number}` }),
-    JSON.stringify({ number: epic.number, title: epic.title, body: epic.body, comments: epic.comments }),
+    await readPromptAsset("github-epic-plan", { EPIC_ID: `${repository ?? ""}#${issue.number}` }),
+    JSON.stringify({ ...(repository ? { repository } : {}), number: issue.number, title: issue.title, body: issue.body, comments: issue.comments }),
   ];
 }
 

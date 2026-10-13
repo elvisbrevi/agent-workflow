@@ -4,9 +4,11 @@ import type { FlagDefault, GuiSettings } from "../lib/backend.ts";
 import { initialValues } from "../lib/form-defaults.ts";
 import { cliLabel, cliOf, defaultModelOf, type AgentModels } from "../lib/models.ts";
 import { emptyRunOptions, plansUnit, prepareRun, type RunAction, type RunOptions, type RunTarget } from "../lib/run-request.ts";
+import type { RunState } from "../lib/runs.ts";
 import { deliveryChildren, isDone, repositoryName, type HuChild } from "../lib/work.ts";
 import { can, useRead } from "../hooks.ts";
 import { AgentPicker, defaultVariant, type AgentChoice } from "./AgentPicker.tsx";
+import { WorkspaceChooser } from "./WorkspaceChooser.tsx";
 
 interface RunFormProps {
   readonly catalog: CommandCatalog;
@@ -16,7 +18,11 @@ interface RunFormProps {
   readonly target: RunTarget;
   /** The saved repositories of the target's tracker, the target's own first: where a plan of it may work. */
   readonly candidates: readonly string[];
+  /** The window's runs, so a download or a creation started from the form is followed in it. */
+  readonly runs: readonly RunState[];
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
+  readonly onProvision: (command: CatalogCommand, args: string[]) => Promise<number | null>;
+  readonly onAddRepository: (path: string) => Promise<void>;
   readonly onSaveDefaults: (settings: GuiSettings) => void;
   readonly onClose: () => void;
 }
@@ -29,7 +35,8 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
  * keeps its own repository first, because its sub-issues are published there.
  */
 function initialRepositories(action: RunAction, target: RunTarget, candidates: readonly string[]): string[] {
-  if (!plansUnit(action, target) || target.kind === "github-epic") return [target.repository];
+  if (!plansUnit(action, target)) return target.repository ? [target.repository] : [];
+  if (target.kind === "github-epic" && target.repository) return [target.repository];
   return candidates.length === 1 ? [candidates[0]!] : [];
 }
 
@@ -54,14 +61,14 @@ function initialOptions(catalog: CommandCatalog, command: CatalogCommand | undef
 
 function heading(action: RunAction, target: RunTarget): { title: string; subtitle: string } {
   if (target.kind === "azure-hu") return { title: `${action === "plan" ? "Planificar" : "Implementar"} ${target.bug ? "Bug" : "HU"} #${target.hu}`, subtitle: target.title };
-  if (target.kind === "github-epic") return { title: `Planificar la épica #${target.issue}`, subtitle: target.title };
+  if (target.kind === "github-epic") return { title: `Planificar la épica #${target.issue}`, subtitle: `${target.nameWithOwner} · ${target.title}` };
   if (target.kind === "github-issue") return { title: `Planificar desde la issue #${target.issue}`, subtitle: target.title };
   return action === "plan"
     ? { title: "Nuevo plan", subtitle: target.scope }
     : { title: "Implementar la cola", subtitle: `${target.scope} · issues ready-for-agent sin asignar ni bloqueos, una por sesión` };
 }
 
-export function RunForm({ catalog, settings, models, action, target, candidates, onRun, onSaveDefaults, onClose }: RunFormProps) {
+export function RunForm({ catalog, settings, models, action, target, candidates, runs, onRun, onProvision, onAddRepository, onSaveDefaults, onClose }: RunFormProps) {
   const command = catalog.commands.find((candidate) => candidate.name === action);
   const [options, setOptions] = useState<RunOptions>(() => initialOptions(catalog, command, settings, action, target, candidates));
   const [rung, setRung] = useState<AgentChoice>({ cli: "", model: "", variant: "" });
@@ -77,8 +84,6 @@ export function RunForm({ catalog, settings, models, action, target, candidates,
   const githubPlan = action === "plan" && target.kind === "github-repository";
   const unitPlan = plansUnit(action, target);
   const others = settings.repositories.filter((repository) => !options.repositories.includes(repository));
-  const toggleRepository = (repository: string, chosen: boolean) =>
-    update({ repositories: chosen ? [...options.repositories, repository] : options.repositories.filter((entry) => entry !== repository) });
   const pending = (tasks ?? []).filter((task) => !isDone(task.state));
 
   const submit = async () => {
@@ -107,24 +112,9 @@ export function RunForm({ catalog, settings, models, action, target, candidates,
         <div className="grow"><h2>{title}</h2><p className="muted small">{subtitle}</p></div>
       </header>
 
-      {unitPlan && (
-        <fieldset className="field">
-          <legend className="field-label">Dónde trabajar</legend>
-          <span className="field-help">{target.kind === "github-epic"
-            ? `Las issues se publican en ${repositoryName(target.repository)}, el repositorio de la épica, como sus sub-issues. Agrega otros si el plan también los toca.`
-            : `La sesión lee y documenta en estos repositorios; las tareas se publican en ${target.kind === "azure-hu" && target.bug ? "el Bug" : "la HU"}. El orden es el de entrega.`}</span>
-          {candidates.map((repository) => {
-            const position = options.repositories.indexOf(repository);
-            const fixed = target.kind === "github-epic" && repository === target.repository;
-            return (
-              <label key={repository} className="choice">
-                <input type="checkbox" checked={position >= 0} disabled={fixed} onChange={(event) => toggleRepository(repository, event.target.checked)} />
-                <span className="grow ellipsis" title={repository}>{repositoryName(repository)}</span>
-                {position >= 0 && options.repositories.length > 1 && <span className="order" aria-label={`Orden ${position + 1}`}>{position + 1}</span>}
-              </label>
-            );
-          })}
-        </fieldset>
+      {unitPlan && (target.kind === "azure-hu" || target.kind === "github-epic") && (
+        <WorkspaceChooser catalog={catalog} target={target} candidates={candidates} saved={settings.repositories} chosen={options.repositories}
+          onChange={(repositories) => update({ repositories })} runs={runs} onProvision={onProvision} onAddRepository={onAddRepository} />
       )}
 
       {azureCode && (

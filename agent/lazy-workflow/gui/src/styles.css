@@ -120,6 +120,9 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
 .segmented button { border: 0; background: none; color: var(--muted); font: inherit; border-radius: 7px; padding: 6px 14px; cursor: pointer; }
 .segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
 .segmented .selected { background: var(--panel); color: var(--accent); box-shadow: var(--shadow); font-weight: 650; }
+.workspace-chooser .destination { align-items: center; gap: 8px; }
+.workspace-chooser .stack { gap: 12px; }
+.command-agent { padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--border); }
 
 .callout { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel); padding: 10px 12px; border-radius: 8px; }
 .callout.error { border-left-color: var(--danger); background: var(--danger-soft); }
@@ -317,7 +320,7 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none; padd
   .panel-footer { margin: 0 -14px -14px; padding: 12px 14px 14px; bottom: -14px; }
   .panel-footer .button.primary { flex: 1; min-height: 48px; }
   .agent-picker { grid-template-columns: minmax(0, 1fr); }
-  .segmented { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-self: stretch; }
+  .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-self: stretch; }
   .segmented button { padding: 6px 4px; }
   .setup-banner { padding: 10px 12px; }
 

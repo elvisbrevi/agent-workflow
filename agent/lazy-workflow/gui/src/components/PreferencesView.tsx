@@ -21,6 +21,13 @@ interface PreferencesViewProps {
 
 const text = (value: FlagDefault | undefined): string => (typeof value === "string" ? value : "");
 
+const AGENT_FLAGS = ["--cli", "--model", "--variant"] as const;
+/** The commands whose form can save an agent of its own, which wins over the default one. */
+const AGENT_COMMANDS = [["plan", "Plan"], ["code", "Code"]] as const;
+
+const agentOf = (flags: Record<string, FlagDefault> | undefined) =>
+  ({ cli: text(flags?.["--cli"]), model: text(flags?.["--model"]), variant: text(flags?.["--variant"]) });
+
 /** What the machine has, read-only: configuring it is the repair session's job, never a form here. */
 function MachineStatus({ catalog, diagnostics, models }: { catalog: CommandCatalog; diagnostics: Diagnostics | null; models: readonly AgentModels[] | null }) {
   if (!diagnostics) return <p className="muted small" role="status">Revisando el equipo…</p>;
@@ -65,6 +72,26 @@ export function PreferencesView({ catalog, document, diagnostics, models, setup,
     }
     update({ flagDefaults });
   };
+  const ownAgent = (command: string): boolean => AGENT_FLAGS.some((flag) => draft.commandDefaults[command]?.[flag] !== undefined);
+  /**
+   * A command's own agent, saved from its form with "Usar estas opciones por defecto", wins
+   * over the default one: shown here, so a changed default is never silently shadowed.
+   * Null removes it; the command's other saved options stay.
+   */
+  const setCommandAgent = (command: string, choice: { cli: string; model: string; variant: string } | null) => {
+    const own = { ...(draft.commandDefaults[command] ?? {}) };
+    for (const flag of AGENT_FLAGS) delete own[flag];
+    if (choice) {
+      // An agent left entirely at its defaults still has to be recorded as this command's own.
+      own["--cli"] = choice.cli || catalog.defaultCli;
+      if (choice.model) own["--model"] = choice.model;
+      if (choice.variant) own["--variant"] = choice.variant;
+    }
+    const commandDefaults = { ...draft.commandDefaults };
+    if (Object.keys(own).length > 0) commandDefaults[command] = own;
+    else delete commandDefaults[command];
+    update({ commandDefaults });
+  };
 
   return (
     <div className="page preferences-page">
@@ -80,7 +107,18 @@ export function PreferencesView({ catalog, document, diagnostics, models, setup,
 
       <section className="panel-card">
         <h2>Agente predeterminado</h2>
-        <AgentPicker catalog={catalog} models={models} id="default" value={{ cli: text(draft.flagDefaults["--cli"]), model: text(draft.flagDefaults["--model"]), variant: text(draft.flagDefaults["--variant"]) }} onChange={setAgent} />
+        <AgentPicker catalog={catalog} models={models} id="default" value={agentOf(draft.flagDefaults)} onChange={setAgent} />
+        {AGENT_COMMANDS.filter(([command]) => catalog.commands.some((entry) => entry.name === command)).map(([command, label]) => (
+          <div className="stack command-agent" key={command}>
+            <label className="toggle">
+              <input type="checkbox" checked={ownAgent(command)} onChange={(event) => setCommandAgent(command, event.target.checked ? agentOf(draft.flagDefaults) : null)} />
+              <span>{label} usa otro agente</span>
+            </label>
+            {ownAgent(command)
+              ? <AgentPicker catalog={catalog} models={models} id={`${command}-agent`} value={agentOf(draft.commandDefaults[command])} onChange={(choice) => setCommandAgent(command, choice)} />
+              : <p className="muted small">{label} usa el agente predeterminado.</p>}
+          </div>
+        ))}
         <label className="toggle"><input type="checkbox" checked={draft.confirmWrites} onChange={(event) => update({ confirmWrites: event.target.checked })} /><span>Pedir confirmación antes de ejecutar Plan o Code</span></label>
       </section>
 

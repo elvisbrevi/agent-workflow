@@ -8,16 +8,19 @@ import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-ca
 import { buildArgs, validateFlags, type FlagIssue, type FlagValues } from "./command-line.ts";
 
 /**
- * The piece of work a run is about. `repository` is where it was read; an HU
- * or an epic is planned from wherever the operator chooses (`RunOptions.repositories`).
+ * The piece of work a run is about. `repository` is the saved folder it was
+ * read in, or null when it was read at the tracker (Planificar, ADR-0049); an
+ * HU or an epic is planned wherever the operator chooses (`RunOptions.repositories`).
  */
 export type RunTarget =
-  /** `bug`: a Bug no story owns, planned and delivered as an HU of its own (ADR-0047). */
-  | { kind: "azure-hu"; repository: string; hu: number; title: string; ticket?: number; bug?: boolean }
-  /** An epic: `plan --issue` slices it and publishes its sub-issues in this, its own repository. */
-  | { kind: "github-epic"; repository: string; issue: number; title: string; url: string }
+  /** `bug`: a Bug no story owns, planned and delivered as an HU of its own (ADR-0047). `project`: its Azure project. */
+  | { kind: "azure-hu"; repository: string | null; hu: number; title: string; ticket?: number; bug?: boolean; project?: string }
+  /** An epic of `nameWithOwner`: `plan --issue` publishes its sub-issues in the first chosen repository. */
+  | { kind: "github-epic"; repository: string | null; nameWithOwner: string; issue: number; title: string; url: string }
   | { kind: "github-issue"; repository: string; issue: number; title: string; url: string }
   | { kind: "github-repository"; repository: string; scope: string };
+
+export const trackerOf = (target: RunTarget): "azure" | "github" => (target.kind === "azure-hu" ? "azure" : "github");
 
 /** A plan of one tracker unit, whose repositories the operator picks before it runs. */
 export const plansUnit = (action: RunAction, target: RunTarget): boolean =>
@@ -46,8 +49,8 @@ export interface RunOptions {
   verbose: boolean;
 }
 
-export const emptyRunOptions = (repository: string): RunOptions => ({
-  repositories: [repository], ticket: "", prompt: "", cli: "", model: "", variant: "",
+export const emptyRunOptions = (repository: string | null): RunOptions => ({
+  repositories: repository ? [repository] : [], ticket: "", prompt: "", cli: "", model: "", variant: "",
   interview: false, questions: "", normasSag: false, baseBranch: "", fallbacks: [], idleTimeout: "", verbose: false,
 });
 
@@ -74,6 +77,8 @@ export function runValues(action: RunAction, target: RunTarget, options: RunOpti
     "--working-directory": options.repositories.filter(Boolean).join(","),
     "--hu": azure ? String(target.hu) : "",
     "--issue": target.kind === "github-epic" && action === "plan" ? String(target.issue) : "",
+    // Always named: the epic may live elsewhere than the first chosen repository (ADR-0049).
+    "--issue-repository": target.kind === "github-epic" && action === "plan" ? target.nameWithOwner : "",
     "--ticket": azure && action === "code" ? options.ticket : "",
     "--base-branch": azure && action === "code" ? options.baseBranch.trim() : "",
     "--prompt": prompt,
@@ -119,4 +124,54 @@ export function prepareSetup(catalog: CommandCatalog, repository: string | null,
   if (!command) return null;
   const values: FlagValues = { "--working-directory": repository ?? "", "--prompt": problems, "--cli": cli };
   return { command, args: buildArgs(catalog, command, values), issues: validateFlags(catalog, command, values) };
+}
+
+/** Downloading or creating the repository a plan works in, before it exists here (ADR-0049). */
+export interface Provision {
+  readonly action: "repo-clone" | "repo-create";
+  readonly tracker: "azure" | "github";
+  /** Azure only. */
+  readonly project: string;
+  /** The Azure repository's name, or GitHub's `owner/name`. */
+  readonly repository: string;
+  /** The new folder: `parent/name`. */
+  readonly destination: string;
+}
+
+/** Null when this lz, or this server, does not offer the command. */
+export function prepareProvision(catalog: CommandCatalog, provision: Provision): PreparedRun | null {
+  const command = catalog.commands.find((candidate) => candidate.name === provision.action);
+  if (!command) return null;
+  const values: FlagValues = {
+    "--tracker": provision.tracker,
+    "--repository": provision.repository.trim(),
+    "--project": provision.tracker === "azure" ? provision.project : "",
+    "--destination": provision.destination,
+  };
+  const issues = validateFlags(catalog, command, values);
+  if (provision.tracker === "github" && !/^[\w.-]+\/[\w.-]+$/.test(provision.repository.trim())) {
+    issues.push({ flag: "--repository", severity: "error", message: "Escribe el repositorio como owner/nombre." });
+  }
+  if (provision.tracker === "azure" && !provision.project) {
+    issues.push({ flag: "--project", severity: "error", message: "Elige el proyecto de Azure DevOps." });
+  }
+  return { command, args: buildArgs(catalog, command, values), issues };
+}
+
+/** The folder a repository lands in by default: its own name, without the owner. */
+export const folderName = (repository: string): string => repository.trim().split("/").filter(Boolean).at(-1) ?? "";
+
+/** `parent/name`, with the separator the parent already uses. */
+export function joinPath(parent: string, name: string): string {
+  const separator = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
+  return `${parent.replace(/[\\/]+$/, "")}${separator}${name}`;
+}
+
+/** Where a download goes unless the operator picks otherwise: beside the repositories already saved. */
+export function defaultParent(repositories: readonly string[]): string {
+  const first = repositories[0];
+  if (!first) return "";
+  const trimmed = first.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut > 0 ? trimmed.slice(0, cut) : "";
 }

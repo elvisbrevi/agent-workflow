@@ -292,10 +292,10 @@ test("con épica, cada Issue cuelga de ella en orden de publicación y antes de 
     createReadyIssue: async (input, directory) => { order.push(`create:${input.title}`); return boundary.createReadyIssue(input, directory); },
     linkBlockedBy: async (blocked, blockerId, directory) => { order.push(`block:${blocked}`); return boundary.linkBlockedBy(blocked, blockerId, directory); },
     addSubIssue: async (parent, childId) => { order.push(`sub:${parent}:${childId}`); return { linked: true }; },
-  }, [ticket("segundo", ["primero"]), ticket("primero")], "/repo", 40);
+  }, [ticket("segundo", ["primero"]), ticket("primero")], "/repo", { issue: 40, repository: null });
 
   expect(order).toEqual(["create:primero", "create:segundo", "sub:40:42000", "sub:40:43000", "block:43"]);
-  expect(publication.epic).toEqual({ issue: 40, subIssues: [{ issue: 42, linked: true }, { issue: 43, linked: true }] });
+  expect(publication.epic).toEqual({ issue: 40, repository: null, subIssues: [{ issue: 42, linked: true }, { issue: 43, linked: true }] });
 });
 
 test("sin épica la publicación no toca la relación de sub-issues", async () => {
@@ -403,4 +403,36 @@ test("plan no acepta una épica GitHub y una HU Azure a la vez", async () => {
 
   expect(code).toBe(1);
   expect(sessions).toBe(0);
+});
+
+test("una épica de otro repositorio se lee allí y sus sub-issues se cuelgan allí (ADR-0049)", async () => {
+  const calls: string[] = [];
+  const prompts: string[] = [];
+  const list = "api --paginate --slurp repos/owner/plans/issues/40/sub_issues?per_page=100";
+  const children = new Set<number>();
+  const service = new GitHubManagedQueueService(ghRunner([
+    ["issue view 40 --repo owner/plans --json number,title,state,labels,assignees,createdAt,blockedBy,body,comments", epicDetail()],
+    ["label list --limit 100 --json name", JSON.stringify([{ name: "ready-for-agent" }])],
+    ["api repos/{owner}/{repo}/issues -f title=uno -f body=cuerpo de uno -f labels[]=ready-for-agent", createdIssue(61, 6100, ["ready-for-agent"])],
+    [list, () => JSON.stringify([[...children].map((id) => ({ id }))])],
+    ["api --method POST repos/owner/plans/issues/40/sub_issues -F sub_issue_id=6100", () => { children.add(6100); return "{}"; }],
+  ], calls));
+  const result = new AgentResult({ sessionId: "ses_plan", text: planReady([ticket("uno")]) });
+
+  const code = await silently(() => createCli({
+    agentSource: { run: async (options) => { prompts.push(options.prompt); return { result, azureLoginRequired: false }; }, resume: async () => result },
+    githubManagedQueue: service,
+    git: async () => "",
+  }).run(["plan", "--issue", "40", "--issue-repository", "owner/plans", "--working-directory", "/work"]));
+
+  expect(code).toBe(0);
+  expect(prompts[0]).toContain("GitHub epic owner/plans#40");
+  // The issue itself is published here, in the repository `code` will drain.
+  expect(calls).toContain("api repos/{owner}/{repo}/issues -f title=uno -f body=cuerpo de uno -f labels[]=ready-for-agent");
+  expect(children).toEqual(new Set([6100]));
+});
+
+test("--issue-repository sin plan --issue es un error de argumentos", async () => {
+  const code = await silently(() => createCli({ git: async () => "" }).run(["plan", "--issue-repository", "owner/plans", "--working-directory", "/work"]));
+  expect(code).toBe(1);
 });

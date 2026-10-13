@@ -12,7 +12,8 @@ import { initialValues } from "../gui/src/lib/form-defaults.ts";
 import { finalMarker, interviewUrl, operatorFeed, parseStdout, runLogPointer, stripAnsi } from "../gui/src/lib/output.ts";
 import { foldRuns, formatDuration } from "../gui/src/lib/history.ts";
 import { initialRunsState, runsReducer, statusOf, type RunsAction } from "../gui/src/lib/runs.ts";
-import { emptyRunOptions, prepareRun, prepareSetup, type RunTarget } from "../gui/src/lib/run-request.ts";
+import { defaultParent, emptyRunOptions, folderName, joinPath, prepareProvision, prepareRun, prepareSetup, type RunTarget } from "../gui/src/lib/run-request.ts";
+import { itemLabel, matchesPlannable, plannableTarget, scopesOf } from "../gui/src/lib/plannable.ts";
 import { effortChoices, installedClis, modelGroups } from "../gui/src/lib/models.ts";
 import { repairCli, repairPrompt, setupProblems } from "../gui/src/lib/setup-check.ts";
 import type { AgentModels } from "../src/coding-agent/agent-models-schema.ts";
@@ -176,11 +177,11 @@ test("un plan de GitHub exige que se describa; desde una issue la sesion la lee 
   expect(prompt.endsWith("Solo el backend")).toBe(true);
 });
 
-test("planificar una épica la nombra con --issue y conserva su repositorio primero", () => {
-  const epic: RunTarget = { kind: "github-epic", repository: "/r/github", issue: 9, title: "[Epic] Portal", url: "https://github.com/o/r/issues/9" };
-  const prepared = prepareRun(catalog, "plan", epic, { ...emptyRunOptions("/r/github"), repositories: ["/r/github", "/r/web"] })!;
+test("planificar una épica la nombra con --issue y su repositorio, esté donde esté el plan", () => {
+  const epic: RunTarget = { kind: "github-epic", repository: null, nameWithOwner: "o/plans", issue: 9, title: "[Epic] Portal", url: "https://github.com/o/plans/issues/9" };
+  const prepared = prepareRun(catalog, "plan", epic, { ...emptyRunOptions(null), repositories: ["/r/github", "/r/web"] })!;
   expect(prepared.issues).toEqual([]);
-  expect(prepared.args).toEqual(["plan", "--working-directory", "/r/github,/r/web", "--issue", "9"]);
+  expect(prepared.args).toEqual(["plan", "--working-directory", "/r/github,/r/web", "--issue", "9", "--issue-repository", "o/plans"]);
   // Code no rebana: drena la cola del repositorio, nunca nombra la épica.
   expect(prepareRun(catalog, "code", epic, emptyRunOptions("/r/github"))!.args).toEqual(["code", "--working-directory", "/r/github"]);
 });
@@ -191,6 +192,33 @@ test("planificar una HU o un Bug pide elegir el repositorio, en palabras del ope
   expect(blocked.issues.filter((issue) => issue.flag === "--working-directory").map((issue) => issue.message)).toEqual(["Elige el repositorio donde trabajar."]);
   expect(prepareRun(catalog, "plan", bug, { ...emptyRunOptions("/r/azure"), repositories: ["/r/api", "/r/web"] })!.args)
     .toEqual(["plan", "--working-directory", "/r/api,/r/web", "--hu", "70"]);
+});
+
+test("descargar o crear un repositorio arma su comando y exige lo que el tracker necesita", () => {
+  const clone = prepareProvision(catalog, { action: "repo-clone", tracker: "azure", project: "Portal", repository: "api", destination: "/home/me/src/api" })!;
+  expect(clone.issues).toEqual([]);
+  expect(clone.args).toEqual(["repo-clone", "--tracker", "azure", "--repository", "api", "--project", "Portal", "--destination", "/home/me/src/api"]);
+  const github = prepareProvision(catalog, { action: "repo-create", tracker: "github", project: "", repository: "acme/nuevo", destination: "/home/me/src/nuevo" })!;
+  expect(github.args).toEqual(["repo-create", "--tracker", "github", "--repository", "acme/nuevo", "--destination", "/home/me/src/nuevo"]);
+  expect(prepareProvision(catalog, { action: "repo-clone", tracker: "github", project: "", repository: "nuevo", destination: "/x/nuevo" })!.issues.map((issue) => issue.flag)).toEqual(["--repository"]);
+  expect(prepareProvision(catalog, { action: "repo-create", tracker: "azure", project: "", repository: "api", destination: "/x/api" })!.issues.map((issue) => issue.flag)).toEqual(["--project"]);
+  expect(folderName("acme/nuevo")).toBe("nuevo");
+  expect(joinPath("/home/me/src/", "api")).toBe("/home/me/src/api");
+  expect(joinPath("C:\\code", "api")).toBe("C:\\code\\api");
+  expect(defaultParent(["/home/me/src/agent-workflow", "/srv/other"])).toBe("/home/me/src");
+  expect(defaultParent([])).toBe("");
+});
+
+test("Planificar lista lo leído en el tracker y lo planifica sin carpeta de origen", () => {
+  const bug = { id: 70, title: "Falla el login", type: "Bug", state: "En progreso", url: "https://dev.azure.com/o/Portal/_workitems/edit/70", scope: "Portal" };
+  const epic = { id: 9, title: "[Epic] Pagos", type: "Epic", state: "OPEN", url: "https://github.com/o/plans/issues/9", scope: "o/plans" };
+  expect(itemLabel(bug, "azure")).toBe("Bug #70");
+  expect(itemLabel(epic, "github")).toBe("o/plans #9");
+  expect(plannableTarget(bug, "azure")).toEqual({ kind: "azure-hu", repository: null, hu: 70, title: "Falla el login", bug: true, project: "Portal" });
+  expect(plannableTarget(epic, "github")).toEqual({ kind: "github-epic", repository: null, nameWithOwner: "o/plans", issue: 9, title: "[Epic] Pagos", url: epic.url });
+  expect(matchesPlannable(bug, "login", "")).toBe(true);
+  expect(matchesPlannable(bug, "", "Otro")).toBe(false);
+  expect(scopesOf([bug, epic, bug])).toEqual(["o/plans", "Portal"]);
 });
 
 const models: AgentModels[] = [

@@ -12,8 +12,24 @@
  * these commands without `gh`, `az` or `git` on the host.
  */
 
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { githubAssignedWork } from "../github/assigned-work.ts";
+import {
+  azurePlannableWork,
+  azureProjects,
+  azureRepositories,
+  cloneAzureRepository,
+  createAzureRepository,
+} from "../azure/azure-repositories.ts";
+import {
+  cloneGitHubRepository,
+  createGitHubRepository,
+  githubOwners,
+  githubPlannableWork,
+} from "../github/github-repositories.ts";
+import type { PlannableWork, ProvisionedRepository, RemoteRepository } from "../workspace/plannable-work.ts";
 import { azureAssignedWork } from "../azure/assigned-work.ts";
 import type { AssignedWork } from "../workspace/assigned-work.ts";
 import { listAgentModels, type AgentModels } from "../coding-agent/agent-models.ts";
@@ -61,7 +77,7 @@ import { keychainPresence, readKeychainCredential, type KeychainPresence } from 
 import { readCredentialSecret } from "../credentials/secret-input.ts";
 import { credentialStatus } from "../credentials/credential-environment.ts";
 import { WORKFLOW_ENVIRONMENT } from "../system/workflow-environment.ts";
-import { isDeterministicToolCommand, type DeterministicToolCommand } from "./tool-commands.ts";
+import { isDeterministicToolCommand, isRepositoryToolCommand, type DeterministicToolCommand, type RepositoryToolCommand } from "./tool-commands.ts";
 import type { CliOptions } from "./parse-cli-options.ts";
 
 export { isDeterministicToolCommand, type DeterministicToolCommand };
@@ -166,8 +182,47 @@ async function resolvePullRequestTools(workingDirectory: string): Promise<PullRe
   throw new Error(`El remote origin ${origin} no es GitHub ni Azure DevOps`);
 }
 
+/** Where `repo-clone` or `repo-create` provisions: a tracker, its project or account, and a new folder. */
+export interface ProvisionRequest {
+  tracker: "azure" | "github";
+  /** The Azure project; null on GitHub, where `repository` names its owner. */
+  project: string | null;
+  repository: string;
+  destination: string;
+  /** The destination's parent, where git and gh run. */
+  parent: string;
+}
+
+/** The tracker reads and effects that need no repository on this machine (ADR-0049). */
+export interface RepositoryTools {
+  plannable(tracker: "azure" | "github", project: string | null): Promise<PlannableWork>;
+  projects(): Promise<Array<{ name: string; id: string }>>;
+  azureRepositories(project: string): Promise<RemoteRepository[]>;
+  githubOwners(): Promise<string[]>;
+  clone(request: ProvisionRequest): Promise<ProvisionedRepository>;
+  create(request: ProvisionRequest): Promise<ProvisionedRepository>;
+}
+
+/** gh reads that name no repository still need a directory to run in; the home always exists. */
+const NO_REPOSITORY = homedir();
+
+const productionRepositoryTools: RepositoryTools = {
+  plannable: (tracker, project) => tracker === "azure" ? azurePlannableWork(runAzureCommand, project) : githubPlannableWork(runGh, NO_REPOSITORY),
+  projects: () => azureProjects(runAzureCommand),
+  azureRepositories: (project) => azureRepositories(runAzureCommand, project),
+  githubOwners: () => githubOwners(runGh, NO_REPOSITORY),
+  clone: (request) => request.tracker === "azure"
+    ? cloneAzureRepository(runAzureCommand, runGit, { ...request, project: request.project! })
+    : cloneGitHubRepository(runGh, request),
+  create: (request) => request.tracker === "azure"
+    ? createAzureRepository(runAzureCommand, runGit, { ...request, project: request.project! }, (path, content) => Bun.write(path, content).then(() => undefined))
+    : createGitHubRepository(runGh, request),
+};
+
 export interface DeterministicToolServices {
   assignedWork?: (directory: string) => Promise<AssignedWork>;
+  /** Optional because only the repository tools reach it. */
+  repositories?: RepositoryTools;
   /** The models each installed CLI offers; optional for the same reason, only `agent-models` reaches it. */
   agentModels?: () => Promise<AgentModels[]>;
   azure: AzureToolBoundary;
@@ -199,13 +254,14 @@ export function createDeterministicToolServices(azure: AzureToolBoundary): Deter
     pullRequests: resolvePullRequestTools,
     assignedWork: readAssignedWork,
     agentModels: () => listAgentModels(),
+    repositories: productionRepositoryTools,
   };
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export function deterministicFailureKind(command: DeterministicToolCommand) {
-  if (command === "work-assigned") return "tracker-read-failure" as const;
+  if (command === "work-assigned" || command === "work-plannable" || command === "azure-project-list" || command === "azure-repo-list" || command === "github-owner-list") return "tracker-read-failure" as const;
   if (command.endsWith("-info") || command === "pr-list" || command === "pr-thread-list" || command === "github-issue-list" || command === "github-issue-select" || command === "github-auth-info" || command === "github-repo-info") return "tracker-read-failure" as const;
   if (command.endsWith("session-verify")) return "session-not-verified" as const;
   if (command === "git-branch-delete") return "ticket-branch-cleanup-failure" as const;
@@ -551,6 +607,43 @@ async function runCredentialsTool(
   return 0;
 }
 
+/** A folder that does not exist yet, under one that does: never an existing checkout overwritten. */
+function newFolder(value: string | null, command: string): { destination: string; parent: string } {
+  const text = requireText(value, "--destination <ruta>", command);
+  if (!isAbsolute(text)) throw new MissingArgument(`${command} requiere --destination como ruta absoluta`);
+  const destination = resolve(text);
+  const parent = dirname(destination);
+  if (!existsSync(parent) || !statSync(parent).isDirectory()) throw new MissingArgument(`${command}: la carpeta ${parent} no existe`);
+  if (existsSync(destination)) throw new MissingArgument(`${command}: ${destination} ya existe; elige una carpeta nueva`);
+  return { destination, parent };
+}
+
+function requireTracker(options: CliOptions, command: string): "azure" | "github" {
+  if (options.tracker === null) throw new MissingArgument(`${command} requiere --tracker azure o --tracker github`);
+  return options.tracker;
+}
+
+async function runRepositoryTool(command: RepositoryToolCommand, options: CliOptions, tools: RepositoryTools): Promise<unknown> {
+  if (command === "work-plannable") {
+    const tracker = requireTracker(options, command);
+    return tools.plannable(tracker, tracker === "azure" ? options.project : null);
+  }
+  if (command === "azure-project-list") return tools.projects();
+  if (command === "azure-repo-list") return tools.azureRepositories(requireText(options.project, "--project <nombre>", command));
+  if (command === "github-owner-list") return tools.githubOwners();
+  const tracker = requireTracker(options, command);
+  const repository = requireText(options.repository, "--repository <nombre>", command);
+  let project: string | null = null;
+  if (tracker === "azure") {
+    project = requireText(options.project, "--project <nombre>", command);
+    if (repository.includes("/")) throw new MissingArgument(`${command}: en Azure --repository es solo el nombre del repositorio`);
+  } else if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+    throw new MissingArgument(`${command}: en GitHub --repository es owner/nombre`);
+  }
+  const request = { tracker, project, repository, ...newFolder(options.destination, command) };
+  return command === "repo-clone" ? tools.clone(request) : tools.create(request);
+}
+
 export async function runDeterministicTool(
   command: DeterministicToolCommand,
   options: CliOptions,
@@ -564,6 +657,8 @@ export async function runDeterministicTool(
     }
     const result = command === "work-assigned"
       ? await (services.assignedWork ?? readAssignedWork)(options.workingDirectory)
+      : isRepositoryToolCommand(command)
+      ? await runRepositoryTool(command, options, services.repositories ?? productionRepositoryTools)
       : command === "agent-models"
       ? await (services.agentModels ?? (() => listAgentModels()))()
       : command.startsWith("pr-")

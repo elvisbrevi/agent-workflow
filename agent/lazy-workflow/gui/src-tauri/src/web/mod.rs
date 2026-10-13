@@ -565,7 +565,8 @@ async fn rpc(
                 let mut request: RunRequest = serde_json::from_value(body["request"].clone()).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
                 let settings = state.core.settings()?;
                 let args = request.args.clone();
-                policy::validate(&mut request, &state.catalog, &settings, &state.data_dir.join("uploads"))?;
+                let (uploads, roots, private) = (state.data_dir.join("uploads"), state.config.repository_roots(), state.private_directory());
+                policy::validate(&mut request, &state.catalog, &settings, &policy::ServerFolders { uploads: &uploads, roots: &roots, private: &private })?;
                 starts.insert(request_id.into(), Receipt { started: None, args: args.clone(), created_at: auth::now(), exit: None });
                 private_write(&state.data_dir.join("runs.json"), &*starts)?;
                 let key = auth::random_token(); let token = auth::random_token();
@@ -611,7 +612,8 @@ async fn rpc(
                 let command = state.catalog["commands"].as_array().unwrap().iter().find(|command| command["name"].as_str() == args.first().map(String::as_str)).ok_or_else(|| denied("read command is not allowed"))?;
                 if command["effect"] != "read" { return Err(denied("only read commands can be captured")); }
                 let mut request = RunRequest { args, stdin: None, cwd: None };
-                policy::validate(&mut request, &state.catalog, &state.core.settings()?, &state.data_dir.join("uploads"))?;
+                let (uploads, roots, private) = (state.data_dir.join("uploads"), state.config.repository_roots(), state.private_directory());
+                policy::validate(&mut request, &state.catalog, &state.core.settings()?, &policy::ServerFolders { uploads: &uploads, roots: &roots, private: &private })?;
                 // Dashboard queries are background reads, not operator runs.
                 request.args.push("--no-log-file".into());
                 Ok(serde_json::to_value(state.core.capture(&request.args, std::time::Duration::from_secs(60))?).unwrap())

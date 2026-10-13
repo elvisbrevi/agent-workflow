@@ -14,7 +14,7 @@ either is the authority whenever this file and the binary disagree.
 | Command | Required | Opens a session | Notes |
 |---|---|---|---|
 | `plan` | — | yes | GitHub scope: the session slices the work, the coordinator publishes one `ready-for-agent` issue per slice |
-| `plan --issue <n>` | `--issue` | yes | Slices that GitHub epic of the first repository; the coordinator publishes its issues as the epic's sub-issues |
+| `plan --issue <n> [--issue-repository owner/name]` | `--issue` | yes | Slices that GitHub epic; the coordinator publishes its issues in the first repository as the epic's sub-issues, wherever the epic lives |
 | `plan --hu <id>` | `--hu` | yes | Slices the HU — or a Bug no story owns; the coordinator publishes the work items in dependency order |
 | `code` | — | yes, one per issue | Drains eligible GitHub issues until the queue is empty or blocked |
 | `code --hu <id>` | `--hu` | yes, one per ticket | Drains the HU's direct Task and Bug tickets |
@@ -23,6 +23,9 @@ either is the authority whenever this file and the binary disagree.
 | `update [installer options]` | — | no | Runs the Bun installer directly with the options after it; `--all-global` when none |
 | `gui` | — | no | Opens the installed GUI detached; `LAZY_WORKFLOW_GUI` overrides the binary; takes no options or run log |
 | `catalog` | — | no | Prints the command catalog as JSON; takes no options and writes no run log |
+| `work-plannable --tracker azure\|github [--project <name>]` | `--tracker` | no | What a plan can slice without a repository here: your HUs `En Desarrollo` and Bugs `En progreso`, or the open epics of your repositories and organizations |
+| `azure-project-list` / `azure-repo-list --project <name>` / `github-owner-list` | — / `--project` / — | no | Where a repository can be downloaded from or created in |
+| `repo-clone` / `repo-create --tracker … --repository … [--project …] --destination <path>` | `--tracker`, `--repository`, `--destination` | no | Downloads, or creates privately with a first commit on `main`, into a folder that must not exist yet |
 
 `lz gui` opens the desktop app. Web hosting has a separate executable,
 `lz-web`; use `lz-web --help` and [GUI.md#web-access](GUI.md#web-access) for its

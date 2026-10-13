@@ -123,25 +123,19 @@ export function groupWork(results: readonly RepositoryWork[]): WorkSection[] {
   return [...sections.values()];
 }
 
-/**
- * What Planificar lists: the work a plan slices that is assigned to the
- * operator — a GitHub epic, an Azure HU or a Bug no story owns. An HU shown
- * only because a task of it is assigned is not the operator's to plan.
- */
-export function plannableSections(sections: readonly WorkSection[]): WorkSection[] {
-  return sections.map((section) => ({
-    ...section,
-    entries: section.entries.filter((entry) => entry.kind === "hu" ? entry.story !== null : isEpic(entry.item)),
-  }));
-}
-
 /** What planning this entry slices: an HU or lone Bug with `--hu`, an epic with `--issue`; null for anything else. */
 export function planTarget(entry: WorkEntry): RunTarget | null {
   if (entry.kind === "hu") {
-    return { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title: entry.story?.title ?? `HU #${entry.hu}`, bug: entry.story?.type === "Bug" };
+    return { kind: "azure-hu", repository: entry.repository, hu: entry.hu, title: entry.story?.title ?? `HU #${entry.hu}`, bug: entry.story?.type === "Bug", project: entry.scope };
   }
   const { item } = entry;
-  return isEpic(item) ? { kind: "github-epic", repository: item.repository, issue: item.id, title: item.title, url: item.url } : null;
+  return isEpic(item) ? { kind: "github-epic", repository: item.repository, nameWithOwner: item.scope, issue: item.id, title: item.title, url: item.url } : null;
+}
+
+/** The saved repositories of the target's tracker, the one it was read in first: where a plan of it may work. */
+export function candidatesFor(target: RunTarget, results: readonly RepositoryWork[]): string[] {
+  const tracker = target.kind === "azure-hu" ? "azure" : "github";
+  return [...new Set([...(target.repository ? [target.repository] : []), ...results.filter((result) => result.tracker === tracker).map((result) => result.repository)])];
 }
 
 export function matchesQuery(entry: WorkEntry, query: string): boolean {
@@ -189,7 +183,7 @@ export const QUEUE_REASONS: Record<string, string> = {
   "wrong-label": "sin ready-for-agent",
 };
 
-const ACTIONS: Record<string, string> = { plan: "Plan", code: "Code", setup: "Configuración" };
+const ACTIONS: Record<string, string> = { plan: "Plan", code: "Code", setup: "Configuración", "repo-clone": "Descarga", "repo-create": "Repositorio nuevo" };
 
 /** "Code · HU #50 · Task #51", or the repository when the run names no unit (a GitHub plan or queue). */
 export function historyLabel(run: Pick<HistoryRun, "command" | "context">): string {
@@ -202,9 +196,10 @@ export function historyLabel(run: Pick<HistoryRun, "command" | "context">): stri
 /** The identifiers a run's own arguments name, in the run log's vocabulary. */
 export function argsContext(args: readonly string[]): Record<string, string> {
   const context: Record<string, string> = {};
-  for (const [flag, key] of [["--hu", "hu"], ["--ticket", "ticket"], ["--issue", "issue"], ["--working-directory", "repository"]] as const) {
+  // A download or a creation is about the folder it makes, as a plan is about where it works.
+  for (const [flag, key] of [["--hu", "hu"], ["--ticket", "ticket"], ["--issue", "issue"], ["--working-directory", "repository"], ["--destination", "repository"]] as const) {
     const index = args.indexOf(flag);
-    if (index >= 0 && args[index + 1]) context[key] = args[index + 1]!;
+    if (index >= 0 && args[index + 1] && !context[key]) context[key] = args[index + 1]!;
   }
   const prompt = args[args.indexOf("--prompt") + 1] ?? "";
   const issue = args.includes("--prompt") && prompt.startsWith(ISSUE_PLAN_PREFIX) ? /^\d+/.exec(prompt.slice(ISSUE_PLAN_PREFIX.length))?.[0] : undefined;
