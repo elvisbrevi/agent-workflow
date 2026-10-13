@@ -158,6 +158,14 @@ test("Planificar lists HUs, Bugs and epics from the tracker, downloads where to 
   await expect(own).not.toBeChecked();
   await own.check();
   await page.locator(".command-agent").first().getByRole("radio", { name: "Codex" }).click();
+  await page.locator("#plan-agent-model").selectOption("gpt-synthetic-sol");
+  await page.locator("#plan-agent-variant").selectOption("low");
+  // Looking at another agent and coming back keeps what was chosen there.
+  await page.locator(".command-agent").first().getByRole("radio", { name: "Claude Code" }).click();
+  await expect(page.locator("#plan-agent-model")).toHaveValue("");
+  await page.locator(".command-agent").first().getByRole("radio", { name: "Codex" }).click();
+  await expect(page.locator("#plan-agent-model")).toHaveValue("gpt-synthetic-sol");
+  await expect(page.locator("#plan-agent-variant")).toHaveValue("low");
   await page.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(page.getByText("Ajustes guardados.")).toBeVisible();
   // Leaving and coming back renders what the server answered, not the edited form.
@@ -165,6 +173,8 @@ test("Planificar lists HUs, Bugs and epics from the tracker, downloads where to 
   await page.getByRole("button", { name: "Ajustes", exact: true }).click();
   await expect(own).toBeChecked();
   await expect(page.locator(".command-agent").first().getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("#plan-agent-model")).toHaveValue("gpt-synthetic-sol");
+  await expect(page.locator("#plan-agent-variant")).toHaveValue("low");
   await own.uncheck();
   await page.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(page.getByText("Plan usa el agente predeterminado.")).toBeVisible();

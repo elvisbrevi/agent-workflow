@@ -64,3 +64,16 @@ export function installedClis(catalog: CommandCatalog, models: readonly AgentMod
   if (!models) return catalog.agents.map((agent) => agent.cli);
   return catalog.agents.map((agent) => agent.cli).filter((cli) => models.find((entry) => entry.cli === cli)?.installed !== false);
 }
+
+/** The model and effort last left on each CLI, so going back to its tab finds them again. */
+export type AgentMemory = Readonly<Record<string, { readonly model: string; readonly variant: string }>>;
+
+/**
+ * Switches a picker to another CLI: remembers what the current one had and
+ * restores what the next one had, or its defaults the first time.
+ */
+export function switchCli(catalog: CommandCatalog, memory: AgentMemory, value: { readonly cli: string; readonly model: string; readonly variant: string }, next: string) {
+  const remembered = { ...memory, [cliOf(catalog, value.cli)]: { model: value.model, variant: value.variant } };
+  const { model, variant } = remembered[next] ?? { model: "", variant: "" };
+  return { memory: remembered, choice: { cli: next === catalog.defaultCli ? "" : next, model, variant } };
+}
