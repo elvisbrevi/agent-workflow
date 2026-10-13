@@ -26,18 +26,35 @@ export async function verifySessionWithGit(
   baseBranch: string,
   workingDirectory: string,
 ): Promise<{ commit: string }> {
-  const active = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
-  if (active !== shortName(branch)) {
-    throw new SessionNotVerifiedError(`la rama activa ${active || "detached"} no coincide con ${branch}`);
+  try {
+    const active = (await git(["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory)).trim();
+    if (active !== shortName(branch)) {
+      throw new SessionNotVerifiedError(`la rama activa ${active || "detached"} no coincide con ${branch}`);
+    }
+    if ((await git(["status", "--porcelain", "--untracked-files=no"], workingDirectory)).trim()) {
+      throw new SessionNotVerifiedError("la sesión dejó cambios sin commitear");
+    }
+    // Un clon fresco puede tener la base solo en origin. La local sigue mandando cuando existe.
+    let base: string | null = null;
+    for (const ref of [`refs/heads/${shortName(baseBranch)}`, `refs/remotes/origin/${shortName(baseBranch)}`]) {
+      try {
+        await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], workingDirectory);
+        base = ref;
+        break;
+      } catch {
+        // Si este ref no resuelve, todavía puede resolver el siguiente.
+      }
+    }
+    if (!base) throw new SessionNotVerifiedError(`la base ${baseBranch} no resuelve en local ni en origin`);
+    const ahead = Number((await git(["rev-list", "--count", `${base}..${branch}`], workingDirectory)).trim());
+    if (!Number.isInteger(ahead) || ahead <= 0) {
+      throw new SessionNotVerifiedError(`la rama ${branch} no tiene commits sobre ${baseBranch}`);
+    }
+    const commit = (await git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
+    if (!/^[0-9a-f]{40,64}$/i.test(commit)) throw new SessionNotVerifiedError(`git no devolvió un commit verificable: ${commit}`);
+    return { commit };
+  } catch (error) {
+    if (error instanceof SessionNotVerifiedError) throw error;
+    throw new SessionNotVerifiedError(`no se pudo verificar con git: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if ((await git(["status", "--porcelain", "--untracked-files=no"], workingDirectory)).trim()) {
-    throw new SessionNotVerifiedError("la sesión dejó cambios sin commitear");
-  }
-  const ahead = Number((await git(["rev-list", "--count", `${baseBranch}..${branch}`], workingDirectory)).trim());
-  if (!Number.isInteger(ahead) || ahead <= 0) {
-    throw new SessionNotVerifiedError(`la rama ${branch} no tiene commits sobre ${baseBranch}`);
-  }
-  const commit = (await git(["rev-parse", "HEAD^{commit}"], workingDirectory)).trim();
-  if (!/^[0-9a-f]{40,64}$/i.test(commit)) throw new SessionNotVerifiedError(`git no devolvió un commit verificable: ${commit}`);
-  return { commit };
 }

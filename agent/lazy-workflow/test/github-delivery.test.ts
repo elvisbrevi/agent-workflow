@@ -762,6 +762,7 @@ const verified = {
   "symbolic-ref --quiet": "issue/42\n",
   "status --porcelain": "",
   "rev-list --count": "3\n",
+  "rev-parse --verify": `${"b".repeat(40)}\n`,
   "rev-parse HEAD^{commit}": `${"a".repeat(40)}\n`,
 };
 
