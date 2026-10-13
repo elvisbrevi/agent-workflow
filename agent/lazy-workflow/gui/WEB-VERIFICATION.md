@@ -5,6 +5,34 @@ Recorded in Linux on 2026-10-09 and continued on the owner's Mac on
 identifies real provider/public HTTPS checks. Each owner runs an independent
 installation on their own server/OS identity.
 
+## Agent picker update (2026-10-13)
+
+`main` at `588709f` (PR #16) was deployed to the Linux installation: the agent
+picker now keeps each CLI's model and effort when another tab is visited and
+restores them on return, in Ajustes, the run form and the fallback agents. No
+workflow runs were active: the backend unit held only its own `lz-web` process.
+The previous backend, frontend, `service.json` and `web.json` were backed up
+under `deployment-backups/before-agent-picker-588709f-2026-10-13T01-58-49Z`.
+`web.json` was not changed.
+
+The owner checkout was fast-forwarded to `588709f`, and `lz update` installed
+the CLI and skills at that commit and rebuilt `~/.local/bin/lz-gui`, whose tree
+stamp `36f79bb65a36b2dd5863e1f11a5618d7621a84e4` matches the merged GUI tree.
+The frozen installs, typecheck, frontend build and optimized `lz-web` build ran
+from the owner checkout; no Rust source changed, so the build reproduced the
+deployed backend. The service helper reinstalled and started both units.
+
+Readback: both units active, local `/health` returning `ok`, the installed
+backend hash `b8b4b191577e0323d9c2caa501ea63387c004bddb82c8530f144c2ae6a8c9509`
+equal to the build, the three frontend files identical to `dist/`, and the
+connector registered four tunnel connections again. The public origin answers
+the Cloudflare Access redirect (302).
+
+Before the merge, `bun run test:web` passed against the synthetic backend
+(28 passed, 7 skipped), including the Ajustes scenario that picks a Codex model
+and effort, visits Claude Code, returns and saves. No authenticated operation
+over the public origin or physical-phone check was performed during this update.
+
 ## Plan from the tracker update (2026-10-13)
 
 `main` at `76f0445` (PR #14) was deployed to the Linux installation: Planificar
