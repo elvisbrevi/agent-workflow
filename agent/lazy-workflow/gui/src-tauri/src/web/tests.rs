@@ -86,6 +86,84 @@ fn request(method: &str, path: &str, cookie: &str, csrf: &str, body: Value) -> R
         .body(Body::from(body.to_string()))
         .unwrap()
 }
+
+#[test]
+fn sag_workflows_pass_web_validation_with_the_cli_catalog() {
+    let fixture = Fixture::new("sag");
+    let catalog_module =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/cli/command-catalog.ts");
+    let output = std::process::Command::new("bun")
+        .arg("-e")
+        .arg(format!(
+            "import {{ commandCatalog }} from {}; console.log(JSON.stringify(commandCatalog()));",
+            serde_json::to_string(&catalog_module).unwrap()
+        ))
+        .output()
+        .expect("Bun is required to verify the CLI catalog contract");
+    assert!(output.status.success());
+    let raw: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut config = fixture.config.clone();
+    config.allowed_commands = raw["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|command| command["name"].as_str())
+        .filter(|name| config::safe_command(name))
+        .map(String::from)
+        .collect();
+    let catalog = policy::catalog(raw, &config).unwrap();
+    assert_eq!(
+        catalog["commands"].as_array().unwrap().len(),
+        config.allowed_commands.len()
+    );
+    let settings = crate::settings::load(&config.settings_path).unwrap();
+    let folders = policy::ServerFolders {
+        uploads: fixture.root.path(),
+        roots: &[],
+        private: fixture.root.path(),
+    };
+    for command in ["plan", "code"] {
+        let args = vec![
+            command.into(),
+            "--working-directory".into(),
+            fixture.root.path().to_string_lossy().into_owned(),
+            "--hu".into(),
+            "50".into(),
+            "--normas-sag".into(),
+            "--cli".into(),
+            "codex".into(),
+            "--verbose".into(),
+        ];
+        let mut request = crate::runner::RunRequest {
+            args: args.clone(),
+            cwd: None,
+            stdin: None,
+        };
+        assert!(policy::validate(&mut request, &catalog, &settings, &folders).is_ok());
+        assert!(request.args.contains(&"--normas-sag".into()));
+        for forbidden in [
+            "--off",
+            "--off-delay",
+            "--log-file",
+            "--no-log-file",
+            "--interview-host",
+            "--interview-port",
+            "--verbose-output",
+        ] {
+            let mut request = crate::runner::RunRequest {
+                args: args.clone(),
+                cwd: None,
+                stdin: None,
+            };
+            request.args.push(forbidden.into());
+            assert!(
+                policy::validate(&mut request, &catalog, &settings, &folders).is_err(),
+                "{command} {forbidden}"
+            );
+        }
+    }
+}
+
 async fn value(response: Response) -> Value {
     serde_json::from_slice(
         &axum::body::to_bytes(response.into_body(), 3 * 1024 * 1024)

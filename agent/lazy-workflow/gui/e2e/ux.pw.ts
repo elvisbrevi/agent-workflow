@@ -59,6 +59,11 @@ test("assigned work, HU task tracking and a Code run with a listed model", async
   await expect(panel.locator("#run-variant option")).toHaveText(["Predeterminado · high", "low", "medium", "high"]);
   await panel.locator("#run-variant").selectOption("high");
   expect(starts).toHaveLength(0);
+  await panel.getByText("Más opciones", { exact: true }).click();
+  await panel.getByLabel("Cargar las normas SAG del componente").check();
+  await expect(panel.getByRole("status", { name: "Configuración de normas SAG" }))
+    .toHaveText("Repositorio de normas SAG configurado (credenciales).");
+  await expect(panel).toContainText(".sag/config.json");
   const form = testInfo.outputPath(`${testInfo.project.name}-code-form.png`);
   await page.screenshot({ path: form, fullPage: true });
   await testInfo.attach("code-form", { path: form, contentType: "image/png" });
@@ -72,6 +77,7 @@ test("assigned work, HU task tracking and a Code run with a listed model", async
   expect(starts).toHaveLength(1);
   const args = (starts[0] as { request: { args: string[] } }).request.args;
   expect(args.slice(0, 1)).toEqual(["code"]);
+  expect(args).toContain("--normas-sag");
   for (const [flag, value] of [["--hu", "50"], ["--ticket", "51"], ["--cli", "codex"], ["--model", "gpt-synthetic-sol"]]) expect(args[args.indexOf(flag!) + 1]).toBe(value);
   // `high` is the CLI's default effort, so the shortest command line leaves it out.
   expect(args).not.toContain("--variant");

@@ -115,14 +115,11 @@ fn access_initialization_binding_recovery_and_password_rejection_are_operator_lo
         .expect("Bun is required to verify the CLI catalog contract");
     assert!(catalog.status.success());
     let names: Vec<String> = serde_json::from_slice(&catalog.stdout).unwrap();
-    for allowed in read(root.path())["allowedCommands"].as_array().unwrap() {
-        assert!(
-            names
-                .iter()
-                .any(|name| Some(name.as_str()) == allowed.as_str()),
-            "Default web command is absent from the CLI catalog: {allowed}"
-        );
-    }
+    let expected: Vec<String> = names
+        .into_iter()
+        .filter(|name| lz_gui_lib::web::config::safe_command(name))
+        .collect();
+    assert_eq!(read(root.path())["allowedCommands"], json!(expected));
     let output = command("bind-access", root.path(), &[], &identity().to_string());
     assert!(
         output.status.success(),

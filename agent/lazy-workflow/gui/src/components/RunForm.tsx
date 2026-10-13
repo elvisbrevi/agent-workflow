@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
-import type { FlagDefault, GuiSettings } from "../lib/backend.ts";
+import type { Diagnostics, FlagDefault, GuiSettings } from "../lib/backend.ts";
 import { initialValues } from "../lib/form-defaults.ts";
 import { cliLabel, cliOf, defaultModelOf, type AgentModels } from "../lib/models.ts";
 import { emptyRunOptions, plansUnit, prepareRun, type RunAction, type RunOptions, type RunTarget } from "../lib/run-request.ts";
@@ -14,6 +14,7 @@ interface RunFormProps {
   readonly catalog: CommandCatalog;
   readonly settings: GuiSettings;
   readonly models: readonly AgentModels[] | null;
+  readonly diagnostics: Diagnostics | null;
   readonly action: RunAction;
   readonly target: RunTarget;
   /** The saved repositories of the target's tracker, the target's own first: where a plan of it may work. */
@@ -68,7 +69,7 @@ function heading(action: RunAction, target: RunTarget): { title: string; subtitl
     : { title: "Implementar la cola", subtitle: `${target.scope} · issues ready-for-agent sin asignar ni bloqueos, una por sesión` };
 }
 
-export function RunForm({ catalog, settings, models, action, target, candidates, runs, onRun, onProvision, onAddRepository, onSaveDefaults, onClose }: RunFormProps) {
+export function RunForm({ catalog, settings, models, diagnostics, action, target, candidates, runs, onRun, onProvision, onAddRepository, onSaveDefaults, onClose }: RunFormProps) {
   const command = catalog.commands.find((candidate) => candidate.name === action);
   const [options, setOptions] = useState<RunOptions>(() => initialOptions(catalog, command, settings, action, target, candidates));
   const [rung, setRung] = useState<AgentChoice>({ cli: "", model: "", variant: "" });
@@ -85,6 +86,8 @@ export function RunForm({ catalog, settings, models, action, target, candidates,
   const unitPlan = plansUnit(action, target);
   const others = settings.repositories.filter((repository) => !options.repositories.includes(repository));
   const pending = (tasks ?? []).filter((task) => !isDone(task.state));
+  const sagRepository = diagnostics?.variables.find((variable) => variable.name === "LAZY_WORKFLOW_SAG_NORMS_REPOSITORY");
+  const sagSource = { settings: "perfil", environment: "entorno", credentials: "credenciales", missing: "sin configurar" };
 
   const submit = async () => {
     if (!prepared || errors.length > 0) return;
@@ -176,7 +179,19 @@ export function RunForm({ catalog, settings, models, action, target, candidates,
               <input id="run-questions" className="input small-input" inputMode="numeric" value={options.questions} placeholder={String(command?.flags.find((flag) => flag.flag === "--number-of-questions")?.default ?? "")} onChange={(event) => update({ questions: event.target.value.replace(/\D/g, "") })} />
             </div>
           )}
-          {command?.flags.some((flag) => flag.flag === "--normas-sag") && <label className="toggle"><input type="checkbox" checked={options.normasSag} onChange={(event) => update({ normasSag: event.target.checked })} /><span>Cargar las normas SAG del componente</span></label>}
+          {command?.flags.some((flag) => flag.flag === "--normas-sag") && (
+            <div className="field">
+              <label className="toggle"><input type="checkbox" checked={options.normasSag} onChange={(event) => update({ normasSag: event.target.checked })} /><span>Cargar las normas SAG del componente</span></label>
+              {options.normasSag && (
+                <>
+                  <p className="field-help" role="status" aria-label="Configuración de normas SAG">
+                    {!diagnostics ? "Revisando el repositorio de normas SAG…" : sagRepository?.present ? `Repositorio de normas SAG configurado (${sagSource[sagRepository.source]}).` : diagnostics.credentialsError ? "No se pudo comprobar el repositorio de normas SAG." : "Falta configurar LAZY_WORKFLOW_SAG_NORMS_REPOSITORY en el equipo que ejecuta lz."}
+                  </p>
+                  <span className="field-help">Cada repositorio necesita <code>.sag/config.json</code> con su tipo (api, bff, nextjs o mcp) al ejecutar con normas SAG.</span>
+                </>
+              )}
+            </div>
+          )}
           <div className="field">
             <span className="field-label">Agentes de respaldo</span>
             <span className="field-help">Si el agente principal agota su cuota o se queda inactivo, el trabajo sigue con estos, en orden.</span>

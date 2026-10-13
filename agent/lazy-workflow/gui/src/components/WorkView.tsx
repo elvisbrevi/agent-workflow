@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { CatalogCommand, CommandCatalog } from "../../../src/cli/command-catalog-schema.ts";
-import type { GuiSettings } from "../lib/backend.ts";
+import type { Diagnostics, GuiSettings } from "../lib/backend.ts";
 import type { HistoryRun } from "../lib/history.ts";
 import type { AgentModels } from "../lib/models.ts";
 import { isDesktop } from "../lib/platform.ts";
@@ -19,6 +19,7 @@ interface WorkViewProps {
   readonly history: readonly HistoryRun[];
   readonly runs: readonly RunState[];
   readonly models: readonly AgentModels[] | null;
+  readonly diagnostics: Diagnostics | null;
   readonly setup: SetupState;
   readonly onRun: (command: CatalogCommand, args: string[]) => Promise<boolean>;
   readonly onProvision: (command: CatalogCommand, args: string[]) => Promise<number | null>;
@@ -62,7 +63,7 @@ function EntryRow({ entry, selected, onSelect }: { entry: WorkEntry; selected: b
   );
 }
 
-export function WorkView({ catalog, settings, work, history, runs, models, setup, onRun, onProvision, onSaveSettings, onAddRepository, onOpenActivity, onFocusRun }: WorkViewProps) {
+export function WorkView({ catalog, settings, work, history, runs, models, diagnostics, setup, onRun, onProvision, onSaveSettings, onAddRepository, onOpenActivity, onFocusRun }: WorkViewProps) {
   const [query, setQuery] = useState("");
   const [tracker, setTracker] = useState<"all" | "github" | "azure">("all");
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -132,7 +133,7 @@ export function WorkView({ catalog, settings, work, history, runs, models, setup
 
         <aside className="work-panel" aria-label="Detalle">
           {form ? (
-            <RunForm key={`${form.action}:${JSON.stringify(form.target)}`} catalog={catalog} settings={settings} models={models} action={form.action} target={form.target}
+            <RunForm key={`${form.action}:${JSON.stringify(form.target)}`} catalog={catalog} settings={settings} models={models} diagnostics={diagnostics} action={form.action} target={form.target}
               candidates={candidatesFor(form.target, work.results)} runs={runs}
               onRun={onRun} onProvision={onProvision} onAddRepository={onAddRepository} onSaveDefaults={onSaveSettings} onClose={() => setForm(null)} />
           ) : selection ? (
