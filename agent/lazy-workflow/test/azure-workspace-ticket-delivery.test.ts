@@ -375,7 +375,7 @@ test("deliverAzureWorkspaceTicket keeps single-repository Azure ticket delivery 
     },
     getBranch: async () => ({ hu, ticket, branch: ticketBranch, integrationBranch }),
     getTicket: async (id: number) => ({ id, type: "Task" as const }),
-    getDescription: async () => ({ ticket, description: null }),
+    getDescription: async () => ({ ticket, description: null, comments: [] }),
     getState: async (id: number) => {
       if (id === ticket) return { ticket: id, state: "En progreso", revision: 4 };
       if (id === hu) return { ticket: id, state: "En Desarrollo", revision: 7 };

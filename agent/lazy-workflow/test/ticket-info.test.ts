@@ -83,6 +83,33 @@ function fixture() {
   return { service: new AzureTicketInfoService(az), commands };
 }
 
+test("ticket-description-info entrega lo que pide el ticket: descripción, pasos de un Bug y comentarios", async () => {
+  const commands: string[][] = [];
+  const service = new AzureTicketInfoService(async (args) => {
+    commands.push(args);
+    if (args[0] === "rest") {
+      return JSON.stringify({ comments: [{ text: "Corrige también el pie", createdDate: "2026-10-12T10:00:00Z", createdBy: { displayName: "Victoria" } }] });
+    }
+    return JSON.stringify({
+      id: 52,
+      fields: {
+        "System.WorkItemType": "Bug",
+        "System.TeamProject": "Cobro Pago y Tarifas",
+        "System.Description": "",
+        "Microsoft.VSTS.TCM.ReproSteps": "<p>Dice Excenta</p>",
+      },
+    });
+  });
+
+  await expect(service.getDescription(52)).resolves.toEqual({
+    ticket: 52,
+    description: null,
+    reproSteps: "<p>Dice Excenta</p>",
+    comments: [{ author: "Victoria", date: "2026-10-12T10:00:00Z", text: "Corrige también el pie" }],
+  });
+  expect(commands[1]?.[commands[1].indexOf("--uri") + 1]).toContain("/Cobro%20Pago%20y%20Tarifas/_apis/wit/workItems/52/comments?order=asc");
+});
+
 test("ticket-info returns normalized delivery context and validates its direct parent", async () => {
   const fixtureValue = fixture();
 
@@ -639,7 +666,7 @@ test("ticket read commands return one normalized JSON object without OpenCode", 
     getTicketInfo: async () => info,
     validateDirectTicketContext: async () => undefined,
     getBranch: async (hu: number, ticket: number) => ({ hu, ticket, branch: info.branch, integrationBranch: info.integrationBranch }),
-    getDescription: async (ticket: number) => ({ ticket, description: "text" }),
+    getDescription: async (ticket: number) => ({ ticket, description: "text", comments: [] }),
     getState: async (ticket: number) => ({ ticket, state: "Active", revision: 4 }),
     getEffort: async (ticket: number) => ({ ticket, effort: { real: 1 } }),
   };

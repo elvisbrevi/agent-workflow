@@ -235,7 +235,7 @@ invoke them as `lz <command> [options]`.
 | `hu-branch-info` | Read the HU's linked integration branch. |
 | `ticket-info` | Read the ticket with its HU, branches, and delivery context. |
 | `ticket-type-info` | Read and validate the ticket's Task or Bug type. |
-| `ticket-description-info` | Read the ticket description. |
+| `ticket-description-info` | Read what the ticket asks for: its description, a Bug's repro steps and acceptance criteria, and its comments. |
 | `ticket-state-info` | Read the ticket state. |
 | `ticket-effort-info` | Read the ticket's effort fields. |
 | `ticket-branch-info` | Read the ticket's linked branch in its HU context. |

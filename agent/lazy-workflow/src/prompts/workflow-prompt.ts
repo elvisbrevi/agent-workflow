@@ -9,6 +9,7 @@
 
 import type { HuInfo } from "../azure/hu-info.ts";
 import type { AutocodeContext, AzureWorkspaceBranchTopology } from "../azure/autocode-service.ts";
+import type { TicketDescription } from "../azure/ticket-info-service.ts";
 import type { GitHubRepositoryContext, SelectedManagedIssue } from "../github/managed-queue-service.ts";
 import type { GitHubWorkspaceUnit } from "../github/github-workspace-checkpoint.ts";
 import type { SagNormsContext } from "../sag/sag-norms-service.ts";
@@ -95,7 +96,7 @@ export type WorkflowPromptSpec =
       /** What the ticket asks for. The coordinator reads it before opening the session, because the
        * session is forbidden from selecting or inferring its own work. */
       context: AutocodeContext;
-      description: string | null;
+      description: TicketDescription | null;
       topology: AzureWorkspaceBranchTopology;
       ticketTopology: AzureWorkspaceBranchTopology;
     }
@@ -104,6 +105,8 @@ export type WorkflowPromptSpec =
       context: AutocodeContext;
       /** La rama que el coordinador fijó y en la que la sesión ya está parada. */
       ticketBranch: string | null;
+      /** Lo que el ticket pide, leído por el coordinador porque la sesión no tiene `az`. */
+      description?: TicketDescription | null;
     };
 
 export interface WorkflowPromptContext {
@@ -262,6 +265,23 @@ async function githubEpicSections(epic: PlanEpic | null | undefined): Promise<st
 }
 
 /**
+ * What the ticket asks for, as a person wrote it: its description, a Bug's own
+ * fields, and its discussion. A delivery session cannot read Azure, so what is
+ * not here — a correction asked for in a comment — never reaches it (ADR-0050).
+ */
+function ticketDescriptionSections(ticket: TicketDescription | null | undefined): string[] {
+  if (!ticket) return [];
+  return [
+    ...(ticket.description?.trim() ? ["Descripción del ticket:", ticket.description] : []),
+    ...(ticket.reproSteps ? ["Pasos para reproducir:", ticket.reproSteps] : []),
+    ...(ticket.acceptanceCriteria ? ["Criterios de aceptación:", ticket.acceptanceCriteria] : []),
+    ...(ticket.comments.length > 0
+      ? ["Comentarios del ticket, del más antiguo al más reciente:", JSON.stringify(ticket.comments)]
+      : []),
+  ];
+}
+
+/**
  * The ready-made manifest invocations, when the coordinator has fixed enough to
  * write them. A run that has not fixed the ticket branch or the manifest path
  * yet gets the tool's instruction alone rather than a command line with a hole
@@ -383,7 +403,7 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       return [
         await readPromptAsset("azure-delivery", { UNIT_ID: String(spec.ticket) }),
         JSON.stringify(spec.context),
-        ...(spec.description ? ["Descripción del ticket:", spec.description] : []),
+        ...ticketDescriptionSections(spec.description),
         `Rama de integración: ${spec.topology.integrationBranch}`,
         `Rama del ticket: ${spec.ticketTopology.ticketBranch ?? null}`,
         ...repositoryRoster(spec.scope),
@@ -394,11 +414,13 @@ async function fragments(spec: WorkflowPromptSpec, context: WorkflowPromptContex
       ];
 
     case "azure-delivery":
-      // El trabajo, y nada del contrato (ADR-0036). El ticket viaja entero porque la sesión no
-      // tiene `az`: es la única forma de que sepa qué se le pidió, y el coordinador ya lo leyó.
+      // El trabajo, y nada del contrato (ADR-0036). El ticket viaja entero — su descripción y sus
+      // comentarios incluidos — porque la sesión no tiene `az`: es la única forma de que sepa qué
+      // se le pidió, y el coordinador ya lo leyó (ADR-0050).
       return [
         await readPromptAsset("azure-delivery", { UNIT_ID: String(spec.context.ticket.id) }),
         JSON.stringify(spec.context),
+        ...ticketDescriptionSections(spec.description),
         await readPromptAsset("delivery"),
         ...sag,
         operatorRequest.trim() ? operatorRequest : null,

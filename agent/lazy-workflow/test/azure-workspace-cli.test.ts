@@ -139,7 +139,7 @@ test("runAzureWorkspaceCode enruta la preparación multi-repositorio y conserva 
       project: "Team",
     }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
-    getDescription: async () => ({ ticket: 51, description: null }),
+    getDescription: async () => ({ ticket: 51, description: null, comments: [] }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
@@ -271,7 +271,7 @@ async function setupWorkspaceFallbackFixture() {
       project: "Team",
     }),
     getTicket: async () => ({ id: 51, type: "Task" as const }),
-    getDescription: async () => ({ ticket: 51, description: null }),
+    getDescription: async () => ({ ticket: 51, description: null, comments: [] }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };
@@ -425,7 +425,7 @@ async function setupWorkspaceDrainFixture() {
       return { context: null, pending: false };
     },
     getTicket: async () => ({ id: currentTicket, type: "Task" as const }),
-    getDescription: async () => ({ ticket: currentTicket, description: null }),
+    getDescription: async () => ({ ticket: currentTicket, description: null, comments: [] }),
     validateDirectTicketContext: async () => undefined,
     linkTicketBranch: async (_huId, ticketId, branch: string, candidates: readonly string[]) => ({ ticket: ticketId, branch, workingDirectory: candidates[0]! }),
   };

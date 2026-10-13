@@ -1,4 +1,5 @@
-import { HuInfo, type HuComment, type HuInfoData } from "./hu-info.ts";
+import { HuInfo, type HuInfoData } from "./hu-info.ts";
+import { readWorkItemComments } from "./work-item-comments.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { verifySessionWithGit } from "../git/session-verification.ts";
@@ -6,6 +7,7 @@ import {
   AzureTicketInfoService,
   runAzureCommand,
   type TicketInfo,
+  type TicketDescription,
   type IntegratedPullRequest,
   type AzurePullRequestTarget,
 } from "./ticket-info-service.ts";
@@ -18,8 +20,6 @@ interface InfrastructurePublication {
 
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const WORK_ITEM_API_VERSION = "7.1";
-/** Work item comments are still a preview resource in 7.1. */
-const COMMENTS_API_VERSION = "7.1-preview.4";
 /**
  * Los estados que sacan una task de la frontera del drenaje.
  *
@@ -153,7 +153,7 @@ export interface AutocodeAzureService {
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket(ticket: number): Promise<DeliveryTicket>;
-  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
+  getDescription(ticket: number): Promise<TicketDescription>;
   getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
   getHuState(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }>;
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
@@ -236,30 +236,6 @@ async function show(id: number, expandRelations: boolean, az: AzRunner): Promise
   const payload = JSON.parse(await az(args)) as WorkItem;
   if (payload.id !== id) throw new Error(`Respuesta de work item malformada: no coincide con el ID solicitado ${id}`);
   return payload;
-}
-
-/** A work item's discussion, oldest first, read to its last page. Deleted comments stay out. */
-async function readComments(id: number, project: string, az: AzRunner): Promise<HuComment[]> {
-  const comments: HuComment[] = [];
-  let token: string | undefined;
-  do {
-    const page = `order=asc&$top=200${token ? `&continuationToken=${encodeURIComponent(token)}` : ""}`;
-    const payload = JSON.parse(await az([
-      "rest", "--resource", AZURE_DEVOPS_RESOURCE, "--method", "get",
-      "--uri", `${azureOrganization()}/${encodeURIComponent(project)}/_apis/wit/workItems/${id}/comments?${page}&api-version=${COMMENTS_API_VERSION}`,
-      "--output", "json",
-    ])) as {
-      comments?: Array<{ text?: unknown; createdDate?: string; createdBy?: { displayName?: string } }>;
-      continuationToken?: string | null;
-    };
-    for (const comment of payload.comments ?? []) {
-      if (typeof comment.text !== "string" || !comment.text.trim()) continue;
-      comments.push({ author: comment.createdBy?.displayName, date: comment.createdDate, text: comment.text });
-    }
-    // A token Azure answers twice would page forever.
-    token = payload.continuationToken && payload.continuationToken !== token ? payload.continuationToken : undefined;
-  } while (token);
-  return comments;
 }
 
 function relationId(url: string | undefined): number | undefined {
@@ -376,7 +352,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
       iteration: field(item, "System.IterationPath"),
       // The session plans from this snapshot and cannot read Azure itself, so a
       // correction asked for in a comment must travel here or it is lost.
-      ...(project ? { comments: await readComments(item.id, project, this.az) } : {}),
+      ...(project ? { comments: await readWorkItemComments(this.az, project, item.id) } : {}),
     } satisfies HuInfoData);
   }
 
@@ -439,7 +415,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.getTicket(ticket);
   }
 
-  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }> {
+  getDescription(ticket: number): Promise<TicketDescription> {
     return this.ticketInfoService.getDescription(ticket);
   }
 

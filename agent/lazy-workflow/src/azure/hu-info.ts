@@ -1,6 +1,8 @@
+import type { WorkItemComment } from "./work-item-comments.ts";
+
 /**
- * The work item types a plan slices into delivery Tasks and Bugs, and a
- * `code --hu` drains: a User Story or Product Backlog Item, or a Bug that is
+ * The work item types a plan slices into delivery Tasks, and whose Tasks and
+ * Bugs a `code --hu` drains: a User Story or Product Backlog Item, or a Bug that is
  * not itself the delivery ticket of one (ADR-0047). The run vocabulary keeps
  * calling all of them the HU.
  */
@@ -17,14 +19,6 @@ export const STORY_WORK_ITEM_TYPES: ReadonlySet<string> = new Set(["User Story",
  */
 export function developedState(type: string | null | undefined): string {
   return type === "Bug" ? "En revisión" : "Desarrollo Terminado";
-}
-
-/** One comment of the work item's discussion, as a person wrote it. */
-export interface HuComment {
-  author?: string;
-  date?: string;
-  /** Azure stores it as HTML or Markdown, like the description. */
-  text: string;
 }
 
 export interface HuInfoData {
@@ -49,7 +43,7 @@ export interface HuInfoData {
    * is not handed here — a correction asked for in a later comment — it never
    * learns.
    */
-  comments?: HuComment[];
+  comments?: WorkItemComment[];
 }
 
 export class HuInfo {
@@ -66,7 +60,7 @@ export class HuInfo {
   readonly assignedTo?: unknown;
   readonly desarrollador?: unknown;
   readonly iteration?: string;
-  readonly comments?: HuComment[];
+  readonly comments?: WorkItemComment[];
 
   constructor(data: HuInfoData) {
     Object.assign(this, data);

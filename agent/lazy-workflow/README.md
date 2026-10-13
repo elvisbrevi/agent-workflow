@@ -435,7 +435,9 @@ before opening a session.
 `code --hu` drains the HU's direct Task and Bug tickets. It ensures the
 `hu/<HU>` integration branch exists — `--base-branch` names what to create it
 from the first time — creates `ticket/<id>` from it, moves the ticket to
-`En progreso`, runs one session, and gates on the same git verification as
+`En progreso`, runs one session — told the whole ticket: its description, a
+Bug's repro steps and acceptance criteria, and its comments — and gates on the
+same git verification as
 GitHub: process exited, ticket branch ahead of the integration branch, clean
 tree. The session's last text becomes the ticket's completion-evidence field.
 The delivery then pushes, creates or reuses the pull request, associates it,

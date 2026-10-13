@@ -536,7 +536,9 @@ declared base, an implicit base in `hu-branch-set`
   owns ticket selection, branches, pull requests, Azure fields, effort,
   completion gates, recovery, and cleanup; the session owns only scoped
   implementation, validation, review and commit, and closes with its delivery
-  summary. Before opening the coding session, the coordinator moves the fixed
+  summary. The session cannot read Azure, so its prompt carries the whole
+  ticket — description, a Bug's repro steps and acceptance criteria, and every
+  comment — in one repository and in a workspace alike (ADR-0050). Before opening the coding session, the coordinator moves the fixed
   ticket to exactly `En progreso` with the current state and revision as guards —
   which is also what removes a failed ticket from the frontier. When the session's
   process exits, the coordinator runs its session verification, and only then

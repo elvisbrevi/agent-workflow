@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# Plan Tasks from the whole work item
+# Plan and deliver from the whole work item; a plan publishes Tasks
 
 A plan of Bug #24663 showed two gaps at once. The Bug had a new comment asking
 for a second correction; the session could not read it, because a planning
@@ -17,6 +17,15 @@ the last page of Azure's comments API — and a Bug's own `Repro Steps` and
 `System Info`, where a Bug states what is wrong when its description is empty.
 The session still reads no tracker: what it needs travels in the snapshot the
 coordinator already gives it, as a GitHub epic plan's comments already did.
+
+**So does the delivery session, from its whole ticket.** `code --hu` in one
+repository handed its session the ticket's identity and title and nothing it
+asked for; only a workspace delivery added the description. Both now read the
+ticket through `ticket-description-info`, which answers its description, a
+Bug's repro steps and acceptance criteria, and its comments, and both put that
+in the prompt before the delivery instruction. A ticket that cannot be read
+stops the run with its checkpoint preserved rather than opening a session that
+does not know what it was asked.
 
 **A plan publishes Tasks, and only Tasks.** The type is no longer part of the
 plan contract. Whatever the work item is — a User Story, a Product Backlog Item
