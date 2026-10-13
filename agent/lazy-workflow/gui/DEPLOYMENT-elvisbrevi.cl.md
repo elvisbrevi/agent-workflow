@@ -34,6 +34,10 @@ Planning from the tracker and provisioning the repository (PR #14, `main` at
 `76f0445`) is deployed there, with six commands added to the allowlist; the
 backup and readback are in
 [verification evidence](WEB-VERIFICATION.md#plan-from-the-tracker-update-2026-10-13).
+Keeping each agent's model and effort when switching tabs (PR #16, `main` at
+`588709f`) is deployed there, a frontend-only change with no allowlist change;
+the backup and readback are in
+[verification evidence](WEB-VERIFICATION.md#agent-picker-update-2026-10-13).
 The web backend runs the CLI from the owner checkout, so develop in a separate
 worktree and keep that checkout on `main`.
 
