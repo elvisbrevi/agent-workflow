@@ -32,6 +32,7 @@ renders `lz catalog` and runs `lz`, and holds no workflow logic.
 | Change GitHub queue selection, plan publication, delivery, the repository lock, or parent reconciliation | `agent/lazy-workflow/src/github/` |
 | Change how SAG norms are resolved, or what infra-sag and deploy-sag verify | `agent/lazy-workflow/src/sag/` |
 | Change how a multi-repository workspace is scoped, or how its checkpoint is read and written | `agent/lazy-workflow/src/workspace/` |
+| Change what is plannable before a repository exists, or how one is downloaded or created | `agent/lazy-workflow/src/azure/azure-repositories.ts`, `agent/lazy-workflow/src/github/github-repositories.ts` and `src/workspace/plannable-work.ts` |
 | Change how a delivered ticket branch is cleaned up | `agent/lazy-workflow/src/git/` |
 | Change the tracker-neutral `pr-*` contract or which tracker an `origin` names | `agent/lazy-workflow/src/pull-request/` (each tracker's adapter stays in `src/github/` or `src/azure/`) |
 | Change the coding agent seam — its options, authority, session errors, or the normalized result and its JSONL decoding | `agent/lazy-workflow/src/coding-agent/` |

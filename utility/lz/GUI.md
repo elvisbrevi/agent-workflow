@@ -85,7 +85,9 @@ reach the browser. A missing piece raises a notice: with `setup` in
 `allowedCommands`, **Reparar con agente** runs `lz setup` on the server;
 otherwise configure it locally with the credentials skill and CLI. The web
 profile needs `work-assigned`, `agent-models`, `hu-info`, `hu-children-info`
-and `github-issue-list` in `allowedCommands`.
+and `github-issue-list` in `allowedCommands`, and **Planificar** needs
+`work-plannable`, `azure-project-list`, `azure-repo-list`, `github-owner-list`,
+`repo-clone` and `repo-create`.
 
 Keep desktop and web on separate profiles or stop one before opening the other.
 Updates rebuild frontend/backend and repeat the web service installer while
@@ -103,8 +105,11 @@ run-log entries; a read that fails becomes a configuration notice.
 | In the GUI | In the CLI |
 |---|---|
 | An HU's tasks, their state and progress | `hu-children-info --hu <id>` (Task and Bug children) |
-| **Planificar** view | the `work-assigned` items a plan slices: GitHub epics, Azure HUs and Bugs no story owns |
-| **Dónde trabajar** in a plan form | `--working-directory a,b`, in delivery order; an epic's own repository stays first |
+| **Planificar** view | `work-plannable --tracker azure\|github`: your HUs in `En Desarrollo` and Bugs in `En progreso`, or the open epics of your repositories and organizations |
+| **Dónde trabajar** → Proyecto existente | `--working-directory a,b`, in delivery order; the first one receives an epic's issues |
+| **Dónde trabajar** → Descargar repo / Crear repo nuevo | `repo-clone` / `repo-create --tracker … --repository … [--project …] --destination <new folder>`, then the folder is registered and chosen; the lists come from `azure-project-list`, `azure-repo-list` and `github-owner-list` |
+| An epic planned in another repository | `plan --issue <n> --issue-repository owner/name` |
+| **Ajustes** → "Plan/Code usa otro agente" | the `--cli`, `--model` and `--variant` saved in `commandDefaults.plan` or `.code`, which win over `flagDefaults` |
 | **Planificar** / **Implementar** on an HU or lone Bug | `plan --hu <id>` / `code --hu <id> [--ticket <id>]` |
 | **Planificar esta épica** | `plan --issue <n>`: the coordinator reads the epic and publishes its issues as sub-issues |
 | **Planificar desde esta issue** (not an epic) | `plan` with a `--prompt` naming the issue; the session reads it with `gh issue view` |

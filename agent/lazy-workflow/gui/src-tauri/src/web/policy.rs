@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 fn allowed_flag(flag: &Value) -> bool {
@@ -298,12 +298,56 @@ pub fn register(
     Ok(settings)
 }
 
+/// Where a run may reach on the server beyond its registered repositories.
+pub struct ServerFolders<'a> {
+    /// Uploaded text files a `file` flag may name.
+    pub uploads: &'a Path,
+    /// The folders the browser walks, under which a command may create one.
+    pub roots: &'a [PathBuf],
+    /// The server's own state, never a destination.
+    pub private: &'a Path,
+}
+
+/// A folder a command creates (`repo-clone`, `repo-create`): a new, visible name
+/// directly under a folder the browser may walk, never an existing path.
+fn new_folder(path: &str, folders: &ServerFolders) -> Result<(), String> {
+    let roots = canonical_roots(folders.roots);
+    if roots.is_empty() {
+        return Err(NO_BROWSING.into());
+    }
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return Err("destination must be an absolute server path".into());
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.starts_with('.'))
+        .ok_or("destination needs a visible folder name")?;
+    let parent = path
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .ok_or("destination's parent folder does not exist")?;
+    if !browsable(&parent, &roots, folders.private) {
+        return Err("destination must be inside a folder this server lets the browser walk".into());
+    }
+    if parent.join(name).symlink_metadata().is_ok() {
+        return Err("destination already exists; choose a new folder".into());
+    }
+    Ok(())
+}
+
 fn validate_value(
     flag: &Value,
     value: &str,
     settings: &GuiSettings,
-    uploads: &Path,
+    folders: &ServerFolders,
 ) -> Result<(), String> {
+    let uploads = folders.uploads;
     if value.len() > 32768 || value.contains('\0') {
         return Err("invalid or oversized argument".into());
     }
@@ -311,6 +355,7 @@ fn validate_value(
         "directory" => {
             registered(value, settings)?;
         }
+        "destination" => new_folder(value, folders)?,
         "directories" => {
             if value.split(',').count() > 16 {
                 return Err("too many repositories".into());
@@ -369,7 +414,7 @@ pub fn validate(
     request: &mut RunRequest,
     catalog: &Value,
     settings: &GuiSettings,
-    uploads: &Path,
+    folders: &ServerFolders,
 ) -> Result<(), String> {
     if request.stdin.is_some() || request.args.is_empty() || request.args.len() > 128 {
         return Err("web runs require 1..128 arguments and accept no raw stdin".into());
@@ -408,16 +453,25 @@ pub fn validate(
         if flag["kind"] != "boolean" {
             index += 1;
             let value = request.args.get(index).ok_or("flag needs a value")?;
-            validate_value(flag, value, settings, uploads)?;
+            validate_value(flag, value, settings, folders)?;
         }
         index += 1;
     }
-    let cwd = request
-        .cwd
-        .as_ref()
-        .or(settings.active_repository.as_ref())
-        .ok_or("select a registered server repository")?;
-    request.cwd = Some(registered(cwd, settings)?.to_string_lossy().into_owned());
+    // A command that works in no repository (listing what to plan, downloading
+    // one) runs below the browsable roots when none is registered or active yet.
+    let works_in_repository = flags.iter().any(|flag| flag["flag"] == "--working-directory");
+    request.cwd = Some(
+        match request.cwd.as_ref().or(settings.active_repository.as_ref()) {
+            Some(cwd) => registered(cwd, settings)?,
+            None if !works_in_repository => canonical_roots(folders.roots)
+                .into_iter()
+                .next()
+                .unwrap_or_else(home_dir),
+            None => return Err("select a registered server repository".into()),
+        }
+        .to_string_lossy()
+        .into_owned(),
+    );
     if request.args[0] == "plan"
         && request
             .args
@@ -459,22 +513,62 @@ mod tests {
                 cwd: None,
                 stdin: None,
             };
-            assert!(validate(&mut request, &catalog, &settings, root.path()).is_err());
+            assert!(validate(&mut request, &catalog, &settings, &ServerFolders { uploads: root.path(), roots: &[], private: root.path() }).is_err());
         }
         let mut request = RunRequest {
             args: vec!["code".into()],
             cwd: Some(outside.path().to_string_lossy().into_owned()),
             stdin: None,
         };
-        assert!(validate(&mut request, &catalog, &settings, root.path()).is_err());
+        assert!(validate(&mut request, &catalog, &settings, &ServerFolders { uploads: root.path(), roots: &[], private: root.path() }).is_err());
         request.cwd = None;
-        assert!(validate(&mut request, &catalog, &settings, root.path()).is_ok());
+        assert!(validate(&mut request, &catalog, &settings, &ServerFolders { uploads: root.path(), roots: &[], private: root.path() }).is_ok());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
             request.cwd = Some(root.path().join("escape").to_string_lossy().into_owned());
-            assert!(validate(&mut request, &catalog, &settings, root.path()).is_err());
+            assert!(validate(&mut request, &catalog, &settings, &ServerFolders { uploads: root.path(), roots: &[], private: root.path() }).is_err());
         }
+    }
+
+    #[test]
+    fn a_new_folder_is_created_only_below_the_browsable_roots_and_never_over_a_path() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        for folder in ["src/existing", ".hidden", "private"] {
+            std::fs::create_dir_all(base.join(folder)).unwrap();
+        }
+        let roots = [root.path().to_path_buf()];
+        let private = base.join("private");
+        let folders = ServerFolders { uploads: &private, roots: &roots, private: &private };
+        let catalog = serde_json::json!({"commands":[{"name":"repo-clone","groups":[],"flags":[
+            {"flag":"--repository","kind":"string"},{"flag":"--destination","kind":"destination"}
+        ]}],"groups":[]});
+        let request = |destination: String| RunRequest {
+            args: vec!["repo-clone".into(), "--repository".into(), "o/r".into(), "--destination".into(), destination],
+            cwd: None,
+            stdin: None,
+        };
+        // Nothing registered yet: a command that works in no repository runs below the roots.
+        let settings = GuiSettings::default();
+        let mut accepted = request(base.join("src/nuevo").display().to_string());
+        validate(&mut accepted, &catalog, &settings, &folders).unwrap();
+        assert_eq!(accepted.cwd.as_deref(), base.to_str());
+        for destination in [
+            base.join("src/existing").display().to_string(),
+            base.join("src/missing/nuevo").display().to_string(),
+            base.join(".hidden/nuevo").display().to_string(),
+            base.join("src/.nuevo").display().to_string(),
+            base.join("private/nuevo").display().to_string(),
+            base.join("src/../src/nuevo").display().to_string(),
+            outside.path().join("nuevo").display().to_string(),
+            "relative/nuevo".into(),
+        ] {
+            assert!(validate(&mut request(destination.clone()), &catalog, &settings, &folders).is_err(), "{destination}");
+        }
+        let no_roots = ServerFolders { uploads: &private, roots: &[], private: &private };
+        assert!(validate(&mut request(base.join("src/nuevo").display().to_string()), &catalog, &settings, &no_roots).is_err());
     }
 
     #[test]

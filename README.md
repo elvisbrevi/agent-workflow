@@ -264,6 +264,21 @@ invoke them as `lz <command> [options]`.
 | `ticket-commit-link` | Link the pull request's merge commit to the ticket. |
 | `ticket-completion-apply` | Apply completion evidence and state after validating delivery gates. |
 
+### Planning before a repository exists
+
+What a plan can slice, read at the tracker, and the repository it works in,
+downloaded or created on this machine. The desktop and web **Planificar** view
+is built on these.
+
+| Command | Purpose |
+|---|---|
+| `work-plannable` | List your Azure HUs in `En Desarrollo` and Bugs in `En progreso`, or the open epics of your GitHub repositories and organizations. |
+| `azure-project-list` | List the projects of the Azure DevOps organization. |
+| `azure-repo-list` | List the repositories of one Azure DevOps project. |
+| `github-owner-list` | List your GitHub account and organizations: where a repository can be created. |
+| `repo-clone` | Download an Azure DevOps or GitHub repository into a new folder. |
+| `repo-create` | Create a private repository with a first commit on `main` and download it into a new folder. |
+
 ### Pull requests (GitHub and Azure DevOps)
 
 `yp pr` without its menu or its AI description. The tracker is the one the

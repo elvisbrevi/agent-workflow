@@ -142,11 +142,12 @@ export interface GitHubManagedQueueAdapter {
   verifyAuthentication?(workingDirectory: string): Promise<GitHubAuthenticatedIdentity>;
   selectEligibleIssue?(workingDirectory: string): Promise<ManagedQueueSelection>;
   claimSelectedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
-  readIssueDetail?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
+  /** `repository` (`owner/name`) reads an issue of another repository than the working directory's. */
+  readIssueDetail?(issueNumber: number, workingDirectory: string, repository?: string | null): Promise<SelectedManagedIssue>;
   reconcileClaimedIssue?(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue>;
   createReadyIssue?(input: { title: string; body: string }, workingDirectory: string): Promise<{ number: number; id: number }>;
   linkBlockedBy?(blocked: number, blockerId: number, workingDirectory: string): Promise<{ linked: boolean }>;
-  addSubIssue?(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }>;
+  addSubIssue?(parent: number, childId: number, workingDirectory: string, parentRepository?: string | null): Promise<{ linked: boolean }>;
   releaseOwnClaim?(issueNumber: number, login: string, workingDirectory: string): Promise<void>;
 }
 
@@ -186,11 +187,12 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
     return Array.isArray(parsed) ? parsed : [];
   }
 
-  async readIssueDetail(issueNumber: number, workingDirectory: string): Promise<SelectedManagedIssue> {
+  async readIssueDetail(issueNumber: number, workingDirectory: string, repository: string | null = null): Promise<SelectedManagedIssue> {
     const output = await this.gh([
       "issue",
       "view",
       `${issueNumber}`,
+      ...(repository ? ["--repo", repository] : []),
       "--json",
       "number,title,state,labels,assignees,createdAt,blockedBy,body,comments",
     ], workingDirectory);
@@ -275,12 +277,13 @@ export class GitHubManagedQueueService implements GitHubManagedQueueAdapter {
 
   /**
    * Cuelga un Issue del plan de su epica con la relacion nativa de sub-issues,
-   * que es la que la reconciliacion de padres lee para cerrarla (ADR-0047).
+   * que es la que la reconciliacion de padres lee para cerrarla (ADR-0047). La
+   * epica puede vivir en otro repositorio (ADR-0049): `parentRepository` la nombra.
    * Como `linkBlockedBy`, se lee antes y despues: una relacion existente
    * responde `linked: false`, y una que GitHub no registro detiene la publicacion.
    */
-  async addSubIssue(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }> {
-    const endpoint = `repos/{owner}/{repo}/issues/${parent}/sub_issues`;
+  async addSubIssue(parent: number, childId: number, workingDirectory: string, parentRepository: string | null = null): Promise<{ linked: boolean }> {
+    const endpoint = `repos/${parentRepository ?? "{owner}/{repo}"}/issues/${parent}/sub_issues`;
     if (await this.hasSubIssue(endpoint, childId, workingDirectory)) return { linked: false };
     await this.gh(["api", "--method", "POST", endpoint, "-F", `sub_issue_id=${childId}`], workingDirectory);
     if (!await this.hasSubIssue(endpoint, childId, workingDirectory)) {

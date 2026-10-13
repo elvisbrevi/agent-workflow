@@ -59,6 +59,9 @@ lz plan --normas-sag --working-directory /path/to/repository
 # Slice a GitHub epic: its issues are published as the epic's sub-issues
 lz plan --issue 40 --working-directory /path/to/repository
 
+# Slice an epic of another repository; its issues are published in this one
+lz plan --issue 40 --issue-repository owner/plans --working-directory /path/to/repository
+
 # Slice an Azure HU and publish its work items in dependency order
 lz plan --hu 23438 --working-directory /path/to/repository
 
@@ -202,6 +205,24 @@ lz credentials-set --name OPENAI_API_KEY
 lz credentials-migrate --name OPENAI_API_KEY --service openai
 ```
 
+### Planning before a repository exists — no session is opened
+
+```bash
+# What you can plan: your HUs En Desarrollo and Bugs En progreso, in one project or all
+lz work-plannable --tracker azure --project "Portal"
+# ...or the open epics of your GitHub repositories and organizations
+lz work-plannable --tracker github
+# Where to download from or create in
+lz azure-project-list
+lz azure-repo-list --project "Portal"
+lz github-owner-list
+# Download a repository into a new folder
+lz repo-clone --tracker azure --project "Portal" --repository api --destination /home/me/src/api
+lz repo-clone --tracker github --repository owner/web --destination /home/me/src/web
+# Create a private one with a first commit on main, and download it
+lz repo-create --tracker github --repository owner/new-service --destination /home/me/src/new-service
+```
+
 ### Updating the tool and the credentials
 
 ```bash
@@ -312,8 +333,10 @@ epic: an `[Epic]`/`[Spec]` title prefix or the `epic` label — and gives the
 session that snapshot. Publication then hangs every issue it created from the
 epic as a native sub-issue, read back to confirm it, so GitHub parent
 reconciliation closes the epic once `code` has closed them. The issues are
-published in the epic's repository, the first one of `--working-directory`.
-`--issue` and `--hu` are exclusive.
+published in the first repository of `--working-directory`; an epic of another
+repository is named with `--issue-repository owner/name`, and parent
+reconciliation then closes it in its own repository (ADR-0049). `--issue` and
+`--hu` are exclusive.
 
 ### `code`
 
@@ -461,6 +484,18 @@ rather than inside any one repository.
 to the authenticated user: open issues in that GitHub repository, or Azure
 work items in its project. It opens no coding session and changes no claim or
 delivery eligibility. The GUI's work view uses this read alongside the run log.
+
+`lz work-plannable --tracker azure|github` lists what a plan can slice without
+a repository on this machine (ADR-0049): the HUs in `En Desarrollo` and the Bugs
+in `En progreso` assigned to you across the Azure organization — a Bug under a
+story is that story's ticket and is left out — or the open epics of your GitHub
+account's and organizations' repositories, by the managed queue's predicate.
+`repo-clone` and `repo-create` then provision where it is planned: they only
+write a folder that does not exist yet, under one that does. An Azure clone
+keeps a credential helper that answers git with the `AZURE_DEVOPS_EXT_PAT` lz
+loads into every run, so later pushes work without the secret on disk; a created
+repository gets a first commit on `main`, from which `code` provisions
+`hu/<HU>`.
 
 Every operation the workflow performs against Azure Boards, GitHub or git
 without opening a session is reachable as its own command. They share the exact

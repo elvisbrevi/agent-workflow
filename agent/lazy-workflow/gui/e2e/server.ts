@@ -17,8 +17,24 @@ const github = join(projects, "github-project"); const azure = join(projects, "a
 await mkdir(github); await mkdir(azure); await mkdir(broken); await mkdir(join(projects, "archive"));
 await writeFile(launcher, `import { commandCatalog } from ${JSON.stringify(catalog)};
 import { createQuestionChannel } from ${JSON.stringify(factory)};
+import { mkdirSync } from "node:fs";
 const command = process.argv[2];
+const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
 if (command === "catalog") console.log(JSON.stringify(commandCatalog()));
+else if (command === "work-plannable" && value("--tracker") === "azure") console.log(JSON.stringify({ tracker: "azure", truncated: false, items: [
+  { id: 50, title: "Mejorar el portal de clientes", type: "User Story", state: "En Desarrollo", url: "https://example.com/hu/50", scope: "Synthetic Azure" },
+  { id: 70, title: "Falla el cierre de sesión", type: "Bug", state: "En progreso", url: "https://example.com/bug/70", scope: "Synthetic Azure" }
+] }));
+else if (command === "work-plannable") console.log(JSON.stringify({ tracker: "github", truncated: false, items: [
+  { id: 9, title: "[Epic] Portal de autoservicio", type: "Epic", state: "OPEN", url: "https://github.com/synthetic/github/issues/9", scope: "synthetic/github" }
+] }));
+else if (command === "azure-project-list") console.log(JSON.stringify([{ name: "Otro proyecto", id: "p2" }, { name: "Synthetic Azure", id: "p1" }]));
+else if (command === "azure-repo-list") console.log(JSON.stringify([{ name: "portal-api", scope: value("--project"), url: "https://example.com/_git/portal-api", defaultBranch: "main" }]));
+else if (command === "github-owner-list") console.log(JSON.stringify(["synthetic", "acme"]));
+else if (command === "repo-clone" || command === "repo-create") {
+  mkdirSync(value("--destination"));
+  console.log(JSON.stringify({ tracker: value("--tracker"), repository: value("--repository"), destination: value("--destination"), created: command === "repo-create" }));
+}
 else if (command === "credentials-status") console.log(JSON.stringify([
   { name: "LAZY_WORKFLOW_AZURE_ORGANIZATION", present: true, value: "https://dev.azure.com/synthetic", source: "credentials" },
   { name: "AZURE_DEVOPS_EXT_PAT", present: true, value: null, source: "credentials" }
@@ -67,7 +83,7 @@ const initialized = Bun.spawn([binary, "init", "--data-dir", root, "--public-url
 initialized.stdin.write("synthetic-passphrase\n"); initialized.stdin.end();
 if (await initialized.exited !== 0) throw new Error(`synthetic initialization failed: ${await readFile(join(root, "init-error.log"), "utf8")}`);
 const config = JSON.parse(await readFile(join(root, "web.json"), "utf8"));
-config.allowedCommands = ["plan", "code", "setup", "work-assigned", "agent-models", "hu-info", "hu-children-info", "github-issue-list"];
+config.allowedCommands = ["plan", "code", "setup", "work-assigned", "work-plannable", "azure-project-list", "azure-repo-list", "github-owner-list", "repo-clone", "repo-create", "agent-models", "hu-info", "hu-children-info", "github-issue-list"];
 config.listen = "127.0.0.1:18234";
 config.repositoryRoots = [projects];
 await writeFile(join(root, "web.json"), JSON.stringify(config), { mode: 0o600 });

@@ -210,6 +210,12 @@ describe("herramientas deterministas como comandos", () => {
   test("clasifica cada comando determinista con su failure kind", () => {
     const expected: Record<typeof DETERMINISTIC_TOOL_COMMANDS[number], ReturnType<typeof deterministicFailureKind>> = {
       "work-assigned": "tracker-read-failure",
+      "work-plannable": "tracker-read-failure",
+      "azure-project-list": "tracker-read-failure",
+      "azure-repo-list": "tracker-read-failure",
+      "github-owner-list": "tracker-read-failure",
+      "repo-clone": "deterministic-completion-failure",
+      "repo-create": "deterministic-completion-failure",
       "hu-children-info": "tracker-read-failure",
       "hu-state-set": "deterministic-completion-failure",
       "hu-branch-ensure": "branch-preparation-failure",

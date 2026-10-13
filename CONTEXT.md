@@ -235,7 +235,9 @@ _Avoid_: keeping ours, a reconciliation subsystem, a second retry
 **GitHub parent reconciliation**:
 The verified closure of an open native parent after all of its direct native
 sub-issues and dependencies are closed. Reconciliation may continue through
-the parent's ancestors and never infers hierarchy from prose or titles.
+the parent's ancestors and never infers hierarchy from prose or titles. An issue
+is its repository and its number: a parent in another repository is read,
+commented on and closed there (ADR-0049).
 _Avoid_: checklist closure, title-based epic closure
 
 **GitHub delivery checkpoint**:
@@ -455,14 +457,30 @@ delivery ticket, and `plan` refuses it before any session opens (ADR-0047).
 _Avoid_: planning a story's Bug, a Bug the coordinator closes in `Done`
 
 **GitHub epic plan**:
-A GitHub planning run with `plan --issue <n>`. The coordinator reads the epic
-from the first repository — open, and an epic by the managed queue's own
-predicate — and gives that snapshot to the session; publication hangs every
-issue it created from the epic as a native sub-issue, which is what GitHub
-parent reconciliation reads to close it. The issues are published in the epic's
-repository, never another one, because reconciliation reads a parent by number
-in the repository of the issue it closed (ADR-0047).
-_Avoid_: an epic named only in `--prompt`, sub-issues published across repositories
+A GitHub planning run with `plan --issue <n>`. The coordinator reads the epic —
+from the first repository, or from `--issue-repository owner/name` — requires it
+open and an epic by the managed queue's own predicate, and gives that snapshot to
+the session. Publication creates the issues in the first working directory,
+where `code` drains them, and hangs each one from the epic as a native
+sub-issue, which is what GitHub parent reconciliation reads to close it, in the
+epic's own repository (ADR-0047, ADR-0049).
+_Avoid_: an epic named only in `--prompt`, an issue identified by its number alone
+
+**Plannable work**:
+What a plan can slice, read at the tracker rather than in a saved repository
+(`work-plannable`): the HUs in `En Desarrollo` and the Bugs in `En progreso`
+assigned to the operator in Azure, or the open epics of the operator's GitHub
+account and organizations. Read-only; where it is planned is chosen afterwards
+(ADR-0049).
+_Avoid_: the assigned work of one repository, a backlog of everyone's items
+
+**Repository provisioning**:
+Downloading (`repo-clone`) or creating (`repo-create`) the repository a plan is
+worked in, before it exists on this machine. A deterministic tool, never a
+session step: it writes only a folder that does not exist yet, keeps Azure's
+credential in lz's environment rather than on disk, and leaves a created
+repository with a first commit on `main` (ADR-0049).
+_Avoid_: cloning inside a session, an empty repository a delivery cannot branch from
 
 **Desarrollador 1**:
 The developer a User Story names in `Custom.Desarrollador1`, and the owner every

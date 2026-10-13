@@ -155,8 +155,14 @@ directory are never listed or registered, and symlinks are resolved before the
 check. A registered folder then constrains run arguments like any other.
 
 The interface needs these reads in `allowedCommands`: `work-assigned`,
-`agent-models`, `hu-info`, `hu-children-info` and `github-issue-list` (new
-installations include them; add the missing ones to an existing `web.json`).
+`agent-models`, `hu-info`, `hu-children-info` and `github-issue-list`, and for
+**Planificar** `work-plannable`, `azure-project-list`, `azure-repo-list` and
+`github-owner-list` (new installations include them; add the missing ones to an
+existing `web.json`). `repo-clone` and `repo-create` download or create the
+repository a plan works in; their `--destination` must be a new, visible folder
+directly under a folder the browser may walk, so `repositoryRoots` bounds where
+they write, and the folder is registered once they succeed. Commands that take
+no working directory run below those roots while no repository is registered.
 `setup` is opt-in: with it, the configuration notice offers **Reparar con
 agente**, which opens one coding-agent session on the server under the
 `lazy-setup` authority (no repository, git or tracker mutation, no secret read).

@@ -75,11 +75,14 @@ export function useAgentModels(catalog: CommandCatalog | null) {
 
 export const can = (catalog: CommandCatalog, name: string): boolean => catalog.commands.some((command) => command.name === name);
 
-/** A read a panel shows once it answers; its failure is a line in the panel, not a dead end. Null values skip it. */
-export function useRead<T>(catalog: CommandCatalog, name: string, values: Record<string, string> | null): { value: T | null; error: string | null } {
+/**
+ * A read a panel shows once it answers; its failure is a line in the panel, not a dead end. Null values skip it.
+ * A new `revision` reads it again.
+ */
+export function useRead<T>(catalog: CommandCatalog, name: string, values: Record<string, string> | null, revision = 0): { value: T | null; error: string | null } {
   const [value, setValue] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const key = values ? JSON.stringify(values) : null;
+  const key = values ? `${JSON.stringify(values)}#${revision}` : null;
   useEffect(() => {
     setValue(null);
     setError(null);

@@ -22,6 +22,8 @@ export type CatalogValueKind =
   | "file"
   | "directory"
   | "directories"
+  /** A folder that does not exist yet, which the command creates (`repo-clone`, `repo-create`). */
+  | "destination"
   | "commit"
   | "secret";
 
@@ -56,6 +58,7 @@ export type CatalogFamilyId =
   | "github-delivery"
   | "git"
   | "pull-request"
+  | "repository"
   | "credentials"
   | "maintenance";
 

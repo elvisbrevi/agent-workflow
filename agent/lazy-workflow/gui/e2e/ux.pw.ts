@@ -82,9 +82,9 @@ test("assigned work, HU task tracking and a Code run with a listed model", async
   expect(failures).toEqual([]);
 });
 
-test("Planificar lists my epics, HUs and lone Bugs, and plans each where the operator chooses", async ({ page }, testInfo) => {
+test("Planificar lists HUs, Bugs and epics from the tracker, downloads where to work and plans there", async ({ page }, testInfo) => {
   const failures: string[] = [];
-  const starts: unknown[] = [];
+  const starts: Array<{ request: { args: string[] } }> = [];
   page.on("pageerror", (error) => failures.push(error.message));
   page.on("request", (request) => { if (request.url().endsWith("/api/rpc/start_run")) starts.push(request.postDataJSON()); });
   page.on("dialog", (dialog) => { void dialog.accept(); });
@@ -95,49 +95,79 @@ test("Planificar lists my epics, HUs and lone Bugs, and plans each where the ope
   await page.getByRole("button", { name: "Planificar", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Planificar", exact: true })).toBeVisible();
   const list = page.locator(".work-list");
-  await expect(list.getByText("[Epic] Portal de autoservicio", { exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "Azure DevOps" }).click();
   await expect(list.getByText("Mejorar el portal de clientes", { exact: true })).toBeVisible();
   await expect(list.getByText("Bug #70", { exact: true })).toBeVisible();
-  // A plain issue is delivered, not sliced.
-  await expect(list.getByText("Mejorar la navegación principal", { exact: true })).toHaveCount(0);
   const listing = testInfo.outputPath(`${testInfo.project.name}-plan-list.png`);
   await page.screenshot({ path: listing, fullPage: true });
   await testInfo.attach("plan-list", { path: listing, contentType: "image/png" });
 
-  // Choosing a lone Bug opens its plan form, with the one Azure repository already chosen.
+  // The Bug opens its plan; it is downloaded from its project into a new folder beside the saved ones.
   await list.getByText("Falla el cierre de sesión", { exact: true }).click();
   const panel = page.locator(".work-panel");
   await expect(panel.getByRole("heading", { name: "Planificar Bug #70" })).toBeVisible();
-  await expect(panel.getByRole("checkbox", { name: "azure-project" })).toBeChecked();
-  await panel.getByText("Responder las preguntas del agente antes de planificar").click();
-  const bugForm = testInfo.outputPath(`${testInfo.project.name}-plan-bug.png`);
-  await page.screenshot({ path: bugForm, fullPage: true });
-  await testInfo.attach("plan-bug", { path: bugForm, contentType: "image/png" });
+  await panel.getByRole("radio", { name: "Descargar repo" }).click();
+  await expect(panel.getByLabel("Proyecto de Azure DevOps")).toHaveValue("Synthetic Azure");
+  await panel.getByLabel("Repositorio", { exact: true }).selectOption("portal-api");
+  const folder = `portal-api-${testInfo.project.name}`;
+  await panel.getByLabel("Nombre de la carpeta").fill(folder);
+  await expect(panel.getByText(new RegExp(`${folder}, que no debe existir`))).toBeVisible();
+  const cloneForm = testInfo.outputPath(`${testInfo.project.name}-plan-clone.png`);
+  await page.screenshot({ path: cloneForm, fullPage: true });
+  await testInfo.attach("plan-clone", { path: cloneForm, contentType: "image/png" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await panel.getByRole("button", { name: "Descargar", exact: true }).click();
+  // The download runs without leaving the form, then its folder is registered and chosen.
+  await expect(panel.getByRole("checkbox", { name: folder })).toBeChecked();
+  const clone = starts[0]!.request.args;
+  expect(clone.slice(0, 7)).toEqual(["repo-clone", "--tracker", "azure", "--repository", "portal-api", "--project", "Synthetic Azure"]);
+  expect(clone[8]).toMatch(new RegExp(`/${folder}$`));
+  await panel.getByText("Responder las preguntas del agente antes de planificar").click();
   await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
   await expect(page.locator(".run-detail h2")).toHaveText("Plan · HU #70");
-  const bugArgs = (starts[0] as { request: { args: string[] } }).request.args;
-  expect(bugArgs[0]).toBe("plan");
-  expect(bugArgs[bugArgs.indexOf("--hu") + 1]).toBe("70");
-  expect(bugArgs[bugArgs.indexOf("--working-directory") + 1]).toMatch(/\/azure-project$/);
+  const plan = starts[1]!.request.args;
+  expect(plan[plan.indexOf("--hu") + 1]).toBe("70");
+  expect(plan[plan.indexOf("--working-directory") + 1]).toBe(clone[8]);
 
-  // An epic keeps its own repository first: its sub-issues are published there.
+  // An epic offers its own repository to download, and an account to create a new one in.
   await page.getByRole("button", { name: "Planificar", exact: true }).click();
+  await page.getByRole("radio", { name: "GitHub" }).click();
   await list.getByText("[Epic] Portal de autoservicio", { exact: true }).click();
   await expect(panel.getByRole("heading", { name: "Planificar la épica #9" })).toBeVisible();
-  const own = panel.getByRole("checkbox", { name: "github-project" });
-  await expect(own).toBeChecked();
-  await expect(own).toBeDisabled();
+  await panel.getByRole("radio", { name: "Descargar repo" }).click();
+  await expect(panel.getByLabel("Repositorio de GitHub")).toHaveValue("synthetic/github");
+  await panel.getByRole("radio", { name: "Crear repo nuevo" }).click();
+  await expect(panel.getByLabel("Cuenta u organización")).toHaveValue("synthetic");
+  await panel.getByRole("radio", { name: "Proyecto existente" }).click();
+  await panel.getByRole("checkbox", { name: "github-project" }).check();
   await panel.getByText("Responder las preguntas del agente antes de planificar").click();
   const epicForm = testInfo.outputPath(`${testInfo.project.name}-plan-epic.png`);
   await page.screenshot({ path: epicForm, fullPage: true });
   await testInfo.attach("plan-epic", { path: epicForm, contentType: "image/png" });
   await panel.getByRole("button", { name: "Ejecutar Plan", exact: true }).click();
   await expect(page.locator(".run-detail h2")).toHaveText("Plan · Issue #9");
-  const epicArgs = (starts[1] as { request: { args: string[] } }).request.args;
-  expect(epicArgs[epicArgs.indexOf("--issue") + 1]).toBe("9");
-  expect(epicArgs[epicArgs.indexOf("--working-directory") + 1]).toMatch(/\/github-project$/);
-  expect(epicArgs).not.toContain("--hu");
+  const epic = starts[2]!.request.args;
+  expect(epic[epic.indexOf("--issue") + 1]).toBe("9");
+  expect(epic[epic.indexOf("--issue-repository") + 1]).toBe("synthetic/github");
+  expect(epic[epic.indexOf("--working-directory") + 1]).toMatch(/\/github-project$/);
+  await expect(page.locator("body")).toContainText(`Descarga · ${folder}`);
+
+  // A command's own agent is shown, saved and kept, so the default never hides it.
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  const own = page.getByRole("checkbox", { name: "Plan usa otro agente" });
+  await expect(own).not.toBeChecked();
+  await own.check();
+  await page.locator(".command-agent").first().getByRole("radio", { name: "Codex" }).click();
+  await page.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(page.getByText("Ajustes guardados.")).toBeVisible();
+  // Leaving and coming back renders what the server answered, not the edited form.
+  await page.getByRole("button", { name: "Trabajo", exact: true }).click();
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(own).toBeChecked();
+  await expect(page.locator(".command-agent").first().getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
+  await own.uncheck();
+  await page.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(page.getByText("Plan usa el agente predeterminado.")).toBeVisible();
   expect(failures).toEqual([]);
 });
 
@@ -161,9 +191,11 @@ test("the owner walks the server's folders to pick a repository instead of typin
   await folders.getByRole("button", { name: "archive", exact: true }).click();
   await expect(folders.getByLabel("Ruta en el servidor")).toHaveValue(/\/archive$/);
   await expect(folders.getByText("Sin subcarpetas.")).toBeVisible();
+  const registered = await page.getByLabel("Repositorio activo").locator("option").count();
   await folders.getByRole("button", { name: "Agregar repositorio", exact: true }).click();
   await expect(folders).toBeHidden();
   await expect(page.getByLabel("Repositorio activo")).toHaveValue(/\/archive$/);
+  await expect(page.getByLabel("Repositorio activo").locator("option")).toHaveCount(registered + 1);
   // `..` walks back up; a folder already registered is selected, not added twice.
   await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
   await expect(folders.getByRole("button", { name: "archive agregado" })).toBeVisible();
@@ -172,7 +204,7 @@ test("the owner walks the server's folders to pick a repository instead of typin
   await folders.getByRole("button", { name: "azure-project agregado" }).click();
   await folders.getByRole("button", { name: "Agregar repositorio", exact: true }).click();
   await expect(page.getByLabel("Repositorio activo")).toHaveValue(/\/azure-project$/);
-  await expect(page.getByLabel("Repositorio activo").locator("option")).toHaveCount(4);
+  await expect(page.getByLabel("Repositorio activo").locator("option")).toHaveCount(registered + 1);
   // A path outside the root the server allows is refused inside the dialog.
   await page.locator(".repo-picker").getByRole("button", { name: "Agregar repositorio…" }).click();
   await folders.getByLabel("Ruta en el servidor").fill("/");

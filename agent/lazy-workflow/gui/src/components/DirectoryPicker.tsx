@@ -6,7 +6,7 @@ import { homePath } from "../lib/work.ts";
 const FolderIcon = () => <svg className="folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2h8.4A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" /></svg>;
 
 /** Native filesystem on desktop; in the browser, the server's folders below the roots its owner allows. */
-export function DirectoryPicker({ onPick, label = "Buscar carpeta…" }: { onPick: (path: string) => void | Promise<void>; label?: string }) {
+export function DirectoryPicker({ onPick, label = "Buscar carpeta…", confirmLabel = "Agregar repositorio" }: { onPick: (path: string) => void | Promise<void>; label?: string; confirmLabel?: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [path, setPath] = useState("");
@@ -22,9 +22,11 @@ export function DirectoryPicker({ onPick, label = "Buscar carpeta…" }: { onPic
       setPath(homePath(next.path, next.home));
     } catch (error) { setError(errorText(error)); }
   };
+  // The field shows `~` for the server account's home; whoever receives the folder gets it whole.
+  const absolute = (value: string): string => (listing?.home && (value === "~" || value.startsWith("~/")) ? `${listing.home}${value.slice(1)}` : value);
   const add = async () => {
     setBusy(true); setError(null);
-    try { await onPick(path.trim()); dialog.current?.close(); }
+    try { await onPick(absolute(path.trim())); dialog.current?.close(); }
     catch (error) { setError(errorText(error)); }
     finally { setBusy(false); }
   };
@@ -45,7 +47,7 @@ export function DirectoryPicker({ onPick, label = "Buscar carpeta…" }: { onPic
         <input className="input" aria-label="Ruta en el servidor" placeholder="~/" value={path} onChange={(event) => setPath(event.target.value)}
           autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} enterKeyHint="go" />
       </form>
-      <button type="button" className="button primary folder-add" disabled={busy || !path.trim()} onClick={() => void add()}>Agregar repositorio</button>
+      <button type="button" className="button primary folder-add" disabled={busy || !path.trim()} onClick={() => void add()}>{confirmLabel}</button>
       {error && <p className="error-text" role="alert">{error}</p>}
       <p className="muted small folder-heading">Carpetas</p>
       <div className="folder-results" aria-busy={!listing && !error}>

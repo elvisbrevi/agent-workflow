@@ -72,8 +72,25 @@ export const CREDENTIALS_TOOL_COMMANDS = [
   "credentials-update",
 ] as const;
 
+/**
+ * What happens before a repository exists on this machine: the work a plan can
+ * slice, read at the tracker, and the projects, accounts and repositories it can
+ * be planned in, downloaded from or created in (ADR-0049).
+ */
+export const REPOSITORY_TOOL_COMMANDS = [
+  "work-plannable",
+  "azure-project-list",
+  "azure-repo-list",
+  "github-owner-list",
+  "repo-clone",
+  "repo-create",
+] as const;
+
+export type RepositoryToolCommand = typeof REPOSITORY_TOOL_COMMANDS[number];
+
 export const DETERMINISTIC_TOOL_COMMANDS = [
   "work-assigned",
+  ...REPOSITORY_TOOL_COMMANDS,
   "agent-models",
   ...AZURE_TOOL_COMMANDS,
   ...GITHUB_TOOL_COMMANDS,
@@ -90,9 +107,21 @@ export function isDeterministicToolCommand(command: string): command is Determin
   return COMMAND_SET.has(command);
 }
 
+const REPOSITORY_SET = new Set<string>(REPOSITORY_TOOL_COMMANDS);
+
+export function isRepositoryToolCommand(command: string): command is RepositoryToolCommand {
+  return REPOSITORY_SET.has(command);
+}
+
 /** The invocation forms shown in `--help`, in the order the families are listed. */
 export const DETERMINISTIC_TOOL_FORMS = [
   "  lz work-assigned --working-directory <path>",
+  "  lz work-plannable --tracker <azure|github> [--project <nombre>]",
+  "  lz azure-project-list",
+  "  lz azure-repo-list --project <nombre>",
+  "  lz github-owner-list",
+  "  lz repo-clone --tracker <azure|github> --repository <nombre|owner/nombre> [--project <nombre>] --destination <ruta>",
+  "  lz repo-create --tracker <azure|github> --repository <nombre|owner/nombre> [--project <nombre>] --destination <ruta>",
   "  lz agent-models",
   "  lz hu-children-info --hu <id>",
   "  lz hu-state-set --hu <id> --state <state> --expected-state <state> --expected-rev <rev>",

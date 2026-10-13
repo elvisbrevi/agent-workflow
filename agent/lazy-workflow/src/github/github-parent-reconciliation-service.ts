@@ -1,13 +1,40 @@
 import { runGh, type GhRunner } from "./managed-queue-service.ts";
 
+/**
+ * An issue and its native relations. `repository` (`owner/name`) is absent when
+ * GitHub answers for the repository being read: a sub-issue may live in another
+ * repository than its parent (ADR-0049), so an issue is its number *and* where.
+ */
 export interface GitHubNativeIssueRelation {
   number: number;
   title: string;
   state: string;
-  parent: { number: number } | null;
+  repository?: string;
+  parent: { number: number; repository?: string } | null;
   subIssues: GitHubNativeIssueRelation[];
   blockedBy: Array<{ number: number; state: string }>;
 }
+
+interface RepositoryParts {
+  owner: string;
+  name: string;
+}
+
+const nameOf = (repository: RepositoryParts): string => `${repository.owner}/${repository.name}`;
+
+function partsOf(nameWithOwner: string): RepositoryParts {
+  if (!/^[^/\s]+\/[^/\s]+$/.test(nameWithOwner)) throw new Error(`GitHub devolvio un repositorio no verificable: ${nameWithOwner}`);
+  const [owner, name] = nameWithOwner.split("/");
+  return { owner: owner!, name: name! };
+}
+
+/** Where a relation points: its own repository, or the one being read when GitHub did not say. */
+const repositoryOf = (relation: { repository?: string } | null | undefined, reading: RepositoryParts): string =>
+  relation?.repository ?? nameOf(reading);
+
+/** `#12` within the repository of the parent, `owner/name#12` anywhere else. */
+const reference = (number: number, repository: string, home: string): string =>
+  repository === home ? `#${number}` : `${repository}#${number}`;
 
 export interface GitHubParentReconciliationAdapter {
   reconcileParents(issue: number, workingDirectory: string): Promise<void>;
@@ -35,7 +62,7 @@ interface PageInfo {
 
 const ISSUE_QUERY = [
   "query($owner:String!,$name:String!,$number:Int!,$endCursor:String)",
-  "{repository(owner:$owner,name:$name){issue(number:$number){number title state parent{number} subIssues(first:100,after:$endCursor){nodes{number title state parent{number}} pageInfo{hasNextPage endCursor}}}}}",
+  "{repository(owner:$owner,name:$name){issue(number:$number){number title state parent{number repository{nameWithOwner}} subIssues(first:100,after:$endCursor){nodes{number title state repository{nameWithOwner} parent{number repository{nameWithOwner}}} pageInfo{hasNextPage endCursor}}}}}",
 ].join("");
 
 const BLOCKER_QUERY = [
@@ -72,7 +99,7 @@ function parsePages(output: string): GraphQlPage[] {
   return pages as GraphQlPage[];
 }
 
-function repositoryParts(output: string): { owner: string; name: string } {
+function repositoryParts(output: string): RepositoryParts {
   let value: { nameWithOwner?: unknown };
   try {
     value = JSON.parse(output) as { nameWithOwner?: unknown };
@@ -114,6 +141,16 @@ function requireCompletePagination(last: PageInfo | undefined): void {
   if (last?.hasNextPage !== false) throw new Error("GitHub devolvio una relación sin paginación completa");
 }
 
+type RawRelation = { number: number; repository?: { nameWithOwner?: string } | string };
+
+/** GraphQL nests `repository { nameWithOwner }`; the relation keeps the name alone. */
+function flatRepository<T extends RawRelation>(relation: T | null | undefined): (Omit<T, "repository"> & { repository?: string }) | null {
+  if (!relation) return null;
+  const { repository, ...rest } = relation;
+  const name = typeof repository === "string" ? repository : repository?.nameWithOwner;
+  return name ? { ...rest, repository: name } : rest;
+}
+
 function issueFromPages(pages: GraphQlPage[], issue: number): GitHubNativeIssueRelation {
   const first = pages[0]?.data?.repository?.issue;
   if (!first || first.number !== issue || typeof first.title !== "string" || typeof first.state !== "string") {
@@ -126,14 +163,17 @@ function issueFromPages(pages: GraphQlPage[], issue: number): GitHubNativeIssueR
     if (!current || current.number !== issue || !current.subIssues) throw new Error(`GitHub devolvio una relación incompleta para el Issue #${issue}`);
     lastPage = pageInfo(current.subIssues.pageInfo);
     if (!Array.isArray(current.subIssues.nodes)) throw new Error(`GitHub devolvio sub-issues incompletos para el Issue #${issue}`);
-    subIssues.push(...current.subIssues.nodes);
+    subIssues.push(...current.subIssues.nodes.map((node) => ({
+      ...flatRepository(node as GitHubNativeIssueRelation & RawRelation)!,
+      parent: flatRepository(node.parent as RawRelation | null),
+    }) as GitHubNativeIssueRelation));
   }
   requireCompletePagination(lastPage);
   return {
     number: issue,
     title: first.title,
     state: first.state,
-    parent: first.parent ?? null,
+    parent: flatRepository(first.parent as RawRelation | null),
     subIssues,
     blockedBy: [],
   };
@@ -173,13 +213,13 @@ function issueNumbersFromPages(pages: GraphQlPage[]): number[] {
 export class GitHubParentReconciliationService implements GitHubParentReconciliationAdapter {
   constructor(private readonly gh: GhRunner = runGh) {}
 
-  private async repository(workingDirectory: string): Promise<{ owner: string; name: string }> {
+  private async repository(workingDirectory: string): Promise<RepositoryParts> {
     return repositoryParts(await this.gh(["repo", "view", "--json", "nameWithOwner"], workingDirectory));
   }
 
   private async readIssue(
     issue: number,
-    repository: { owner: string; name: string },
+    repository: RepositoryParts,
     workingDirectory: string,
   ): Promise<GitHubNativeIssueRelation> {
     const issuePages = parsePages(await this.gh(graphQlArgs(ISSUE_QUERY, repository, issue), workingDirectory));
@@ -190,7 +230,7 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
 
   private async comments(
     issue: number,
-    repository: { owner: string; name: string },
+    repository: RepositoryParts,
     workingDirectory: string,
   ): Promise<string[]> {
     const pages = parsePages(await this.gh(graphQlArgs(COMMENT_QUERY, repository, issue), workingDirectory));
@@ -208,44 +248,56 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
   }
 
   private async openIssues(
-    repository: { owner: string; name: string },
+    repository: RepositoryParts,
     workingDirectory: string,
   ): Promise<number[]> {
     const pages = parsePages(await this.gh(graphQlArgs(OPEN_ISSUES_QUERY, repository), workingDirectory));
     return issueNumbersFromPages(pages);
   }
 
+  /**
+   * Closes `parent` once every direct sub-issue and dependency is closed, then
+   * walks up. A parent in another repository than the one the run works in is
+   * written with `-R`; one in the same repository is written exactly as before.
+   */
   private async reconcileParent(
     parent: GitHubNativeIssueRelation,
-    repository: { owner: string; name: string },
+    repository: RepositoryParts,
+    home: RepositoryParts,
     workingDirectory: string,
-    path: Set<number>,
-    expectedChild: number | null,
+    path: Set<string>,
+    expectedChild: { number: number; repository: string } | null,
   ): Promise<void> {
-    if (path.has(parent.number)) throw new Error(`La jerarquía GitHub contiene un ciclo en el Issue #${parent.number}`);
-    path.add(parent.number);
+    const where = nameOf(repository);
+    const key = `${where}#${parent.number}`;
+    if (path.has(key)) throw new Error(`La jerarquía GitHub contiene un ciclo en el Issue ${reference(parent.number, where, nameOf(home))}`);
+    path.add(key);
 
-    if (expectedChild !== null && !parent.subIssues.some(({ number }) => number === expectedChild)) {
+    if (expectedChild !== null && !parent.subIssues.some((child) =>
+      child.number === expectedChild.number && repositoryOf(child, repository) === expectedChild.repository
+    )) {
       throw new Error(`La jerarquía nativa del Issue #${parent.number} es ambigua`);
     }
 
+    const target = where === nameOf(home) ? [] : ["-R", where];
     if (parent.state === "OPEN") {
       if (parent.subIssues.length === 0) return;
-      const childNumbers = new Set<number>();
+      const children = new Set<string>();
       for (const child of parent.subIssues) {
-        if (childNumbers.has(child.number) || child.parent?.number !== parent.number) {
+        const childKey = reference(child.number, repositoryOf(child, repository), where);
+        if (children.has(childKey) || child.parent?.number !== parent.number || repositoryOf(child.parent, repository) !== where) {
           throw new Error(`La jerarquía nativa del Issue #${parent.number} es ambigua`);
         }
-        childNumbers.add(child.number);
+        children.add(childKey);
         if (child.state !== "CLOSED") return;
       }
       if (parent.blockedBy.some(({ state }) => state !== "CLOSED")) return;
 
-      const marker = `lazy-workflow: verified direct sub-issues for parent #${parent.number}: ${[...childNumbers].map((number) => `#${number}`).join(", ")}`;
+      const marker = `lazy-workflow: verified direct sub-issues for parent #${parent.number}: ${[...children].join(", ")}`;
       if (!(await this.comments(parent.number, repository, workingDirectory)).some((comment) => comment.includes(marker))) {
-        await this.gh(["issue", "comment", `${parent.number}`, "--body", marker], workingDirectory);
+        await this.gh(["issue", "comment", `${parent.number}`, ...target, "--body", marker], workingDirectory);
       }
-      await this.gh(["issue", "close", `${parent.number}`], workingDirectory);
+      await this.gh(["issue", "close", `${parent.number}`, ...target], workingDirectory);
       const verified = await this.readIssue(parent.number, repository, workingDirectory);
       if (verified.state !== "CLOSED") throw new Error(`El Issue padre #${parent.number} no quedó cerrado`);
       parent = verified;
@@ -254,27 +306,30 @@ export class GitHubParentReconciliationService implements GitHubParentReconcilia
     }
 
     if (parent.parent) {
-      await this.reconcileParent(await this.readIssue(parent.parent.number, repository, workingDirectory), repository, workingDirectory, path, parent.number);
+      const above = partsOf(repositoryOf(parent.parent, repository));
+      await this.reconcileParent(await this.readIssue(parent.parent.number, above, workingDirectory), above, home, workingDirectory, path, { number: parent.number, repository: where });
     }
   }
 
   async reconcileParents(issue: number, workingDirectory: string): Promise<void> {
     if (!Number.isInteger(issue) || issue <= 0) throw new Error("El issue para reconciliar no es válido");
-    const repository = await this.repository(workingDirectory);
-    const current = await this.readIssue(issue, repository, workingDirectory);
+    const home = await this.repository(workingDirectory);
+    const current = await this.readIssue(issue, home, workingDirectory);
     if (current.parent) {
-      await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set(), current.number);
+      const above = partsOf(repositoryOf(current.parent, home));
+      await this.reconcileParent(await this.readIssue(current.parent.number, above, workingDirectory), above, home, workingDirectory, new Set(), { number: current.number, repository: nameOf(home) });
     }
   }
 
   async reconcileOpenParents(workingDirectory: string): Promise<void> {
-    const repository = await this.repository(workingDirectory);
-    for (const issue of await this.openIssues(repository, workingDirectory)) {
-      const current = await this.readIssue(issue, repository, workingDirectory);
+    const home = await this.repository(workingDirectory);
+    for (const issue of await this.openIssues(home, workingDirectory)) {
+      const current = await this.readIssue(issue, home, workingDirectory);
       if (current.subIssues.length > 0) {
-        await this.reconcileParent(current, repository, workingDirectory, new Set(), null);
+        await this.reconcileParent(current, home, home, workingDirectory, new Set(), null);
       } else if (current.parent) {
-        await this.reconcileParent(await this.readIssue(current.parent.number, repository, workingDirectory), repository, workingDirectory, new Set(), current.number);
+        const above = partsOf(repositoryOf(current.parent, home));
+        await this.reconcileParent(await this.readIssue(current.parent.number, above, workingDirectory), above, home, workingDirectory, new Set(), { number: current.number, repository: nameOf(home) });
       }
     }
   }

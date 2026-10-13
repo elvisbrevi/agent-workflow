@@ -18,7 +18,7 @@ export interface PublishedIssue {
 export interface GitHubPlanPublication {
   issues: PublishedIssue[];
   /** The epic the plan sliced, when it had one, and which issues now hang from it. */
-  epic?: { issue: number; subIssues: Array<{ issue: number; linked: boolean }> };
+  epic?: { issue: number; repository: string | null; subIssues: Array<{ issue: number; linked: boolean }> };
   blockingLinks: Array<{ blocker: number; blocked: number; linked: boolean }>;
 }
 
@@ -31,8 +31,8 @@ export interface GitHubPlanPublicationBoundary {
   ): Promise<{ number: number; id: number }>;
   /** Records `blocked` as blocked by the issue whose id is `blockerId`. */
   linkBlockedBy(blocked: number, blockerId: number, workingDirectory: string): Promise<{ linked: boolean }>;
-  /** Hangs the issue whose id is `childId` from `parent` as a native sub-issue. */
-  addSubIssue?(parent: number, childId: number, workingDirectory: string): Promise<{ linked: boolean }>;
+  /** Hangs the issue whose id is `childId` from `parent`, in `parentRepository` or here, as a native sub-issue. */
+  addSubIssue?(parent: number, childId: number, workingDirectory: string, parentRepository?: string | null): Promise<{ linked: boolean }>;
 }
 
 /**
@@ -46,7 +46,7 @@ export async function publishPlanIssues(
   boundary: GitHubPlanPublicationBoundary,
   tickets: PlannedTicket[],
   workingDirectory: string,
-  epic: number | null = null,
+  epic: { issue: number; repository: string | null } | null = null,
 ): Promise<GitHubPlanPublication> {
   const ordered = publicationOrder(tickets);
   const published = new Map<string, { issue: number; id: number }>();
@@ -65,7 +65,7 @@ export async function publishPlanIssues(
     subIssues = [];
     for (const ticket of ordered) {
       const child = published.get(ticket.title.trim())!;
-      const { linked } = await boundary.addSubIssue(epic, child.id, workingDirectory);
+      const { linked } = await boundary.addSubIssue(epic.issue, child.id, workingDirectory, epic.repository);
       subIssues.push({ issue: child.issue, linked });
     }
   }
@@ -82,7 +82,7 @@ export async function publishPlanIssues(
 
   return {
     issues: ordered.map((ticket) => ({ title: ticket.title, issue: published.get(ticket.title.trim())!.issue })),
-    ...(epic !== null ? { epic: { issue: epic, subIssues: subIssues! } } : {}),
+    ...(epic !== null ? { epic: { ...epic, subIssues: subIssues! } } : {}),
     blockingLinks,
   };
 }
