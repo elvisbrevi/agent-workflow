@@ -4,6 +4,7 @@ import { realpath } from "node:fs/promises";
 import { runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { azureOrganization } from "./azure-organization.ts";
 import { HU_WORK_ITEM_TYPES } from "./hu-info.ts";
+import { readWorkItemComments, type WorkItemComment } from "./work-item-comments.ts";
 
 const AZURE_DEVOPS_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798";
 const API_VERSION = "7.1";
@@ -206,6 +207,20 @@ interface FixedCommitLink {
 }
 
 export type AzRunner = (args: string[]) => Promise<string>;
+
+/**
+ * What a ticket asks for, as a person wrote it: its description, a Bug's repro
+ * steps and acceptance criteria when it has them, and its discussion, oldest
+ * first. A delivery session cannot read Azure, so this is all it learns of the
+ * ticket beyond its title (ADR-0050).
+ */
+export interface TicketDescription {
+  ticket: number;
+  description: string | null;
+  reproSteps?: string;
+  acceptanceCriteria?: string;
+  comments: WorkItemComment[];
+}
 
 function positiveId(value: number, name: string): void {
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} debe ser un entero positivo: ${value}`);
@@ -735,9 +750,18 @@ export class AzureTicketInfoService {
     return { hu, ticket, branch: ticketBranch.ref, integrationBranch: integrationBranch.ref };
   }
 
-  async getDescription(ticket: number): Promise<{ ticket: number; description: string | null }> {
+  async getDescription(ticket: number): Promise<TicketDescription> {
     const item = await this.readWorkItemValidated(ticket);
-    return { ticket, description: text(item, "System.Description") ?? null };
+    const project = text(item, "System.TeamProject");
+    const reproSteps = text(item, "Microsoft.VSTS.TCM.ReproSteps");
+    const acceptanceCriteria = text(item, "Microsoft.VSTS.Common.AcceptanceCriteria");
+    return {
+      ticket,
+      description: text(item, "System.Description") ?? null,
+      ...(reproSteps?.trim() ? { reproSteps } : {}),
+      ...(acceptanceCriteria?.trim() ? { acceptanceCriteria } : {}),
+      comments: project ? await readWorkItemComments(this.az, project, ticket) : [],
+    };
   }
 
   async getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }> {

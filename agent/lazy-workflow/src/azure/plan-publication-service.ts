@@ -10,6 +10,14 @@
 
 import { publicationOrder, type PlannedTicket } from "../prompts/plan-contract.ts";
 
+/**
+ * What a plan hangs from the work item it slices, whatever that item is: a
+ * User Story, a Product Backlog Item or a Bug HU all get Tasks, which is what
+ * `code --hu` drains. A new Bug or a new HU is never a plan's to create
+ * (ADR-0050).
+ */
+export const PLANNED_TICKET_TYPE = "Task";
+
 export interface PublishedTicket {
   title: string;
   ticket: number;
@@ -54,7 +62,7 @@ export class AzurePlanPublicationService {
       const descriptionFile = await this.writeDescription(ticket.body);
       const created = await this.boundary.createTicket({
         hu,
-        type: ticket.type,
+        type: PLANNED_TICKET_TYPE,
         title: ticket.title,
         descriptionFile,
         ...(ticket.estimate !== undefined ? { estimate: ticket.estimate } : {}),

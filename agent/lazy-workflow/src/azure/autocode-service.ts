@@ -1,4 +1,5 @@
 import { HuInfo, type HuInfoData } from "./hu-info.ts";
+import { readWorkItemComments } from "./work-item-comments.ts";
 import { reportOperator } from "../output/operator-output.ts";
 import { checkoutGitBranch, pushGitBranch, runGit, type GitRunner } from "../git/git-ticket-branch-cleaner.ts";
 import { verifySessionWithGit } from "../git/session-verification.ts";
@@ -6,6 +7,7 @@ import {
   AzureTicketInfoService,
   runAzureCommand,
   type TicketInfo,
+  type TicketDescription,
   type IntegratedPullRequest,
   type AzurePullRequestTarget,
 } from "./ticket-info-service.ts";
@@ -151,7 +153,7 @@ export interface AutocodeAzureService {
   getCompletionInfo(hu: number, ticket: number): Promise<{ hu: number; ticket: number; gates: TicketInfo["gates"] }>;
   getBranch(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket(ticket: number): Promise<DeliveryTicket>;
-  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }>;
+  getDescription(ticket: number): Promise<TicketDescription>;
   getState(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
   getHuState(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }>;
   getEffort(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
@@ -331,6 +333,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     // Relations carry the parent, which decides whether a Bug can be planned on its own.
     const item = await show(hu, true, this.az);
     const parents = (item.relations ?? []).filter(({ rel }) => rel === "System.LinkTypes.Hierarchy-Reverse");
+    const project = field(item, "System.TeamProject");
     return new HuInfo({
       id: item.id,
       type: field(item, "System.WorkItemType"),
@@ -338,13 +341,18 @@ export class AzureAutocodeService implements AutocodeAzureService {
       title: field(item, "System.Title"),
       description: field(item, "System.Description"),
       criterioDeAceptacion: field(item, "Microsoft.VSTS.Common.AcceptanceCriteria"),
+      reproSteps: field(item, "Microsoft.VSTS.TCM.ReproSteps"),
+      systemInfo: field(item, "Microsoft.VSTS.TCM.SystemInfo"),
       state: field(item, "System.State"),
-      project: field(item, "System.TeamProject"),
+      project,
       assignedTo: item.fields?.["System.AssignedTo"],
       // Both are identities: Azure answers them as objects, and reading them as
       // text drops the developer the delivery tickets are assigned to.
       desarrollador: item.fields?.["Custom.Desarrollador1"],
       iteration: field(item, "System.IterationPath"),
+      // The session plans from this snapshot and cannot read Azure itself, so a
+      // correction asked for in a comment must travel here or it is lost.
+      ...(project ? { comments: await readWorkItemComments(this.az, project, item.id) } : {}),
     } satisfies HuInfoData);
   }
 
@@ -407,7 +415,7 @@ export class AzureAutocodeService implements AutocodeAzureService {
     return this.ticketInfoService.getTicket(ticket);
   }
 
-  getDescription(ticket: number): Promise<{ ticket: number; description: string | null }> {
+  getDescription(ticket: number): Promise<TicketDescription> {
     return this.ticketInfoService.getDescription(ticket);
   }
 

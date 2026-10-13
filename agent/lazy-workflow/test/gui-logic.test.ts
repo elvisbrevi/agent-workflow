@@ -9,7 +9,8 @@ import { expect, test } from "bun:test";
 import { commandCatalog, type CatalogCommand } from "../src/cli/command-catalog.ts";
 import { buildArgs, renderCommandLine, shellQuote, validateFlags, MASK } from "../gui/src/lib/command-line.ts";
 import { initialValues } from "../gui/src/lib/form-defaults.ts";
-import { finalMarker, interviewUrl, operatorFeed, parseStdout, runLogPointer, stripAnsi } from "../gui/src/lib/output.ts";
+import { finalMarker, interviewUrl, operatorFeed, readResult, runLogPointer, stripAnsi } from "../gui/src/lib/output.ts";
+import { inlineMarkdown, markdownBlocks } from "../gui/src/lib/markdown.ts";
 import { foldRuns, formatDuration } from "../gui/src/lib/history.ts";
 import { initialRunsState, runsReducer, statusOf, type RunsAction } from "../gui/src/lib/runs.ts";
 import { defaultParent, emptyRunOptions, folderName, joinPath, prepareProvision, prepareRun, prepareSetup, type RunTarget } from "../gui/src/lib/run-request.ts";
@@ -98,9 +99,63 @@ test("la salida ofrece la URL de la entrevista, el run del run log y el marcador
   expect(interviewUrl(stderr)).toBe("http://127.0.0.1:41234/i/Zx9_token");
   expect(runLogPointer(stderr)).toEqual({ runId: "0b1c2d3e-1111-4222-8333-444455556666", path: "/home/u/.local/state/lazy-workflow/runs.jsonl" });
   expect(finalMarker(['{"outcome":"QUEUE_EMPTY"}', "QUEUE_EMPTY", "WORKFLOW_STEP_FINISHED"])).toBe("Cola vacia");
-  expect(parseStdout(["{", '  "hu": 1', "}"])).toEqual({ kind: "json", value: { hu: 1 } });
-  expect(parseStdout(['{"a":1}', "QUEUE_EMPTY"]).kind).toBe("text");
-  expect(parseStdout([]).kind).toBe("empty");
+  expect(readResult(["{", '  "hu": 1', "}"])).toEqual({ parts: [], documents: [{ hu: 1 }] });
+  expect(readResult(['{"outcome":"QUEUE_EMPTY"}', "QUEUE_EMPTY", "WORKFLOW_STEP_FINISHED"])).toEqual({ parts: [], documents: [{ outcome: "QUEUE_EMPTY" }] });
+  expect(readResult([])).toEqual({ parts: [], documents: [] });
+});
+
+test("el resultado de un plan se lee como resumen y tickets publicados, no como JSON", () => {
+  const plan = { tickets: [{ type: "Bug", title: "Corrige el texto", body: "Pasos:\n1. Leer el comentario", blockedBy: [], estimate: 1 }] };
+  const agent = {
+    sessionId: "c532c1d5",
+    text: `Leí el comentario de **#24663**.\n\nPLAN_READY\n${JSON.stringify(plan)}`,
+    reasoning: [],
+    reason: "success",
+    tokens: { input: 18, output: 4687, cache: { write: 28369, read: 264970 } },
+    cost: 0.186879,
+  };
+  const publication = { hu: 24663, tickets: [{ title: "Corrige el texto", ticket: 26296, type: "Task", created: true }], blockingLinks: [] };
+  const stdout = [...JSON.stringify(agent, null, 2).split("\n"), ...JSON.stringify(publication, null, 2).split("\n")];
+
+  const result = readResult(stdout);
+
+  expect(result.parts).toEqual([
+    {
+      kind: "agent",
+      summary: "Leí el comentario de **#24663**.",
+      plan: [{ title: "Corrige el texto", body: "Pasos:\n1. Leer el comentario", blockedBy: [], estimate: 1 }],
+      cost: 0.186879,
+      outputTokens: 4687,
+    },
+    { kind: "publication", tracker: "azure", parent: "HU 24663", items: [{ id: 26296, title: "Corrige el texto", type: "Task", created: true }], blockingLinks: 0 },
+  ]);
+  expect(result.documents).toEqual([agent, publication]);
+});
+
+test("un plan de GitHub nombra su épica, y un reporte en prosa queda como texto", () => {
+  const publication = { issues: [{ title: "Slice", issue: 41 }], epic: { issue: 7, repository: null, subIssues: [] }, blockingLinks: [{ blocker: 40, blocked: 41, linked: true }] };
+  expect(readResult(JSON.stringify(publication, null, 2).split("\n")).parts).toEqual([
+    { kind: "publication", tracker: "github", parent: "épica #7", items: [{ id: 41, title: "Slice", type: null, created: null }], blockingLinks: 1 },
+  ]);
+  expect(readResult(["## Configuración", "", "Todo listo."]).parts).toEqual([{ kind: "text", text: "## Configuración\n\nTodo listo." }]);
+});
+
+test("el markdown del agente se lee en títulos, párrafos, listas y código", () => {
+  expect(inlineMarkdown("Usa `lz` y **no** adivines")).toEqual([
+    { kind: "text", text: "Usa " },
+    { kind: "code", text: "lz" },
+    { kind: "text", text: " y " },
+    { kind: "strong", text: "no" },
+    { kind: "text", text: " adivines" },
+  ]);
+  expect(markdownBlocks("# Plan\nContexto:\n1. Uno\n   sigue\n2. Dos\n- suelto\n\n```\ncodigo\n```\nFin")).toEqual([
+    { kind: "heading", inline: [{ kind: "text", text: "Plan" }] },
+    { kind: "paragraph", inline: [{ kind: "text", text: "Contexto:" }] },
+    { kind: "list", ordered: true, start: 1, items: [[{ kind: "text", text: "Uno sigue" }], [{ kind: "text", text: "Dos" }]] },
+    { kind: "list", ordered: false, start: 1, items: [[{ kind: "text", text: "suelto" }]] },
+    { kind: "code", text: "codigo" },
+    { kind: "paragraph", inline: [{ kind: "text", text: "Fin" }] },
+  ]);
 });
 
 test("el run log se agrupa por run, el mas reciente primero, con su resultado y contexto", () => {

@@ -1487,6 +1487,32 @@ test("code versionado completa el ticket después de que git verifica la sesión
 });
 
 
+test("en un solo repositorio la sesión recibe lo que pide el ticket: descripción y comentarios (ADR-0050)", async () => {
+  const { code, prompt } = versionedAzureDelivery({
+    getDescription: async (ticket) => ({
+      ticket,
+      description: "<p>Migrar el endpoint de pagos</p>",
+      comments: [{ author: "Victoria", date: "2026-10-12T10:00:00Z", text: "Corrige también el pie del comprobante" }],
+    }),
+  });
+  const openCodePrompt = await code.then(prompt);
+
+  expect(await code).toBe(0);
+  expect(openCodePrompt).toContain("Descripción del ticket:\n<p>Migrar el endpoint de pagos</p>");
+  expect(openCodePrompt).toContain("Comentarios del ticket, del más antiguo al más reciente:");
+  expect(openCodePrompt).toContain("Corrige también el pie del comprobante");
+});
+
+test("en un solo repositorio no se abre una sesión sin poder leer el ticket", async () => {
+  const { code, prompt, events } = versionedAzureDelivery({
+    getDescription: async () => { throw new Error("az caído"); },
+  });
+
+  expect(await code).toBe(1);
+  expect(prompt()).toBe("");
+  expect(events).not.toContain("verify");
+});
+
 test("en un solo repositorio la HU avanza cuando su último ticket queda en Done (ADR-0048)", async () => {
   for (const [type, developed] of [["User Story", "Desarrollo Terminado"], ["Bug", "En revisión"]] as const) {
     let huState = type === "Bug" ? "En progreso" : "En Desarrollo";

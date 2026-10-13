@@ -310,7 +310,7 @@ read Azure, prepare integration branches, or clean Azure ticket branches;
 ### `plan`
 
 The session decides how to slice the work and returns the slices behind a
-`PLAN_READY` marker — type, title, body, blocking edges, optional estimate. It
+`PLAN_READY` marker — title, body, blocking edges, optional estimate. It
 creates no issues: `gh issue create` and `gh issue edit` are denied to it by its
 authority profile.
 
@@ -415,9 +415,12 @@ resolves the organization from `LAZY_WORKFLOW_AZURE_ORGANIZATION`
 (`https://dev.azure.com/<organization>`); a run without it fails before reaching
 Azure instead of naming one.
 
-`plan --hu` reads the HU, opens one session that slices it, and publishes the
-result the way GitHub does: work items created in dependency order, parent links
-wired, blocking relations added in a second pass when real ids exist. A created
+`plan --hu` reads the HU — its fields, a Bug's repro steps, and every comment
+of its discussion, which the session cannot read on its own — opens one session
+that slices it, and publishes the result the way GitHub does: Tasks created in
+dependency order, parent links wired, blocking relations added in a second pass
+when real ids exist. A plan never creates a Bug or an HU: a `type` the session
+writes is dropped (ADR-0050). A created
 ticket inherits its HU's iteration and is assigned to the HU's `Desarrollador 1`
 (`Custom.Desarrollador1`), not to whoever the HU itself is assigned to — the HU
 answers to a lead, the ticket lands on the developer. `--assignee` overrides
@@ -432,7 +435,9 @@ before opening a session.
 `code --hu` drains the HU's direct Task and Bug tickets. It ensures the
 `hu/<HU>` integration branch exists — `--base-branch` names what to create it
 from the first time — creates `ticket/<id>` from it, moves the ticket to
-`En progreso`, runs one session, and gates on the same git verification as
+`En progreso`, runs one session — told the whole ticket: its description, a
+Bug's repro steps and acceptance criteria, and its comments — and gates on the
+same git verification as
 GitHub: process exited, ticket branch ahead of the integration branch, clean
 tree. The session's last text becomes the ticket's completion-evidence field.
 The delivery then pushes, creates or reuses the pull request, associates it,

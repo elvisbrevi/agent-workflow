@@ -36,3 +36,25 @@ test("hu-info entrega el tipo y el padre directo, que deciden si un Bug se plani
   expect({ type: info.type, parent: info.parent }).toEqual({ type: "Bug", parent: 23001 });
   expect(commands[0]).toContain("relations");
 });
+
+test("hu-info entrega la discusión completa de la HU, en orden y por páginas, y los pasos de un Bug", async () => {
+  const commands: string[][] = [];
+  const bug = { ...huItem, fields: { ...huItem.fields, "Microsoft.VSTS.TCM.ReproSteps": "<p>Dice Excenta</p>" } };
+  const pages = [
+    { comments: [{ text: "<p>Corrige también el texto del pie</p>", createdDate: "2026-10-10T12:00:00Z", createdBy: { displayName: "Victoria" } }, { text: " " }], continuationToken: "siguiente" },
+    { comments: [{ text: "Gracias", createdDate: "2026-10-11T09:00:00Z", createdBy: { displayName: "Elvis" } }], continuationToken: null },
+  ];
+  const info = await new AzureAutocodeService(async (args) => {
+    commands.push(args);
+    return JSON.stringify(args.includes("rest") ? pages.shift() : bug);
+  }).getHuInfo(HU);
+
+  expect(info.reproSteps).toBe("<p>Dice Excenta</p>");
+  expect(info.comments).toEqual([
+    { author: "Victoria", date: "2026-10-10T12:00:00Z", text: "<p>Corrige también el texto del pie</p>" },
+    { author: "Elvis", date: "2026-10-11T09:00:00Z", text: "Gracias" },
+  ]);
+  const uris = commands.filter((args) => args.includes("rest")).map((args) => args[args.indexOf("--uri") + 1]!);
+  expect(uris[0]).toContain(`/Cobro%20Pago%20y%20Tarifas/_apis/wit/workItems/${HU}/comments?order=asc`);
+  expect(uris[1]).toContain("continuationToken=siguiente");
+});

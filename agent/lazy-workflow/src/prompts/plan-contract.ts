@@ -14,12 +14,15 @@ import { PLAN_READY_MARKER } from "./workflow-contract.ts";
  * Lo que la sesion aporta por rebanada: titulo, descripcion y esfuerzo. Todo lo
  * demas de un item publicado es derivable, y por eso no es suyo (ADR-0040).
  *
+ * El tipo tampoco: un plan cuelga Tasks del item que corta, y crear otro Bug u
+ * otra HU nunca es una decision de la sesion (ADR-0050). Un `type` que la sesion
+ * igual escriba se descarta al leer el plan.
+ *
  * El contrato es uno solo en los dos trackers aunque GitHub no tenga donde
- * poner `type` ni `estimate`: una sesion no elige su forma segun donde va a
- * publicarse el plan, y Azure si los necesita.
+ * poner `estimate`: una sesion no elige su forma segun donde va a publicarse el
+ * plan, y Azure si lo necesita.
  */
 export interface PlannedTicket {
-  type: "Task" | "Bug";
   title: string;
   body: string;
   blockedBy: string[];
@@ -36,8 +39,7 @@ export class PlanParseError extends Error {
 function isPlannedTicket(value: unknown): value is PlannedTicket {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  return (candidate.type === "Task" || candidate.type === "Bug")
-    && typeof candidate.title === "string" && candidate.title.trim().length > 0
+  return typeof candidate.title === "string" && candidate.title.trim().length > 0
     && typeof candidate.body === "string" && candidate.body.trim().length > 0
     && Array.isArray(candidate.blockedBy)
     && candidate.blockedBy.every((entry) => typeof entry === "string")
@@ -67,7 +69,13 @@ export function parsePlan(text: string): PlannedTicket[] {
   const invalid = tickets.findIndex((ticket) => !isPlannedTicket(ticket));
   if (invalid >= 0) throw new PlanParseError(`El ticket ${invalid + 1} del plan no tiene la forma esperada`);
 
-  const planned = tickets as PlannedTicket[];
+  // Only what the contract names travels on: a stray `type` never reaches publication.
+  const planned = (tickets as PlannedTicket[]).map(({ title, body, blockedBy, estimate }): PlannedTicket => ({
+    title,
+    body,
+    blockedBy,
+    ...(estimate !== undefined ? { estimate } : {}),
+  }));
   const titles = planned.map(({ title }) => title.trim());
   const duplicate = titles.find((title, index) => titles.indexOf(title) !== index);
   if (duplicate) throw new PlanParseError(`El plan repite el título "${duplicate}"`);

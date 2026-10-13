@@ -120,7 +120,7 @@ run-log entries; a read that fails becomes a configuration notice.
 | An option left at its default | not sent, so the CLI applies its own default |
 | **Reparar con agente** | `setup --prompt <detected problems>` with an installed agent |
 | Confirmation before a run | `confirmWrites`: Plan, Code and setup open sessions |
-| A run in **Ejecuciones** | its operator lines (stderr) as a progress feed with their time, and its stdout as the result — a setup report as text, a plan's JSON under **Resultado técnico** |
+| A run in **Ejecuciones** | its operator lines (stderr) as a progress feed with their time, and its stdout as the result: the session's summary as formatted text with its cost, a plan's published tickets with their id, type, estimate and description, a setup report as text, and every JSON document as printed under **Resultado técnico** |
 | **Interrumpir** | Ctrl-C: SIGINT to the run's process group, so the run is recorded as interrupted and a pending `--off` is cancelled; a second click kills it. Windows has no SIGINT for a windowless process, so there it ends the run's process tree at once |
 | **Ejecuciones** | runs in progress, and the CLI's run log (`LAZY_WORKFLOW_LOG_FILE` or `~/.local/state/lazy-workflow/runs.jsonl`) for Plan, Code and setup, terminal runs included |
 

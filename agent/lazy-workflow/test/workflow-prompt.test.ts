@@ -261,6 +261,22 @@ test("la entrega Azure nombra el ticket, lo describe y dice el trabajo, nada má
   expect(prompt).toContain("termina con un resumen de lo realizado entendible por un humano.");
 });
 
+test("la entrega Azure de un repositorio lleva lo que pide el ticket, sin encabezados vacíos", async () => {
+  const context_ = { hu: { id: 23438 }, ticket: { id: 51 }, integrationBranch: "refs/heads/hu/23438" } as never;
+  const prompt = await buildWorkflowPrompt({
+    kind: "azure-delivery",
+    context: context_,
+    ticketBranch: "refs/heads/ticket/51",
+    description: { ticket: 51, description: null, reproSteps: "<p>Dice Excenta</p>", comments: [] },
+  }, context);
+
+  expect(prompt).toContain("Pasos para reproducir:\n<p>Dice Excenta</p>");
+  expect(prompt).not.toContain("Descripción del ticket:");
+  expect(prompt).not.toContain("Comentarios del ticket");
+  // El ticket va antes que la instrucción de entrega, como en un workspace.
+  expect(prompt.indexOf("Dice Excenta")).toBeLessThan(prompt.indexOf("trabaja y comitea"));
+});
+
 test("la entrega Azure ya no lleva el contrato de manifest, evidencia ni marcador", async () => {
   const prompt = await buildWorkflowPrompt({
     kind: "azure-delivery",
@@ -370,7 +386,11 @@ test("la entrega workspace Azure lleva el contenido del ticket, no solo su ident
     hu: 23438,
     ticket: 51,
     context: deliveryContext,
-    description: "Criterio de aceptación: el intento de pago se concilia contra el proveedor.",
+    description: {
+      ticket: 51,
+      description: "Criterio de aceptación: el intento de pago se concilia contra el proveedor.",
+      comments: [{ author: "Victoria", text: "Concilia también los reintentos" }],
+    },
     topology: topology as never,
     ticketTopology: topology as never,
   }, context);
@@ -379,6 +399,8 @@ test("la entrega workspace Azure lleva el contenido del ticket, no solo su ident
   expect(prompt).toContain("HU transversal de pagos");
   expect(prompt).toContain("Descripción del ticket:");
   expect(prompt).toContain("el intento de pago se concilia contra el proveedor");
+  expect(prompt).toContain("Comentarios del ticket, del más antiguo al más reciente:");
+  expect(prompt).toContain("Concilia también los reintentos");
   // El contenido del ticket va antes que el roster: es lo que la sesión necesita leer primero.
   expect(prompt.indexOf("Conciliar el intento de pago")).toBeLessThan(prompt.indexOf("Ordered participant repositories"));
 });

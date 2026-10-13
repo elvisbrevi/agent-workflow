@@ -24,7 +24,7 @@ Conflicting existing data fails closed.
 | Concern | Read command | Mutation command | Required explicit input |
 |---|---|---|---|
 | Aggregate ticket | `ticket-info --hu <id> --ticket <id>` | none | HU and ticket IDs |
-| Description | `ticket-description-info --ticket <id>` | `ticket-description-set --ticket <id> --description-file <path>` | UTF-8 file; no shell-embedded HTML |
+| Description and discussion | `ticket-description-info --ticket <id>` (also a Bug's repro steps, acceptance criteria and comments) | `ticket-description-set --ticket <id> --description-file <path>` | UTF-8 file; no shell-embedded HTML |
 | State | `ticket-state-info --ticket <id>` | `ticket-state-set --ticket <id> --state <state> --expected-state <state>` | expected and desired state |
 | Effort | `ticket-effort-info --ticket <id>` | `ticket-effort-set --ticket <id> --real-effort <hours> --real-effort-hh <hours> --expected-rev <rev>` | absolute cumulative totals and Azure revision |
 | Ticket branch | `ticket-branch-info --hu <id> --ticket <id>` | `ticket-branch-set --hu <id> --ticket <id> --branch <name> --working-directory <path>` | exact branch; base is the verified HU branch |

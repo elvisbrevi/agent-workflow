@@ -14,7 +14,7 @@ import {
   type TicketCompletionVerification,
   type VerifiedTicketCompletion,
 } from "../azure/autocode-service.ts";
-import type { TicketInfo } from "../azure/ticket-info-service.ts";
+import type { TicketDescription, TicketInfo } from "../azure/ticket-info-service.ts";
 import type { AzurePullRequestTarget, AzureWorkspaceBranchTopology, AzureWorkspaceRepositoryInput } from "../azure/autocode-service.ts";
 import { AzureWorkspaceCheckpointStore, writeAzureWorkspaceManifest, type AzureWorkspaceCheckpoint, type AzureWorkspaceCheckpointUnit } from "../azure/azure-workspace-checkpoint.ts";
 import {
@@ -146,7 +146,7 @@ export type AzureBoundary = Pick<HuInfoService, "getHuInfo" | "waitForAccess">
   linkTicketBranch?(hu: number, ticket: number, ticketBranch: string, candidates: readonly string[]): Promise<unknown>;
   getBranch?(hu: number, ticket: number): Promise<{ hu: number; ticket: number; branch: string | null; integrationBranch: string | null }>;
   getTicket?(ticket: number): Promise<{ id: number; type: "Task" | "Bug" }>;
-  getDescription?(ticket: number): Promise<{ ticket: number; description: string | null }>;
+  getDescription?(ticket: number): Promise<TicketDescription>;
   getState?(ticket: number): Promise<{ ticket: number; state: string | null; revision: number | null }>;
   getHuState?(hu: number): Promise<{ hu: number; type?: string; state: string | null; revision: number | null }>;
   getEffort?(ticket: number): Promise<{ ticket: number; effort: { estimated?: number; real?: number; realHours?: number } }>;
@@ -2001,7 +2001,7 @@ export class LazyWorkflowCli {
         hu,
         ticket,
         context,
-        description: description.description,
+        description,
         topology,
         ticketTopology,
       },
@@ -4218,13 +4218,24 @@ export class LazyWorkflowCli {
 
     const norms = await this.loadSagNorms(options, "coding");
     if (options.normasSag && norms === null) return 1;
+    // La sesión no tiene `az`: lo que el ticket pide — su descripción y sus comentarios — viaja
+    // en el prompt o no le llega nunca (ADR-0050).
+    let description: TicketDescription | null = null;
+    if (this.huInfoService.getDescription) {
+      try {
+        description = await this.huInfoService.getDescription(ticket);
+      } catch (error) {
+        reportAzureFailure("tracker-read-failure", "prompting", options, `lazy-workflow: no se pudo leer lo que pide el ticket ${ticket} (${errorMessage(error)}); checkpoint conservado.`, { ticket }, "preserved");
+        return 1;
+      }
+    }
     let sessionId = options.session ?? checkpoint.sessionId;
     let activeCli = checkpoint.cli;
     let resumePrompt = options.prompt;
     while (true) {
       try {
         const authoritativeResumePrompt = buildResumePrompt(resumePrompt, norms);
-        const run = await this.prompt({ kind: "azure-delivery", context, ticketBranch }, options, norms);
+        const run = await this.prompt({ kind: "azure-delivery", context, ticketBranch, description }, options, norms);
         let activeAuthority = run.agent;
         const execution = await track(null, async () => {
           // Both a fresh session and a resume of a checkpointed one descend the same declared
@@ -4245,7 +4256,7 @@ export class LazyWorkflowCli {
           };
           const handOff = async (rung: FallbackRung) => {
             const handoffOptions: CliOptions = { ...options, cli: rung.cli, model: rung.model, variant: rung.variant };
-            const handoffRun = await this.prompt({ kind: "azure-delivery", context, ticketBranch }, handoffOptions, norms);
+            const handoffRun = await this.prompt({ kind: "azure-delivery", context, ticketBranch, description }, handoffOptions, norms);
             this.resolveAgent(rung.cli);
             const handedOff = await this.codingAgent.run({
               ...handoffOptions,

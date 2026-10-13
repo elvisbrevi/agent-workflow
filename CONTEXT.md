@@ -385,8 +385,10 @@ _Avoid_: Azure HU prompt
 
 **Azure HU planning run**:
 A lazy-workflow invocation with `plan --hu <ID>`. It reads the Azure DevOps
-User Story — or a **Bug HU** — combines that data with the English autoplan
-prompt, and starts OpenCode in the selected working directory. OpenCode decides how to slice the
+User Story — or a **Bug HU** — whole: its fields, a Bug's repro steps, and its
+discussion, every comment oldest first, because the session cannot read Azure
+and plans only from what it is handed (ADR-0050). It combines that data with the
+English autoplan prompt, and starts OpenCode in the selected working directory. OpenCode decides how to slice the
 User Story and returns the slices as a delivery plan; it publishes no Azure work
 items. The coordinator validates that plan and publishes it. It may hold a
 planning interview on the way, which changes who answers its questions and
@@ -427,19 +429,22 @@ _Avoid_: default answer, fallback answer
 
 **Delivery plan**:
 The machine-readable result of a planning run, in either tracker: the
-tracer-bullet tickets to publish, each with its type, exact title, body,
-optional estimate, and the titles that block it. Titles are the plan's only
-identity, because tracker ids do not exist yet. Duplicate titles, unknown
-blockers, and blocking cycles are rejected before anything is created, so a
-malformed plan publishes nothing. One shape serves both trackers because a
-session does not choose its answer by where the plan will be published; GitHub
-simply has nowhere to put the type or the estimate.
-_Avoid_: prose ticket list, tracker ids in a plan, a per-tracker plan shape
+tracer-bullet tickets to publish, each with its exact title, body, optional
+estimate, and the titles that block it. Titles are the plan's only identity,
+because tracker ids do not exist yet. Duplicate titles, unknown blockers, and
+blocking cycles are rejected before anything is created, so a malformed plan
+publishes nothing. One shape serves both trackers because a session does not
+choose its answer by where the plan will be published; GitHub simply has nowhere
+to put the estimate. The plan names no type: on Azure every ticket is a Task,
+and a `type` the session still writes is dropped (ADR-0050).
+_Avoid_: prose ticket list, tracker ids in a plan, a per-tracker plan shape, a
+session-chosen work item type
 
 **Plan publication**:
 The deterministic half of a planning run, in both trackers. The session decides
-the slices and returns them behind `PLAN_READY` — type, title, body, blocking
-edges, estimate. The coordinator creates the items, wires parents and blocking
+the slices and returns them behind `PLAN_READY` — title, body, blocking edges,
+estimate. The coordinator creates the items — Tasks, on Azure, under whatever
+work item was planned — wires parents and blocking
 relations, applies `ready-for-agent` on GitHub in the same call that creates the
 issue, and sets every derivable Azure field: assignee, month, remaining work,
 and the HU's integration branch. For a GitHub epic plan it also hangs each
@@ -531,7 +536,9 @@ declared base, an implicit base in `hu-branch-set`
   owns ticket selection, branches, pull requests, Azure fields, effort,
   completion gates, recovery, and cleanup; the session owns only scoped
   implementation, validation, review and commit, and closes with its delivery
-  summary. Before opening the coding session, the coordinator moves the fixed
+  summary. The session cannot read Azure, so its prompt carries the whole
+  ticket — description, a Bug's repro steps and acceptance criteria, and every
+  comment — in one repository and in a workspace alike (ADR-0050). Before opening the coding session, the coordinator moves the fixed
   ticket to exactly `En progreso` with the current state and revision as guards —
   which is also what removes a failed ticket from the frontier. When the session's
   process exits, the coordinator runs its session verification, and only then

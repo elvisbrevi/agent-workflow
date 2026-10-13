@@ -206,7 +206,7 @@ export function createAzureWorkspaceHarness(options: AzureWorkspaceHarnessOption
         },
         getBranch: async () => ({ hu, ticket, branch: ticketBranch, integrationBranch }),
         getTicket: async (id: number) => ({ id, type: "Task" as const }),
-        getDescription: async () => ({ ticket, description: null }),
+        getDescription: async () => ({ ticket, description: null, comments: [] }),
         getState: async (id: number) => {
           if (id === ticket) return { ticket: id, state: currentTicketState, revision: currentTicketRevision };
           throw new Error(`unexpected state for ${id}`);

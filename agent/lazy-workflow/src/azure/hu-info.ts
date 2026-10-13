@@ -1,6 +1,8 @@
+import type { WorkItemComment } from "./work-item-comments.ts";
+
 /**
- * The work item types a plan slices into delivery Tasks and Bugs, and a
- * `code --hu` drains: a User Story or Product Backlog Item, or a Bug that is
+ * The work item types a plan slices into delivery Tasks, and whose Tasks and
+ * Bugs a `code --hu` drains: a User Story or Product Backlog Item, or a Bug that is
  * not itself the delivery ticket of one (ADR-0047). The run vocabulary keeps
  * calling all of them the HU.
  */
@@ -28,11 +30,20 @@ export interface HuInfoData {
   title?: string;
   description?: string;
   criterioDeAceptacion?: string;
+  /** A Bug's own description fields: where a Bug says what is wrong, often instead of its description. */
+  reproSteps?: string;
+  systemInfo?: string;
   state?: string;
   project?: string;
   assignedTo?: unknown;
   desarrollador?: unknown;
   iteration?: string;
+  /**
+   * The discussion, oldest first. A plan session cannot read Azure, so what it
+   * is not handed here — a correction asked for in a later comment — it never
+   * learns.
+   */
+  comments?: WorkItemComment[];
 }
 
 export class HuInfo {
@@ -42,11 +53,14 @@ export class HuInfo {
   readonly title?: string;
   readonly description?: string;
   readonly criterioDeAceptacion?: string;
+  readonly reproSteps?: string;
+  readonly systemInfo?: string;
   readonly state?: string;
   readonly project?: string;
   readonly assignedTo?: unknown;
   readonly desarrollador?: unknown;
   readonly iteration?: string;
+  readonly comments?: WorkItemComment[];
 
   constructor(data: HuInfoData) {
     Object.assign(this, data);
